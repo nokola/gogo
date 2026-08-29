@@ -1,7 +1,7 @@
-// UI quads: one instanced draw for the whole gogo draw list. Each instance
-// is a rectangle in device pixels with a kind: 0 rounded rect (+border),
-// 1 circle, 2 linear gradient, 3 radial gradient. Anti-aliased by a signed
-// distance in the fragment stage.
+// UI quads: one instanced draw per (clip, texture) batch for the whole gogo
+// draw list. Kinds: 0 rounded rect (+border), 1 circle, 2 linear gradient,
+// 3 radial gradient, 4 glyph (atlas coverage × color), 5 image (texture ×
+// tint). Anti-aliased by a signed distance in the fragment stage.
 
 struct Screen {
     size: vec2<f32>,
@@ -9,21 +9,25 @@ struct Screen {
 };
 
 @group(0) @binding(0) var<uniform> screen: Screen;
+@group(1) @binding(0) var tex: texture_2d<f32>;
+@group(1) @binding(1) var samp: sampler;
 
 struct Quad {
     @location(0) rect: vec4<f32>,          // x, y, w, h (device px)
-    @location(1) color: vec4<f32>,         // fill (gradient: from)
+    @location(1) color: vec4<f32>,         // fill (gradient: from; glyph/image: tint)
     @location(2) border_color: vec4<f32>,  // border (gradient: to)
     @location(3) params: vec4<f32>,        // corner, border, kind, angle (radians)
+    @location(4) uv: vec4<f32>,            // u0, v0, u1, v1 (kinds 4, 5)
 };
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
-    @location(0) local: vec2<f32>,         // 0..w, 0..h inside the rect
+    @location(0) local: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) border_color: vec4<f32>,
     @location(3) params: vec4<f32>,
     @location(4) size: vec2<f32>,
+    @location(5) uv: vec2<f32>,
 };
 
 @vertex
@@ -41,6 +45,7 @@ fn vs_main(@builtin(vertex_index) vi: u32, q: Quad) -> VsOut {
     out.border_color = q.border_color;
     out.params = q.params;
     out.size = q.rect.zw;
+    out.uv = mix(q.uv.xy, q.uv.zw, c);
     return out;
 }
 
@@ -51,9 +56,17 @@ fn rounded_rect_sdf(p: vec2<f32>, half: vec2<f32>, r: f32) -> f32 {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    let kind = in.params.z;
+    if (kind == 4.0) {
+        let a = in.color.a * textureSample(tex, samp, in.uv).r;
+        return vec4<f32>(in.color.rgb * a, a);
+    }
+    if (kind == 5.0) {
+        let t = textureSample(tex, samp, in.uv) * in.color;
+        return vec4<f32>(t.rgb * t.a, t.a);
+    }
     let half = in.size * 0.5;
     let p = in.local - half;
-    let kind = in.params.z;
     var corner = in.params.x;
     if (kind == 1.0) {
         corner = min(half.x, half.y);
@@ -63,7 +76,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let border = in.params.y;
     var color = in.color;
     if (kind == 2.0) {
-        // Linear: angle 0 = left→right, 90 = top→bottom.
         let dir = vec2<f32>(cos(in.params.w), sin(in.params.w));
         let t = clamp(dot(in.local / in.size - 0.5, dir) + 0.5, 0.0, 1.0);
         color = mix(in.color, in.border_color, t);
@@ -73,7 +85,6 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     } else if (border > 0.0 && d > -border) {
         color = in.border_color;
     }
-    // One-pixel anti-aliased edge; premultiply for the blend state.
     let coverage = clamp(0.5 - d, 0.0, 1.0);
     let a = color.a * coverage;
     return vec4<f32>(color.rgb * a, a);
