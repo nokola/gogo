@@ -46,8 +46,8 @@ impl Rect {
 /// Text measurement the caller supplies (the crate never shapes text).
 pub trait TextMeasure {
     /// Width and height of `text` at `font_size` epx; wrapped at
-    /// `max_width` when given.
-    fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32);
+    /// `max_width` when given. `font` = the file key from `font=`.
+    fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> (f32, f32);
 }
 
 /// A fixed-advance fake for tests and headless layout: 0.55 em per char,
@@ -55,7 +55,7 @@ pub trait TextMeasure {
 pub struct FixedAdvance;
 
 impl TextMeasure for FixedAdvance {
-    fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>) -> (f32, f32) {
+    fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>, _font: Option<&str>) -> (f32, f32) {
         let advance = font_size * 0.55;
         let line_h = font_size * 1.25;
         let Some(max_w) = max_width else {
@@ -131,8 +131,15 @@ impl<'a> Lay<'a> {
     /// Padding plus border, per edge (left, top, right, bottom).
     fn inner_inset(&self, id: NodeId) -> [f32; 4] {
         let mut pad = self.placement(id).padding;
+        if self.placement(id).padding_safe {
+            for i in 0..4 {
+                pad[i] += self.res.safe[i];
+            }
+        }
         let kind = self.node(id).kind;
-        if kind == Kind::Button && pad == [0.0; 4] {
+        // The text-only Button gets air around its label; a Button that
+        // holds its own content (a `face` Panel) spells its own padding.
+        if kind == Kind::Button && pad == [0.0; 4] && self.node(id).children.1 == 0 {
             pad = BUTTON_PADDING;
         }
         let border = if matches!(kind, Kind::Panel | Kind::Button | Kind::View) { self.res.num(self.page, id, PropKey::BorderThickness).unwrap_or(0.0) } else { 0.0 };
@@ -148,6 +155,10 @@ impl<'a> Lay<'a> {
             Value::VText { text, .. } => Some(self.page.str(text)),
             _ => None,
         }
+    }
+
+    fn font_key(&self, id: NodeId) -> Option<&'a str> {
+        self.res.font(self.page, id).map(|f| self.page.str(f))
     }
 
     fn spacing(&self, id: NodeId) -> f32 {
@@ -204,12 +215,12 @@ impl<'a> Lay<'a> {
                 let text = self.text_of(id).unwrap_or("");
                 // Hug measures unwrapped (D254); wrapping needs a bound width.
                 let bound = if wrap { inner_w.or(self.placement(id).max_width) } else { None };
-                self.text.measure(text, self.font_size(id), bound)
+                self.text.measure(text, self.font_size(id), bound, self.font_key(id))
             }
             Kind::Button | Kind::Check | Kind::Toggle | Kind::Radio => {
                 let (mut w, mut h) = (0.0f32, 0.0f32);
                 if let Some(text) = self.text_of(id) {
-                    let (tw, th) = self.text.measure(text, self.font_size(id), None);
+                    let (tw, th) = self.text.measure(text, self.font_size(id), None, self.font_key(id));
                     w = tw;
                     h = th;
                 }

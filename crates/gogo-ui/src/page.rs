@@ -157,6 +157,8 @@ pub struct Placement {
     pub margin: [Option<f32>; 4],
     /// left, top, right, bottom — air inside the node's own box.
     pub padding: [f32; 4],
+    /// `padding=safe`: the platform's safe-area insets are added.
+    pub padding_safe: bool,
 }
 
 impl Placement {
@@ -173,6 +175,7 @@ impl Placement {
         max_height_fill: false,
         margin: [None; 4],
         padding: [0.0; 4],
+        padding_safe: false,
     };
 }
 
@@ -218,6 +221,8 @@ pub enum PropKey {
     Stops,
     Angle,
     Aspect,
+    /// Font file key (`font="assets/Fonts/Roboto Light.ttf"`), inherited down the tree.
+    Font,
     /// Placement keys, so `when` blocks can carry them.
     Width,
     Height,
@@ -277,6 +282,7 @@ impl PropKey {
             "stops" => PropKey::Stops,
             "angle" => PropKey::Angle,
             "aspect" => PropKey::Aspect,
+            "font" => PropKey::Font,
             "width" => PropKey::Width,
             "height" => PropKey::Height,
             "min_width" => PropKey::MinWidth,
@@ -406,10 +412,14 @@ impl State {
 }
 
 /// `when <state> prop=...` on one node: the props range in `Page::props`.
+/// `of` = the node whose state is watched (`NO_NODE` = this node); a
+/// style's `when held face.background=…` lands on `face` watching the
+/// Button.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct When {
     pub state: State,
     pub props: (u32, u32),
+    pub of: NodeId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -456,22 +466,21 @@ pub struct KindDefault {
     pub props: (u32, u32),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Join {
-    First,
-    And,
-    Then,
-}
-
-/// One step of an `anim`: a property track (`opacity from=0, to=1,
-/// duration=0.2`), a nested `play`, or a `delay`. Kept as data for G8.
+/// One track of an `anim`, sequencing already solved at compile time:
+/// `node.channel` goes `from` → `to` starting at `start` seconds (the
+/// `and`/`then` chain folded in) over `duration` with `easing`.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct AnimStep {
+pub struct AnimTrack {
     pub anim: StrId,
-    pub join: Join,
-    /// The dotted target (`listBrush.translate.x`) as written.
-    pub target: StrId,
-    pub props: (u32, u32),
+    pub node: NodeId,
+    /// `translate.x`, `scale`, `rotate`, `opacity`…
+    pub channel: StrId,
+    /// `None` = `to=` alone: start from the live value when the track starts.
+    pub from: Option<f32>,
+    pub to: f32,
+    pub start: f32,
+    pub duration: f32,
+    pub easing: StrId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -525,7 +534,7 @@ pub struct StaticPage {
     pub kind_defaults: &'static [KindDefault],
     pub arrangements: &'static [StrId],
     pub transitions: &'static [Transition],
-    pub anims: &'static [AnimStep],
+    pub anims: &'static [AnimTrack],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -540,7 +549,7 @@ pub struct Page {
     pub kind_defaults: Vec<KindDefault>,
     pub arrangements: Vec<StrId>,
     pub transitions: Vec<Transition>,
-    pub anims: Vec<AnimStep>,
+    pub anims: Vec<AnimTrack>,
 }
 
 impl Page {

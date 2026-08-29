@@ -4,11 +4,13 @@
 //! list. Design: `docs/gogo-design.md`; grammar: the Godot gogo's
 //! `gogo-spec.md` minus the §7 changes.
 
+pub mod anim;
 pub mod ast;
 pub mod compile;
 pub mod diag;
 pub mod draw;
 pub mod emit;
+pub mod input;
 pub mod layout;
 pub mod lexer;
 pub mod page;
@@ -18,9 +20,11 @@ pub mod runtime;
 pub use compile::{Compiled, compile};
 pub use diag::{Diagnostic, Severity, has_errors};
 pub use draw::{Draw, GradientKind, TextAlign, draw, hit};
+pub use input::{Event, EventKind, Input, Phase, Touch};
 pub use layout::{FixedAdvance, Rect, TextMeasure, layout};
 pub use page::{Kind, NO_NODE, NO_STR, NodeId, Page, PropKey, Rgba, StaticPage, StrId, Value};
-pub use runtime::{Resolved, Runtime, resolve};
+pub use anim::{Easing, Finish, Motion};
+pub use runtime::{Resolved, Runtime, resolve, resolve_animated};
 
 use std::path::{Path, PathBuf};
 

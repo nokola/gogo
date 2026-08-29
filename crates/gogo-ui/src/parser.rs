@@ -199,10 +199,18 @@ impl<'a> Parser<'a> {
                         need_comma = false;
                         continue;
                     }
-                    if need_comma {
+                    // `then group drop …` / `and play appear`: the word after the
+                    // connective's step word is that step's own name.
+                    let step_name = matches!(node.type_word.as_str(), "and" | "then") && matches!(node.name.as_deref(), Some("group") | Some("each") | Some("play")) && node.args.is_empty() && node.props.is_empty() && self.tokens.get(self.pos + 1).map(|t| t.tok != Tok::Eq).unwrap_or(true);
+                    if need_comma && !step_name {
                         self.error("G0017", format!("missing `,` before `{word}`"));
                     }
                     self.pos += 1;
+                    if step_name {
+                        node.args.push(AstValue::Ident { word, opacity, pos });
+                        need_comma = false;
+                        continue;
+                    }
                     if *self.peek() == Tok::Eq {
                         self.pos += 1;
                         let Some(value) = self.value() else { break };

@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use crate::anim::{Channel, Easing};
 use crate::ast::{AstItem, AstNode, AstProp, AstValue, Document};
 use crate::diag::Diagnostic;
 use crate::page::*;
@@ -32,6 +33,8 @@ struct WidgetDef {
 struct WhenTmp {
     state: State,
     props: Vec<Prop>,
+    /// Descendant responses (`when held face.background=…`): (node name, prop).
+    descendants: Vec<(String, Prop)>,
 }
 
 /// A node before it has an arena slot.
@@ -61,6 +64,8 @@ pub struct Compiler<'a> {
     terms: HashMap<String, String>,
     /// Top-level `when <arrangement> { node.prop = v }`, applied after the tree exists.
     deferred_whens: Vec<(State, Vec<AstItem>, u32)>,
+    /// `anim` declarations, compiled after the tree exists (they name nodes).
+    anim_decls: Vec<AstNode>,
     root_seen: bool,
     names: std::collections::HashSet<String>,
 }
@@ -84,6 +89,7 @@ pub fn compile(source: &str, loader: Loader<'_>) -> Compiled {
         node_whens: Vec::new(),
         terms: HashMap::new(),
         deferred_whens: Vec::new(),
+        anim_decls: Vec::new(),
         root_seen: false,
         names: std::collections::HashSet::new(),
     };
@@ -235,6 +241,19 @@ impl<'a> Compiler<'a> {
                     self.page.theme.push(ThemeEntry { name, variant, value: v });
                 }
                 AstItem::Assign { key, dollar: false, value, line } => {
+                    // Control defaults: `font = $x`, `font_size = 15` land on
+                    // every text-bearing kind.
+                    if let Some(pk) = PropKey::from_word(key) {
+                        if matches!(pk, PropKey::Font | PropKey::FontSize | PropKey::Color) {
+                            let v = self.value(value, *line, Some(pk));
+                            for kind in [Kind::Label, Kind::Button, Kind::Input, Kind::Check, Kind::Toggle, Kind::Radio, Kind::View, Kind::Panel] {
+                                let first = self.page.props.len() as u32;
+                                self.page.props.push(Prop { key: pk, value: v });
+                                self.page.kind_defaults.push(KindDefault { kind, props: (first, 1) });
+                            }
+                            continue;
+                        }
+                    }
                     // Palette override: `red = #E51400` (§7: bare names only here).
                     if !self.palette.contains_key(key) {
                         self.error("G3002", *line, format!("`{key}` is not a palette color (new names are `$values`)"));
@@ -301,36 +320,115 @@ impl<'a> Compiler<'a> {
             self.error("G0029", n.line, "`anim` needs a name");
             return;
         };
-        let anim = self.intern(&name);
-        if self.page.anims.iter().any(|a| a.anim == anim) {
+        if self.anim_decls.iter().any(|a| a.name.as_deref() == Some(&name)) {
             self.error("G0030", n.line, format!("anim `{name}` is defined twice"));
         }
-        self.anim_steps(anim, &n.children, Join::First);
+        self.anim_decls.push(n.clone());
     }
 
-    fn anim_steps(&mut self, anim: StrId, items: &[AstItem], first_join: Join) {
-        let mut join = first_join;
+    /// A header word (`duration_each`, `easing`) from the nearest scope.
+    fn anim_num(scopes: &[&AstNode], key: &str) -> Option<f32> {
+        scopes.iter().rev().find_map(|s| s.props.iter().find(|p| p.key == key).and_then(|p| p.value.as_num()))
+    }
+
+    fn anim_word(scopes: &[&AstNode], key: &str) -> Option<String> {
+        scopes.iter().rev().find_map(|s| s.props.iter().find(|p| p.key == key).and_then(|p| p.value.as_ident()).map(str::to_string))
+    }
+
+    /// Compiles one anim into flat tracks; returns the end time of the chain.
+    fn anim_chain(&mut self, anim: StrId, items: &[AstItem], scopes: &[&AstNode], chain_start: f32) -> f32 {
+        // `and` joins the previous step; `then` starts after the whole and-cluster.
+        let mut cluster_start = chain_start;
+        let mut cluster_end = chain_start;
+        let mut first = true;
         for item in items {
             let AstItem::Node(step) = item else { continue };
-            let (target, this_join) = match step.type_word.as_str() {
-                "and" => (step.name.clone().unwrap_or_default(), Join::And),
-                "then" => (step.name.clone().unwrap_or_default(), Join::Then),
-                _ => (step.type_word.clone(), join),
+            let (word, connective, target) = match step.type_word.as_str() {
+                "and" | "then" => {
+                    // `then delay=0.2` has no step word: the prop names it.
+                    let w = step.name.clone().unwrap_or_else(|| if step.props.iter().any(|p| p.key == "delay") { "delay".to_string() } else { String::new() });
+                    (w, step.type_word.as_str(), step.args.first().and_then(|a| a.as_ident()).map(str::to_string))
+                }
+                other => (other.to_string(), "", step.name.clone()),
             };
-            let target_id = self.intern(&target);
-            let first = self.page.props.len() as u32;
-            for p in &step.props {
-                let v = self.value(&p.value, p.line, None);
-                let key = self.prop_key(&p.key);
-                self.page.props.push(Prop { key, value: v });
+            if !first && connective.is_empty() {
+                self.error("G0061", step.line, "every step after the first says when it runs: `and` or `then`");
             }
-            let count = self.page.props.len() as u32 - first;
-            self.page.anims.push(AnimStep { anim, join: this_join, target: target_id, props: (first, count) });
-            if !step.children.is_empty() {
-                self.anim_steps(anim, &step.children, Join::And);
+            if first && !connective.is_empty() {
+                self.error("G0061", step.line, "the first step stands alone — no `and`/`then`");
             }
-            join = Join::Then;
+            if connective == "then" {
+                cluster_start = cluster_end;
+            }
+            first = false;
+            if step.props.iter().any(|p| p.key == "after") {
+                self.error("G0062", step.line, "`after=` is not supported yet — use `and`/`then`");
+            }
+            let mut scopes: Vec<&AstNode> = scopes.to_vec();
+            let end = match word.as_str() {
+                "group" => {
+                    scopes.push(step);
+                    let e = self.anim_chain(anim, &step.children, &scopes, cluster_start);
+                    let _ = target;
+                    e
+                }
+                "delay" => {
+                    let d = step.props.iter().find(|p| p.key == "delay").and_then(|p| p.value.as_num()).unwrap_or(0.0);
+                    cluster_start + d
+                }
+                "play" | "each" | "key" => {
+                    self.error("G0062", step.line, format!("`{word}` steps are not supported yet"));
+                    cluster_start
+                }
+                path => {
+                    // `node.channel[.axis]` — the last one or two words are the channel.
+                    let (node_name, channel) = match path.split_once('.') {
+                        Some((n, rest)) if Channel::parse(rest).is_some() => (n.to_string(), rest.to_string()),
+                        _ => {
+                            if Channel::parse(path).is_some() {
+                                self.error("G0063", step.line, format!("`{path}` needs a node: `<node>.{path}` (bare paths only inside `each`)"));
+                            } else {
+                                self.error("G0063", step.line, format!("`{path}`: want `<node>.translate.x|translate.y|scale|scale.x|scale.y|rotate|opacity`"));
+                            }
+                            continue;
+                        }
+                    };
+                    let Some(node) = self.page.find(&node_name) else {
+                        self.error("G0060", step.line, format!("`{path}`: no node named `{node_name}`"));
+                        continue;
+                    };
+                    let num = |key: &str| step.props.iter().find(|p| p.key == key).and_then(|p| p.value.as_num());
+                    let from = match step.props.iter().find(|p| p.key == "from") {
+                        Some(p) if p.value.as_ident() == Some("current") => None,
+                        Some(p) => p.value.as_num(),
+                        None => None,
+                    };
+                    let Some(to) = num("to") else {
+                        self.error("G0064", step.line, format!("`{path}` needs `to=`"));
+                        continue;
+                    };
+                    scopes.push(step);
+                    let duration = num("duration").or_else(|| Self::anim_num(&scopes, "duration_each")).unwrap_or(0.0);
+                    let easing_word = step.props.iter().find(|p| p.key == "easing").and_then(|p| p.value.as_ident()).map(str::to_string).or_else(|| Self::anim_word(&scopes, "easing"));
+                    let easing = match easing_word {
+                        Some(w) => {
+                            if Easing::parse(&w).is_none() {
+                                self.error("G0065", step.line, format!("unknown easing `{w}`"));
+                            }
+                            self.intern(&w)
+                        }
+                        None => NO_STR,
+                    };
+                    let offset = num("offset").unwrap_or(0.0);
+                    let start = (cluster_start + offset).max(0.0);
+                    let channel_id = self.intern(&channel);
+                    self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from, to, start, duration, easing });
+                    start + duration
+                }
+            };
+            cluster_end = cluster_end.max(end);
         }
+        cluster_end
     }
 
     fn arrangement(&mut self, n: &AstNode) {
@@ -563,6 +661,10 @@ impl<'a> Compiler<'a> {
                 self.error("G0041", p.line, "`autowrap_mode` is `wrap=true`");
                 return None;
             }
+            "texture" => {
+                self.error("G0041", p.line, "`texture=` is `src=\"assets/…\"` (a path relative to the assets root, checked at build)");
+                return None;
+            }
             _ => {}
         }
         let key = self.prop_key(&p.key);
@@ -651,6 +753,15 @@ impl<'a> Compiler<'a> {
             }
         }
         all_props.extend(n.props.iter().cloned());
+        for c in &n.children {
+            if let AstItem::Node(t) = c {
+                if t.type_word == "theme" {
+                    // `theme font=…` inside a block: a default for this subtree
+                    // (font inherits down the draw walk).
+                    all_props.extend(t.props.iter().cloned());
+                }
+            }
+        }
         if let Some(i) = instance {
             let params: Vec<String> = self.scopes.last().map(|s| s.keys().cloned().collect()).unwrap_or_default();
             all_props.extend(i.props.iter().filter(|p| !params.contains(&p.key)).cloned());
@@ -705,7 +816,7 @@ impl<'a> Compiler<'a> {
 
         for c in &n.children {
             match c {
-                AstItem::Node(c) if c.type_word == "when" || c.type_word == "transition" => {}
+                AstItem::Node(c) if c.type_word == "when" || c.type_word == "transition" || c.type_word == "theme" => {}
                 AstItem::Node(c) => {
                     let child = self.node(c, Some(kind), None);
                     tmp.children.push(child);
@@ -842,24 +953,26 @@ impl<'a> Compiler<'a> {
             return None;
         }
         let mut props = Vec::new();
-        for p in &w.props {
-            if let Some(prop) = self.prop(p, kind) {
-                props.push(prop);
-            }
-        }
+        let mut descendants = Vec::new();
+        let mut lines: Vec<AstProp> = w.props.clone();
         for item in &w.children {
             match item {
-                AstItem::Assign { key, dollar: false, value, line } => {
-                    let ap = AstProp { key: key.clone(), value: value.clone(), line: *line };
-                    if let Some(prop) = self.prop(&ap, kind) {
-                        props.push(prop);
-                    }
-                }
+                AstItem::Assign { key, dollar: false, value, line } => lines.push(AstProp { key: key.clone(), value: value.clone(), line: *line }),
                 AstItem::Assign { key, line, .. } => self.error("G0054", *line, format!("`${key}` — a when block sets properties, not theme values")),
                 AstItem::Node(c) => self.error("G0054", c.line, format!("a when block sets properties, not `{}` nodes", c.type_word)),
             }
         }
-        Some(WhenTmp { state, props })
+        for p in &lines {
+            if let Some((node_name, prop_name)) = p.key.rsplit_once('.') {
+                let ap = AstProp { key: prop_name.to_string(), value: p.value.clone(), line: p.line };
+                if let Some(prop) = self.prop(&ap, Kind::Custom) {
+                    descendants.push((node_name.to_string(), prop));
+                }
+            } else if let Some(prop) = self.prop(p, kind) {
+                props.push(prop);
+            }
+        }
+        Some(WhenTmp { state, props, descendants })
     }
 
     // ----- placement ------------------------------------------------------
@@ -952,7 +1065,10 @@ impl<'a> Compiler<'a> {
                 PropKey::PaddingTop => p.padding[1] = self.num(v, line, "padding_top"),
                 PropKey::PaddingRight => p.padding[2] = self.num(v, line, "padding_right"),
                 PropKey::PaddingBottom => p.padding[3] = self.num(v, line, "padding_bottom"),
-                PropKey::Padding => p.padding = [self.num(v, line, "padding"); 4],
+                PropKey::Padding => match v {
+                    Value::VIdent(id) if self.page.str(id) == "safe" => p.padding_safe = true,
+                    _ => p.padding = [self.num(v, line, "padding"); 4],
+                },
                 PropKey::Size => {
                     if let Value::VSize(w, h) = v {
                         if let Some(w) = w {
@@ -1021,6 +1137,17 @@ impl<'a> Compiler<'a> {
     // ----- finish ---------------------------------------------------------
 
     fn finish(&mut self) {
+        // Anims: flat tracks with start times.
+        let decls = std::mem::take(&mut self.anim_decls);
+        for n in &decls {
+            let name = n.name.clone().unwrap_or_default();
+            let anim = self.intern(&name);
+            if n.props.iter().any(|p| p.key == "duration") {
+                self.error("G0066", n.line, "`duration=` on an anim header reads as the chain's total — write `duration_each=`");
+            }
+            let scopes = vec![n];
+            self.anim_chain(anim, &n.children, &scopes, 0.0);
+        }
         // Top-level `when <arrangement> { node.prop = value }`.
         let deferred = std::mem::take(&mut self.deferred_whens);
         for (state, items, line) in deferred {
@@ -1042,20 +1169,47 @@ impl<'a> Compiler<'a> {
                 if let Some(prop) = self.prop(&ap, kind) {
                     match self.node_whens[id as usize].iter_mut().find(|w| w.state == state) {
                         Some(w) => w.props.push(prop),
-                        None => self.node_whens[id as usize].push(WhenTmp { state, props: vec![prop] }),
+                        None => self.node_whens[id as usize].push(WhenTmp { state, props: vec![prop], descendants: Vec::new() }),
                     }
                 }
             }
         }
+        // Descendant responses move to the named node, watching their owner.
+        let mut whens = std::mem::take(&mut self.node_whens);
+        let mut moved: Vec<(usize, WhenTmp)> = Vec::new();
+        for (owner, list) in whens.iter_mut().enumerate() {
+            for w in list.iter_mut() {
+                for (name, prop) in std::mem::take(&mut w.descendants) {
+                    let end = self.page.nodes[owner].subtree_end as usize;
+                    let target = (owner + 1..end).find(|i| self.page.nodes[*i].name != NO_STR && self.page.str(self.page.nodes[*i].name) == name);
+                    match target {
+                        Some(t) => moved.push((t, WhenTmp { state: w.state, props: vec![prop], descendants: Vec::new() })),
+                        None => {
+                            let line = self.page.nodes[owner].line;
+                            self.error("G0060", line, format!("`when … {name}.…`: no node named `{name}` under this one"));
+                        }
+                    }
+                }
+            }
+        }
+        let mut of: Vec<Vec<NodeId>> = whens.iter().map(|l| vec![NO_NODE; l.len()]).collect();
+        for (target, w) in moved {
+            // The owner is the node whose subtree held the response: found by walking up until the state is theirs.
+            let mut owner = self.page.nodes[target].parent;
+            while owner != NO_NODE && !self.page.nodes[owner as usize].kind.is_press_surface() && self.page.nodes[owner as usize].parent != NO_NODE {
+                owner = self.page.nodes[owner as usize].parent;
+            }
+            whens[target].push(w);
+            of[target].push(owner);
+        }
         // Whens pool, contiguous per node.
-        let whens = std::mem::take(&mut self.node_whens);
         for (i, list) in whens.into_iter().enumerate() {
             let first = self.page.whens.len() as u32;
-            for w in list {
+            for (j, w) in list.into_iter().enumerate() {
                 let pf = self.page.props.len() as u32;
                 self.page.props.extend(w.props);
                 let pc = self.page.props.len() as u32 - pf;
-                self.page.whens.push(When { state: w.state, props: (pf, pc) });
+                self.page.whens.push(When { state: w.state, props: (pf, pc), of: of[i][j] });
             }
             self.page.nodes[i].whens = (first, self.page.whens.len() as u32 - first);
         }
@@ -1119,6 +1273,7 @@ mod tests {
         assert_eq!(p.nodes[b as usize].placement.min_height, 36.0);
         let whens: Vec<State> = p.whens[p.nodes[b as usize].whens.0 as usize..].iter().map(|w| w.state).collect();
         assert_eq!(whens, vec![State::Selected, State::Held]);
+        assert!(p.whens.iter().all(|w| w.of == NO_NODE));
         let held_props = &p.props[p.whens[1].props.0 as usize..];
         assert_eq!(held_props[0].value, Value::VColor(Rgba([255, 255, 255, 128])));
         let accent = p.intern_lookup("accent");
@@ -1192,5 +1347,28 @@ impl Page {
     /// A string id if the string is interned (tests, name lookups).
     pub fn intern_lookup(&self, s: &str) -> StrId {
         self.strings.iter().position(|x| x == s).map(|i| i as StrId).unwrap_or(NO_STR)
+    }
+}
+
+#[cfg(test)]
+mod anim_tests {
+    use super::*;
+
+    #[test]
+    fn descendant_when_and_anim_tracks() {
+        let c = compile("style OkLook { when held face.background=red }\nanim appear duration_each=0.5, easing=cubic_out {\n a.translate.x from=-60, to=0\n and b.opacity from=0, to=1\n then group drop duration_each=0.25 { b.scale to=1.05, easing=back_out }\n then delay=0.2\n then a.opacity to=1, duration=0.1\n}\nView v {\n Button ok .OkLook { Panel face { Label a text=\"x\" } }\n Label b text=\"y\"\n}\n", &|_| None);
+        assert!(!crate::diag::has_errors(&c.diags), "{:#?}", c.diags);
+        let p = c.page;
+        let face = p.find("face").unwrap();
+        let ok = p.find("ok").unwrap();
+        let w = p.whens[p.nodes[face as usize].whens.0 as usize];
+        assert_eq!((w.state, w.of), (State::Held, ok));
+        let tracks: Vec<(&str, &str, Option<f32>, f32, f32, f32)> = p.anims.iter().map(|t| (p.str(p.nodes[t.node as usize].name), p.str(t.channel), t.from, t.to, t.start, t.duration)).collect();
+        assert_eq!(tracks[0], ("a", "translate.x", Some(-60.0), 0.0, 0.0, 0.5));
+        assert_eq!(tracks[1], ("b", "opacity", Some(0.0), 1.0, 0.0, 0.5));
+        assert_eq!(tracks[2], ("b", "scale", None, 1.05, 0.5, 0.25));
+        assert_eq!(tracks[3], ("a", "opacity", None, 1.0, 0.95, 0.1));
+        assert_eq!(p.str(p.anims[2].easing), "back_out");
+        assert_eq!(p.str(p.anims[0].easing), "cubic_out");
     }
 }

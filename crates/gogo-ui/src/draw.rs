@@ -29,7 +29,7 @@ pub enum Draw {
     /// Two-stop gradient (first/last stop) — the renderer's G5 form.
     Gradient { rect: Rect, kind: GradientKind, from: Rgba, to: Rgba, angle: f32 },
     /// `text`/`key`: the English literal and its translation key.
-    Text { rect: Rect, text: StrId, key: StrId, font_size: f32, color: Rgba, halign: TextAlign, valign: TextAlign, wrap: bool },
+    Text { rect: Rect, text: StrId, key: StrId, font_size: f32, color: Rgba, halign: TextAlign, valign: TextAlign, wrap: bool, font: StrId },
     ClipPush(Rect),
     ClipPop,
 }
@@ -66,8 +66,9 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
         return;
     }
     let node = &page.nodes[id as usize];
-    let rect = rects[id as usize];
-    let opacity = opacity * res.num(page, id, PropKey::Opacity).unwrap_or(1.0).clamp(0.0, 1.0);
+    let motion = res.motion.get(id as usize).copied().unwrap_or(crate::anim::Motion::IDENTITY);
+    let rect = moved(rects[id as usize], &motion);
+    let opacity = opacity * res.num(page, id, PropKey::Opacity).unwrap_or(1.0).clamp(0.0, 1.0) * motion.opacity.clamp(0.0, 1.0);
     let color = |key: PropKey| res.color(page, id, key).map(|c| mul_alpha(c, opacity));
     let corner = res.num(page, id, PropKey::CornerRadius).unwrap_or(0.0);
     let border = res.num(page, id, PropKey::BorderThickness).unwrap_or(0.0);
@@ -96,6 +97,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                     halign: text_align(page, res, id, PropKey::TextHalign, TextAlign::Center),
                     valign: text_align(page, res, id, PropKey::TextValign, TextAlign::Center),
                     wrap: false,
+                    font: res.font(page, id).unwrap_or(NO_STR),
                 });
             }
         }
@@ -144,6 +146,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                     halign: text_align(page, res, id, PropKey::TextHalign, TextAlign::Start),
                     valign: text_align(page, res, id, PropKey::TextValign, TextAlign::Start),
                     wrap: res.bool(page, id, PropKey::Wrap).unwrap_or(false),
+                    font: res.font(page, id).unwrap_or(NO_STR),
                 });
             }
         }
@@ -165,7 +168,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             let bg = color(PropKey::Background).unwrap_or(mul_alpha(Rgba([0x2B, 0x2B, 0x2B, 0xFF]), opacity));
             out.push(Draw::Quad { rect, color: bg, corner, border: border.max(1.0), border_color: if border > 0.0 { border_color } else { mul_alpha(Rgba([0x7F, 0x7F, 0x7F, 0xFF]), opacity) } });
             if let Some(Value::VText { text, key }) = res.prop(page, id, PropKey::Text) {
-                out.push(Draw::Text { rect: rect.inset(8.0, 0.0, 8.0, 0.0), text, key, font_size: res.num(page, id, PropKey::FontSize).unwrap_or(DEFAULT_FONT_SIZE), color: color(PropKey::Color).unwrap_or(mul_alpha(DEFAULT_TEXT_COLOR, opacity)), halign: TextAlign::Start, valign: TextAlign::Center, wrap: false });
+                out.push(Draw::Text { rect: rect.inset(8.0, 0.0, 8.0, 0.0), text, key, font_size: res.num(page, id, PropKey::FontSize).unwrap_or(DEFAULT_FONT_SIZE), color: color(PropKey::Color).unwrap_or(mul_alpha(DEFAULT_TEXT_COLOR, opacity)), halign: TextAlign::Start, valign: TextAlign::Center, wrap: false, font: res.font(page, id).unwrap_or(NO_STR) });
             }
         }
         _ => {}
@@ -175,12 +178,33 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     if clip {
         out.push(Draw::ClipPush(rect));
     }
-    for c in page.children(id) {
-        walk(page, res, rects, c as NodeId, opacity, out);
+    if motion.translate != [0.0, 0.0] || motion.scale != [1.0, 1.0] {
+        // Children move with their parent: shift their rects by the same
+        // transform (scale about this node's center).
+        let mut moved_rects: Vec<Rect> = rects.to_vec();
+        let (cx, cy) = (rects[id as usize].x + rects[id as usize].w / 2.0, rects[id as usize].y + rects[id as usize].h / 2.0);
+        for i in (id as usize + 1)..node.subtree_end as usize {
+            let r = rects[i];
+            moved_rects[i] = Rect::new(cx + (r.x - cx) * motion.scale[0] + motion.translate[0], cy + (r.y - cy) * motion.scale[1] + motion.translate[1], r.w * motion.scale[0], r.h * motion.scale[1]);
+        }
+        for c in page.children(id) {
+            walk(page, res, &moved_rects, c as NodeId, opacity, out);
+        }
+    } else {
+        for c in page.children(id) {
+            walk(page, res, rects, c as NodeId, opacity, out);
+        }
     }
     if clip {
         out.push(Draw::ClipPop);
     }
+}
+
+/// The node's own rect under its motion channels (scale about the center).
+fn moved(r: Rect, m: &crate::anim::Motion) -> Rect {
+    let w = r.w * m.scale[0];
+    let h = r.h * m.scale[1];
+    Rect::new(r.x + (r.w - w) / 2.0 + m.translate[0], r.y + (r.h - h) / 2.0 + m.translate[1], w, h)
 }
 
 /// The top-most node under (x, y) that takes input: a press surface, a

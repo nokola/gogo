@@ -48,7 +48,7 @@ pub fn pascal_case(name: &str) -> String {
 pub fn handler_names(page: &Page) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for h in &page.handlers {
-        if let Action::Named(id) = h.action {
+        if let Action::Named(id) | Action::Emit(id) = h.action {
             let n = page.str(id).to_string();
             if !names.contains(&n) {
                 names.push(n);
@@ -86,7 +86,7 @@ fn slice<T: std::fmt::Debug>(items: &[T]) -> String {
 pub fn emit_rust(page: &Page, module: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("#[allow(unused_imports, clippy::all)]\npub mod {module} {{\n"));
-    out.push_str("    use gogo::page::*;\n    use gogo::page::{Kind::*, Len::*, Align::*, PropKey::*, Value::*, State::*, Action::*, Join::*};\n\n");
+    out.push_str("    use gogo::page::*;\n    use gogo::page::{Kind::*, Len::*, Align::*, PropKey::*, Value::*, State::*, Action::*};\n\n");
     out.push_str("    pub static PAGE: StaticPage = StaticPage {\n");
     out.push_str(&format!("        nodes: {},\n", slice(&page.nodes)));
     out.push_str(&format!("        strings: {},\n", slice(&page.strings.iter().map(String::as_str).collect::<Vec<_>>())));
