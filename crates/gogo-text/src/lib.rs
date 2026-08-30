@@ -16,6 +16,13 @@ use gogo::layout::TextMeasure;
 /// Godot's default `Label` line_spacing (px), added between lines.
 pub const LINE_SPACING_PX: f32 = 3.0;
 
+/// Entries a measure / shape cache holds before it is emptied. Needed
+/// because a label that changes every few frames (the debug overlay's
+/// stats line, a zoom readout) is a new string each time — an unbounded
+/// cache would grow for as long as the app runs. Emptying costs one
+/// re-shape per visible string on the next frame, far below a frame.
+pub const CACHE_CAP: usize = 4096;
+
 /// A face's vertical metrics in font units, read from the file at load.
 #[derive(Clone, Copy, Debug)]
 pub struct FaceMetrics {
@@ -228,6 +235,9 @@ impl TextEngine {
         }
         let h = self.metrics(font).block_height(font_size, lines);
         let v = (w.ceil(), h);
+        if self.measure_cache.len() >= CACHE_CAP {
+            self.measure_cache.clear();
+        }
         self.measure_cache.insert(key, v);
         v
     }
@@ -244,6 +254,9 @@ impl TextEngine {
             }
         }
         let quads = self.shape_uncached(text, font_size, max_width, font, box_w, halign);
+        if self.shape_cache.len() >= CACHE_CAP {
+            self.shape_cache.clear();
+        }
         self.shape_cache.insert(key, (self.generation, quads.clone()));
         let (dx, dy) = (x.round(), y.round());
         quads.into_iter().map(|q| GlyphQuad { x: q.x + dx, y: q.y + dy, ..q }).collect()
