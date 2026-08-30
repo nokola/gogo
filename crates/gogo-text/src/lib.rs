@@ -13,7 +13,28 @@ use cosmic_text::{Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping,
 use gogo::layout::TextMeasure;
 
 /// Line height as a multiple of the font size (WPF/Roboto-like).
-pub const LINE_HEIGHT: f32 = 1.2;
+/// Roboto's ascent + descent (hhea 1900 + 500 over 2048 units).
+pub const FONT_HEIGHT: f32 = 1.172;
+/// Godot's default `Label` line_spacing (px), added between lines.
+pub const LINE_SPACING_PX: f32 = 3.0;
+
+/// The pitch between lines in px, the way Godot's Label lays them out:
+/// the face's height at the size, plus the theme's line spacing.
+pub fn line_height(font_size: f32) -> f32 {
+    font_height(font_size) + LINE_SPACING_PX
+}
+
+/// One line's own height (no spacing) — a single-line label's box.
+pub fn font_height(font_size: f32) -> f32 {
+    (font_size * FONT_HEIGHT).round()
+}
+
+/// The box height of `lines` lines: spacing sits only BETWEEN lines
+/// (Godot: lines × font height + (lines − 1) × line_spacing).
+pub fn block_height(font_size: f32, lines: f32) -> f32 {
+    let n = lines.max(1.0);
+    n * font_height(font_size) + (n - 1.0) * LINE_SPACING_PX
+}
 
 /// Where a glyph sits in the atlas plus its placement relative to the pen.
 #[derive(Clone, Copy, Debug)]
@@ -124,7 +145,7 @@ impl TextEngine {
     }
 
     fn buffer(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> Buffer {
-        let mut buffer = Buffer::new(&mut self.fs, Metrics::new(font_size, (font_size * LINE_HEIGHT).round()));
+        let mut buffer = Buffer::new(&mut self.fs, Metrics::new(font_size, line_height(font_size)));
         buffer.set_wrap(if max_width.is_some() { Wrap::WordOrGlyph } else { Wrap::None });
         buffer.set_size(max_width, None);
         let attrs = self.attrs(font);
@@ -146,7 +167,7 @@ impl TextEngine {
             w = w.max(run.line_w);
             lines += 1.0;
         }
-        let h = lines.max(1.0) * (font_size * LINE_HEIGHT).round();
+        let h = block_height(font_size, lines);
         let v = (w.ceil(), h);
         self.measure_cache.insert(key, v);
         v
@@ -188,7 +209,10 @@ impl TextEngine {
                 }
                 out.push(GlyphQuad {
                     x: (x + shift).round() + g.x as f32 + slot.left as f32,
-                    y: y.round() + line_y.round() + g.y as f32 - slot.top as f32,
+                    // cosmic splits the line spacing half above each line;
+                    // Godot puts none above the first, so the rows sit
+                    // half a spacing higher.
+                    y: y.round() + (line_y - LINE_SPACING_PX / 2.0).round() + g.y as f32 - slot.top as f32,
                     w: slot.width as f32,
                     h: slot.height as f32,
                     uv: [slot.u0, slot.v0, slot.u1, slot.v1],
@@ -279,13 +303,21 @@ pub struct EpxMeasure<'a> {
     pub epx: f32,
     /// The page's default font key (the `theme { font = … }` line).
     pub font: Option<String>,
+    /// (image key, width px, height px) for `aspect=natural`.
+    pub images: &'a [(String, u32, u32)],
 }
 
 impl TextMeasure for EpxMeasure<'_> {
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> (f32, f32) {
         let mut e = self.engine.borrow_mut();
-        let (w, h) = e.measure(text, (font_size * self.epx).round().max(1.0), max_width.map(|w| w * self.epx), font.or(self.font.as_deref()));
+        // Godot sizes fonts as `int(epx * size)` (truncated): same here, or
+        // every line measures a hair wider and wraps a word early.
+        let (w, h) = e.measure(text, (font_size * self.epx).floor().max(1.0), max_width.map(|w| w * self.epx), font.or(self.font.as_deref()));
         (w / self.epx, h / self.epx)
+    }
+
+    fn image_size(&self, key: &str) -> Option<(f32, f32)> {
+        self.images.iter().find(|(k, _, _)| k == key).map(|(_, w, h)| (*w as f32, *h as f32))
     }
 }
 

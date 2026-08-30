@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use gogo::draw::{Draw, GradientKind, TextAlign};
+use gogo::draw::{Draw, Fit, GradientKind, TextAlign};
 use gogo::layout::Rect;
 use gogo::page::{NO_STR, Page};
 use text::TextEngine;
@@ -63,7 +63,7 @@ pub struct UiRenderer {
     textures: Vec<Texture>,
     atlas_texture: Option<wgpu::Texture>,
     atlas_size: u32,
-    /// Image key (the `src=` string) → texture slot.
+    /// Image key (the `source=` string) → texture slot.
     images: HashMap<String, TexId>,
     /// Commands with no texture to draw them (a missing image).
     pub skipped: u32,
@@ -191,9 +191,12 @@ impl UiRenderer {
         );
     }
 
-    /// Registers an RGBA8 image under `key` (the `src=` string).
+    /// Registers an RGBA8 image under `key` (the `source=` string).
     pub fn add_image(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: &str, rgba: &[u8], width: u32, height: u32) {
-        let (tex, entry) = self.make_texture(device, width, height, wgpu::TextureFormat::Rgba8UnormSrgb);
+        // sRGB bytes in, sRGB bytes out: the surface is non-sRGB (the canvas
+        // blit copies encoded bytes), so an sRGB texture here would be
+        // decoded on sample and never re-encoded — every image too dark.
+        let (tex, entry) = self.make_texture(device, width, height, wgpu::TextureFormat::Rgba8Unorm);
         Self::write(queue, &tex, rgba, width, height, 4);
         self.textures.push(entry);
         self.images.insert(key.to_string(), (self.textures.len() - 1) as TexId);
@@ -256,7 +259,8 @@ impl UiRenderer {
                     let s = page.str(*text_id);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let r = px(rect);
-                    let size_px = (font_size * epx).round().max(1.0);
+                    // Truncated like Godot's `int(epx * size)` (see `EpxMeasure`).
+                    let size_px = (font_size * epx).floor().max(1.0);
                     let max_w = if *wrap { Some(r[2]) } else { None };
                     let (_, th) = text.measure(s, size_px, max_w, font_key);
                     let y = match valign {
@@ -274,7 +278,7 @@ impl UiRenderer {
                         self.quads.push(Quad { rect: [g.x, g.y, g.w, g.h], color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_GLYPH, 0.0], uv: g.uv });
                     }
                 }
-                Draw::Image { rect, image, tint } => {
+                Draw::Image { rect, image, tint, fit } => {
                     let Some(tex) = self.images.get(page.str(*image)).copied() else {
                         self.skipped += 1;
                         continue;
@@ -283,14 +287,25 @@ impl UiRenderer {
                         self.close_batch(&mut batch_first, current, current_tex);
                         current_tex = tex;
                     }
-                    // fit=contain: the bitmap letterboxed into the rect.
                     let t = &self.textures[tex as usize];
                     let r = px(rect);
-                    let scale = (r[2] / t.width as f32).min(r[3] / t.height as f32);
-                    let w = t.width as f32 * scale;
-                    let h = t.height as f32 * scale;
-                    let fitted = [r[0] + (r[2] - w) / 2.0, r[1] + (r[3] - h) / 2.0, w, h];
-                    self.quads.push(Quad { rect: fitted, color: tint.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_IMAGE, 0.0], uv: [0.0, 0.0, 1.0, 1.0] });
+                    let (tw, th) = (t.width as f32, t.height as f32);
+                    let (fitted, uv) = match fit {
+                        // contain: the bitmap letterboxed into the rect.
+                        Fit::Contain => {
+                            let scale = (r[2] / tw).min(r[3] / th);
+                            let (w, h) = (tw * scale, th * scale);
+                            ([r[0] + (r[2] - w) / 2.0, r[1] + (r[3] - h) / 2.0, w, h], [0.0, 0.0, 1.0, 1.0])
+                        }
+                        // cover: the rect filled, the bitmap's overflow cropped (centered).
+                        Fit::Cover => {
+                            let scale = (r[2] / tw).max(r[3] / th);
+                            let (vis_w, vis_h) = (r[2] / scale / tw, r[3] / scale / th);
+                            (r, [(1.0 - vis_w) / 2.0, (1.0 - vis_h) / 2.0, (1.0 + vis_w) / 2.0, (1.0 + vis_h) / 2.0])
+                        }
+                        Fit::Distort => (r, [0.0, 0.0, 1.0, 1.0]),
+                    };
+                    self.quads.push(Quad { rect: fitted, color: tint.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_IMAGE, 0.0], uv });
                 }
                 Draw::ClipPush(rect) => {
                     self.close_batch(&mut batch_first, current, current_tex);
