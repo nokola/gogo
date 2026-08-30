@@ -38,6 +38,12 @@ pub struct Runtime {
     pub tweens: Vec<Tween>,
     pub players: Vec<Player>,
     pub motion: Vec<Motion>,
+    /// Per node: the string slot a code `set_text` owns (`NO_STR` = none
+    /// yet). Needed so a label that changes every few frames (a stats
+    /// line) rewrites ONE string in place instead of interning a new one
+    /// each time — `Page::strings` would grow without bound and every
+    /// `intern` scans it.
+    pub owned_text: Vec<StrId>,
     /// The displayed value per (node, key) after the last resolve — the
     /// `from` of the next tween.
     last: Vec<(NodeId, Prop)>,
@@ -60,6 +66,7 @@ impl Runtime {
             tweens: Vec::new(),
             players: Vec::new(),
             motion: vec![Motion::IDENTITY; page.nodes.len()],
+            owned_text: vec![NO_STR; page.nodes.len()],
             last: Vec::new(),
         }
     }
@@ -161,8 +168,30 @@ impl Runtime {
         self.dirty = true;
     }
 
+    /// A code write of a label's text. The first write pushes a fresh
+    /// string slot the node owns (never a shared interned one — another
+    /// node may show the same words); later writes rewrite that slot in
+    /// place. A same-text write changes nothing.
     pub fn set_text(&mut self, page: &mut Page, node: NodeId, text: &str) {
-        let id = page.intern(text);
+        let owned = self.owned_text[node as usize];
+        let id = if owned != NO_STR {
+            if page.strings[owned as usize] == text {
+                return;
+            }
+            let slot = &mut page.strings[owned as usize];
+            slot.clear();
+            slot.push_str(text);
+            self.dirty = true;
+            owned
+        } else {
+            if page.strings.is_empty() {
+                page.strings.push(String::new());
+            }
+            page.strings.push(text.to_string());
+            let id = (page.strings.len() - 1) as StrId;
+            self.owned_text[node as usize] = id;
+            id
+        };
         self.set_prop(node, PropKey::Text, Value::VText { text: id, key: NO_STR });
     }
 
@@ -657,6 +686,36 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
 mod tests {
     use super::*;
     use crate::compile::compile;
+
+    /// A stats label rewritten every few frames must not grow the page's
+    /// string table (1000 writes = 1 slot), must not steal a shared
+    /// string (another label showing the same words keeps them), and a
+    /// same-text write leaves the page clean.
+    #[test]
+    fn set_text_rewrites_one_owned_slot() {
+        let c = compile("View v { Label a text=\"same\"\n Label b text=\"same\" }", &|_| None);
+        assert!(!crate::diag::has_errors(&c.diags), "{:#?}", c.diags);
+        let mut page = c.page;
+        let a = page.find("a").unwrap();
+        let b = page.find("b").unwrap();
+        let mut rt = Runtime::new(&page);
+        let before = page.strings.len();
+        rt.set_text(&mut page, a, "same");
+        let r = resolve_animated(&page, &mut rt);
+        let text_of = |page: &Page, r: &Resolved, n: NodeId| -> String { match r.prop(page, n, PropKey::Text) { Some(Value::VText { text, .. }) => page.str(text).to_string(), _ => String::new() } };
+        assert_eq!(text_of(&page, &r, a), "same");
+        assert_eq!(page.strings.len(), before + 1, "the first write owns a fresh slot");
+        for i in 0..1000 {
+            rt.set_text(&mut page, a, &format!("frame {i}"));
+        }
+        assert_eq!(page.strings.len(), before + 1, "later writes reuse the slot");
+        let r = resolve_animated(&page, &mut rt);
+        assert_eq!(text_of(&page, &r, a), "frame 999");
+        assert_eq!(text_of(&page, &r, b), "same", "the shared string was never touched");
+        rt.dirty = false;
+        rt.set_text(&mut page, a, "frame 999");
+        assert!(!rt.dirty, "a same-text write changes nothing");
+    }
 
     #[test]
     fn held_transition_tweens_the_background_and_retargets() {
