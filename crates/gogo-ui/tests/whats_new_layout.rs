@@ -1,4 +1,5 @@
-//! Lays out the real What's New page (crates/app/ui/whats_new.gogo) and
+//! Lays out a real What's New page (tests/fixtures/whats_new.gogo, a copy
+//! of the app's page + theme; images are not read at compile) and
 //! pins the numbers the shipped file declares: the ok Button is 130×60
 //! centered, its `face` sits 8 in from every edge (114×44).
 use gogo::layout::{FixedAdvance, Rect, layout};
@@ -7,7 +8,7 @@ use std::path::Path;
 
 #[test]
 fn whats_new_ok_button_and_face() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app/ui/whats_new.gogo");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/whats_new.gogo");
     let c = gogo::compile_file(&path).unwrap();
     assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;

@@ -478,7 +478,7 @@ fn motion_default(key: PropKey) -> Option<Value> {
     }
 }
 
-/// A posed size key behaves as if the file had declared it (D249).
+/// A posed size key behaves as if the file had declared it.
 fn apply_placement(p: &mut Placement, page: &Page, prop: Prop) {
     let len = |v: Value| match v {
         Value::VNum(n) => Len::Exact(n),

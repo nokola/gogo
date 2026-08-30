@@ -1,4 +1,4 @@
-//! Motion (G8): WPF-exact easing math, property tweens for `transition`
+//! Motion: WPF-exact easing math, property tweens for `transition`
 //! rules, and players for `anim` tracks on the motion channels
 //! (`translate.x/.y`, `scale`, `rotate`, `opacity`). Layout is declared,
 //! motion is transformed: a player never touches a rect in the arena; the
@@ -212,7 +212,7 @@ impl Channel {
 pub struct Motion {
     pub translate: [f32; 2],
     pub scale: [f32; 2],
-    /// Degrees; drawn as-is only by renderers that rotate (G5 quads do not).
+    /// Degrees; drawn as-is only by renderers that rotate (the quad renderer does not).
     pub rotate: f32,
     pub opacity: f32,
 }

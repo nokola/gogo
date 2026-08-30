@@ -34,7 +34,7 @@ pub enum Draw {
     Circle { rect: Rect, color: Rgba, border: f32, border_color: Rgba },
     /// `image` is the `src` string id; the renderer maps it to a texture.
     Image { rect: Rect, image: StrId, tint: Rgba, fit: Fit },
-    /// Two-stop gradient (first/last stop) — the renderer's G5 form.
+    /// Two-stop gradient (first/last stop) — the form the renderer draws.
     Gradient { rect: Rect, kind: GradientKind, from: Rgba, to: Rgba, angle: f32 },
     /// `text`/`key`: the English literal and its translation key.
     Text { rect: Rect, text: StrId, key: StrId, font_size: f32, color: Rgba, halign: TextAlign, valign: TextAlign, wrap: bool, font: StrId },
@@ -115,7 +115,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     let pad = res.placement[id as usize].padding;
     let text_rect = rect.inset(pad[0] + border, pad[1] + border, pad[2] + border, pad[3] + border);
     // A templated Check/Radio/Toggle (a body of its own) is a blank toggle
-    // surface: no chrome unless the file paints it (D142/D144).
+    // surface: no chrome unless the file paints it.
     let templated = node.kind.is_press_surface() && node.kind != Kind::Button && node.children.1 > 0;
     // Scroll viewports and slot regions clip; so does `clip_contents=true`,
     // and a Label with `clip_text=true` cuts its own text.
@@ -250,7 +250,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             }
         }
         Kind::Slider => {
-            // Track + thumb from `value`/`min`/`max` (G7 wires the drag).
+            // Track + thumb from `value`/`min`/`max` (the drag is not wired yet).
             let min = res.num(page, id, PropKey::Min).unwrap_or(0.0);
             let max = res.num(page, id, PropKey::Max).unwrap_or(100.0);
             let value = res.num(page, id, PropKey::Value).unwrap_or(min);

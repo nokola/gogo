@@ -1,4 +1,4 @@
-//! Touch → the spec's input vocabulary (G7). One finger: a press lands on
+//! Touch → the spec's input vocabulary. One finger: a press lands on
 //! the top-most input-taking node (`hit`); a Button holds `held` (slide-off
 //! clears, slide-back re-arms) and fires `activate` on a completed tap;
 //! Check/Toggle/Radio flip `selected` and fire `change`; a Slider streams

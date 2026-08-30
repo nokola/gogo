@@ -108,26 +108,6 @@ impl Kind {
         })
     }
 
-    /// Retired spellings (Godot-era redirects) — an error naming the gogo word.
-    pub fn retired(word: &str) -> Option<&'static str> {
-        Some(match word {
-            "Border" | "PanelContainer" => "Panel",
-            "TextBlock" => "Label",
-            "ScrollViewer" | "ScrollContainer" => "Scroll",
-            "WrapPanel" | "FlowContainer" => "Flow",
-            "TextBox" | "LineEdit" => "Input",
-            "VBoxContainer" => "Column",
-            "HBoxContainer" => "Row",
-            "ColorRect" => "Rectangle",
-            "HSlider" => "Slider",
-            "Ellipse" => "Circle",
-            "Radial" => "Gradient",
-            "TextureRect" => "Image",
-            "Control" => "Layers",
-            _ => return None,
-        })
-    }
-
     /// Children stack on one axis (Column/Row) — `gap` is legal here.
     pub fn is_stack(self) -> bool {
         matches!(self, Kind::Column | Kind::Row)
@@ -227,7 +207,8 @@ pub enum PropKey {
     Opacity,
     Visibility,
     Disabled,
-    /// `source=` on an Image: the file, `res://…`.
+    /// `source=` on an Image: the file path, resolved by the build against
+    /// its asset root (`BuildOptions::res_root`).
     Source,
     IconName,
     Value,
@@ -251,7 +232,7 @@ pub enum PropKey {
     Stops,
     Angle,
     Aspect,
-    /// Font file key (`font="assets/Fonts/Roboto Light.ttf"`), inherited down the tree.
+    /// Font file key (`font="fonts/Light.ttf"`), inherited down the tree.
     Font,
     /// Text color (`font_color=`), the text half of `background=`.
     FontColor,
@@ -262,8 +243,9 @@ pub enum PropKey {
     /// Tiles cell props.
     Span,
     FullRow,
-    /// Accepted for parity with the Godot files; nothing here reads them
-    /// (lint silencers, lazy decode, list selection mode, backend pick).
+    /// Host-read keys: the compiler accepts them and no gogo pass reads
+    /// them; the host program reads them off the page (`UNREAD_BY_DESIGN`
+    /// says which and why).
     Loading,
     TouchTarget,
     TapPulse,
@@ -621,8 +603,7 @@ impl Node {
 }
 
 /// The color words every `.gogo` can use bare (`color=red`), the one
-/// table for every engine — the same values as the Godot gogo resolver
-/// (gogo_resolver.gd PALETTE): CSS-named, readable on white and black. A
+/// table for every renderer: CSS-named, readable on white and black. A
 /// theme block overrides a word for the file (`theme { red = #E51400 }`).
 pub const PALETTE: &[(&str, u32)] = &[
     ("black", 0x000000),
@@ -668,20 +649,20 @@ pub fn palette_color(word: &str) -> Option<Rgba> {
 /// fails on any key that is neither read by layout/draw/runtime/input/anim
 /// nor listed here.
 pub const UNREAD_BY_DESIGN: &[(PropKey, &str)] = &[
-    (PropKey::Loading, "`loading=lazy` is read by the SHELL, not a gogo pass: shell::lazy_image_keys defers those images' decode to their first draw"),
-    (PropKey::TouchTarget, "Godot-side touch-slop plate; hit testing here uses the node's own rect"),
-    (PropKey::TapPulse, "the press feedback pulse is a code-behind-round item (G12)"),
-    (PropKey::AccessibilityName, "no screen-reader bridge yet"),
-    (PropKey::KeyboardTarget, "no keyboard focus routing yet"),
-    (PropKey::Select, "List selection mode; Lists get items from code (G12)"),
-    (PropKey::Render, "`render=native|gogo` picked a Godot backend; one renderer here"),
-    (PropKey::Step, "Slider steps arrive with the drag wiring (G7)"),
-    (PropKey::IconSrc, "Godot-only icon file hint"),
+    (PropKey::Loading, "host-read: `loading=lazy` asks the host to defer that image's decode to its first draw"),
+    (PropKey::TouchTarget, "host-read: an enlarged touch plate the host may honor; hit testing here uses the node's own rect"),
+    (PropKey::TapPulse, "host-read: the press feedback pulse is drawn by the host; not built here yet"),
+    (PropKey::AccessibilityName, "host-read: no screen-reader bridge here yet"),
+    (PropKey::KeyboardTarget, "host-read: no keyboard focus routing here yet"),
+    (PropKey::Select, "host-read: List selection mode; Lists get their items from the host"),
+    (PropKey::Render, "accepted for old files that picked a renderer per node; one renderer here"),
+    (PropKey::Step, "Slider steps are not built yet (the drag is not wired)"),
+    (PropKey::IconSrc, "accepted for old files; an icon file hint nothing reads"),
     (PropKey::Automatic, "read at compile into `Node.auto`, not as a prop"),
     (PropKey::SeatOf, "read at resolve through `Resolved.seat`, not as a prop"),
-    (PropKey::ToggleMode, "`toggle=true` on a Button; the selected flip is a code-behind-round item (G12)"),
-    (PropKey::RowHeight, "Grid `row_height=`: rows size by `row height=` here; the prop form is owed"),
-    (PropKey::RowSpan, "Grid `row_span=`: only column spans are laid out (D82 subset); owed"),
+    (PropKey::ToggleMode, "`toggle=true` on a Button; the selected flip is not built yet"),
+    (PropKey::RowHeight, "Grid `row_height=`: rows size by `row height=` here; the prop form is not built yet"),
+    (PropKey::RowSpan, "Grid `row_span=`: only column spans are laid out; not built yet"),
 ];
 
 /// The build-time shape: the same pools as `&'static` slices.

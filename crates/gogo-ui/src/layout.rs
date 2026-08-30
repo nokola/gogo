@@ -322,7 +322,7 @@ impl<'a> Lay<'a> {
             Kind::Label => {
                 let wrap = self.res.bool(self.page, id, PropKey::Wrap).unwrap_or(false);
                 let text = self.text_of(id).unwrap_or("");
-                // Hug measures unwrapped (D254); wrapping needs a bound width.
+                // Hug measures unwrapped; wrapping needs a bound width.
                 let bound = if wrap { inner_w.or(self.placement(id).max_width) } else { None };
                 let (w, h) = self.text.measure(text, self.font_size(id), bound, self.font_key(id));
                 // A wrapping label that fills its width has no width of its
@@ -476,7 +476,7 @@ impl<'a> Lay<'a> {
         let mut p = *self.placement(id);
         let m = self.margins(id);
         // The document root is host-placed: the shell offers the viewport
-        // and the root's own placement words seat the box in it (D189).
+        // and the root's own placement words seat the box in it.
         let _ = root;
         // An `automatic=` slot: the value picks its extent or its seat
         // along the host's width (the sliders here are horizontal).
@@ -598,7 +598,7 @@ impl<'a> Lay<'a> {
 
     // ----- tiles -------------------------------------------------------------
 
-    /// The Tiles lattice (D94): unit = width / cols; a cell is `span` units
+    /// The Tiles lattice: unit = width / cols; a cell is `span` units
     /// (`full_row` = all of them), packed first-fit in declaration order,
     /// wrapping whole; a row is as tall as its tallest cell.
     fn tiles_cells(&self, id: NodeId, inner_w: f32) -> (Vec<(NodeId, Rect)>, f32) {

@@ -1,4 +1,4 @@
-//! Diagnostics with the Godot gogo's G-codes where one exists. At build
+//! Diagnostics, each with a stable G-code. At build
 //! time they fail `cargo build` (file:line); at hot reload the overlay
 //! shows them.
 

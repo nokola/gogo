@@ -1,6 +1,6 @@
 //! AST → `Page`. Styles, `uses`, widgets and the palette are resolved
 //! here (the runtime never sees them); `$theme` refs and translation keys
-//! stay live. Diagnostics keep the Godot G-codes where one existed.
+//! stay live. Diagnostic codes are stable G-numbers (`G0041`, `G7011` …).
 
 use std::collections::HashMap;
 
@@ -13,6 +13,17 @@ use crate::parser::parse;
 
 /// Reads a `uses "path"` file relative to the current one; `None` = not found.
 pub type Loader<'a> = &'a dyn Fn(&str) -> Option<String>;
+
+/// What the host program tells the compiler about its own world. gogo
+/// itself knows no host: a node type it cannot name is an error unless the
+/// host lists it here.
+#[derive(Clone, Copy, Default)]
+pub struct CompileOptions<'a> {
+    /// Node types the host draws from code (no gogo body): each becomes an
+    /// empty box of its declared size with a G7013 warning, so the page
+    /// still lays out. Example: `&["GradientEdit"]`.
+    pub code_controls: &'a [&'a str],
+}
 
 /// The gogo events; anything else on `on:` is a raw signal — gone (§7).
 /// `press` fires on finger-down (the undo/redo feel); `activate` on a
@@ -69,10 +80,6 @@ const PENDING_NODE: NodeId = u32::MAX - 1;
 /// A `for=` widget response whose host is found once the tree exists.
 const HOST_PENDING: NodeId = u32::MAX - 2;
 
-/// Controls FantasiaGodot registers from C# (`register_control`): no gogo
-/// body to expand, nothing to draw without the code.
-const CODE_CONTROLS: &[&str] = &["GradientEdit"];
-
 /// Does a widget body flag a `signals` node anywhere?
 fn has_signals_node(n: &AstNode) -> bool {
     n.flags.iter().any(|f| f == "signals") || n.children.iter().any(|c| matches!(c, AstItem::Node(k) if has_signals_node(k)))
@@ -92,6 +99,7 @@ pub struct Compiler<'a> {
     page: Page,
     diags: Vec<Diagnostic>,
     loader: Loader<'a>,
+    options: CompileOptions<'a>,
     styles: HashMap<String, StyleDef>,
     widgets: HashMap<String, WidgetDef>,
     palette: HashMap<String, Rgba>,
@@ -123,13 +131,19 @@ pub struct Compiled {
     pub diags: Vec<Diagnostic>,
 }
 
+/// `compile` with no host options (no code controls).
 pub fn compile(source: &str, loader: Loader<'_>) -> Compiled {
+    compile_with(source, loader, CompileOptions::default())
+}
+
+pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOptions<'a>) -> Compiled {
     let mut diags = Vec::new();
     let doc = parse(source, &mut diags);
     let mut c = Compiler {
         page: Page::default(),
         diags,
         loader,
+        options,
         styles: HashMap::new(),
         widgets: HashMap::new(),
         palette: default_palette(),
@@ -152,8 +166,7 @@ pub fn compile(source: &str, loader: Loader<'_>) -> Compiled {
     Compiled { page: c.page, diags: c.diags }
 }
 
-/// The bare color words: `page::PALETTE` (the one table, shared with the
-/// Godot resolver) plus its aliases and `transparent`.
+/// The bare color words: `page::PALETTE` plus its aliases and `transparent`.
 fn default_palette() -> HashMap<String, Rgba> {
     let mut p = HashMap::new();
     for (name, _) in PALETTE {
@@ -185,7 +198,7 @@ impl<'a> Compiler<'a> {
     /// contributes directives).
     fn document(&mut self, doc: &Document, is_main: bool) {
         // Pass 0: arrangements, so a `transition a -> b` may sit above its
-        // `arrangement` lines (the Godot files do).
+        // `arrangement` lines (files written that way exist).
         for item in &doc.items {
             if let AstItem::Node(n) = item {
                 if n.type_word == "arrangement" {
@@ -745,7 +758,7 @@ impl<'a> Compiler<'a> {
                 return None;
             }
             "texture" => {
-                self.error("G0041", p.line, "`texture=` is `source=\"res://assets/…\"` (checked and embedded at build)");
+                self.error("G0041", p.line, "`texture=` is `source=\"<image path>\"` (checked and embedded at build)");
                 return None;
             }
             _ => {}
@@ -836,18 +849,14 @@ impl<'a> Compiler<'a> {
         };
         let kind = match Kind::from_word(&n.type_word) {
             Some(k) => k,
-            None if CODE_CONTROLS.contains(&n.type_word.as_str()) => {
-                // A control whose look comes from code (a script in Godot):
-                // an empty box of its declared size, so the page still lays out.
+            None if self.options.code_controls.contains(&n.type_word.as_str()) => {
+                // A control whose look comes from the host's code: an empty
+                // box of its declared size, so the page still lays out.
                 self.warning("G7013", n.line, format!("`{}` is drawn by code — an empty box here", n.type_word));
                 Kind::Custom
             }
             None => {
-                if let Some(word) = Kind::retired(&n.type_word) {
-                    self.error("G7010", n.line, format!("`{}` is spelled `{word}`", n.type_word));
-                } else {
-                    self.error("G7011", n.line, format!("unknown node type `{}`", n.type_word));
-                }
+                self.error("G7011", n.line, format!("unknown node type `{}`", n.type_word));
                 Kind::Custom
             }
         };
@@ -963,7 +972,7 @@ impl<'a> Compiler<'a> {
             }
         }
         // A wrap label whose width never binds (G1004, the spec's lint):
-        // hug measures unwrapped (D254), so the text stays one line.
+        // hug measures unwrapped, so the text stays one line.
         if kind == Kind::Label && tmp.props.iter().any(|p| p.key == PropKey::Wrap && p.value == Value::VBool(true)) {
             let pl = &tmp.node.placement;
             if matches!(pl.width, Len::Hug(_)) && pl.max_width.is_none() && !pl.max_width_fill {
@@ -1669,8 +1678,11 @@ mod tests {
     }
 
     #[test]
-    fn removed_words_and_retired_spellings_are_errors() {
-        assert!(codes("View v { Border b }").contains(&"G7010".to_string()));
+    fn removed_words_and_code_controls() {
+        assert!(codes("View v { Border b }").contains(&"G7011".to_string()));
+        let code = compile_with("View v { GradientEdit g width=100, height=40 }", &|_| None, CompileOptions { code_controls: &["GradientEdit"], ..Default::default() });
+        assert!(code.diags.iter().any(|d| d.code == "G7013"), "{:?}", code.diags);
+        assert!(!crate::diag::has_errors(&code.diags), "{:?}", code.diags);
         assert!(codes("View v { Panel p width=host }").contains(&"G0055".to_string()));
         assert!(codes("View v { Button b on:pressed=x }").contains(&"G0049".to_string()));
         assert!(codes("Column c { Label a }").contains(&"G7003".to_string()));

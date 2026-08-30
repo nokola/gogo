@@ -270,7 +270,7 @@ impl<'a> Parser<'a> {
     }
 
     /// `Layers wheelTouchTarget` alone on its line, members on the next
-    /// (the Godot files write this): the line continues when the next line
+    /// (files are written this way): the line continues when the next line
     /// opens with a size or a `key=` member — never with a node type.
     fn continues_after_name(&self, node: &AstNode) -> bool {
         if node.name.is_none() || !node.args.is_empty() || !node.props.is_empty() || !node.styles.is_empty() {
