@@ -486,6 +486,17 @@ pub enum ScreenClass {
     LotsOfSpace,
 }
 
+/// At or under this width (within `EPSILON`) an upright screen is
+/// `portraitSmall`.
+const SMALL_MAX_WIDTH_EPX: f32 = 350.0;
+/// Past this a dimension has room for a second pane of content: an
+/// upright screen wider than this is `portraitLarge`, a sideways screen
+/// TALLER than this has `lotsOfSpace`.
+const MEDIUM_MAX_EPX: f32 = 568.0;
+const TABLET_MIN_WIDTH_EPX: f32 = 620.0;
+/// Soaks up float noise in view sizes (a 349.99-epx width is small).
+const EPSILON: f32 = 0.1;
+
 impl ScreenClass {
     /// The word as written in a `when screen.<class>`.
     pub(crate) const fn word(self) -> &'static str {
@@ -496,6 +507,30 @@ impl ScreenClass {
             ScreenClass::LandscapeSmall => "landscapeSmall",
             ScreenClass::LotsOfSpace => "lotsOfSpace",
         }
+    }
+
+    /// The class a view size (epx) falls in — gogo's ruler, made for
+    /// general-purpose apps. A sideways screen is graded by its HEIGHT
+    /// (is there room under the content?), an upright one by its WIDTH.
+    /// A host with its own policy can still classify itself and hand the
+    /// result to `Runtime::set_screen`.
+    pub fn from_view(view_width_epx: f32, view_height_epx: f32) -> ScreenClass {
+        if view_width_epx > view_height_epx {
+            if view_height_epx > MEDIUM_MAX_EPX - EPSILON {
+                return ScreenClass::LotsOfSpace;
+            }
+            return ScreenClass::LandscapeSmall;
+        }
+        if view_width_epx < SMALL_MAX_WIDTH_EPX + EPSILON {
+            return ScreenClass::PortraitSmall;
+        }
+        if view_width_epx < MEDIUM_MAX_EPX - EPSILON {
+            return ScreenClass::PortraitMedium;
+        }
+        if view_width_epx < TABLET_MIN_WIDTH_EPX - EPSILON {
+            return ScreenClass::PortraitLarge;
+        }
+        ScreenClass::LotsOfSpace
     }
 }
 
@@ -513,6 +548,11 @@ impl Orientation {
             Orientation::Portrait => "portrait",
             Orientation::Landscape => "landscape",
         }
+    }
+
+    /// Landscape = wider than tall; a square screen is portrait.
+    pub fn from_view(view_width_epx: f32, view_height_epx: f32) -> Orientation {
+        if view_width_epx > view_height_epx { Orientation::Landscape } else { Orientation::Portrait }
     }
 }
 

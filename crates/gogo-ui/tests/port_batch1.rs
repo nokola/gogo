@@ -169,3 +169,20 @@ fn stop_restores_and_entrances_respect_gone_ancestors() {
     assert_eq!(rt.motion[inner].opacity, 1.0);
     let _ = (NO_NODE, PropKey::Opacity, Value::VNum(0.0), resolve_animated);
 }
+
+/// The ruler behind `when screen.<class>`: a 320×680 phone is
+/// portraitSmall, 1100×800 is lotsOfSpace, a phone on its side is
+/// landscapeSmall — and a sideways screen grades by HEIGHT, so a squat
+/// 700×500 window is still small.
+#[test]
+fn screen_classes_grade_view_sizes() {
+    use gogo::{Orientation, ScreenClass};
+    assert_eq!(ScreenClass::from_view(320.0, 680.0), ScreenClass::PortraitSmall);
+    assert_eq!(ScreenClass::from_view(360.0, 740.0), ScreenClass::PortraitMedium);
+    assert_eq!(ScreenClass::from_view(600.0, 900.0), ScreenClass::PortraitLarge);
+    assert_eq!(ScreenClass::from_view(680.0, 320.0), ScreenClass::LandscapeSmall);
+    assert_eq!(ScreenClass::from_view(700.0, 500.0), ScreenClass::LandscapeSmall);
+    assert_eq!(ScreenClass::from_view(1100.0, 800.0), ScreenClass::LotsOfSpace);
+    assert_eq!(Orientation::from_view(680.0, 320.0), Orientation::Landscape);
+    assert_eq!(Orientation::from_view(320.0, 320.0), Orientation::Portrait, "a square screen is portrait");
+}
