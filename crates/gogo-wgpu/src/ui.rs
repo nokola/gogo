@@ -3,8 +3,9 @@
 //! handful of draw calls; the page's rects are epx and are scaled to device
 //! pixels here (`gogo` never sees a device pixel). Text is shaped by the
 //! `text` crate into glyph quads over its coverage atlas (texture 0);
-//! images are RGBA textures added by the shell (`add_image`). Limit:
-//! gradients use their first and last stop only; `fit=` is `contain`.
+//! images are RGBA textures added by the shell (`add_image`). A gradient
+//! arrives as one quad per stop pair (its `band`); a `RotatePush` turns
+//! every quad until its pop about the given center.
 
 use std::collections::HashMap;
 
@@ -21,8 +22,13 @@ struct Quad {
     border_color: [f32; 4],
     /// corner, border, kind, angle.
     params: [f32; 4],
+    /// Glyph/image: u0, v0, u1, v1. Gradient: band start, band end.
     uv: [f32; 4],
+    /// sin, cos of the rotation and its center (device px); `[0, 1, 0, 0]` = none.
+    rot: [f32; 4],
 }
+
+const NO_ROT: [f32; 4] = [0.0, 1.0, 0.0, 0.0];
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -116,7 +122,7 @@ impl UiRenderer {
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Quad>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4],
                 })],
             },
             primitive: wgpu::PrimitiveState::default(),
@@ -240,6 +246,8 @@ impl UiRenderer {
         // from its true position).
         let px = |r: &Rect| [(r.x * epx).round(), (r.y * epx).round(), r.w * epx, r.h * epx];
         let mut clips: Vec<[u32; 4]> = Vec::new();
+        let mut rots: Vec<[f32; 4]> = Vec::new();
+        let mut rot: [f32; 4] = NO_ROT;
         let mut batch_first = 0u32;
         let mut current: Option<[u32; 4]> = None;
         let mut current_tex: TexId = ATLAS;
@@ -247,14 +255,16 @@ impl UiRenderer {
         for d in draws.iter() {
             match d {
                 Draw::Quad { rect, color, corner, border, border_color } => {
-                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [corner * epx, border * epx, KIND_RECT, 0.0], uv: NO_UV });
+                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [corner * epx, border * epx, KIND_RECT, 0.0], uv: NO_UV, rot });
                 }
                 Draw::Circle { rect, color, border, border_color } => {
-                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [0.0, border * epx, KIND_CIRCLE, 0.0], uv: NO_UV });
+                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [0.0, border * epx, KIND_CIRCLE, 0.0], uv: NO_UV, rot });
                 }
-                Draw::Gradient { rect, kind, from, to, angle } => {
+                Draw::Gradient { rect, kind, from, to, angle, band } => {
                     let k = if *kind == GradientKind::Radial { KIND_RADIAL } else { KIND_LINEAR };
-                    self.quads.push(Quad { rect: px(rect), color: from.to_f32(), border_color: to.to_f32(), params: [0.0, 0.0, k, angle.to_radians()], uv: NO_UV });
+                    // The compass (0 = to top, clockwise) as the shader's
+                    // direction angle (0 = to the right): a quarter turn back.
+                    self.quads.push(Quad { rect: px(rect), color: from.to_f32(), border_color: to.to_f32(), params: [0.0, 0.0, k, (angle - 90.0).to_radians()], uv: [band.0, band.1, 0.0, 0.0], rot });
                 }
                 Draw::Text { rect, text: text_id, key: _, font_size, color, halign, valign, wrap, font } => {
                     if current_tex != ATLAS {
@@ -280,7 +290,7 @@ impl UiRenderer {
                     };
                     let color = color.to_f32();
                     for g in text.shape(s, size_px, max_w, font_key, x, y, box_w, h) {
-                        self.quads.push(Quad { rect: [g.x, g.y, g.w, g.h], color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_GLYPH, 0.0], uv: g.uv });
+                        self.quads.push(Quad { rect: [g.x, g.y, g.w, g.h], color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_GLYPH, 0.0], uv: g.uv, rot });
                     }
                 }
                 Draw::Image { rect, image, tint, fit } => {
@@ -310,7 +320,7 @@ impl UiRenderer {
                         }
                         Fit::Distort => (r, [0.0, 0.0, 1.0, 1.0]),
                     };
-                    self.quads.push(Quad { rect: fitted, color: tint.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_IMAGE, 0.0], uv });
+                    self.quads.push(Quad { rect: fitted, color: tint.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_IMAGE, 0.0], uv, rot });
                 }
                 Draw::ClipPush(rect) => {
                     self.close_batch(&mut batch_first, current, current_tex);
@@ -334,6 +344,15 @@ impl UiRenderer {
                     self.close_batch(&mut batch_first, current, current_tex);
                     clips.pop();
                     current = clips.last().copied();
+                }
+                Draw::RotatePush { angle, cx, cy } => {
+                    let (sin, cos) = angle.to_radians().sin_cos();
+                    rots.push([sin, cos, cx * epx, cy * epx]);
+                    rot = *rots.last().unwrap();
+                }
+                Draw::RotatePop => {
+                    rots.pop();
+                    rot = rots.last().copied().unwrap_or(NO_ROT);
                 }
             }
         }
