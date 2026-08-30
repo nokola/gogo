@@ -57,7 +57,7 @@ pub fn handler_names(page: &Page) -> Vec<String> {
     }
     let activate = page.intern_lookup("activate");
     for node in &page.nodes {
-        if node.kind.is_press_surface() && node.name != NO_STR {
+        if node.kind.is_press_surface() && node.name != NO_STR && !page.str(node.name).contains('/') {
             let has_activate = page.handlers[node.handlers.0 as usize..(node.handlers.0 + node.handlers.1) as usize].iter().any(|h| h.event == activate);
             if !has_activate {
                 let n = page.str(node.name).to_string();
@@ -86,7 +86,7 @@ fn slice<T: std::fmt::Debug>(items: &[T]) -> String {
 pub fn emit_rust(page: &Page, module: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("#[allow(unused_imports, clippy::all)]\npub mod {module} {{\n"));
-    out.push_str("    use gogo::page::*;\n    use gogo::page::{Kind::*, Len::*, Align::*, PropKey::*, Value::*, State::*, Action::*};\n\n");
+    out.push_str("    use gogo::page::*;\n    use gogo::page::{Kind::*, Len::*, Align::*, PropKey::*, Value::*, State::*, Action::*, Auto::*};\n\n");
     out.push_str("    pub static PAGE: StaticPage = StaticPage {\n");
     out.push_str(&format!("        nodes: {},\n", slice(&page.nodes)));
     out.push_str(&format!("        strings: {},\n", slice(&page.strings.iter().map(String::as_str).collect::<Vec<_>>())));
@@ -116,7 +116,8 @@ pub fn emit_rust(page: &Page, module: &str) -> String {
 
     // Names struct.
     out.push_str("    /// Every named node, by id.\n    #[derive(Clone, Copy, Debug)]\n    pub struct Names {\n");
-    let named: Vec<(String, NodeId)> = page.nodes.iter().enumerate().filter(|(_, n)| n.name != NO_STR).map(|(i, n)| (snake_case(page.str(n.name)), i as NodeId)).collect();
+    // Widget-body names are per instance (`inst/name`) — not addressable from code.
+    let named: Vec<(String, NodeId)> = page.nodes.iter().enumerate().filter(|(_, n)| n.name != NO_STR && !page.str(n.name).contains('/')).map(|(i, n)| (snake_case(page.str(n.name)), i as NodeId)).collect();
     for (n, _) in &named {
         out.push_str(&format!("        pub {n}: NodeId,\n"));
     }

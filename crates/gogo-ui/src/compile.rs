@@ -14,7 +14,9 @@ use crate::parser::parse;
 pub type Loader<'a> = &'a dyn Fn(&str) -> Option<String>;
 
 /// The gogo events; anything else on `on:` is a raw signal — gone (§7).
-const EVENTS: &[&str] = &["activate", "change", "edit", "show", "hide"];
+/// `press` fires on finger-down (the undo/redo feel); `activate` on a
+/// completed tap.
+const EVENTS: &[&str] = &["activate", "press", "change", "edit", "show", "hide"];
 
 #[derive(Clone, Default)]
 struct StyleDef {
@@ -27,7 +29,19 @@ struct StyleDef {
 struct WidgetDef {
     params: Vec<AstProp>,
     body: AstNode,
+    /// `widget X for=Radio`: the body fills a host control, and the
+    /// widget-scope `when` lines answer the HOST's states.
+    for_host: bool,
+    whens: Vec<AstNode>,
     line: u32,
+}
+
+/// What a widget instance brings for the body's slots: bare children for
+/// the default slot, `slot <name> { … }` blocks by name.
+#[derive(Clone, Default)]
+struct Fills {
+    default: Vec<AstItem>,
+    named: HashMap<String, Vec<AstItem>>,
 }
 
 struct WhenTmp {
@@ -35,6 +49,8 @@ struct WhenTmp {
     props: Vec<Prop>,
     /// Descendant responses (`when held face.background=…`): (node name, prop).
     descendants: Vec<(String, Prop)>,
+    /// A `for=` widget's scope response: watches the hosting control.
+    host: bool,
 }
 
 /// A node before it has an arena slot.
@@ -49,6 +65,27 @@ struct TmpNode {
 
 /// A node-level transition's node before flattening assigns the real id.
 const PENDING_NODE: NodeId = u32::MAX - 1;
+/// A `for=` widget response whose host is found once the tree exists.
+const HOST_PENDING: NodeId = u32::MAX - 2;
+
+/// Controls FantasiaGodot registers from C# (`register_control`): no gogo
+/// body to expand, nothing to draw without the code.
+const CODE_CONTROLS: &[&str] = &["GradientEdit"];
+
+/// Does a widget body flag a `signals` node anywhere?
+fn has_signals_node(n: &AstNode) -> bool {
+    n.flags.iter().any(|f| f == "signals") || n.children.iter().any(|c| matches!(c, AstItem::Node(k) if has_signals_node(k)))
+}
+
+/// `face.background` → (`face`, `background`); a motion key like
+/// `translate.x` stays whole, and `dot.translate.x` splits once.
+fn split_target(key: &str) -> Option<(&str, &str)> {
+    if PropKey::from_word(key).is_some() {
+        return None;
+    }
+    let (node, rest) = key.split_once('.')?;
+    Some((node, rest))
+}
 
 pub struct Compiler<'a> {
     page: Page,
@@ -68,6 +105,16 @@ pub struct Compiler<'a> {
     anim_decls: Vec<AstNode>,
     root_seen: bool,
     names: std::collections::HashSet<String>,
+    /// `uses` paths already brought in (a diamond import is one import).
+    used: std::collections::HashSet<String>,
+    /// Widget instances being expanded, outermost first: body names are
+    /// per instance (`inst/name`), so a widget used twice never collides.
+    prefix: Vec<String>,
+    unnamed_instances: u32,
+    fills: Vec<Fills>,
+    /// Per widget instance being expanded: the instance's `on:` props still
+    /// waiting for the body's `signals` node (`None` = the root took them).
+    instance_on: Vec<Option<Vec<AstProp>>>,
 }
 
 pub struct Compiled {
@@ -92,6 +139,11 @@ pub fn compile(source: &str, loader: Loader<'_>) -> Compiled {
         anim_decls: Vec::new(),
         root_seen: false,
         names: std::collections::HashSet::new(),
+        used: std::collections::HashSet::new(),
+        prefix: Vec::new(),
+        unnamed_instances: 0,
+        fills: Vec::new(),
+        instance_on: Vec::new(),
     };
     c.page.intern("");
     c.document(&doc, true);
@@ -151,6 +203,15 @@ impl<'a> Compiler<'a> {
     /// `is_main`: the file whose root becomes the page (a `uses` file only
     /// contributes directives).
     fn document(&mut self, doc: &Document, is_main: bool) {
+        // Pass 0: arrangements, so a `transition a -> b` may sit above its
+        // `arrangement` lines (the Godot files do).
+        for item in &doc.items {
+            if let AstItem::Node(n) = item {
+                if n.type_word == "arrangement" {
+                    self.arrangement(n);
+                }
+            }
+        }
         // Pass 1: directives, in order (uses first so later lines can override).
         for item in &doc.items {
             match item {
@@ -169,9 +230,9 @@ impl<'a> Compiler<'a> {
                     "uses" => self.uses(n),
                     "theme" => self.theme(n),
                     "style" => self.style(n),
-                    "widget" => self.widget(n),
+                    "widget" | "control" => self.widget(n),
                     "anim" => self.anim(n),
-                    "arrangement" => self.arrangement(n),
+                    "arrangement" => {}
                     "transition" => {
                         let t = self.transition(n, NO_NODE);
                         self.page.transitions.push(t);
@@ -191,7 +252,7 @@ impl<'a> Compiler<'a> {
         // Pass 2: the root.
         for item in &doc.items {
             if let AstItem::Node(n) = item {
-                if matches!(n.type_word.as_str(), "uses" | "theme" | "style" | "widget" | "anim" | "arrangement" | "transition" | "when") {
+                if matches!(n.type_word.as_str(), "uses" | "theme" | "style" | "widget" | "control" | "anim" | "arrangement" | "transition" | "when") {
                     continue;
                 }
                 if self.root_seen {
@@ -213,6 +274,9 @@ impl<'a> Compiler<'a> {
             self.error("G0023", n.line, "`uses` needs a quoted path");
             return;
         };
+        if !self.used.insert(path.to_string()) {
+            return;
+        }
         let Some(text) = (self.loader)(path) else {
             self.error("G0024", n.line, format!("`uses \"{path}\"`: file not found"));
             return;
@@ -307,12 +371,17 @@ impl<'a> Compiler<'a> {
             self.error("G0027", n.line, "`widget` needs a name");
             return;
         };
-        let bodies: Vec<&AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).collect();
+        // A `control` body holds its behavior lines (`script`, `state`,
+        // `state_builtin`, `signal`, a default `transition`) beside the root;
+        // with no code-behind here they carry nothing for the picture.
+        let bodies: Vec<&AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| !matches!(b.type_word.as_str(), "script" | "state" | "state_builtin" | "signal" | "transition" | "when" | "anim" | "style")).collect();
         if bodies.len() != 1 {
             self.error("G0028", n.line, format!("widget `{name}` needs exactly one root node in its body"));
             return;
         }
-        self.widgets.insert(name, WidgetDef { params: n.params.clone(), body: bodies[0].clone(), line: n.line });
+        let whens: Vec<AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "when").cloned().collect();
+        let for_host = n.props.iter().any(|p| p.key == "for");
+        self.widgets.insert(name, WidgetDef { params: n.params.clone(), body: bodies[0].clone(), for_host, whens, line: n.line });
     }
 
     fn anim(&mut self, n: &AstNode) {
@@ -376,7 +445,11 @@ impl<'a> Compiler<'a> {
                     let d = step.props.iter().find(|p| p.key == "delay").and_then(|p| p.value.as_num()).unwrap_or(0.0);
                     cluster_start + d
                 }
-                "play" | "each" | "key" => {
+                "each" => {
+                    self.warning("G0062", step.line, "`each` steps are not supported yet — skipped");
+                    cluster_start
+                }
+                "play" | "key" => {
                     self.error("G0062", step.line, format!("`{word}` steps are not supported yet"));
                     cluster_start
                 }
@@ -398,6 +471,35 @@ impl<'a> Compiler<'a> {
                         continue;
                     };
                     let num = |key: &str| step.props.iter().find(|p| p.key == key).and_then(|p| p.value.as_num());
+                    let channel_id = self.intern(&channel);
+                    let keys: Vec<&AstNode> = step.children.iter().filter_map(|i| if let AstItem::Node(k) = i { Some(k) } else { None }).filter(|k| k.type_word == "key").collect();
+                    if !keys.is_empty() {
+                        // `key t=, v=, easing=, jump=true` children own the
+                        // timeline: one track per segment between keys.
+                        let key_num = |k: &AstNode, key: &str| k.props.iter().find(|p| p.key == key).and_then(|p| p.value.as_num());
+                        let mut prev: Option<(f32, f32)> = None;
+                        let mut end = cluster_start;
+                        for k in keys {
+                            let t = key_num(k, "t").unwrap_or(0.0);
+                            let v = key_num(k, "v").unwrap_or(0.0);
+                            let jump = k.props.iter().any(|p| p.key == "jump" && p.value == AstValue::Bool(true));
+                            let easing_word = k.props.iter().find(|p| p.key == "easing").and_then(|p| p.value.as_ident()).map(str::to_string);
+                            let easing = match easing_word {
+                                Some(w) => self.intern(&w),
+                                None => NO_STR,
+                            };
+                            let (from, start, duration) = match prev {
+                                Some((pt, pv)) => (Some(pv), cluster_start + pt, if jump { 0.0 } else { t - pt }),
+                                // The first key pins its value from play start.
+                                None => (Some(v), cluster_start, t),
+                            };
+                            self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from, to: v, start, duration, easing });
+                            end = start + duration;
+                            prev = Some((t, v));
+                        }
+                        cluster_end = cluster_end.max(end);
+                        continue;
+                    }
                     let from = match step.props.iter().find(|p| p.key == "from") {
                         Some(p) if p.value.as_ident() == Some("current") => None,
                         Some(p) => p.value.as_num(),
@@ -421,7 +523,6 @@ impl<'a> Compiler<'a> {
                     };
                     let offset = num("offset").unwrap_or(0.0);
                     let start = (cluster_start + offset).max(0.0);
-                    let channel_id = self.intern(&channel);
                     self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from, to, start, duration, easing });
                     start + duration
                 }
@@ -622,6 +723,15 @@ impl<'a> Compiler<'a> {
                 Value::VIdent(self.intern(word))
             }
             AstValue::Size { w, h } => Value::VSize(*w, *h),
+            AstValue::Call { name, args } if (name == "live" || name == "round") && !args.is_empty() => {
+                // `live($value)` — a control prop read; static here (no
+                // code-behind writes it), so the value itself.
+                self.value(&args[0], line, key)
+            }
+            AstValue::Range(a, _) => {
+                self.error("G0067", line, "`a..b` is only legal after `in` on a slot line");
+                self.value(a, line, key)
+            }
             AstValue::Call { name, args } => {
                 let compiled: Vec<Value> = args.iter().map(|a| self.value(a, line, None)).collect();
                 let first = self.page.values.len() as u32;
@@ -641,14 +751,6 @@ impl<'a> Compiler<'a> {
 
     fn prop(&mut self, p: &AstProp, kind: Kind) -> Option<Prop> {
         match p.key.as_str() {
-            "interactive" => {
-                self.error("G0040", p.line, "`interactive=` is gone — a node with handlers takes input, `disabled=true` blocks it (§7)");
-                return None;
-            }
-            "overlay" => {
-                self.error("G0040", p.line, "`overlay=` is gone (§7)");
-                return None;
-            }
             "anchors" | "offset_left" | "offset_top" | "offset_right" | "offset_bottom" | "size_flags_horizontal" | "size_flags_vertical" => {
                 self.error("G0041", p.line, format!("`{}` is gone — placement says it all (halign/valign, width/height, margins)", p.key));
                 return None;
@@ -662,7 +764,7 @@ impl<'a> Compiler<'a> {
                 return None;
             }
             "texture" => {
-                self.error("G0041", p.line, "`texture=` is `src=\"assets/…\"` (a path relative to the assets root, checked at build)");
+                self.error("G0041", p.line, "`texture=` is `source=\"res://assets/…\"` (checked and embedded at build)");
                 return None;
             }
             _ => {}
@@ -694,14 +796,63 @@ impl<'a> Compiler<'a> {
                 }
             }
             self.scopes.push(scope);
-            let t = self.node(&def.body, parent_kind, Some(n));
+            let mut fills = Fills::default();
+            for c in &n.children {
+                match c {
+                    AstItem::Node(k) if k.type_word == "slot" && k.name.is_some() => {
+                        fills.named.insert(k.name.clone().unwrap_or_default(), k.children.clone());
+                    }
+                    AstItem::Node(k) if matches!(k.type_word.as_str(), "when" | "transition") => {}
+                    other => fills.default.push(other.clone()),
+                }
+            }
+            self.fills.push(fills);
+            let prefix = match &n.name {
+                Some(name) => name.clone(),
+                None => {
+                    self.unnamed_instances += 1;
+                    format!("#{}", self.unnamed_instances)
+                }
+            };
+            self.prefix.push(prefix);
+            // `signals` inside the body: the instance's `on:` wiring binds
+            // to that node, not the root (the Slider inside LabeledSlider).
+            let on_props: Vec<AstProp> = n.props.iter().filter(|p| p.key.starts_with("on:")).cloned().collect();
+            self.instance_on.push(if has_signals_node(&def.body) { Some(on_props) } else { None });
+            let mut t = self.node(&def.body, parent_kind, Some(n));
+            self.instance_on.pop();
+            // A `for=` widget's scope responses answer the hosting control.
+            for w in &def.whens {
+                if let Some(mut tw) = self.when(w, t.node.kind) {
+                    tw.host = def.for_host;
+                    t.whens.push(tw);
+                }
+            }
+            self.prefix.pop();
+            self.fills.pop();
             self.scopes.pop();
             let _ = def.line;
             return t;
         }
 
+        // `layout Flow { … }` inside a List: the items' container, spelled
+        // by the word after `layout`.
+        let type_word: String = if n.type_word == "layout" { n.name.clone().unwrap_or_default() } else { n.type_word.clone() };
+        let n_layout: AstNode;
+        let n: &AstNode = if n.type_word == "layout" {
+            n_layout = AstNode { type_word: type_word.clone(), name: None, ..n.clone() };
+            &n_layout
+        } else {
+            n
+        };
         let kind = match Kind::from_word(&n.type_word) {
             Some(k) => k,
+            None if CODE_CONTROLS.contains(&n.type_word.as_str()) => {
+                // A control whose look comes from code (a script in Godot):
+                // an empty box of its declared size, so the page still lays out.
+                self.warning("G7013", n.line, format!("`{}` is drawn by code — an empty box here", n.type_word));
+                Kind::Custom
+            }
             None => {
                 if let Some(word) = Kind::retired(&n.type_word) {
                     self.error("G7010", n.line, format!("`{}` is spelled `{word}`", n.type_word));
@@ -714,13 +865,20 @@ impl<'a> Compiler<'a> {
         if kind == Kind::View && parent_kind.is_some() {
             self.error("G7012", n.line, "`View` is the screen root only — inside the tree use `Layers` (free placement) or `Panel` (a styled box)");
         }
+        let signals = n.flags.iter().any(|f| f == "signals");
         for f in &n.flags {
-            self.error("G0043", n.line, format!("`{f}` is gone — handlers are the `OnHandler` enum (§7)"));
+            if f != "signals" {
+                self.error("G0043", n.line, format!("unknown flag `{f}`"));
+            }
         }
         let mut node = Node { kind, line: n.line, ..Node::EMPTY };
         node.type_name = self.intern(&n.type_word);
-        // The instance's name wins over the widget body's.
-        let name = instance.and_then(|i| i.name.clone()).or_else(|| n.name.clone());
+        // The instance's name wins over the widget body's; body names are
+        // scoped per instance (`inst/name`).
+        let name = match instance.and_then(|i| i.name.clone()) {
+            Some(name) => Some(self.scoped_name(&name, true)),
+            None => n.name.clone().map(|nm| self.scoped_name(&nm, false)),
+        };
         if let Some(name) = &name {
             if self.names.contains(name) {
                 self.error("G0044", n.line, format!("node name `{name}` is used twice"));
@@ -764,7 +922,15 @@ impl<'a> Compiler<'a> {
         }
         if let Some(i) = instance {
             let params: Vec<String> = self.scopes.last().map(|s| s.keys().cloned().collect()).unwrap_or_default();
-            all_props.extend(i.props.iter().filter(|p| !params.contains(&p.key)).cloned());
+            let root_takes_on = matches!(self.instance_on.last(), None | Some(None));
+            all_props.extend(i.props.iter().filter(|p| !params.contains(&p.key) && (root_takes_on || !p.key.starts_with("on:"))).cloned());
+        }
+        if signals {
+            if let Some(slot) = self.instance_on.last_mut() {
+                if let Some(props) = slot.take() {
+                    all_props.extend(props);
+                }
+            }
         }
         // Positional size arg: `Button 44x44`.
         for a in n.args.iter().chain(instance.iter().flat_map(|i| i.args.iter())) {
@@ -774,8 +940,13 @@ impl<'a> Compiler<'a> {
                 self.error("G0046", n.line, format!("unexpected value {a:?} on `{}`", n.type_word));
             }
         }
-        for (k, v) in &n.clauses {
-            all_props.push(AstProp { key: k.clone(), value: v.clone(), line: n.line });
+        if !matches!(kind, Kind::Slot | Kind::Repeat) {
+            for (k, v) in &n.clauses {
+                all_props.push(AstProp { key: k.clone(), value: v.clone(), line: n.line });
+            }
+        }
+        if kind == Kind::Slot {
+            tmp.node.auto = self.automatic(n);
         }
 
         let mut placement_props: Vec<Prop> = Vec::new();
@@ -817,6 +988,21 @@ impl<'a> Compiler<'a> {
         for c in &n.children {
             match c {
                 AstItem::Node(c) if c.type_word == "when" || c.type_word == "transition" || c.type_word == "theme" => {}
+                AstItem::Node(c) if c.type_word == "slot" => self.slot_child(c, kind, &mut tmp.children),
+                // `choice { Radio … }` is erased: the Radios parent flat
+                // (one group under this node); with no code-behind its
+                // name and `on:change` carry nothing.
+                AstItem::Node(c) if c.type_word == "choice" => {
+                    for item in &c.children {
+                        if let AstItem::Node(k) = item {
+                            let child = self.node(k, Some(kind), None);
+                            tmp.children.push(child);
+                        }
+                    }
+                }
+                // A repeat's template needs items from code; with none, only
+                // its `empty { }` content shows.
+                AstItem::Node(c) if kind == Kind::Repeat && c.type_word != "empty" => {}
                 AstItem::Node(c) => {
                     let child = self.node(c, Some(kind), None);
                     tmp.children.push(child);
@@ -827,6 +1013,116 @@ impl<'a> Compiler<'a> {
             }
         }
         tmp
+    }
+
+    /// `inst/name` inside a widget body (the instance's own name sits one
+    /// scope out).
+    fn scoped_name(&self, name: &str, is_instance: bool) -> String {
+        let depth = if is_instance { self.prefix.len().saturating_sub(1) } else { self.prefix.len() };
+        if depth == 0 {
+            return name.to_string();
+        }
+        format!("{}/{name}", self.prefix[..depth].join("/"))
+    }
+
+    /// `automatic=<kind> by $value in $min..$max` on a slot line, solved
+    /// to a fraction now: nothing writes `$value` at runtime here.
+    fn automatic(&mut self, n: &AstNode) -> Auto {
+        let Some(kind_prop) = n.props.iter().find(|p| p.key == "automatic") else { return Auto::NoAuto };
+        let kind = kind_prop.value.as_ident().unwrap_or("").to_string();
+        let by = n.clauses.iter().find(|(k, _)| k == "by").map(|(_, v)| v.clone());
+        let range = n.clauses.iter().find(|(k, _)| k == "in").map(|(_, v)| v.clone());
+        let num = |c: &mut Self, v: &AstValue| -> f32 {
+            match c.value(v, n.line, None) {
+                Value::VNum(x) => x,
+                _ => 0.0,
+            }
+        };
+        match kind.as_str() {
+            "length" | "position" => {
+                let (Some(by), Some(AstValue::Range(lo, hi))) = (by, range) else {
+                    self.error("G5104", n.line, format!("`automatic={kind}` wants `by $value in $min..$max`"));
+                    return Auto::NoAuto;
+                };
+                let v = num(self, &by);
+                let lo = num(self, &lo);
+                let hi = num(self, &hi);
+                let f = if hi > lo { ((v - lo) / (hi - lo)).clamp(0.0, 1.0) } else { 0.0 };
+                if kind == "length" { Auto::Length(f) } else { Auto::Position(f) }
+            }
+            "presence" => Auto::Presence(false),
+            other => {
+                self.error("G5104", n.line, format!("`automatic={other}`: want length, position or presence"));
+                Auto::NoAuto
+            }
+        }
+    }
+
+    /// Compiles with the innermost widget scope set aside: an instance's
+    /// fill content is written one scope out.
+    fn outer<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let scope = self.scopes.pop();
+        let prefix = self.prefix.pop();
+        let fills = self.fills.pop();
+        let r = f(self);
+        if let Some(s) = scope {
+            self.scopes.push(s);
+        }
+        if let Some(p) = prefix {
+            self.prefix.push(p);
+        }
+        if let Some(f) = fills {
+            self.fills.push(f);
+        }
+        r
+    }
+
+    /// A `slot` line inside a widget body: the default slot splices the
+    /// instance's bare children in place (else its own default content); a
+    /// named region is a real clipped box showing the fill or its default.
+    fn slot_child(&mut self, c: &AstNode, parent_kind: Kind, out: &mut Vec<TmpNode>) {
+        let fills = self.fills.last().cloned();
+        let is_default = c.name.is_none() && c.props.is_empty() && c.clauses.is_empty();
+        if is_default {
+            match fills.filter(|f| !f.default.is_empty()) {
+                Some(f) => {
+                    for item in &f.default {
+                        if let AstItem::Node(k) = item {
+                            let child = self.outer(|me| me.node(k, Some(parent_kind), None));
+                            out.push(child);
+                        }
+                    }
+                }
+                None => {
+                    for item in &c.children {
+                        if let AstItem::Node(k) = item {
+                            let child = self.node(k, Some(parent_kind), None);
+                            out.push(child);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        let fill = fills.and_then(|f| c.name.as_ref().and_then(|n| f.named.get(n).cloned()));
+        match fill {
+            Some(items) => {
+                let mut region = c.clone();
+                region.children.clear();
+                let mut tmp = self.node(&region, Some(parent_kind), None);
+                for item in &items {
+                    if let AstItem::Node(k) = item {
+                        let child = self.outer(|me| me.node(k, Some(Kind::Slot), None));
+                        tmp.children.push(child);
+                    }
+                }
+                out.push(tmp);
+            }
+            None => {
+                let tmp = self.node(c, Some(parent_kind), None);
+                out.push(tmp);
+            }
+        }
     }
 
     /// Lays a temporary tree into the arena: a node, then ALL its direct
@@ -948,10 +1244,6 @@ impl<'a> Compiler<'a> {
 
     fn when(&mut self, w: &AstNode, kind: Kind) -> Option<WhenTmp> {
         let state = self.state_word(w, false)?;
-        if state == State::Held && !kind.is_press_surface() {
-            self.error("G0053", w.line, format!("`when held` needs a press surface (a Button, Check, Toggle, Radio), not `{kind:?}`"));
-            return None;
-        }
         let mut props = Vec::new();
         let mut descendants = Vec::new();
         let mut lines: Vec<AstProp> = w.props.clone();
@@ -963,7 +1255,7 @@ impl<'a> Compiler<'a> {
             }
         }
         for p in &lines {
-            if let Some((node_name, prop_name)) = p.key.rsplit_once('.') {
+            if let Some((node_name, prop_name)) = split_target(&p.key) {
                 let ap = AstProp { key: prop_name.to_string(), value: p.value.clone(), line: p.line };
                 if let Some(prop) = self.prop(&ap, Kind::Custom) {
                     descendants.push((node_name.to_string(), prop));
@@ -972,7 +1264,7 @@ impl<'a> Compiler<'a> {
                 props.push(prop);
             }
         }
-        Some(WhenTmp { state, props, descendants })
+        Some(WhenTmp { state, props, descendants, host: false })
     }
 
     // ----- placement ------------------------------------------------------
@@ -1034,6 +1326,28 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// One margin/padding edge: a number, or `safe` (the host's inset for
+    /// that edge, read at layout time).
+    fn edge(&mut self, v: Value, line: u32, key: &str, p: &mut Placement, i: usize, margin: bool) {
+        if let Value::VIdent(id) = v {
+            if self.page.str(id) == "safe" {
+                if margin {
+                    p.margin[i] = Some(0.0);
+                    p.margin_safe[i] = true;
+                } else {
+                    p.padding_safe[i] = true;
+                }
+                return;
+            }
+        }
+        let n = self.num(v, line, key);
+        if margin {
+            p.margin[i] = Some(n);
+        } else {
+            p.padding[i] = n;
+        }
+    }
+
     fn placement(&mut self, props: &[Prop], line: u32, parent: Option<Kind>, kind: Kind) -> Placement {
         let mut p = Placement::DEFAULT;
         for prop in props {
@@ -1053,20 +1367,26 @@ impl<'a> Compiler<'a> {
                 },
                 PropKey::Halign => p.halign = self.align(v, line, "halign"),
                 PropKey::Valign => p.valign = self.align(v, line, "valign"),
-                PropKey::MarginLeft => p.margin[0] = Some(self.num(v, line, "margin_left")),
-                PropKey::MarginTop => p.margin[1] = Some(self.num(v, line, "margin_top")),
-                PropKey::MarginRight => p.margin[2] = Some(self.num(v, line, "margin_right")),
-                PropKey::MarginBottom => p.margin[3] = Some(self.num(v, line, "margin_bottom")),
-                PropKey::Margin => {
-                    let m = self.num(v, line, "margin");
-                    p.margin = [Some(m); 4];
-                }
-                PropKey::PaddingLeft => p.padding[0] = self.num(v, line, "padding_left"),
-                PropKey::PaddingTop => p.padding[1] = self.num(v, line, "padding_top"),
-                PropKey::PaddingRight => p.padding[2] = self.num(v, line, "padding_right"),
-                PropKey::PaddingBottom => p.padding[3] = self.num(v, line, "padding_bottom"),
+                PropKey::MarginLeft => self.edge(v, line, "margin_left", &mut p, 0, true),
+                PropKey::MarginTop => self.edge(v, line, "margin_top", &mut p, 1, true),
+                PropKey::MarginRight => self.edge(v, line, "margin_right", &mut p, 2, true),
+                PropKey::MarginBottom => self.edge(v, line, "margin_bottom", &mut p, 3, true),
+                PropKey::Margin => match v {
+                    Value::VIdent(id) if self.page.str(id) == "safe" => {
+                        p.margin = [Some(0.0); 4];
+                        p.margin_safe = [true; 4];
+                    }
+                    _ => {
+                        let m = self.num(v, line, "margin");
+                        p.margin = [Some(m); 4];
+                    }
+                },
+                PropKey::PaddingLeft => self.edge(v, line, "padding_left", &mut p, 0, false),
+                PropKey::PaddingTop => self.edge(v, line, "padding_top", &mut p, 1, false),
+                PropKey::PaddingRight => self.edge(v, line, "padding_right", &mut p, 2, false),
+                PropKey::PaddingBottom => self.edge(v, line, "padding_bottom", &mut p, 3, false),
                 PropKey::Padding => match v {
-                    Value::VIdent(id) if self.page.str(id) == "safe" => p.padding_safe = true,
+                    Value::VIdent(id) if self.page.str(id) == "safe" => p.padding_safe = [true; 4],
                     _ => p.padding = [self.num(v, line, "padding"); 4],
                 },
                 PropKey::Size => {
@@ -1156,7 +1476,7 @@ impl<'a> Compiler<'a> {
                     self.error("G0054", line, "a top-level `when` block holds `node.prop = value` lines");
                     continue;
                 };
-                let Some((node_name, prop_name)) = key.rsplit_once('.') else {
+                let Some((node_name, prop_name)) = split_target(key) else {
                     self.error("G0059", *l, format!("`{key}` — write `node.prop = value`"));
                     continue;
                 };
@@ -1169,7 +1489,7 @@ impl<'a> Compiler<'a> {
                 if let Some(prop) = self.prop(&ap, kind) {
                     match self.node_whens[id as usize].iter_mut().find(|w| w.state == state) {
                         Some(w) => w.props.push(prop),
-                        None => self.node_whens[id as usize].push(WhenTmp { state, props: vec![prop], descendants: Vec::new() }),
+                        None => self.node_whens[id as usize].push(WhenTmp { state, props: vec![prop], descendants: Vec::new(), host: false }),
                     }
                 }
             }
@@ -1181,9 +1501,13 @@ impl<'a> Compiler<'a> {
             for w in list.iter_mut() {
                 for (name, prop) in std::mem::take(&mut w.descendants) {
                     let end = self.page.nodes[owner].subtree_end as usize;
-                    let target = (owner + 1..end).find(|i| self.page.nodes[*i].name != NO_STR && self.page.str(self.page.nodes[*i].name) == name);
+                    // Widget-body names carry their instance prefix (`inst/name`).
+                    let target = (owner + 1..end).find(|i| {
+                        let full = if self.page.nodes[*i].name != NO_STR { self.page.str(self.page.nodes[*i].name) } else { "" };
+                        full == name || full.rsplit('/').next() == Some(name.as_str())
+                    });
                     match target {
-                        Some(t) => moved.push((t, WhenTmp { state: w.state, props: vec![prop], descendants: Vec::new() })),
+                        Some(t) => moved.push((t, WhenTmp { state: w.state, props: vec![prop], descendants: Vec::new(), host: w.host })),
                         None => {
                             let line = self.page.nodes[owner].line;
                             self.error("G0060", line, format!("`when … {name}.…`: no node named `{name}` under this one"));
@@ -1192,15 +1516,29 @@ impl<'a> Compiler<'a> {
                 }
             }
         }
-        let mut of: Vec<Vec<NodeId>> = whens.iter().map(|l| vec![NO_NODE; l.len()]).collect();
+        let mut of: Vec<Vec<NodeId>> = whens.iter().map(|l| l.iter().map(|w| if w.host { HOST_PENDING } else { NO_NODE }).collect()).collect();
         for (target, w) in moved {
             // The owner is the node whose subtree held the response: found by walking up until the state is theirs.
             let mut owner = self.page.nodes[target].parent;
             while owner != NO_NODE && !self.page.nodes[owner as usize].kind.is_press_surface() && self.page.nodes[owner as usize].parent != NO_NODE {
                 owner = self.page.nodes[owner as usize].parent;
             }
+            let host = w.host;
             whens[target].push(w);
-            of[target].push(owner);
+            of[target].push(if host { HOST_PENDING } else { owner });
+        }
+        // `for=` widget responses watch the hosting control (the nearest
+        // press surface above).
+        for i in 0..of.len() {
+            for j in 0..of[i].len() {
+                if of[i][j] == HOST_PENDING {
+                    let mut a = self.page.nodes[i].parent;
+                    while a != NO_NODE && !self.page.nodes[a as usize].kind.is_press_surface() {
+                        a = self.page.nodes[a as usize].parent;
+                    }
+                    of[i][j] = a;
+                }
+            }
         }
         // Whens pool, contiguous per node.
         for (i, list) in whens.into_iter().enumerate() {
@@ -1316,9 +1654,7 @@ mod tests {
     fn removed_words_and_retired_spellings_are_errors() {
         assert!(codes("View v { Border b }").contains(&"G7010".to_string()));
         assert!(codes("View v { Panel p width=host }").contains(&"G0055".to_string()));
-        assert!(codes("View v { Button b signals }").contains(&"G0043".to_string()));
         assert!(codes("View v { Button b on:pressed=x }").contains(&"G0049".to_string()));
-        assert!(codes("View v { Panel p interactive=true }").contains(&"G0040".to_string()));
         assert!(codes("Column c { Label a }").contains(&"G7003".to_string()));
         assert!(codes("View v { Label a text=\"x\"/k; Label b text=\"y\"/k }").contains(&"G8001".to_string()));
         assert!(codes("View v { Label a color=$nothing }").contains(&"G9001".to_string()));

@@ -236,6 +236,8 @@ pub struct Resolved {
     pub safe: [f32; 4],
     /// Per node: the motion channels the draw walk applies.
     pub motion: Vec<Motion>,
+    /// Per node: the `seat` socket it sits in (`NO_NODE` = its declared home).
+    pub seat: Vec<NodeId>,
 }
 
 impl Resolved {
@@ -254,11 +256,18 @@ impl Resolved {
     }
 
     pub fn color(&self, page: &Page, node: NodeId, key: PropKey) -> Option<Rgba> {
-        match self.prop(page, node, key)? {
-            Value::VColor(c) => Some(c),
-            Value::VStop { color, .. } => Some(color),
-            _ => None,
+        let mut c = match self.prop(page, node, key)? {
+            Value::VColor(c) => c,
+            Value::VStop { color, .. } => color,
+            _ => return None,
+        };
+        // `color.a = 0.5` in a `when`: the fill keeps its hue, alpha alone moves.
+        if key == PropKey::Color {
+            if let Some(Value::VNum(a)) = self.overrides.iter().rev().find(|(n, p)| *n == node && p.key == PropKey::ColorA).map(|(_, p)| p.value) {
+                c = c.with_opacity(a);
+            }
         }
+        Some(c)
     }
 
     pub fn num(&self, page: &Page, node: NodeId, key: PropKey) -> Option<f32> {
@@ -313,9 +322,23 @@ impl Resolved {
         }
     }
 
-    /// `visibility=gone` — out of layout.
+    /// `visibility=gone` — out of layout. An `automatic=presence` slot
+    /// whose state is off is gone too.
     pub fn gone(&self, page: &Page, node: NodeId) -> bool {
+        if page.nodes[node as usize].auto == Auto::Presence(false) {
+            return true;
+        }
         self.ident(page, node, PropKey::Visibility) == Some("gone")
+    }
+
+    /// The nodes laid out and drawn under `id`: its own children that no
+    /// `when` seated elsewhere, plus whoever is seated here.
+    pub fn children(&self, page: &Page, id: NodeId) -> Vec<NodeId> {
+        let mut out: Vec<NodeId> = page.children(id).map(|i| i as NodeId).filter(|c| self.seat.get(*c as usize).copied().unwrap_or(NO_NODE) == NO_NODE).collect();
+        if page.nodes[id as usize].kind == Kind::Seat {
+            out.extend(self.seat.iter().enumerate().filter(|(_, s)| **s == id).map(|(i, _)| i as NodeId));
+        }
+        out
     }
 
     /// `visibility=hidden` — laid out, not drawn, no input.
@@ -350,7 +373,7 @@ pub fn deref(page: &Page, variant: StrId, v: Value) -> Value {
 }
 
 pub fn resolve(page: &Page, rt: &Runtime) -> Resolved {
-    let mut r = Resolved { placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: rt.motion.clone() };
+    let mut r = Resolved { placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: rt.motion.clone(), seat: vec![NO_NODE; page.nodes.len()] };
     for (i, node) in page.nodes.iter().enumerate() {
         let id = i as NodeId;
         let mut placement = node.placement;
@@ -376,7 +399,49 @@ pub fn resolve(page: &Page, rt: &Runtime) -> Resolved {
             r.overrides.push((*id, *p));
         }
     }
+    fold_seats_and_motion(page, &mut r);
     r
+}
+
+/// The keys that are not props but placement facts: `x.seat = name`
+/// re-parents for layout, the motion words set the draw transform.
+fn fold_seats_and_motion(page: &Page, r: &mut Resolved) {
+    for i in 0..page.nodes.len() {
+        r.seat[i] = NO_NODE;
+    }
+    for (id, p) in &r.overrides {
+        match p.key {
+            PropKey::SeatOf => {
+                r.seat[*id as usize] = match p.value {
+                    Value::VIdent(name) if page.str(name) == "home" => NO_NODE,
+                    Value::VIdent(name) => page.find(page.str(name)).unwrap_or(NO_NODE),
+                    _ => NO_NODE,
+                };
+            }
+            PropKey::Scale | PropKey::ScaleX | PropKey::ScaleY | PropKey::TranslateX | PropKey::TranslateY | PropKey::Rotate => {
+                let Value::VNum(n) = p.value else { continue };
+                let m = &mut r.motion[*id as usize];
+                match p.key {
+                    PropKey::Scale => m.scale = [n, n],
+                    PropKey::ScaleX => m.scale[0] = n,
+                    PropKey::ScaleY => m.scale[1] = n,
+                    PropKey::TranslateX => m.translate[0] = n,
+                    PropKey::TranslateY => m.translate[1] = n,
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A motion key's value when no response holds it: the identity.
+fn motion_default(key: PropKey) -> Option<Value> {
+    match key {
+        PropKey::Scale | PropKey::ScaleX | PropKey::ScaleY => Some(Value::VNum(1.0)),
+        PropKey::TranslateX | PropKey::TranslateY | PropKey::Rotate => Some(Value::VNum(0.0)),
+        _ => None,
+    }
 }
 
 /// A posed size key behaves as if the file had declared it (D249).
@@ -451,6 +516,12 @@ const ANIMATABLE: &[PropKey] = &[
     PropKey::PaddingTop,
     PropKey::PaddingRight,
     PropKey::PaddingBottom,
+    PropKey::ColorA,
+    PropKey::Scale,
+    PropKey::ScaleX,
+    PropKey::ScaleY,
+    PropKey::TranslateX,
+    PropKey::TranslateY,
 ];
 
 /// A placement field as a prop value (`None` where the file did not speak).
@@ -518,9 +589,9 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
             let id = i as NodeId;
             let _ = node;
             for key in ANIMATABLE {
-                let target = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key) };
+                let target = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)) };
                 let Some(target) = target else { continue };
-                let current = rt.tweens.iter().find(|t| t.node == id && t.key == *key).map(|t| t.value()).or_else(|| rt.last.iter().find(|(n, p)| *n == id && p.key == *key).map(|(_, p)| p.value));
+                let current = rt.tweens.iter().find(|t| t.node == id && t.key == *key).map(|t| t.value()).or_else(|| rt.last.iter().find(|(n, p)| *n == id && p.key == *key).map(|(_, p)| p.value)).or_else(|| motion_default(*key));
                 let Some(current) = current else { continue };
                 if current == target {
                     continue;
@@ -561,12 +632,13 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
             r.overrides.push((t.node, Prop { key: t.key, value: v }));
         }
     }
+    fold_seats_and_motion(page, &mut r);
     // Remember what is displayed now.
     rt.last.clear();
     for i in 0..page.nodes.len() {
         let id = i as NodeId;
         for key in ANIMATABLE {
-            let v = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key) };
+            let v = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)) };
             if let Some(v) = v {
                 rt.last.push((id, Prop { key: *key, value: v }));
             }

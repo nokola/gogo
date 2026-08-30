@@ -45,8 +45,29 @@ pub enum Kind {
     GridRow,
     /// `skip` inside a Grid row.
     Skip,
+    /// A widget's named `slot` region: a free, clipped box the instance
+    /// fills (or that shows its default content).
+    Slot,
+    /// `seat <name>` — an empty socket a `when` moves a node into.
+    Seat,
+    /// A repeat's `empty { }` content (shown with no items — always, here).
+    Empty,
     /// A widget instance whose body was not expanded (unknown type).
     Custom,
+}
+
+/// `automatic=` on a slot line, solved at compile time (no code-behind
+/// drives `$value`, so the fraction is a number): the geometry a value
+/// displays.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Auto {
+    NoAuto,
+    /// Main-axis extent = fraction of the host.
+    Length(f32),
+    /// Seated along the main axis at the fraction (own width from content).
+    Position(f32),
+    /// Content exists iff the named state holds.
+    Presence(bool),
 }
 
 impl Kind {
@@ -80,6 +101,9 @@ impl Kind {
             "gap" => Kind::Gap,
             "row" => Kind::GridRow,
             "skip" => Kind::Skip,
+            "slot" => Kind::Slot,
+            "seat" => Kind::Seat,
+            "empty" => Kind::Empty,
             _ => return None,
         })
     }
@@ -111,7 +135,7 @@ impl Kind {
 
     /// Children place freely (halign/valign + margins).
     pub fn is_free(self) -> bool {
-        matches!(self, Kind::View | Kind::Layers | Kind::Panel | Kind::Button | Kind::ListItem)
+        matches!(self, Kind::View | Kind::Layers | Kind::Panel | Kind::Button | Kind::ListItem | Kind::Slot | Kind::Seat | Kind::Empty)
     }
 
     /// A press surface: `held` / `activate` live here.
@@ -157,8 +181,10 @@ pub struct Placement {
     pub margin: [Option<f32>; 4],
     /// left, top, right, bottom — air inside the node's own box.
     pub padding: [f32; 4],
-    /// `padding=safe`: the platform's safe-area insets are added.
-    pub padding_safe: bool,
+    /// Per edge: `padding_<edge>=safe` — the platform's inset is added.
+    pub padding_safe: [bool; 4],
+    /// Per edge: `margin_<edge>=safe`.
+    pub margin_safe: [bool; 4],
 }
 
 impl Placement {
@@ -175,7 +201,8 @@ impl Placement {
         max_height_fill: false,
         margin: [None; 4],
         padding: [0.0; 4],
-        padding_safe: false,
+        padding_safe: [false; 4],
+        margin_safe: [false; 4],
     };
 }
 
@@ -200,7 +227,8 @@ pub enum PropKey {
     Opacity,
     Visibility,
     Disabled,
-    Src,
+    /// `source=` on an Image: the file, `res://…`.
+    Source,
     IconName,
     Value,
     Min,
@@ -216,13 +244,49 @@ pub enum PropKey {
     Allow,
     Bars,
     ToggleMode,
-    Selected,
-    Fill,
+    /// `selected=true` (Check/Toggle/Radio). Named apart from `State::Selected`: the codegen glob-imports both enums.
+    SelectedProp,
+    /// `fill=linear|radial` on a Gradient (apart from `Len::Fill`).
+    GradientFill,
     Stops,
     Angle,
     Aspect,
     /// Font file key (`font="assets/Fonts/Roboto Light.ttf"`), inherited down the tree.
     Font,
+    /// Text color (`font_color=`), the text half of `background=`.
+    FontColor,
+    /// `color.a` — a Rectangle/Circle fill's alpha alone (whens/anims).
+    ColorA,
+    ClipText,
+    ClipContents,
+    /// Tiles cell props.
+    Span,
+    FullRow,
+    /// Accepted for parity with the Godot files; nothing here reads them
+    /// (lint silencers, lazy decode, list selection mode, backend pick).
+    Loading,
+    TouchTarget,
+    TapPulse,
+    AccessibilityName,
+    KeyboardTarget,
+    Select,
+    Render,
+    Step,
+    IconSrc,
+    Automatic,
+    /// `x.seat = <name>` in a `when`: the socket the node moves into (apart from `Kind::Seat`).
+    SeatOf,
+    /// `overlay=true`: the box sits on its parent without sizing it.
+    Overlay,
+    /// `interactive=true/false`: claims input / hit-invisible (no restyle).
+    Interactive,
+    /// Motion words as standing `when` responses.
+    Scale,
+    ScaleX,
+    ScaleY,
+    TranslateX,
+    TranslateY,
+    Rotate,
     /// Placement keys, so `when` blocks can carry them.
     Width,
     Height,
@@ -261,7 +325,7 @@ impl PropKey {
             "opacity" => PropKey::Opacity,
             "visibility" => PropKey::Visibility,
             "disabled" => PropKey::Disabled,
-            "src" => PropKey::Src,
+            "source" => PropKey::Source,
             "name" => PropKey::IconName,
             "value" => PropKey::Value,
             "min" => PropKey::Min,
@@ -277,12 +341,38 @@ impl PropKey {
             "allow" => PropKey::Allow,
             "bars" => PropKey::Bars,
             "toggle" => PropKey::ToggleMode,
-            "selected" => PropKey::Selected,
-            "fill" => PropKey::Fill,
+            "selected" => PropKey::SelectedProp,
+            "fill" => PropKey::GradientFill,
             "stops" => PropKey::Stops,
             "angle" => PropKey::Angle,
             "aspect" => PropKey::Aspect,
             "font" => PropKey::Font,
+            "font_color" => PropKey::FontColor,
+            "color.a" => PropKey::ColorA,
+            "modulate.a" => PropKey::Opacity,
+            "clip_text" => PropKey::ClipText,
+            "clip_contents" => PropKey::ClipContents,
+            "span" => PropKey::Span,
+            "full_row" => PropKey::FullRow,
+            "loading" => PropKey::Loading,
+            "touch_target" => PropKey::TouchTarget,
+            "tap_pulse" => PropKey::TapPulse,
+            "accessibility_name" => PropKey::AccessibilityName,
+            "keyboard_target" => PropKey::KeyboardTarget,
+            "select" => PropKey::Select,
+            "render" => PropKey::Render,
+            "step" => PropKey::Step,
+            "icon" => PropKey::IconSrc,
+            "automatic" => PropKey::Automatic,
+            "seat" => PropKey::SeatOf,
+            "overlay" => PropKey::Overlay,
+            "interactive" => PropKey::Interactive,
+            "scale" => PropKey::Scale,
+            "scale.x" => PropKey::ScaleX,
+            "scale.y" => PropKey::ScaleY,
+            "translate.x" => PropKey::TranslateX,
+            "translate.y" => PropKey::TranslateY,
+            "rotate" => PropKey::Rotate,
             "width" => PropKey::Width,
             "height" => PropKey::Height,
             "min_width" => PropKey::MinWidth,
@@ -501,6 +591,8 @@ pub struct Node {
     /// `gap` value: fixed epx, or weight when `gap_fill`.
     pub gap: f32,
     pub gap_fill: bool,
+    /// A slot region's `automatic=` coupling.
+    pub auto: Auto,
     pub line: u32,
 }
 
@@ -518,6 +610,7 @@ impl Node {
         handlers: (0, 0),
         gap: 0.0,
         gap_fill: false,
+        auto: Auto::NoAuto,
         line: 0,
     };
 }

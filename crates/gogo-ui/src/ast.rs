@@ -14,6 +14,8 @@ pub enum AstValue {
     Size { w: Option<f32>, h: Option<f32> },
     Call { name: String, args: Vec<AstValue> },
     List(Vec<AstValue>),
+    /// `a..b` (`in $min..$max`).
+    Range(Box<AstValue>, Box<AstValue>),
 }
 
 impl AstValue {

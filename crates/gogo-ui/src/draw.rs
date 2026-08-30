@@ -14,6 +14,14 @@ pub enum TextAlign {
     End,
 }
 
+/// `fit=` on an Image: how the bitmap maps into the node's own rect.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fit {
+    Contain,
+    Cover,
+    Distort,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GradientKind {
     Linear,
@@ -25,7 +33,7 @@ pub enum Draw {
     Quad { rect: Rect, color: Rgba, corner: f32, border: f32, border_color: Rgba },
     Circle { rect: Rect, color: Rgba, border: f32, border_color: Rgba },
     /// `image` is the `src` string id; the renderer maps it to a texture.
-    Image { rect: Rect, image: StrId, tint: Rgba },
+    Image { rect: Rect, image: StrId, tint: Rgba, fit: Fit },
     /// Two-stop gradient (first/last stop) — the renderer's G5 form.
     Gradient { rect: Rect, kind: GradientKind, from: Rgba, to: Rgba, angle: f32 },
     /// `text`/`key`: the English literal and its translation key.
@@ -73,9 +81,22 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     let corner = res.num(page, id, PropKey::CornerRadius).unwrap_or(0.0);
     let border = res.num(page, id, PropKey::BorderThickness).unwrap_or(0.0);
     let border_color = color(PropKey::BorderColor).unwrap_or(Rgba::TRANSPARENT);
+    let text_color = || color(PropKey::FontColor).or_else(|| color(PropKey::Color)).unwrap_or(mul_alpha(DEFAULT_TEXT_COLOR, opacity));
+    // Text sits inside the node's padding and border (WPF Padding).
+    let pad = res.placement[id as usize].padding;
+    let text_rect = rect.inset(pad[0] + border, pad[1] + border, pad[2] + border, pad[3] + border);
+    // A templated Check/Radio/Toggle (a body of its own) is a blank toggle
+    // surface: no chrome unless the file paints it (D142/D144).
+    let templated = node.kind.is_press_surface() && node.kind != Kind::Button && node.children.1 > 0;
+    // Scroll viewports and slot regions clip; so does `clip_contents=true`,
+    // and a Label with `clip_text=true` cuts its own text.
+    let clip = matches!(node.kind, Kind::Scroll | Kind::Slot) || res.bool(page, id, PropKey::ClipContents).unwrap_or(false) || (node.kind == Kind::Label && res.bool(page, id, PropKey::ClipText).unwrap_or(false));
+    if clip {
+        out.push(Draw::ClipPush(rect));
+    }
 
     match node.kind {
-        Kind::View | Kind::Panel | Kind::ListItem => {
+        Kind::View | Kind::Panel | Kind::ListItem | Kind::Slot => {
             // The plate: View/Panel start on the blank slate — transparent
             // unless the file speaks `background=`.
             if let Some(bg) = color(PropKey::Background) {
@@ -85,15 +106,19 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             }
         }
         Kind::Button | Kind::Check | Kind::Toggle | Kind::Radio => {
-            let bg = color(PropKey::Background).unwrap_or(mul_alpha(DEFAULT_BUTTON_BACKGROUND, opacity));
-            out.push(Draw::Quad { rect, color: bg, corner, border, border_color });
+            let bg = color(PropKey::Background).or_else(|| if templated { None } else { Some(mul_alpha(DEFAULT_BUTTON_BACKGROUND, opacity)) });
+            if let Some(bg) = bg {
+                out.push(Draw::Quad { rect, color: bg, corner, border, border_color });
+            } else if border > 0.0 {
+                out.push(Draw::Quad { rect, color: Rgba::TRANSPARENT, corner, border, border_color });
+            }
             if let Some(Value::VText { text, key }) = res.prop(page, id, PropKey::Text) {
                 out.push(Draw::Text {
-                    rect,
+                    rect: text_rect,
                     text,
                     key,
                     font_size: res.num(page, id, PropKey::FontSize).unwrap_or(DEFAULT_FONT_SIZE),
-                    color: color(PropKey::Color).unwrap_or(mul_alpha(DEFAULT_TEXT_COLOR, opacity)),
+                    color: text_color(),
                     halign: text_align(page, res, id, PropKey::TextHalign, TextAlign::Center),
                     valign: text_align(page, res, id, PropKey::TextValign, TextAlign::Center),
                     wrap: false,
@@ -118,31 +143,36 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             };
             let from = stops.first().and_then(stop_color).unwrap_or(Rgba::TRANSPARENT);
             let to = stops.last().and_then(stop_color).unwrap_or(from);
-            let kind = match res.ident(page, id, PropKey::Fill) {
+            let kind = match res.ident(page, id, PropKey::GradientFill) {
                 Some("radial") => GradientKind::Radial,
                 _ => GradientKind::Linear,
             };
             out.push(Draw::Gradient { rect, kind, from: mul_alpha(from, opacity), to: mul_alpha(to, opacity), angle: res.num(page, id, PropKey::Angle).unwrap_or(0.0) });
         }
         Kind::Image | Kind::Icon => {
-            let src = match res.prop(page, id, if node.kind == Kind::Image { PropKey::Src } else { PropKey::IconName }) {
+            let src = match res.prop(page, id, if node.kind == Kind::Image { PropKey::Source } else { PropKey::IconName }) {
                 Some(Value::VText { text, .. }) => text,
                 Some(Value::VIdent(id)) => id,
                 _ => NO_STR,
             };
             if src != NO_STR {
                 let tint = color(PropKey::Color).unwrap_or(mul_alpha(Rgba([255, 255, 255, 255]), opacity));
-                out.push(Draw::Image { rect, image: src, tint });
+                let fit = match res.ident(page, id, PropKey::Fit) {
+                    Some("cover") => Fit::Cover,
+                    Some("distort") => Fit::Distort,
+                    _ => Fit::Contain,
+                };
+                out.push(Draw::Image { rect, image: src, tint, fit });
             }
         }
         Kind::Label => {
             if let Some(Value::VText { text, key }) = res.prop(page, id, PropKey::Text) {
                 out.push(Draw::Text {
-                    rect,
+                    rect: text_rect,
                     text,
                     key,
                     font_size: res.num(page, id, PropKey::FontSize).unwrap_or(DEFAULT_FONT_SIZE),
-                    color: color(PropKey::Color).unwrap_or(mul_alpha(DEFAULT_TEXT_COLOR, opacity)),
+                    color: text_color(),
                     halign: text_align(page, res, id, PropKey::TextHalign, TextAlign::Start),
                     valign: text_align(page, res, id, PropKey::TextValign, TextAlign::Start),
                     wrap: res.bool(page, id, PropKey::Wrap).unwrap_or(false),
@@ -165,19 +195,16 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             out.push(Draw::Circle { rect: Rect::new(rect.x + (rect.w - thumb) * t, rect.y + rect.h / 2.0 - thumb / 2.0, thumb, thumb), color: fill, border: 0.0, border_color: Rgba::TRANSPARENT });
         }
         Kind::Input => {
-            let bg = color(PropKey::Background).unwrap_or(mul_alpha(Rgba([0x2B, 0x2B, 0x2B, 0xFF]), opacity));
-            out.push(Draw::Quad { rect, color: bg, corner, border: border.max(1.0), border_color: if border > 0.0 { border_color } else { mul_alpha(Rgba([0x7F, 0x7F, 0x7F, 0xFF]), opacity) } });
+            // Godot's default LineEdit plate: (0.1, 0.1, 0.1) at 0.6, no border.
+            let bg = color(PropKey::Background).unwrap_or(mul_alpha(Rgba([0x1A, 0x1A, 0x1A, 0x99]), opacity));
+            out.push(Draw::Quad { rect, color: bg, corner, border, border_color });
             if let Some(Value::VText { text, key }) = res.prop(page, id, PropKey::Text) {
-                out.push(Draw::Text { rect: rect.inset(8.0, 0.0, 8.0, 0.0), text, key, font_size: res.num(page, id, PropKey::FontSize).unwrap_or(DEFAULT_FONT_SIZE), color: color(PropKey::Color).unwrap_or(mul_alpha(DEFAULT_TEXT_COLOR, opacity)), halign: TextAlign::Start, valign: TextAlign::Center, wrap: false, font: res.font(page, id).unwrap_or(NO_STR) });
+                out.push(Draw::Text { rect: text_rect.inset(8.0, 0.0, 8.0, 0.0), text, key, font_size: res.num(page, id, PropKey::FontSize).unwrap_or(DEFAULT_FONT_SIZE), color: text_color(), halign: TextAlign::Start, valign: TextAlign::Center, wrap: false, font: res.font(page, id).unwrap_or(NO_STR) });
             }
         }
         _ => {}
     }
 
-    let clip = node.kind == Kind::Scroll;
-    if clip {
-        out.push(Draw::ClipPush(rect));
-    }
     if motion.translate != [0.0, 0.0] || motion.scale != [1.0, 1.0] {
         // Children move with their parent: shift their rects by the same
         // transform (scale about this node's center).
@@ -187,12 +214,24 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             let r = rects[i];
             moved_rects[i] = Rect::new(cx + (r.x - cx) * motion.scale[0] + motion.translate[0], cy + (r.y - cy) * motion.scale[1] + motion.translate[1], r.w * motion.scale[0], r.h * motion.scale[1]);
         }
-        for c in page.children(id) {
-            walk(page, res, &moved_rects, c as NodeId, opacity, out);
+        for c in res.children(page, id) {
+            walk(page, res, &moved_rects, c, opacity, out);
         }
     } else {
-        for c in page.children(id) {
-            walk(page, res, rects, c as NodeId, opacity, out);
+        for c in res.children(page, id) {
+            walk(page, res, rects, c, opacity, out);
+        }
+    }
+    if node.kind == Kind::Scroll {
+        // Godot's auto scroll bar: a gray grabber in the right column, as
+        // long as the viewport's share of the content.
+        let content_h = res.children(page, id).iter().map(|c| rects[*c as usize].h).fold(0.0, f32::max);
+        if content_h > rect.h && res.ident(page, id, PropKey::Bars) != Some("never") {
+            let track = rect.h;
+            let len = (track * rect.h / content_h).max(8.0);
+            let offset = res.scroll.get(id as usize).map(|s| s[1]).unwrap_or(0.0);
+            let y = rect.y + (track - len) * (offset / (content_h - rect.h)).clamp(0.0, 1.0);
+            out.push(Draw::Quad { rect: Rect::new(rect.right() - crate::layout::SCROLL_BAR_EPX, y + 1.0, crate::layout::SCROLL_BAR_EPX, len - 1.0), color: mul_alpha(Rgba([0x6F, 0x6F, 0x6F, 0xFF]), opacity), corner: 0.0, border: 0.0, border_color: Rgba::TRANSPARENT });
         }
     }
     if clip {
@@ -218,7 +257,10 @@ pub fn hit(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: boo
             continue;
         }
         let node = &page.nodes[i];
-        let takes_input = any || node.kind.is_press_surface() || node.handlers.1 > 0 || matches!(node.kind, Kind::Scroll | Kind::Slider | Kind::Input);
+        // `interactive=true` claims input (the catcher plate), `false`
+        // makes a control hit-invisible; else press surfaces and handlers.
+        let interactive = res.bool(page, id, PropKey::Interactive);
+        let takes_input = any || interactive == Some(true) || (interactive != Some(false) && (node.kind.is_press_surface() || node.handlers.1 > 0 || matches!(node.kind, Kind::Scroll | Kind::Slider | Kind::Input)));
         if !takes_input {
             continue;
         }

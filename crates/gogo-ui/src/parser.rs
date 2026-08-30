@@ -7,7 +7,7 @@ use crate::lexer::{Tok, Token, lex};
 
 /// Reserved words that are never a node name.
 const FLAGS: &[&str] = &["signals"];
-const CLAUSES: &[&str] = &["as", "by"];
+const CLAUSES: &[&str] = &["as", "by", "in"];
 
 pub fn parse(source: &str, diags: &mut Vec<Diagnostic>) -> Document {
     let tokens = lex(source, diags);
@@ -170,6 +170,9 @@ impl<'a> Parser<'a> {
                     }
                     continue;
                 }
+                Tok::Newline if self.continues_after_name(&node) => {
+                    self.skip_newlines();
+                }
                 Tok::Newline | Tok::Eof | Tok::RBrace => break,
                 Tok::LBrace => {
                     self.pos += 1;
@@ -219,7 +222,7 @@ impl<'a> Parser<'a> {
                         node.flags.push(word);
                     } else if *self.peek() == Tok::LParen {
                         node.args.push(self.call(word));
-                    } else if node.name.is_none() && node.args.is_empty() && node.props.is_empty() && opacity.is_none() && pos.is_none() && !is_value_word(&word) {
+                    } else if node.name.is_none() && node.args.is_empty() && node.props.is_empty() && opacity.is_none() && pos.is_none() && !is_value_word(&node.type_word, &word) {
                         // The name: no comma after it (`Button ok .Tool text="x"`).
                         node.name = Some(word);
                         continue;
@@ -266,6 +269,24 @@ impl<'a> Parser<'a> {
         Some(node)
     }
 
+    /// `Layers wheelTouchTarget` alone on its line, members on the next
+    /// (the Godot files write this): the line continues when the next line
+    /// opens with a size or a `key=` member — never with a node type.
+    fn continues_after_name(&self, node: &AstNode) -> bool {
+        if node.name.is_none() || !node.args.is_empty() || !node.props.is_empty() || !node.styles.is_empty() {
+            return false;
+        }
+        let mut i = self.pos;
+        while self.tokens.get(i).map(|t| t.tok == Tok::Newline).unwrap_or(false) {
+            i += 1;
+        }
+        match self.tokens.get(i).map(|t| &t.tok) {
+            Some(Tok::Size { .. }) => true,
+            Some(Tok::Ident { .. }) => self.tokens.get(i + 1).map(|t| t.tok == Tok::Eq).unwrap_or(false),
+            _ => false,
+        }
+    }
+
     fn call(&mut self, name: String) -> AstValue {
         self.pos += 1; // (
         let mut args = Vec::new();
@@ -290,6 +311,16 @@ impl<'a> Parser<'a> {
     }
 
     fn value(&mut self) -> Option<AstValue> {
+        let v = self.value_one()?;
+        if *self.peek() == Tok::DotDot {
+            self.pos += 1;
+            let end = self.value_one()?;
+            return Some(AstValue::Range(Box::new(v), Box::new(end)));
+        }
+        Some(v)
+    }
+
+    fn value_one(&mut self) -> Option<AstValue> {
         let t = self.next();
         Some(match t {
             Tok::Ident { word, opacity, pos } => {
@@ -340,9 +371,10 @@ impl<'a> Parser<'a> {
 }
 
 /// Words that are values, never node names, in a positional slot
-/// (`gap fill`, `transition any`).
-fn is_value_word(word: &str) -> bool {
-    matches!(word, "fill" | "hug" | "any" | "base")
+/// (`gap fill`, `transition any`). `fill`/`hug` are contextual: after a
+/// control type they are a plain name (`Rectangle fill 26x26`).
+fn is_value_word(type_word: &str, word: &str) -> bool {
+    matches!(word, "any" | "base") || (type_word == "gap" && matches!(word, "fill" | "hug"))
 }
 
 fn describe(tok: &Tok) -> String {
@@ -355,6 +387,7 @@ fn describe(tok: &Tok) -> String {
         Tok::Size { .. } => "a size".to_string(),
         Tok::Color { .. } => "a color".to_string(),
         Tok::Arrow => "`->`".to_string(),
+        Tok::DotDot => "`..`".to_string(),
         Tok::Comma => "`,`".to_string(),
         Tok::Eq => "`=`".to_string(),
         Tok::LBrace => "`{`".to_string(),

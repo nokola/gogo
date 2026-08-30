@@ -200,7 +200,8 @@ impl Channel {
             "scale.x" => vec![Channel::ScaleX],
             "scale.y" => vec![Channel::ScaleY],
             "rotate" => vec![Channel::Rotate],
-            "opacity" => vec![Channel::Opacity],
+            // A fill's alpha or the engine's modulate.a both fade the node.
+            "opacity" | "modulate.a" | "color.a" => vec![Channel::Opacity],
             _ => return None,
         })
     }

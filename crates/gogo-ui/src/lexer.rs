@@ -21,6 +21,8 @@ pub enum Tok {
     /// `#RRGGBB[AA]` as bytes, plus suffixes.
     Color { rgba: [u8; 4], opacity: Option<f32>, pos: Option<f32> },
     Arrow,
+    /// `..` — a range (`$min..$max`).
+    DotDot,
     Comma,
     Eq,
     LBrace,
@@ -139,6 +141,10 @@ impl<'a> Lexer<'a> {
                 '"' => self.string(),
                 '#' => self.color(),
                 '$' => self.reference(),
+                '.' if self.peek_at(1) == '.' => {
+                    self.push(Tok::DotDot);
+                    self.pos += 2;
+                }
                 '.' if is_ident_start(self.peek_at(1)) => {
                     self.pos += 1;
                     let word = self.word();

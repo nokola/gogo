@@ -48,6 +48,10 @@ pub trait TextMeasure {
     /// Width and height of `text` at `font_size` epx; wrapped at
     /// `max_width` when given. `font` = the file key from `font=`.
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> (f32, f32);
+    /// A bitmap's own size in pixels, for `aspect=natural` (`None` = unknown).
+    fn image_size(&self, _key: &str) -> Option<(f32, f32)> {
+        None
+    }
 }
 
 /// A fixed-advance fake for tests and headless layout: 0.55 em per char,
@@ -87,6 +91,8 @@ pub const BUTTON_PADDING: [f32; 4] = [12.0, 6.0, 12.0, 6.0];
 pub const SLIDER_HEIGHT: f32 = 32.0;
 pub const INPUT_HEIGHT: f32 = 36.0;
 pub const CHECK_SIZE: (f32, f32) = (48.0, 32.0);
+/// The vertical scroll bar's column (Godot's default theme at 2× is 8 px).
+pub const SCROLL_BAR_EPX: f32 = 4.0;
 pub const ICON_SIZE: f32 = 24.0;
 
 struct Lay<'a> {
@@ -125,14 +131,32 @@ impl<'a> Lay<'a> {
     }
 
     fn visible_children(&self, id: NodeId) -> Vec<NodeId> {
-        self.page.children(id).map(|i| i as NodeId).filter(|c| !self.gone(*c)).collect()
+        self.res.children(self.page, id).into_iter().filter(|c| !self.gone(*c)).collect()
+    }
+
+    /// The children that count toward `id`'s minimum: `overlay=true` boxes
+    /// sit on the parent without sizing it (touch-slop plates, badges).
+    fn sizing_children(&self, id: NodeId) -> Vec<NodeId> {
+        self.visible_children(id).into_iter().filter(|c| !self.res.bool(self.page, *c, PropKey::Overlay).unwrap_or(false)).collect()
+    }
+
+    /// The node's margins with `safe` edges read from the host insets.
+    fn margins(&self, id: NodeId) -> [Option<f32>; 4] {
+        let p = self.placement(id);
+        let mut m = p.margin;
+        for i in 0..4 {
+            if p.margin_safe[i] {
+                m[i] = Some(m[i].unwrap_or(0.0) + self.res.safe[i]);
+            }
+        }
+        m
     }
 
     /// Padding plus border, per edge (left, top, right, bottom).
     fn inner_inset(&self, id: NodeId) -> [f32; 4] {
         let mut pad = self.placement(id).padding;
-        if self.placement(id).padding_safe {
-            for i in 0..4 {
+        for i in 0..4 {
+            if self.placement(id).padding_safe[i] {
                 pad[i] += self.res.safe[i];
             }
         }
@@ -199,7 +223,7 @@ impl<'a> Lay<'a> {
     /// the margins it declares on that axis.
     fn child_extent(&self, child: NodeId, avail_w: Option<f32>) -> (f32, f32) {
         let (w, h) = self.min_size(child, avail_w);
-        let m = self.placement(child).margin;
+        let m = self.margins(child);
         let mw = m[0].unwrap_or(0.0).max(0.0) + m[2].unwrap_or(0.0).max(0.0);
         let mh = m[1].unwrap_or(0.0).max(0.0) + m[3].unwrap_or(0.0).max(0.0);
         (w + mw, h + mh)
@@ -224,12 +248,14 @@ impl<'a> Lay<'a> {
                     w = tw;
                     h = th;
                 }
-                for c in self.visible_children(id) {
+                for c in self.sizing_children(id) {
                     let (cw, ch) = self.child_extent(c, inner_w);
                     w = w.max(cw);
                     h = h.max(ch);
                 }
-                if matches!(node.kind, Kind::Check | Kind::Toggle | Kind::Radio) {
+                // The native check/radio chrome; a templated one (a body)
+                // is a blank surface sized by its body alone.
+                if matches!(node.kind, Kind::Check | Kind::Toggle | Kind::Radio) && node.children.1 == 0 {
                     w += CHECK_SIZE.0;
                     h = h.max(CHECK_SIZE.1);
                 }
@@ -237,10 +263,11 @@ impl<'a> Lay<'a> {
             }
             Kind::Column | Kind::Choice | Kind::List => self.stack_min(id, Axis::Y, inner_w),
             Kind::Row => self.stack_min(id, Axis::X, inner_w),
-            Kind::Flow | Kind::Tiles => self.flow_min(id, inner_w),
-            Kind::View | Kind::Layers | Kind::Panel | Kind::ListItem | Kind::Repeat | Kind::Custom => {
+            Kind::Flow => self.flow_min(id, inner_w),
+            Kind::Tiles => self.tiles_min(id, inner_w),
+            Kind::View | Kind::Layers | Kind::Panel | Kind::ListItem | Kind::Repeat | Kind::Custom | Kind::Slot | Kind::Seat | Kind::Empty => {
                 let (mut w, mut h) = (0.0f32, 0.0f32);
-                for c in self.visible_children(id) {
+                for c in self.sizing_children(id) {
                     let (cw, ch) = self.child_extent(c, inner_w);
                     w = w.max(cw);
                     h = h.max(ch);
@@ -251,7 +278,7 @@ impl<'a> Lay<'a> {
                 let (sx, sy) = self.scroll_axes(id);
                 let p = self.placement(id);
                 let (mut w, mut h) = (0.0f32, 0.0f32);
-                for c in self.visible_children(id) {
+                for c in self.sizing_children(id) {
                     let (cw, ch) = self.child_extent(c, if sx { None } else { inner_w });
                     w = w.max(cw);
                     h = h.max(ch);
@@ -269,7 +296,7 @@ impl<'a> Lay<'a> {
             Kind::Grid => self.grid_min(id, inner_w),
             Kind::GridRow => (0.0, 0.0),
             Kind::Gap | Kind::Skip => (0.0, 0.0),
-            Kind::Image => (0.0, 0.0),
+            Kind::Image => self.image_min(id, avail_w),
             Kind::Icon => (ICON_SIZE, ICON_SIZE),
             Kind::Rectangle | Kind::Circle | Kind::Gradient => (0.0, 0.0),
             Kind::Slider => (0.0, SLIDER_HEIGHT),
@@ -278,9 +305,36 @@ impl<'a> Lay<'a> {
         (cw + inset[0] + inset[2], ch + inset[1] + inset[3])
     }
 
+    /// `aspect=natural` (the bitmap's ratio) or `aspect=<w/h>`: the axis
+    /// the file sized drives, the other follows; with neither, the width
+    /// the parent offers drives (WPF UniformToFill measure).
+    fn image_min(&self, id: NodeId, avail_w: Option<f32>) -> (f32, f32) {
+        let ratio: Option<f32> = match self.res.prop(self.page, id, PropKey::Aspect) {
+            Some(Value::VNum(r)) if r > 0.0 => Some(r),
+            Some(Value::VIdent(word)) if self.page.str(word) == "natural" => {
+                let key = match self.res.prop(self.page, id, PropKey::Source) {
+                    Some(Value::VText { text, .. }) => Some(self.page.str(text)),
+                    _ => None,
+                };
+                key.and_then(|k| self.text.image_size(k)).filter(|(_, h)| *h > 0.0).map(|(w, h)| w / h)
+            }
+            _ => None,
+        };
+        let Some(ratio) = ratio else { return (0.0, 0.0) };
+        let p = self.placement(id);
+        match (p.width, p.height) {
+            (Len::Exact(w), _) => (w, w / ratio),
+            (_, Len::Exact(h)) => (h * ratio, h),
+            _ => match avail_w {
+                Some(w) => (0.0, w / ratio),
+                None => (0.0, 0.0),
+            },
+        }
+    }
+
     fn stack_min(&self, id: NodeId, axis: Axis, inner_w: Option<f32>) -> (f32, f32) {
         let spacing = self.spacing(id);
-        let children = self.visible_children(id);
+        let children = self.sizing_children(id);
         let (mut main, mut cross) = (0.0f32, 0.0f32);
         for (i, c) in children.iter().enumerate() {
             let node = self.node(*c);
@@ -325,13 +379,28 @@ impl<'a> Lay<'a> {
     /// applied) and recurses. `root`: the document root ignores the free-
     /// fill default? No — the root fills its viewport unless it says otherwise.
     fn place(&mut self, id: NodeId, frame: Rect, root: bool) {
-        let p = *self.placement(id);
+        let mut p = *self.placement(id);
+        let m = self.margins(id);
+        // The document root is host-placed: the shell offers the viewport
+        // and the root's own placement words seat the box in it (D189).
+        let _ = root;
+        // An `automatic=` slot: the value picks its extent or its seat
+        // along the host's width (the sliders here are horizontal).
+        let frame = match self.node(id).auto {
+            Auto::Length(f) => Rect::new(frame.x, frame.y, frame.w * f, frame.h),
+            Auto::Position(f) => {
+                let (own_w, _) = self.min_size(id, Some(frame.w));
+                p.width = Len::Hug(1.0);
+                Rect::new(frame.x + (frame.w - own_w) * f, frame.y, own_w, frame.h)
+            }
+            _ => frame,
+        };
         let (min_w, _) = self.min_size(id, Some(frame.w));
-        let (x, w) = free_axis(frame.x, frame.w, p.width, p.halign, p.margin[0], p.margin[2], min_w, p.min_width, p.max_width, p.max_width_fill, root);
+        let (x, w) = free_axis(frame.x, frame.w, p.width, p.halign, m[0], m[2], min_w, p.min_width, p.max_width, p.max_width_fill, root);
         // The height minimum at the width the node actually got (wrap
         // text, Flow rows).
         let (_, min_h) = self.min_size(id, Some(w));
-        let (y, h) = free_axis(frame.y, frame.h, p.height, p.valign, p.margin[1], p.margin[3], min_h, p.min_height, p.max_height, p.max_height_fill, root);
+        let (y, h) = free_axis(frame.y, frame.h, p.height, p.valign, m[1], m[3], min_h, p.min_height, p.max_height, p.max_height_fill, root);
         let rect = Rect::new(x, y, w, h);
         self.rects[id as usize] = rect;
         self.place_children(id, rect);
@@ -344,7 +413,8 @@ impl<'a> Lay<'a> {
         match kind {
             Kind::Column | Kind::Choice | Kind::List => self.place_stack(id, inner, Axis::Y),
             Kind::Row => self.place_stack(id, inner, Axis::X),
-            Kind::Flow | Kind::Tiles => self.place_flow(id, inner),
+            Kind::Flow => self.place_flow(id, inner),
+            Kind::Tiles => self.place_tiles(id, inner),
             Kind::Grid => self.place_grid(id, inner),
             Kind::Scroll => self.place_scroll(id, inner),
             _ => {
@@ -397,7 +467,17 @@ impl<'a> Lay<'a> {
                 cursor += size + spacing;
                 continue;
             }
-            let p = *self.placement(*c);
+            let mut p = *self.placement(*c);
+            // An Image sized on both axes is an exact CENTERED box in a
+            // stack (Godot's shrink_center default for it; spec "Image").
+            if node.kind == Kind::Image && matches!(p.width, Len::Exact(_)) && matches!(p.height, Len::Exact(_)) {
+                if p.halign == Align::AlignUnset {
+                    p.halign = Align::Center;
+                }
+                if p.valign == Align::AlignUnset {
+                    p.valign = Align::Center;
+                }
+            }
             // The cross axis is a free axis; the main axis is the slot.
             let rect = if axis == Axis::Y {
                 let (min_w, _) = self.min_size(*c, Some(inner.w));
@@ -436,9 +516,92 @@ impl<'a> Lay<'a> {
         }
     }
 
+    // ----- tiles -------------------------------------------------------------
+
+    /// The Tiles lattice (D94): unit = width / cols; a cell is `span` units
+    /// (`full_row` = all of them), packed first-fit in declaration order,
+    /// wrapping whole; a row is as tall as its tallest cell.
+    fn tiles_cells(&self, id: NodeId, inner_w: f32) -> (Vec<(NodeId, Rect)>, f32) {
+        let spacing = self.spacing(id);
+        let cols = self.res.num(self.page, id, PropKey::Cols).unwrap_or(1.0).max(1.0) as usize;
+        let unit = ((inner_w - spacing * (cols as f32 - 1.0)) / cols as f32).max(0.0);
+        let mut out: Vec<(NodeId, Rect)> = Vec::new();
+        let mut col = 0usize;
+        let mut y = 0.0f32;
+        let mut row_h = 0.0f32;
+        let mut row_first = 0usize;
+        for c in self.visible_children(id) {
+            let full = self.res.bool(self.page, c, PropKey::FullRow).unwrap_or(false);
+            let span = if full { cols } else { (self.res.num(self.page, c, PropKey::Span).unwrap_or(1.0).max(1.0) as usize).min(cols) };
+            if col + span > cols && col > 0 {
+                y += row_h + spacing;
+                for (_, r) in &mut out[row_first..] {
+                    r.h = row_h;
+                }
+                row_first = out.len();
+                col = 0;
+                row_h = 0.0;
+            }
+            let w = unit * span as f32 + spacing * (span as f32 - 1.0);
+            let (_, h) = self.min_size(c, Some(w));
+            let x = (unit + spacing) * col as f32;
+            out.push((c, Rect::new(x, y, w, h)));
+            row_h = row_h.max(h);
+            col += span;
+        }
+        for (_, r) in &mut out[row_first..] {
+            r.h = row_h;
+        }
+        let total_h = if out.is_empty() { 0.0 } else { y + row_h };
+        (out, total_h)
+    }
+
+    fn tiles_min(&self, id: NodeId, inner_w: Option<f32>) -> (f32, f32) {
+        // Minimum width is the widest cell's own minimum (FlowContainer's
+        // rule); the height needs a granted width.
+        let widest = self.visible_children(id).iter().map(|c| self.min_size(*c, None).0).fold(0.0, f32::max);
+        match inner_w {
+            None => (widest, 0.0),
+            Some(w) => {
+                let (_, h) = self.tiles_cells(id, w);
+                (widest, h)
+            }
+        }
+    }
+
+    fn place_tiles(&mut self, id: NodeId, inner: Rect) {
+        let (cells, _) = self.tiles_cells(id, inner.w);
+        for (c, r) in cells {
+            let p = *self.placement(c);
+            let (_, own_h) = self.min_size(c, Some(r.w));
+            // A cell is as tall as its own minimum, top-aligned in its row.
+            let h = match p.height {
+                Len::Fill(_) => r.h,
+                _ => own_h.min(r.h.max(own_h)),
+            };
+            let rect = Rect::new(inner.x + r.x, inner.y + r.y, r.w, h);
+            self.rects[c as usize] = rect;
+            self.place_children(c, rect);
+        }
+    }
+
+    /// Godot's ScrollContainer keeps the vertical bar's column out of the
+    /// content when the bar shows (`bars=` not `never`, content taller
+    /// than the viewport): 8 device px on the phone theme, 4 epx here.
+    fn scroll_bar_width(&self, id: NodeId, inner: Rect) -> f32 {
+        let (_, sy) = self.scroll_axes(id);
+        if !sy || self.res.ident(self.page, id, PropKey::Bars) == Some("never") {
+            return 0.0;
+        }
+        let content_h = self.visible_children(id).iter().map(|c| self.min_size(*c, Some(inner.w)).1).fold(0.0, f32::max);
+        if content_h > inner.h { SCROLL_BAR_EPX } else { 0.0 }
+    }
+
     fn place_scroll(&mut self, id: NodeId, inner: Rect) {
         let (sx, sy) = self.scroll_axes(id);
         let offset = self.res_scroll(id);
+        let bar = self.scroll_bar_width(id, inner);
+        let inner = Rect::new(inner.x, inner.y, (inner.w - bar).max(0.0), inner.h);
         for c in self.visible_children(id) {
             let (min_w, min_h) = self.min_size(c, if sx { None } else { Some(inner.w) });
             // Content takes the viewport and scrolls past it when larger.
@@ -641,10 +804,13 @@ fn free_axis(start: f32, extent: f32, len: Len, align: Align, m_near: Option<f32
     let filled = extent - near - far;
     // An aligned axis with no size key hugs: alignment carves the default fill.
     let len = if len == Len::Unset && align != Align::AlignUnset { Len::Hug(1.0) } else { len };
-    // Both edges named: the box spans them.
-    if m_near.is_some() && m_far.is_some() && !matches!(len, Len::Exact(_)) {
+    // Both edges named on an unaligned axis: the box spans them. Aligned
+    // (the toast: `width=hug, max_width=fill, halign=center, margins`),
+    // the margins only inset the measuring frame.
+    if m_near.is_some() && m_far.is_some() && !matches!(len, Len::Exact(_)) && align == Align::AlignUnset {
         return (start + near, filled.max(floor));
     }
+    let (start, extent) = if align != Align::AlignUnset && m_near.is_some() && m_far.is_some() { (start + near, filled) } else { (start, extent) };
     let mut size = match len {
         Len::Unset | Len::Fill(_) => filled,
         Len::Exact(n) => n,
@@ -761,7 +927,8 @@ mod tests {
     fn scroll_content_takes_the_viewport_and_scrolls_past() {
         let (p, r) = lay("View v {\n Scroll list height=100 {\n  Column content { Rectangle a height=80; Rectangle b height=80 }\n }\n}\n", 200.0, 300.0);
         assert_eq!(rect(&p, &r, "list"), Rect::new(0.0, 0.0, 200.0, 100.0));
-        assert_eq!(rect(&p, &r, "content"), Rect::new(0.0, 0.0, 200.0, 160.0));
+        // The auto scroll bar keeps its 4-epx column out of the content.
+        assert_eq!(rect(&p, &r, "content"), Rect::new(0.0, 0.0, 196.0, 160.0));
         assert_eq!(rect(&p, &r, "b").y, 80.0);
     }
 

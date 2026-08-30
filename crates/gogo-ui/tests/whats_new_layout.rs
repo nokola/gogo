@@ -17,7 +17,8 @@ fn whats_new_ok_button_and_face() {
     let ok = page.find("okButton").unwrap() as usize;
     let face = page.find("face").unwrap() as usize;
     assert_eq!((rects[ok].w, rects[ok].h), (130.0, 60.0));
-    assert!((rects[ok].x - (20.0 + (493.0 - 130.0) / 2.0)).abs() < 0.01, "centered in the padded column: {:?}", rects[ok]);
+    // The column is 493 wide minus the auto scroll bar's 4-epx column (the content scrolls).
+    assert!((rects[ok].x - (20.0 + (489.0 - 130.0) / 2.0)).abs() < 0.01, "centered in the padded column: {:?}", rects[ok]);
     assert_eq!((rects[face].w, rects[face].h), (114.0, 44.0));
     assert_eq!((rects[face].x - rects[ok].x, rects[face].y - rects[ok].y), (8.0, 8.0));
     // The Scroll content is taller than the viewport: it scrolls.

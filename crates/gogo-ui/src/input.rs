@@ -39,6 +39,8 @@ pub struct Touch {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EventKind {
+    /// Finger down on a press surface (`on:press=`).
+    Press,
     Activate,
     Change(Value),
     Edit(Value),
@@ -149,6 +151,9 @@ impl Input {
                 let scroll = if kind == Kind::Scroll { Some(node) } else { scroll_ancestor(page, node) };
                 if kind.is_press_surface() && !caught {
                     rt.set_state(node, HELD, true);
+                    if let Some(action) = event_action(page, node, "press") {
+                        events.push(Event { node, kind: EventKind::Press, action: Some(action) });
+                    }
                 }
                 if kind == Kind::Slider && !caught {
                     rt.set_state(node, HELD, true);
