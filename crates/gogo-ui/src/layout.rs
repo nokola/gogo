@@ -6,9 +6,21 @@
 //!   width its parent can offer (wrapped text and Flow rows need it).
 //!   Hugging parents, cross axes and "the height at the width I got" ask
 //!   this. Memoized per pass.
-//! - `main_min(node, axis)` — the floor a stack or grid grants along the
-//!   axis it splits: a `fill` child's `min_*` alone (fill takes its share,
-//!   never its content), a hug/exact child's measure.
+//! - `main_min(node, axis)` — how much a child gets when its parent was
+//!   told its size and is splitting it: a `fill` child's `min_*` only (it
+//!   takes its share of what's left), any other child its own size.
+//!
+//! A parent is either TOLD its size (`width=300`, `width=fill`, the
+//! screen) or ASKS its children (`width=hug`, or an aligned axis with no
+//! width word).
+//! - Parent that asks its children ("how wide do you need to be?"): a
+//!   `fill` child answers with its content, like any other child. There is
+//!   nothing to share yet, so "fill" has nothing to say here.
+//! - Parent that was told its size ("I'm 300 wide, split it"): fixed
+//!   children take their size, `fill` children share what's left. A fill
+//!   child can end up narrower than its text here; the smallest it goes is
+//!   its `min_width`.
+//!
 //! - `star_split` — ARRANGE along an axis: fixed slots take their size,
 //!   fills share what is left by weight, a fill under its floor takes the
 //!   floor and the rest re-share (Godot BoxContainer / WPF star).
@@ -240,10 +252,11 @@ impl<'a> Lay<'a> {
         }
     }
 
-    /// The floor a stack or grid grants `id` along the axis it splits: a
-    /// `fill` child's `min_*` alone — fill takes its share, never its
-    /// content — a hug/exact child's measure (`cross` = the known extent
-    /// on the other axis, for wrapped text).
+    /// How much a child gets when its parent already has a width and is
+    /// splitting it: a fill child's `min_width` only (it will take its
+    /// share of what's left), any other child its own size. `cross` = the
+    /// other axis's known size, for wrapped text. (A parent that is still
+    /// asking its children how wide to be uses `stack_min` instead.)
     fn main_min(&self, id: NodeId, axis: Axis, cross: Option<f32>) -> f32 {
         let p = self.placement(id);
         if let Len::Fill(_) = self.main_len(id, axis) {
@@ -405,17 +418,22 @@ impl<'a> Lay<'a> {
         }
     }
 
+    /// A stack that is asking its children how big to be (`hug`): the sum
+    /// of what they need along its axis, the widest across.
     fn stack_min(&self, id: NodeId, axis: Axis, inner_w: Option<f32>) -> (f32, f32) {
         let spacing = self.spacing(id);
         let children = self.sizing_children(id);
         let (mut main, mut cross) = (0.0f32, 0.0f32);
         for (i, c) in children.iter().enumerate() {
             let node = self.node(*c);
+            // A parent that is asking its children how wide to be: every
+            // child, fill included, answers with its content. (A parent
+            // that was told its size splits it in `place_stack`.)
             let (m, x) = if node.kind == Kind::Gap {
                 (if node.gap_fill { 0.0 } else { node.gap }, 0.0)
             } else {
                 let (w, h) = self.size_at(*c, if axis == Axis::Y { inner_w } else { None });
-                (self.main_min(*c, axis, inner_w), if axis == Axis::Y { w } else { h })
+                if axis == Axis::Y { (h, w) } else { (w, h) }
             };
             main += m;
             if i > 0 {
@@ -759,16 +777,16 @@ impl<'a> Lay<'a> {
             for (c, first, span) in self.row_cells(*r) {
                 let (w, ch) = self.size_at(c, inner_w);
                 h = h.max(ch);
-                // A hug track is as wide as its widest single-span cell; a
-                // fill track takes its share (no content floor).
-                if span == 1 && first < track_min.len() && matches!(tracks[first], Len::Hug(_)) {
+                // The grid asking how wide to be: a hug or fill track needs
+                // its widest single-span cell. (A grid that was told its
+                // size splits it in `place_grid`.)
+                if span == 1 && first < track_min.len() && !matches!(tracks[first], Len::Exact(_)) {
                     track_min[first] = track_min[first].max(w);
                 }
             }
             let rp = self.placement(*r);
             let h = match rp.height {
                 Len::Exact(n) => n,
-                Len::Fill(_) => rp.min_height,
                 _ => h.max(rp.min_height),
             };
             row_min.push(h);
@@ -787,11 +805,13 @@ impl<'a> Lay<'a> {
     fn place_grid(&mut self, id: NodeId, inner: Rect) {
         let spacing = self.spacing(id);
         let (tracks, track_min, row_min) = self.grid_measure(id, Some(inner.w));
-        // Tracks and rows split the way a stack does: the star rule.
-        let track_slots: Vec<(f32, f32)> = tracks.iter().zip(&track_min).map(|(t, m)| (*m, if let Len::Fill(w) = t { *w } else { 0.0 })).collect();
+        // The grid was told its size and splits it, the way a stack does:
+        // a fill track shares what's left (smallest 0), a fill row shares
+        // too (smallest its `min_height`); the rest take their measured size.
+        let track_slots: Vec<(f32, f32)> = tracks.iter().zip(&track_min).map(|(t, m)| if let Len::Fill(w) = t { (0.0, *w) } else { (*m, 0.0) }).collect();
         let track_size: Vec<f32> = star_split(inner.w - spacing * tracks.len().saturating_sub(1) as f32, &track_slots);
         let rows = self.visible_children(id);
-        let row_slots: Vec<(f32, f32)> = rows.iter().zip(&row_min).map(|(r, m)| (*m, if let Len::Fill(w) = self.placement(*r).height { w } else { 0.0 })).collect();
+        let row_slots: Vec<(f32, f32)> = rows.iter().zip(&row_min).map(|(r, m)| if let Len::Fill(w) = self.placement(*r).height { (self.placement(*r).min_height, w) } else { (*m, 0.0) }).collect();
         let row_size: Vec<f32> = star_split(inner.h - spacing * rows.len().saturating_sub(1) as f32, &row_slots);
         let mut track_x = Vec::with_capacity(tracks.len());
         let mut x = inner.x;
@@ -1023,6 +1043,28 @@ mod tests {
         assert_eq!(rect(&p, &r, "back").w, 100.0);
         assert_eq!(rect(&p, &r, "mid").x, 100.0);
         assert_eq!(rect(&p, &r, "dots").w, 100.0);
+    }
+
+    /// A parent that asks its children how wide to be: the fill label
+    /// answers with its text, so the menu column grows to fit "Music
+    /// volume" + slider instead of squeezing the label to a sliver
+    /// (test.gogo).
+    #[test]
+    fn a_parent_asking_its_children_hears_a_fill_childs_content() {
+        let (p, r) = lay("View v {
+ Column menu halign=center, valign=center, spacing=8 {
+  Button b text=\"New Game\", width=220, height=48
+  Row row spacing=12 {
+   Label vol text=\"Music volume\", font_size=20, width=fill
+   Rectangle s width=200, height=20
+  }
+ }
+}
+", 720.0, 800.0);
+        // "Music volume" = 12 chars × 11 = 132; row = 132 + 12 + 200 = 344.
+        assert_eq!(rect(&p, &r, "menu").w, 344.0);
+        assert_eq!(rect(&p, &r, "vol").w, 132.0);
+        assert_eq!(rect(&p, &r, "s").x, (720.0 - 344.0) / 2.0 + 144.0);
     }
 
     /// A fill under its `min_` floor takes the floor; the others re-share.
