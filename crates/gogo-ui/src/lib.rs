@@ -106,6 +106,16 @@ pub fn build_pages(dir: &Path, out: &Path, res_root: &Path) -> Result<(), String
                 errors.push_str(&format!("asset `{key}` not found at {}\n", file.display()));
                 continue;
             }
+            // A `.ignore` file in a folder (or any folder above it, under
+            // the root) keeps that folder out of the build: art that is not
+            // shipped yet (assets/Images/RealObjects, Stickers). Only named
+            // assets embed anyway, so the fence is an ERROR on a page that
+            // names one — the file says "not yet"; a silent embed would ship
+            // 40 MB nobody decided on.
+            if let Some(ignore) = ignore_file_above(&file, res_root) {
+                errors.push_str(&format!("asset `{key}` sits under {} — delete the .ignore to ship that folder\n", ignore.display()));
+                continue;
+            }
             let abs = file.canonicalize().unwrap_or(file).display().to_string().trim_start_matches("\\\\?\\").to_string();
             t.push_str(&format!("    ({key:?}, include_bytes!({abs:?})),\n"));
         }
@@ -120,4 +130,23 @@ pub fn build_pages(dir: &Path, out: &Path, res_root: &Path) -> Result<(), String
         return Err(errors);
     }
     std::fs::write(out, source).map_err(|e| format!("{}: {e}", out.display()))
+}
+
+/// The nearest `.ignore` file in `file`'s folder or its parents, stopping
+/// at `root` (`None` = not ignored).
+fn ignore_file_above(file: &Path, root: &Path) -> Option<PathBuf> {
+    let root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let mut dir = file.canonicalize().ok()?;
+    dir.pop();
+    loop {
+        let candidate = dir.join(".ignore");
+        if candidate.is_file() {
+            // Without the `\\?\` verbatim prefix canonicalize adds on Windows.
+            let shown = candidate.display().to_string();
+            return Some(PathBuf::from(shown.trim_start_matches("\\\\?\\")));
+        }
+        if dir == root || !dir.pop() {
+            return None;
+        }
+    }
 }
