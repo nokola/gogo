@@ -167,8 +167,12 @@ impl<'a> Lay<'a> {
         self.res.gone(self.page, id)
     }
 
+    /// The children that take part in layout: not `gone`, and not a
+    /// `repeat` with no items — an empty repeat is nothing on screen, so it
+    /// takes no stack slot and no `spacing` (it did: the test page's menu
+    /// carried a 4-epx gap for a list with no tasks).
     fn visible_children(&self, id: NodeId) -> Vec<NodeId> {
-        self.res.children(self.page, id).into_iter().filter(|c| !self.gone(*c)).collect()
+        self.res.children(self.page, id).into_iter().filter(|c| !self.gone(*c) && !(self.node(*c).kind == Kind::Repeat && self.node(*c).children.1 == 0)).collect()
     }
 
     /// The children that count toward `id`'s minimum: `overlay=true` boxes
@@ -1065,6 +1069,20 @@ mod tests {
         assert_eq!(rect(&p, &r, "menu").w, 344.0);
         assert_eq!(rect(&p, &r, "vol").w, 132.0);
         assert_eq!(rect(&p, &r, "s").x, (720.0 - 344.0) / 2.0 + 144.0);
+    }
+
+    /// A `repeat` with no items takes no slot and no spacing in a stack.
+    #[test]
+    fn an_empty_repeat_takes_no_slot() {
+        let (p, r) = lay("View v {
+ Column c spacing=4, valign=top {
+  Label a text=\"Tasks\", font_size=10
+  repeat tasks by $item.id { ListItem { Label text=$item.title } }
+  Label b text=\"Next\", font_size=10
+ }
+}
+", 300.0, 300.0);
+        assert_eq!(rect(&p, &r, "b").y, 12.5 + 4.0);
     }
 
     /// A fill under its `min_` floor takes the floor; the others re-share.
