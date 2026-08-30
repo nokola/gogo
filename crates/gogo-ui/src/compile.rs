@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use crate::anim::{Channel, Easing};
+use crate::anim::{Channel, EASING_PARAM_KEYS, Easing, PARAMS_FOR_CURVE};
 use crate::ast::{AstItem, AstNode, AstProp, AstValue, Document};
 use crate::diag::Diagnostic;
 use crate::page::*;
@@ -26,9 +26,12 @@ pub struct CompileOptions<'a> {
 }
 
 /// The gogo events; anything else on `on:` is a raw signal — gone (§7).
-/// `press` fires on finger-down (the undo/redo feel); `activate` on a
+/// `press` fires on finger-down (the undo/redo feel); `release` exactly
+/// once when that gesture ends, however it ends; `activate` on a
 /// completed tap.
-const EVENTS: &[&str] = &["activate", "press", "change", "edit", "show", "hide"];
+/// `touch` hands the host the raw finger (down/move/up/cancel with positions
+/// in the node's own epx space) — a code-drawn control's input.
+const EVENTS: &[&str] = &["activate", "press", "release", "change", "edit", "show", "hide", "touch"];
 
 #[derive(Clone, Default)]
 struct StyleDef {
@@ -41,6 +44,9 @@ struct StyleDef {
 struct WidgetDef {
     params: Vec<AstProp>,
     body: AstNode,
+    /// `anim` declarations beside the body: each instance gets its own
+    /// copy, named `inst/anim`, its targets scoped to the instance.
+    anims: Vec<AstNode>,
     /// `widget X for=Radio`: the body fills a host control, and the
     /// widget-scope `when` lines answer the HOST's states.
     for_host: bool,
@@ -110,8 +116,10 @@ pub struct Compiler<'a> {
     terms: HashMap<String, String>,
     /// Top-level `when <arrangement> { node.prop = v }`, applied after the tree exists.
     deferred_whens: Vec<(State, Vec<AstItem>, u32)>,
-    /// `anim` declarations, compiled after the tree exists (they name nodes).
-    anim_decls: Vec<AstNode>,
+    /// `anim` declarations, compiled after the tree exists (they name
+    /// nodes): (the widget-instance scope they were declared in — `""` at
+    /// the top of the file — and the declaration).
+    anim_decls: Vec<(String, AstNode)>,
     root_seen: bool,
     names: std::collections::HashSet<String>,
     /// `uses` paths already brought in (a diamond import is one import).
@@ -374,8 +382,36 @@ impl<'a> Compiler<'a> {
             return;
         }
         let whens: Vec<AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "when").cloned().collect();
+        let anims: Vec<AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "anim").cloned().collect();
         let for_host = n.props.iter().any(|p| p.key == "for");
-        self.widgets.insert(name, WidgetDef { params: n.params.clone(), body: bodies[0].clone(), for_host, whens, line: n.line });
+        self.widgets.insert(name, WidgetDef { params: n.params.clone(), body: bodies[0].clone(), anims, for_host, whens, line: n.line });
+    }
+
+    /// `easing=name` plus its parameter words on the same line
+    /// (`bounces=1, bounciness=2.4`) as one interned word the runtime
+    /// parses back (`bounce_out(1,2.4)`); `None` = no `easing=` here. A
+    /// parameter the curve does not take, or an unknown name, is an error.
+    fn easing_spec(&mut self, props: &[AstProp], line: u32) -> Option<StrId> {
+        let word = props.iter().find(|p| p.key == "easing")?.value.as_ident().map(str::to_string);
+        let Some(word) = word else {
+            self.error("G0065", line, "`easing=` takes a name like `cubic_out`");
+            return None;
+        };
+        let Some(mut easing) = Easing::parse(&word) else {
+            self.error("G0065", line, format!("unknown easing `{word}`"));
+            return None;
+        };
+        let takes: &[&str] = PARAMS_FOR_CURVE.iter().find(|(c, _)| *c == easing.curve).map(|(_, p)| *p).unwrap_or(&[]);
+        for p in props.iter().filter(|p| EASING_PARAM_KEYS.contains(&p.key.as_str())) {
+            match takes.iter().position(|k| *k == p.key) {
+                Some(i) => match p.value.as_num() {
+                    Some(v) => easing.params[i] = Some(v),
+                    None => self.error("G0065", p.line, format!("`{}=` takes a number", p.key)),
+                },
+                None => self.error("G0065", p.line, format!("`{word}` takes no `{}=` (its parameters: {})", p.key, if takes.is_empty() { "none".to_string() } else { takes.join(", ") })),
+            }
+        }
+        Some(self.intern(&easing.to_word()))
     }
 
     fn anim(&mut self, n: &AstNode) {
@@ -383,10 +419,23 @@ impl<'a> Compiler<'a> {
             self.error("G0029", n.line, "`anim` needs a name");
             return;
         };
-        if self.anim_decls.iter().any(|a| a.name.as_deref() == Some(&name)) {
+        let scope = self.prefix.join("/");
+        if self.anim_decls.iter().any(|(s, a)| *s == scope && a.name.as_deref() == Some(&name)) {
             self.error("G0030", n.line, format!("anim `{name}` is defined twice"));
         }
-        self.anim_decls.push(n.clone());
+        self.anim_decls.push((scope, n.clone()));
+    }
+
+    /// The anim a `play(x)` names from here: the enclosing instance's own
+    /// `x` when its widget declared one, else the page's `x`.
+    fn anim_ref(&mut self, name: &str) -> StrId {
+        for depth in (1..=self.prefix.len()).rev() {
+            let scope = self.prefix[..depth].join("/");
+            if self.anim_decls.iter().any(|(s, a)| *s == scope && a.name.as_deref() == Some(name)) {
+                return self.intern(&format!("{scope}/{name}"));
+            }
+        }
+        self.intern(name)
     }
 
     /// A header word (`duration_each`, `easing`) from the nearest scope.
@@ -394,12 +443,11 @@ impl<'a> Compiler<'a> {
         scopes.iter().rev().find_map(|s| s.props.iter().find(|p| p.key == key).and_then(|p| p.value.as_num()))
     }
 
-    fn anim_word(scopes: &[&AstNode], key: &str) -> Option<String> {
-        scopes.iter().rev().find_map(|s| s.props.iter().find(|p| p.key == key).and_then(|p| p.value.as_ident()).map(str::to_string))
-    }
-
-    /// Compiles one anim into flat tracks; returns the end time of the chain.
-    fn anim_chain(&mut self, anim: StrId, items: &[AstItem], scopes: &[&AstNode], chain_start: f32) -> f32 {
+    /// Compiles one anim into flat tracks; returns the end time of the
+    /// chain. `scope` = the widget instance the anim belongs to (`""` for a
+    /// page anim): `rope.opacity` means that instance's `rope`, `self.`
+    /// the instance's root.
+    fn anim_chain(&mut self, anim: StrId, scope: &str, items: &[AstItem], scopes: &[&AstNode], chain_start: f32) -> f32 {
         // `and` joins the previous step; `then` starts after the whole and-cluster.
         let mut cluster_start = chain_start;
         let mut cluster_end = chain_start;
@@ -431,7 +479,7 @@ impl<'a> Compiler<'a> {
             let end = match word.as_str() {
                 "group" => {
                     scopes.push(step);
-                    let e = self.anim_chain(anim, &step.children, &scopes, cluster_start);
+                    let e = self.anim_chain(anim, scope, &step.children, &scopes, cluster_start);
                     let _ = target;
                     e
                 }
@@ -460,65 +508,91 @@ impl<'a> Compiler<'a> {
                             continue;
                         }
                     };
-                    let Some(node) = self.page.find(&node_name) else {
-                        self.error("G0060", step.line, format!("`{path}`: no node named `{node_name}`"));
+                    let found = if node_name == "self" {
+                        if scope.is_empty() { None } else { self.page.find(scope) }
+                    } else if scope.is_empty() {
+                        self.page.find(&node_name)
+                    } else {
+                        self.page.find(&format!("{scope}/{node_name}")).or_else(|| self.page.find(&node_name))
+                    };
+                    let Some(node) = found else {
+                        self.error("G0060", step.line, format!("`{path}`: no node named `{node_name}`{}", if node_name == "self" { " (`self` is the widget's root, inside a widget's own anim)" } else { "" }));
                         continue;
                     };
                     let num = |key: &str| step.props.iter().find(|p| p.key == key).and_then(|p| p.value.as_num());
                     let channel_id = self.intern(&channel);
                     let keys: Vec<&AstNode> = step.children.iter().filter_map(|i| if let AstItem::Node(k) = i { Some(k) } else { None }).filter(|k| k.type_word == "key").collect();
+                    scopes.push(step);
+                    let autoreverse = scopes.iter().rev().find_map(|s| s.props.iter().find(|p| p.key == "autoreverse").map(|p| p.value == AstValue::Bool(true))).unwrap_or(false);
                     if !keys.is_empty() {
                         // `key t=, v=, easing=, jump=true` children own the
-                        // timeline: one track per segment between keys.
+                        // timeline: one track per segment between keys. A
+                        // `jump` key HOLDS the previous value until its own
+                        // `t`, then snaps; a first key past t=0 glides from
+                        // the live value; a first key at t=0 is pinned from
+                        // play start.
                         let key_num = |k: &AstNode, key: &str| k.props.iter().find(|p| p.key == key).and_then(|p| p.value.as_num());
-                        let mut prev: Option<(f32, f32)> = None;
-                        let mut end = cluster_start;
-                        for k in keys {
+                        let mut parsed: Vec<(f32, f32, bool, StrId)> = Vec::new();
+                        for k in &keys {
                             let t = key_num(k, "t").unwrap_or(0.0);
                             let v = key_num(k, "v").unwrap_or(0.0);
                             let jump = k.props.iter().any(|p| p.key == "jump" && p.value == AstValue::Bool(true));
-                            let easing_word = k.props.iter().find(|p| p.key == "easing").and_then(|p| p.value.as_ident()).map(str::to_string);
-                            let easing = match easing_word {
-                                Some(w) => self.intern(&w),
-                                None => NO_STR,
-                            };
+                            let easing = if k.props.iter().any(|p| p.key == "easing") { self.easing_spec(&k.props, k.line).unwrap_or(NO_STR) } else { NO_STR };
+                            parsed.push((t, v, jump, easing));
+                        }
+                        let mut prev: Option<(f32, f32)> = None;
+                        let mut end = cluster_start;
+                        for (t, v, jump, easing) in parsed.iter().copied() {
                             let (from, start, duration) = match prev {
-                                Some((pt, pv)) => (Some(pv), cluster_start + pt, if jump { 0.0 } else { t - pt }),
-                                // The first key pins its value from play start.
-                                None => (Some(v), cluster_start, t),
+                                Some((pt, _)) => (None, if jump { cluster_start + t } else { cluster_start + pt }, if jump { 0.0 } else { t - pt }),
+                                None if t <= 0.0 => (Some(v), cluster_start, 0.0),
+                                None => (None, if jump { cluster_start + t } else { cluster_start }, if jump { 0.0 } else { t }),
                             };
-                            self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from, to: v, start, duration, easing });
+                            self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from, to: v, start, duration, easing, current: false, autoreverse: false });
                             end = start + duration;
                             prev = Some((t, v));
+                        }
+                        if autoreverse {
+                            // Out and back: the keys mirrored after the last
+                            // one, each return segment with its outbound easing.
+                            let lane = parsed.last().map(|k| k.0).unwrap_or(0.0);
+                            if parsed.first().map(|k| k.0 > 0.0).unwrap_or(true) {
+                                self.error("G0062", step.line, "`autoreverse=true` on a keyed line needs a key at t=0 to return to");
+                            }
+                            for i in (0..parsed.len().saturating_sub(1)).rev() {
+                                let (t0, v0, _, _) = parsed[i];
+                                let (t1, _, jump, easing) = parsed[i + 1];
+                                let (start, duration) = if jump { (cluster_start + 2.0 * lane - t0, 0.0) } else { (cluster_start + 2.0 * lane - t1, t1 - t0) };
+                                self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from: None, to: v0, start, duration, easing, current: false, autoreverse: false });
+                                end = end.max(start + duration);
+                            }
                         }
                         cluster_end = cluster_end.max(end);
                         continue;
                     }
-                    let from = match step.props.iter().find(|p| p.key == "from") {
-                        Some(p) if p.value.as_ident() == Some("current") => None,
-                        Some(p) => p.value.as_num(),
-                        None => None,
+                    let (from, current) = match step.props.iter().find(|p| p.key == "from") {
+                        Some(p) if p.value.as_ident() == Some("current") => (None, true),
+                        Some(p) => (p.value.as_num(), false),
+                        None => (None, false),
                     };
                     let Some(to) = num("to") else {
                         self.error("G0064", step.line, format!("`{path}` needs `to=`"));
                         continue;
                     };
-                    scopes.push(step);
                     let duration = num("duration").or_else(|| Self::anim_num(&scopes, "duration_each")).unwrap_or(0.0);
-                    let easing_word = step.props.iter().find(|p| p.key == "easing").and_then(|p| p.value.as_ident()).map(str::to_string).or_else(|| Self::anim_word(&scopes, "easing"));
-                    let easing = match easing_word {
-                        Some(w) => {
-                            if Easing::parse(&w).is_none() {
-                                self.error("G0065", step.line, format!("unknown easing `{w}`"));
-                            }
-                            self.intern(&w)
+                    // The nearest scope that names an easing supplies it, with
+                    // the parameter words written beside it there.
+                    let easing = match scopes.iter().rev().find(|s| s.props.iter().any(|p| p.key == "easing")) {
+                        Some(scope) => {
+                            let props = scope.props.clone();
+                            self.easing_spec(&props, step.line).unwrap_or(NO_STR)
                         }
                         None => NO_STR,
                     };
                     let offset = num("offset").unwrap_or(0.0);
                     let start = (cluster_start + offset).max(0.0);
-                    self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from, to, start, duration, easing });
-                    start + duration
+                    self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from, to, start, duration, easing, current, autoreverse });
+                    start + if autoreverse { 2.0 * duration } else { duration }
                 }
             };
             cluster_end = cluster_end.max(end);
@@ -568,9 +642,10 @@ impl<'a> Compiler<'a> {
         for p in &n.props {
             match p.key.as_str() {
                 "duration" => t.duration = p.value.as_num().unwrap_or(0.0),
-                "easing" => t.easing = self.intern(p.value.as_ident().unwrap_or("")),
+                "easing" => t.easing = self.easing_spec(&n.props, p.line).unwrap_or(NO_STR),
                 "anim" => t.anim = self.intern(p.value.as_ident().unwrap_or("")),
-                other => self.error("G0034", p.line, format!("`transition` takes duration=, easing=, anim= — not `{other}`")),
+                other if EASING_PARAM_KEYS.contains(&other) => {}
+                other => self.error("G0034", p.line, format!("`transition` takes duration=, easing= (+ its parameters), anim= — not `{other}`")),
             }
         }
         t
@@ -595,8 +670,17 @@ impl<'a> Compiler<'a> {
                 return None;
             }
             _ if word.starts_with("screen.") => {
-                let class = self.intern(&word["screen.".len()..]);
-                State::Screen(class)
+                let name = &word["screen.".len()..];
+                if SCREEN_ORIENTATIONS.contains(&name) {
+                    let id = self.intern(name);
+                    State::ScreenOrientation(id)
+                } else if SCREEN_CLASSES.contains(&name) {
+                    let id = self.intern(name);
+                    State::ScreenClass(id)
+                } else {
+                    self.error("G0036", line, format!("unknown screen word `{word}` — the classes are {}; the orientations are {}", SCREEN_CLASSES.join(", "), SCREEN_ORIENTATIONS.join(", ")));
+                    return None;
+                }
             }
             _ => {
                 let id = self.page.strings.iter().position(|s| s == word).map(|i| i as StrId);
@@ -612,12 +696,26 @@ impl<'a> Compiler<'a> {
         })
     }
 
+    /// The condition of a `when`: one word, or a composed pair
+    /// (`when large screen.lotsOfSpace`, `when screen.landscape
+    /// screen.lotsOfSpace`) that holds only while BOTH do.
     fn state_word(&mut self, n: &AstNode, top_level: bool) -> Option<State> {
         let Some(word) = n.name.clone() else {
             self.error("G0037", n.line, "`when` needs a state");
             return None;
         };
-        self.state_from_word(&word, n.line, top_level)
+        let first = self.state_from_word(&word, n.line, top_level)?;
+        let second = n.args.iter().find_map(|a| a.as_ident()).map(str::to_string);
+        let Some(second) = second else { return Some(first) };
+        let second_state = self.state_from_word(&second, n.line, top_level)?;
+        match (first, second_state) {
+            (State::Arrangement(a), State::ScreenClass(w)) | (State::Arrangement(a), State::ScreenOrientation(w)) => Some(State::ArrangementScreen(a, w)),
+            (State::ScreenOrientation(o), State::ScreenClass(c)) => Some(State::ScreenPair(o, c)),
+            _ => {
+                self.error("G0038", n.line, format!("`when {word} {second}`: a composed condition is `<arrangement> screen.<class|orientation>` or `screen.<orientation> screen.<class>`"));
+                None
+            }
+        }
     }
 
     // ----- values ---------------------------------------------------------
@@ -817,6 +915,10 @@ impl<'a> Compiler<'a> {
                 }
             };
             self.prefix.push(prefix);
+            // The widget's own anims, one copy per instance.
+            for a in &def.anims {
+                self.anim(a);
+            }
             // `signals` inside the body: the instance's `on:` wiring binds
             // to that node, not the root (the Slider inside LabeledSlider).
             let on_props: Vec<AstProp> = n.props.iter().filter(|p| p.key.starts_with("on:")).cloned().collect();
@@ -949,6 +1051,9 @@ impl<'a> Compiler<'a> {
 
         let mut placement_props: Vec<Prop> = Vec::new();
         for p in &all_props {
+            if kind == Kind::Repeat && p.key == "max" {
+                continue;
+            }
             if let Some(action) = p.key.strip_prefix("on:") {
                 if let Some(h) = self.handler(action, p) {
                     tmp.handlers.push(h);
@@ -1003,33 +1108,83 @@ impl<'a> Compiler<'a> {
             match c {
                 AstItem::Node(c) if c.type_word == "when" || c.type_word == "transition" || c.type_word == "theme" => {}
                 AstItem::Node(c) if c.type_word == "slot" => self.slot_child(c, kind, &mut tmp.children),
-                // `choice { Radio … }` is erased: the Radios parent flat
-                // (one group under this node); with no code-behind its
-                // name and `on:change` carry nothing.
+                // `choice { Radio … }` has no node of its own: its children
+                // parent flat here, and every Radio inside (however deep
+                // through Rows/Columns) joins ONE group — the group is what
+                // reports the pick, to `on:change=` or a handler named
+                // after the choice.
                 AstItem::Node(c) if c.type_word == "choice" => {
-                    // `value=<name>`: the Radio of that name starts selected.
                     let start: Option<String> = c.props.iter().find(|p| p.key == "value").and_then(|p| p.value.as_ident().map(str::to_string));
+                    let mut action: Option<Action> = None;
+                    for p in &c.props {
+                        match p.key.as_str() {
+                            "value" => {}
+                            "on:change" => action = self.handler("change", p).map(|h| h.action),
+                            "on:changed" => self.error("G0070", p.line, "`on:changed` is spelled `on:change` — changed means CHANGED: one report per genuine transition"),
+                            other => self.error("G0070", p.line, format!("`{other}` does not belong on a choice line — `choice <name> value=<radioName> on:change=… {{ … }}`; looks and sizes go on the Radios")),
+                        }
+                    }
+                    let name = match &c.name {
+                        Some(n) => self.intern(n),
+                        None => NO_STR,
+                    };
+                    if action.is_none() && name != NO_STR {
+                        action = Some(Action::Named(name));
+                    }
+                    let index = self.page.choices.len() as u32;
+                    self.page.choices.push(ChoiceGroup { name, action });
                     let mut found = start.is_none();
+                    let start_id = match &start {
+                        Some(name) => self.intern(name),
+                        None => NO_STR,
+                    };
+                    let mut radios = 0u32;
                     for item in &c.children {
                         if let AstItem::Node(k) = item {
+                            if k.type_word == "choice" {
+                                self.error("G0070", k.line, "choice scopes don't nest — one exclusive set at a time");
+                                continue;
+                            }
                             if k.props.iter().any(|p| p.key == "selected") {
                                 self.error("G0068", k.line, "`selected=` on a Radio inside `choice` — the group's `value=<name>` picks the start");
                             }
                             let mut child = self.node(k, Some(kind), None);
-                            if start.is_some() && k.name == start {
-                                child.node.initial_states |= SELECTED;
-                                found = true;
-                            }
+                            Self::join_choice(&mut child, index, start_id, &mut radios, &mut found);
                             tmp.children.push(child);
                         }
+                    }
+                    if radios == 0 {
+                        self.error("G0069", c.line, "choice holds no Radio — nothing to be exclusive about (nested `Row`/`Column` layout is fine)");
                     }
                     if !found {
                         self.error("G0069", c.line, format!("`choice value={}`: no Radio of that name in the group", start.unwrap_or_default()));
                     }
                 }
-                // A repeat's template needs items from code; with none, only
-                // its `empty { }` content shows.
-                AstItem::Node(c) if kind == Kind::Repeat && c.type_word != "empty" => {}
+                // `repeat x max=N { … }`: the template is built N times at
+                // compile (`x/0`, `x/1`, …), every copy `gone` until code
+                // sets the count (`Runtime::set_count`); with no `max=` the
+                // template needs items from code and only `empty { }` shows.
+                AstItem::Node(c) if kind == Kind::Repeat && c.type_word != "empty" => {
+                    let Some(max) = n.props.iter().find(|p| p.key == "max").and_then(|p| p.value.as_num()) else { continue };
+                    let repeat_name = n.name.clone().unwrap_or_else(|| "repeat".to_string());
+                    let gone = self.intern("gone");
+                    for i in 0..(max.max(0.0) as usize) {
+                        self.prefix.push(format!("{repeat_name}/{i}"));
+                        // A widget item with no instance name is `item`, so its
+                        // parts are addressable (`x/0/item/knob`).
+                        let named: AstNode;
+                        let template: &AstNode = if c.name.is_none() && self.widgets.contains_key(&c.type_word) {
+                            named = AstNode { name: Some("item".to_string()), ..c.clone() };
+                            &named
+                        } else {
+                            c
+                        };
+                        let mut child = self.node(template, Some(kind), None);
+                        self.prefix.pop();
+                        child.props.push(Prop { key: PropKey::Visibility, value: Value::VIdent(gone) });
+                        tmp.children.push(child);
+                    }
+                }
                 AstItem::Node(c) => {
                     let child = self.node(c, Some(kind), None);
                     tmp.children.push(child);
@@ -1218,12 +1373,14 @@ impl<'a> Compiler<'a> {
         if !EVENTS.contains(&event) {
             let hint = match event {
                 "pressed" | "activated" => "activate",
+                "button_down" => "press",
+                "button_up" | "released" => "release",
                 "toggled" | "changed" | "value_changed" | "text_submitted" => "change",
                 "changing" | "text_changed" | "input" => "edit",
                 _ => "",
             };
             if hint.is_empty() {
-                self.error("G0049", p.line, format!("`on:{event}` — raw signals are gone (§7); the events are activate, change, edit, show, hide"));
+                self.error("G0049", p.line, format!("`on:{event}` — raw signals are gone (§7); the events are activate, press, release, change, edit, show, hide, touch"));
             } else {
                 self.error("G0049", p.line, format!("`on:{event}` is spelled `on:{hint}`"));
             }
@@ -1252,7 +1409,7 @@ impl<'a> Compiler<'a> {
                         };
                         if name == "go" { Action::Go(target) } else { Action::ToggleArrangement(target) }
                     }
-                    "play" => Action::Play(self.intern(arg)),
+                    "play" => Action::Play(self.anim_ref(arg)),
                     "emit" => Action::Emit(self.intern(arg)),
                     other => {
                         self.error("G0052", p.line, format!("`{other}(…)` is not an action (play, go, toggle, emit, or a handler name)"));
@@ -1267,6 +1424,22 @@ impl<'a> Compiler<'a> {
         };
         let event_id = self.intern(event);
         Some(OnHandler { event: event_id, action })
+    }
+
+    /// Every Radio in a choice's subtree joins its group (however deep
+    /// through Rows/Columns); the one named by `value=` starts selected.
+    fn join_choice(t: &mut TmpNode, index: u32, start: StrId, radios: &mut u32, found: &mut bool) {
+        if t.node.kind == Kind::Radio {
+            t.node.choice = index;
+            *radios += 1;
+            if start != NO_STR && t.node.name == start {
+                t.node.initial_states |= SELECTED;
+                *found = true;
+            }
+        }
+        for c in &mut t.children {
+            Self::join_choice(c, index, start, radios, found);
+        }
     }
 
     fn when(&mut self, w: &AstNode, kind: Kind) -> Option<WhenTmp> {
@@ -1486,14 +1659,35 @@ impl<'a> Compiler<'a> {
     fn finish(&mut self) {
         // Anims: flat tracks with start times.
         let decls = std::mem::take(&mut self.anim_decls);
-        for n in &decls {
+        for (scope, n) in &decls {
             let name = n.name.clone().unwrap_or_default();
-            let anim = self.intern(&name);
-            if n.props.iter().any(|p| p.key == "duration") {
-                self.error("G0066", n.line, "`duration=` on an anim header reads as the chain's total — write `duration_each=`");
+            let full = if scope.is_empty() { name.clone() } else { format!("{scope}/{name}") };
+            let anim = self.intern(&full);
+            let mut head = AnimHead { anim, repeat: false, speed: 1.0 };
+            for p in &n.props {
+                match p.key.as_str() {
+                    "repeat" => match p.value.as_ident() {
+                        Some("forever") => head.repeat = true,
+                        _ => self.error("G0066", p.line, "`repeat=` takes `forever` — a one-shot anim just omits it"),
+                    },
+                    "speed" => match p.value.as_num() {
+                        Some(v) if v > 0.0 => head.speed = v,
+                        _ => self.error("G0066", p.line, "`speed=` takes a number above 0"),
+                    },
+                    "duration" => self.error("G0066", p.line, "`duration=` on an anim header reads as the chain's total — write `duration_each=`"),
+                    "delay" => self.error("G0066", p.line, "`delay=` was retired — a pause in the chain is its own step (`then delay=0.3`), a shift is `offset=`"),
+                    "duration_each" | "easing" | "autoreverse" => {}
+                    other if EASING_PARAM_KEYS.contains(&other) => {}
+                    other => self.error("G0066", p.line, format!("an anim header takes `repeat=forever`, `speed=`, `duration_each=`, `easing=` (+ its parameters), `autoreverse=` — not `{other}`")),
+                }
             }
+            if n.props.iter().any(|p| p.key == "easing") {
+                let props = n.props.clone();
+                self.easing_spec(&props, n.line);
+            }
+            self.page.anim_heads.push(head);
             let scopes = vec![n];
-            self.anim_chain(anim, &n.children, &scopes, 0.0);
+            self.anim_chain(anim, scope, &n.children, &scopes, 0.0);
         }
         // Top-level `when <arrangement> { node.prop = value }`.
         let deferred = std::mem::take(&mut self.deferred_whens);

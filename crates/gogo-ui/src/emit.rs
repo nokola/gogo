@@ -44,7 +44,9 @@ pub fn pascal_case(name: &str) -> String {
 }
 
 /// Handler names: every `Action::Named`, plus every named Button/Check/
-/// Toggle/Radio without an `on:activate` (the auto-wiring convention).
+/// Toggle/Radio without an `on:activate` and every named Slider/Input
+/// without an `on:change` (the auto-wiring convention: the node's own
+/// name is its handler, for `activate` and for `change`/`edit` alike).
 pub fn handler_names(page: &Page) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     for h in &page.handlers {
@@ -55,10 +57,22 @@ pub fn handler_names(page: &Page) -> Vec<String> {
             }
         }
     }
+    // A named `choice` reports its pick to a handler of its own name.
+    for c in &page.choices {
+        if let Some(Action::Named(id) | Action::Emit(id)) = c.action {
+            let n = page.str(id).to_string();
+            if !names.contains(&n) {
+                names.push(n);
+            }
+        }
+    }
     let activate = page.intern_lookup("activate");
+    let change = page.intern_lookup("change");
     for node in &page.nodes {
-        if node.kind.is_press_surface() && node.name != NO_STR && !page.str(node.name).contains('/') {
-            let has_activate = page.handlers[node.handlers.0 as usize..(node.handlers.0 + node.handlers.1) as usize].iter().any(|h| h.event == activate);
+        let value_control = matches!(node.kind, Kind::Slider | Kind::Input);
+        if (node.kind.is_press_surface() || value_control) && node.name != NO_STR && !page.str(node.name).contains('/') {
+            let wired = if value_control { change } else { activate };
+            let has_activate = page.handlers[node.handlers.0 as usize..(node.handlers.0 + node.handlers.1) as usize].iter().any(|h| h.event == wired);
             if !has_activate {
                 let n = page.str(node.name).to_string();
                 if !names.contains(&n) {
@@ -99,6 +113,8 @@ pub fn emit_rust(page: &Page, module: &str) -> String {
     out.push_str(&format!("        arrangements: {},\n", slice(&page.arrangements)));
     out.push_str(&format!("        transitions: {},\n", slice(&page.transitions)));
     out.push_str(&format!("        anims: {},\n", slice(&page.anims)));
+    out.push_str(&format!("        anim_heads: {},\n", slice(&page.anim_heads)));
+    out.push_str(&format!("        choices: {},\n", slice(&page.choices)));
     out.push_str("    };\n\n");
 
     // Handler enum.

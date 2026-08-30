@@ -4,6 +4,7 @@
 //! layout and draw passes read only the `Resolved` result.
 
 use crate::anim::{Easing, Finish, Motion, Player, Tween, lerp_value};
+use crate::layout::Rect;
 use crate::page::*;
 
 pub const HELD: u8 = 1;
@@ -38,6 +39,18 @@ pub struct Runtime {
     pub tweens: Vec<Tween>,
     pub players: Vec<Player>,
     pub motion: Vec<Motion>,
+    /// A timed arrangement flip started this frame: every box whose laid-out
+    /// rectangle changes glides there over (duration, easing) — alignment,
+    /// fill, hug, cap and seat moves all tween through their final rects.
+    pub glide_start: Option<(f32, Easing)>,
+    /// Rect tweens in flight: (node, from, to, elapsed, duration, easing).
+    pub rect_tweens: Vec<(NodeId, Rect, Rect, f32, f32, Easing)>,
+    /// The rects shown last frame (the `from` of the next glide).
+    pub last_rects: Vec<Rect>,
+    /// Paint-order bumps among siblings (the Canvas.ZIndex port): (node,
+    /// raise) — higher paints later (on top), lower earlier (below);
+    /// absent = 0, the file's order. Layout never moves.
+    pub raised: Vec<(NodeId, i32)>,
     /// Per node: the string slot a code `set_text` owns (`NO_STR` = none
     /// yet). Needed so a label that changes every few frames (a stats
     /// line) rewrites ONE string in place instead of interning a new one
@@ -68,12 +81,44 @@ impl Runtime {
             motion: vec![Motion::IDENTITY; page.nodes.len()],
             owned_text: vec![NO_STR; page.nodes.len()],
             last: Vec::new(),
+            glide_start: None,
+            rect_tweens: Vec::new(),
+            last_rects: Vec::new(),
+            raised: Vec::new(),
         }
     }
 
     /// Something is moving: keep redrawing.
     pub fn animating(&self) -> bool {
-        !self.tweens.is_empty() || !self.players.is_empty()
+        !self.tweens.is_empty() || !self.players.is_empty() || !self.rect_tweens.is_empty()
+    }
+
+    /// The rects to SHOW this frame: the laid-out ones, except boxes still
+    /// gliding from a timed arrangement flip, which sit between where they
+    /// were and where the layout put them. Call once per layout, after
+    /// `tick`. A flip mid-glide retargets from the shown rect.
+    pub fn glide(&mut self, rects: Vec<Rect>) -> Vec<Rect> {
+        let mut shown = rects.clone();
+        if let Some((duration, easing)) = self.glide_start.take() {
+            if duration > 0.0 && self.last_rects.len() == rects.len() {
+                for i in 0..rects.len() {
+                    if self.last_rects[i] != rects[i] {
+                        self.rect_tweens.retain(|t| t.0 != i as NodeId);
+                        self.rect_tweens.push((i as NodeId, self.last_rects[i], rects[i], 0.0, duration, easing));
+                    }
+                }
+            }
+        }
+        for (node, from, to, elapsed, duration, easing) in &mut self.rect_tweens {
+            // A relayout (a resize, a text change) moves the target with it.
+            *to = rects[*node as usize];
+            let t = easing.apply((*elapsed / *duration).min(1.0));
+            let lerp = |a: f32, b: f32| a + (b - a) * t;
+            shown[*node as usize] = Rect::new(lerp(from.x, to.x), lerp(from.y, to.y), lerp(from.w, to.w), lerp(from.h, to.h));
+        }
+        self.rect_tweens.retain(|t| t.3 < t.4);
+        self.last_rects = shown.clone();
+        shown
     }
 
     /// Plays `anim` on this page (`play(name)`); a newer player owns the
@@ -112,13 +157,71 @@ impl Runtime {
         }
     }
 
-    /// Plays every visible node's `on:show` once (the entrance on first build).
+    /// Plays every visible node's `on:show` once (the entrance on first
+    /// build). A node under a `gone` ancestor is not on screen: no entrance.
     pub fn play_entrances(&mut self, page: &Page) {
+        let gone: Vec<bool> = (0..page.nodes.len()).map(|i| {
+            let n = i as NodeId;
+            page.prop(n, PropKey::Visibility).map(|v| matches!(v, Value::VIdent(id) if page.str(id) == "gone")).unwrap_or(false) || self.writes.iter().any(|(w, p)| *w == n && p.key == PropKey::Visibility && matches!(p.value, Value::VIdent(id) if page.str(id) == "gone"))
+        }).collect();
         for i in 0..page.nodes.len() {
-            if page.prop(i as NodeId, PropKey::Visibility).map(|v| matches!(v, Value::VIdent(id) if page.str(id) == "gone")).unwrap_or(false) {
+            let mut n = i as NodeId;
+            let mut hidden = false;
+            loop {
+                if gone[n as usize] {
+                    hidden = true;
+                    break;
+                }
+                let parent = page.nodes[n as usize].parent;
+                if parent == NO_NODE {
+                    break;
+                }
+                n = parent;
+            }
+            if hidden {
                 continue;
             }
             self.play_action(page, i as NodeId, "show", Finish::Nothing);
+        }
+    }
+
+    /// A `repeat x max=N` node's built items, in order (its `empty { }`
+    /// child is not one).
+    pub fn items(&self, page: &Page, repeat: NodeId) -> Vec<NodeId> {
+        page.children(repeat).map(|i| i as NodeId).filter(|c| page.nodes[*c as usize].kind != Kind::Empty).collect()
+    }
+
+    /// Shows the first `n` items of a `repeat x max=N` node (the rest are
+    /// `gone`); its `empty { }` content shows only at zero. More than N
+    /// clamps to N.
+    pub fn set_count(&mut self, page: &mut Page, repeat: NodeId, n: usize) {
+        let items = self.items(page, repeat);
+        for (i, item) in items.iter().enumerate() {
+            self.set_visible(page, *item, i < n);
+        }
+        let empties: Vec<NodeId> = page.children(repeat).map(|i| i as NodeId).filter(|c| page.nodes[*c as usize].kind == Kind::Empty).collect();
+        for e in empties {
+            self.set_visible(page, e, n == 0);
+        }
+    }
+
+    /// Is `anim` mid-play?
+    pub fn is_playing(&self, anim: StrId) -> bool {
+        self.players.iter().any(|p| p.anim == anim && !p.stopped)
+    }
+
+    /// Stops `anim` (WPF Storyboard.Stop): `restore` puts every channel it
+    /// owns back to its pre-play value; the player's finish action does
+    /// not run. Nothing happens when it is not playing.
+    pub fn stop(&mut self, anim: StrId, restore: bool) {
+        let mut any = false;
+        for p in self.players.iter_mut().filter(|p| p.anim == anim) {
+            p.stop(restore, &mut self.motion);
+            any = true;
+        }
+        if any {
+            self.players.retain(|p| !p.stopped);
+            self.dirty = true;
         }
     }
 
@@ -128,6 +231,10 @@ impl Runtime {
         for t in &mut self.tweens {
             t.elapsed += dt;
         }
+        for t in &mut self.rect_tweens {
+            t.3 += dt;
+        }
+        moving |= !self.rect_tweens.is_empty();
         let before = self.tweens.len();
         self.tweens.retain(|t| t.elapsed < t.duration);
         moving |= before > 0;
@@ -226,6 +333,37 @@ impl Runtime {
         self.states[node as usize] & bit != 0
     }
 
+    /// Bumps `node`'s paint order among its siblings (the shipped
+    /// Canvas.ZIndex): higher draws on top and takes the touch first, 0 =
+    /// back to the file's order. Layout is untouched — only paint and hit.
+    pub fn set_raise(&mut self, node: NodeId, raise: i32) {
+        let before = self.raised.iter().find(|(n, _)| *n == node).map(|(_, r)| *r).unwrap_or(0);
+        if before == raise {
+            return;
+        }
+        self.raised.retain(|(n, _)| *n != node);
+        if raise != 0 {
+            self.raised.push((node, raise));
+        }
+        self.dirty = true;
+    }
+
+    /// EFFECTIVE `disabled`: the node's own flag or any ancestor's — the
+    /// WPF IsEnabled law; a child cannot re-enable under a disabled parent.
+    pub fn disabled(&self, page: &Page, node: NodeId) -> bool {
+        let mut n = node;
+        loop {
+            if self.has(n, DISABLED) {
+                return true;
+            }
+            let parent = page.nodes[n as usize].parent;
+            if parent == NO_NODE {
+                return false;
+            }
+            n = parent;
+        }
+    }
+
     pub fn go(&mut self, arrangement: u32) {
         if self.arrangement != arrangement {
             let from = self.arrangement;
@@ -240,16 +378,37 @@ impl Runtime {
         self.go(target);
     }
 
-    pub fn state_active(&self, node: NodeId, state: State) -> bool {
+    /// The host names the live screen orientation and class (one of
+    /// `SCREEN_ORIENTATIONS`, one of `SCREEN_CLASSES`); every `when
+    /// screen.*` re-poses at once, instantly (no transition, like a
+    /// rotation). A word the page never mentions is simply not active.
+    pub fn set_screen(&mut self, page: &Page, orientation: &str, class: &str) {
+        let mut words: Vec<StrId> = Vec::new();
+        for w in [orientation, class] {
+            let id = page.intern_lookup(w);
+            if id != NO_STR {
+                words.push(id);
+            }
+        }
+        words.sort();
+        if words != self.screen {
+            self.screen = words;
+            self.dirty = true;
+        }
+    }
+
+    pub fn state_active(&self, page: &Page, node: NodeId, state: State) -> bool {
         match state {
             State::Held => self.has(node, HELD),
             State::Hovered => self.has(node, HOVERED),
             State::Focused => self.has(node, FOCUSED),
             State::FocusWithin => self.has(node, FOCUS_WITHIN),
             State::Selected => self.has(node, SELECTED),
-            State::StateDisabled => self.has(node, DISABLED),
+            State::StateDisabled => self.disabled(page, node),
             State::Arrangement(i) => self.arrangement == i,
-            State::Screen(class) => self.screen.contains(&class),
+            State::ScreenOrientation(w) | State::ScreenClass(w) => self.screen.contains(&w),
+            State::ArrangementScreen(i, w) => self.arrangement == i && self.screen.contains(&w),
+            State::ScreenPair(o, c) => self.screen.contains(&o) && self.screen.contains(&c),
         }
     }
 }
@@ -272,6 +431,8 @@ pub struct Resolved {
     /// Per node: the state bits (`SELECTED`, `DISABLED` …) — the native
     /// looks draw the mark from them.
     pub states: Vec<u8>,
+    /// Paint-order bumps (`Runtime::set_raise`), copied for draw and hit.
+    pub raised: Vec<(NodeId, i32)>,
 }
 
 impl Resolved {
@@ -375,6 +536,17 @@ impl Resolved {
         out
     }
 
+    /// `children` in PAINT order: siblings sorted by their raise (stable,
+    /// so equal raises keep the file's order). Draw and hit use this;
+    /// layout keeps the file's order.
+    pub fn paint_children(&self, page: &Page, id: NodeId) -> Vec<NodeId> {
+        let mut out = self.children(page, id);
+        if !self.raised.is_empty() {
+            out.sort_by_key(|c| self.raised.iter().find(|(n, _)| n == c).map(|(_, r)| *r).unwrap_or(0));
+        }
+        out
+    }
+
     /// `visibility=hidden` — laid out, not drawn, no input.
     pub fn hidden(&self, page: &Page, node: NodeId) -> bool {
         self.ident(page, node, PropKey::Visibility) == Some("hidden")
@@ -407,12 +579,12 @@ pub fn deref(page: &Page, variant: StrId, v: Value) -> Value {
 }
 
 pub fn resolve(page: &Page, rt: &Runtime) -> Resolved {
-    let mut r = Resolved { placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: rt.motion.clone(), seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone() };
+    let mut r = Resolved { placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: rt.motion.clone(), seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone() };
     for (i, node) in page.nodes.iter().enumerate() {
         let id = i as NodeId;
         let mut placement = node.placement;
         // Active whens, lowest priority first (stable: file order within a level).
-        let mut active: Vec<&When> = page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize].iter().filter(|w| rt.state_active(if w.of == NO_NODE { id } else { w.of }, w.state)).collect();
+        let mut active: Vec<&When> = page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize].iter().filter(|w| rt.state_active(page, if w.of == NO_NODE { id } else { w.of }, w.state)).collect();
         active.sort_by_key(|w| w.state.priority());
         for w in active {
             for p in &page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize] {
@@ -461,6 +633,7 @@ fn fold_seats_and_motion(page: &Page, r: &mut Resolved) {
                     PropKey::ScaleY => m.scale[1] = n,
                     PropKey::TranslateX => m.translate[0] = n,
                     PropKey::TranslateY => m.translate[1] = n,
+                    PropKey::Rotate => m.rotate = n,
                     _ => {}
                 }
             }
@@ -556,6 +729,9 @@ const ANIMATABLE: &[PropKey] = &[
     PropKey::ScaleY,
     PropKey::TranslateX,
     PropKey::TranslateY,
+    PropKey::Rotate,
+    PropKey::FontColor,
+    PropKey::Angle,
 ];
 
 /// A placement field as a prop value (`None` where the file did not speak).
@@ -618,6 +794,18 @@ fn find_rule(page: &Page, node: NodeId, from: Option<State>, to: Option<State>) 
 pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
     let mut r = resolve(page, rt);
     let changes = std::mem::take(&mut rt.changes);
+    // An arrangement flip with a timed view rule: the boxes it re-poses
+    // glide to their new rects (`Runtime::glide`).
+    for (who, from, to) in &changes {
+        if *who == NO_NODE {
+            if let Some(rule) = find_rule(page, NO_NODE, *from, *to) {
+                if rule.duration > 0.0 {
+                    let easing = if rule.easing == NO_STR { Easing::LINEAR } else { Easing::parse(page.str(rule.easing)).unwrap_or(Easing::LINEAR) };
+                    rt.glide_start = Some((rule.duration, easing));
+                }
+            }
+        }
+    }
     if !changes.is_empty() && !rt.last.is_empty() {
         for (i, node) in page.nodes.iter().enumerate() {
             let id = i as NodeId;

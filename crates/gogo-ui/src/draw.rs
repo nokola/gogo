@@ -34,12 +34,20 @@ pub enum Draw {
     Circle { rect: Rect, color: Rgba, border: f32, border_color: Rgba },
     /// `image` is the `src` string id; the renderer maps it to a texture.
     Image { rect: Rect, image: StrId, tint: Rgba, fit: Fit },
-    /// Two-stop gradient (first/last stop) — the form the renderer draws.
-    Gradient { rect: Rect, kind: GradientKind, from: Rgba, to: Rgba, angle: f32 },
+    /// One segment of a gradient over the whole `rect`: `from` → `to`
+    /// across the `band` (0..1 along the gradient's run; `(0, 1)` is the
+    /// whole run), nothing painted outside it. A gradient with N stops is
+    /// N−1 of these. `angle` is the CSS compass: 0 = to top, 90 = to
+    /// right, clockwise.
+    Gradient { rect: Rect, kind: GradientKind, from: Rgba, to: Rgba, angle: f32, band: (f32, f32) },
     /// `text`/`key`: the English literal and its translation key.
     Text { rect: Rect, text: StrId, key: StrId, font_size: f32, color: Rgba, halign: TextAlign, valign: TextAlign, wrap: bool, font: StrId },
     ClipPush(Rect),
     ClipPop,
+    /// Everything until the matching `RotatePop` turns `angle` degrees
+    /// clockwise about (`cx`, `cy`) epx — a node's `rotate` and its subtree.
+    RotatePush { angle: f32, cx: f32, cy: f32 },
+    RotatePop,
 }
 
 pub const DEFAULT_TEXT_COLOR: Rgba = Rgba([0xFF, 0xFF, 0xFF, 0xFF]);
@@ -123,6 +131,10 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     if clip {
         out.push(Draw::ClipPush(rect));
     }
+    let rotated = motion.rotate != 0.0;
+    if rotated {
+        out.push(Draw::RotatePush { angle: motion.rotate, cx: rect.x + rect.w / 2.0, cy: rect.y + rect.h / 2.0 });
+    }
 
     match node.kind {
         Kind::View | Kind::Panel | Kind::ListItem | Kind::Slot => {
@@ -171,7 +183,10 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                         let pill = if selected { accent } else { mul_alpha(TOGGLE_OFF, opacity) };
                         out.push(Draw::Quad { rect: mark, color: pill, corner: mh / 2.0, border: 0.0, border_color: Rgba::TRANSPARENT });
                         let inset = (mh - TOGGLE_KNOB_EPX) / 2.0;
-                        let x = if selected { mark.right() - inset - TOGGLE_KNOB_EPX } else { mark.x + inset };
+                        // The knob sits where the finger left it (`value=` 0..1,
+                        // written by a drag); with no value, at the selected end.
+                        let fraction = res.num(page, id, PropKey::Value).map(|v| v.clamp(0.0, 1.0)).unwrap_or(if selected { 1.0 } else { 0.0 });
+                        let x = mark.x + inset + (mark.right() - inset - TOGGLE_KNOB_EPX - (mark.x + inset)) * fraction;
                         out.push(Draw::Circle { rect: Rect::new(x, mark.y + inset, TOGGLE_KNOB_EPX, TOGGLE_KNOB_EPX), color: white, border: 0.0, border_color: Rgba::TRANSPARENT });
                     }
                 }
@@ -205,18 +220,44 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
         }
         Kind::Gradient => {
             let stops = res.prop(page, id, PropKey::Stops).map(|v| page.list(v).to_vec()).unwrap_or_default();
-            let stop_color = |v: &Value| match v {
-                Value::VStop { color, .. } => Some(*color),
-                Value::VColor(c) => Some(*c),
-                _ => None,
-            };
-            let from = stops.first().and_then(stop_color).unwrap_or(Rgba::TRANSPARENT);
-            let to = stops.last().and_then(stop_color).unwrap_or(from);
             let kind = match res.ident(page, id, PropKey::GradientFill) {
                 Some("radial") => GradientKind::Radial,
                 _ => GradientKind::Linear,
             };
-            out.push(Draw::Gradient { rect, kind, from: mul_alpha(from, opacity), to: mul_alpha(to, opacity), angle: res.num(page, id, PropKey::Angle).unwrap_or(0.0) });
+            // No `angle=`: left → right (Godot's fill_from (0,0) → fill_to
+            // (1,0)), which is 90 on the compass.
+            let angle = res.num(page, id, PropKey::Angle).unwrap_or(90.0);
+            // (color, position): `@pos` as written, else spread evenly.
+            let mut colored: Vec<(Rgba, Option<f32>)> = stops.iter().filter_map(|v| match v {
+                Value::VStop { color, pos } => Some((mul_alpha(*color, opacity), *pos)),
+                Value::VColor(c) => Some((mul_alpha(*c, opacity), None)),
+                _ => None,
+            }).collect();
+            let n = colored.len();
+            for (i, (_, pos)) in colored.iter_mut().enumerate() {
+                if pos.is_none() {
+                    *pos = Some(if n <= 1 { 0.0 } else { i as f32 / (n - 1) as f32 });
+                }
+            }
+            let at = |i: usize| colored[i].1.unwrap_or(0.0).clamp(0.0, 1.0);
+            match n {
+                0 => {}
+                1 => out.push(Draw::Gradient { rect, kind, from: colored[0].0, to: colored[0].0, angle, band: (0.0, 1.0) }),
+                _ => {
+                    // Before the first stop and after the last, the edge color holds.
+                    if at(0) > 0.0 {
+                        out.push(Draw::Gradient { rect, kind, from: colored[0].0, to: colored[0].0, angle, band: (0.0, at(0)) });
+                    }
+                    for i in 0..n - 1 {
+                        if at(i + 1) > at(i) {
+                            out.push(Draw::Gradient { rect, kind, from: colored[i].0, to: colored[i + 1].0, angle, band: (at(i), at(i + 1)) });
+                        }
+                    }
+                    if at(n - 1) < 1.0 {
+                        out.push(Draw::Gradient { rect, kind, from: colored[n - 1].0, to: colored[n - 1].0, angle, band: (at(n - 1), 1.0) });
+                    }
+                }
+            }
         }
         Kind::Image | Kind::Icon => {
             let src = match res.prop(page, id, if node.kind == Kind::Image { PropKey::Source } else { PropKey::IconName }) {
@@ -283,11 +324,11 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             let r = rects[i];
             moved_rects[i] = Rect::new(cx + (r.x - cx) * motion.scale[0] + motion.translate[0], cy + (r.y - cy) * motion.scale[1] + motion.translate[1], r.w * motion.scale[0], r.h * motion.scale[1]);
         }
-        for c in res.children(page, id) {
+        for c in res.paint_children(page, id) {
             walk(page, res, &moved_rects, c, opacity, out);
         }
     } else {
-        for c in res.children(page, id) {
+        for c in res.paint_children(page, id) {
             walk(page, res, rects, c, opacity, out);
         }
     }
@@ -309,6 +350,9 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             out.push(Draw::Quad { rect: Rect::new(x + 1.0, rect.bottom() - SCROLL_BAR_EPX, len - 1.0, SCROLL_BAR_EPX), color: grabber, corner: 0.0, border: 0.0, border_color: Rgba::TRANSPARENT });
         }
     }
+    if rotated {
+        out.push(Draw::RotatePop);
+    }
     if clip {
         out.push(Draw::ClipPop);
     }
@@ -321,13 +365,28 @@ fn moved(r: Rect, m: &crate::anim::Motion) -> Rect {
     Rect::new(r.x + (r.w - w) / 2.0 + m.translate[0], r.y + (r.h - h) / 2.0 + m.translate[1], w, h)
 }
 
+/// The nodes in PAINT order (parents before children, siblings by their
+/// raise): what `hit` scans backwards, so the touch lands on what the eye
+/// sees on top.
+fn paint_order(page: &Page, res: &Resolved, id: NodeId, out: &mut Vec<NodeId>) {
+    out.push(id);
+    for c in res.paint_children(page, id) {
+        paint_order(page, res, c, out);
+    }
+}
+
 /// The top-most node under (x, y) that takes input: a press surface, a
-/// node with handlers, or a Scroll — walking the arena backwards (last
-/// painted first), honoring `visibility` and Scroll clips. `any`: return
-/// the top-most visible node of any kind instead.
+/// node with handlers, or a Scroll — walking the paint order backwards
+/// (last painted first), honoring `visibility` and Scroll clips. `any`:
+/// return the top-most visible node of any kind instead.
 pub fn hit(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: bool) -> Option<NodeId> {
-    for i in (0..page.nodes.len()).rev() {
-        let id = i as NodeId;
+    if page.nodes.is_empty() {
+        return None;
+    }
+    let mut order: Vec<NodeId> = Vec::with_capacity(page.nodes.len());
+    paint_order(page, res, 0, &mut order);
+    for id in order.into_iter().rev() {
+        let i = id as usize;
         if !rects[i].contains(x, y) {
             continue;
         }

@@ -463,22 +463,38 @@ pub enum State {
     StateDisabled,
     /// Index into `Page::arrangements`.
     Arrangement(u32),
-    /// `screen.<class>` / `screen.<orientation>` — the class word.
-    Screen(StrId),
+    /// `screen.<orientation>` — `portrait` or `landscape` (the word).
+    ScreenOrientation(StrId),
+    /// `screen.<class>` — one of `SCREEN_CLASSES` (the word).
+    ScreenClass(StrId),
+    /// `when <arrangement> screen.<class|orientation>`: both must hold.
+    ArrangementScreen(u32, StrId),
+    /// `when screen.<orientation> screen.<class>`: both must hold.
+    ScreenPair(StrId, StrId),
 }
 
+/// The five screen classes a `when screen.<class>` may pose for — a CLOSED
+/// set, so a file reads the same in every project; the host names the
+/// live one (`Runtime::set_screen`).
+pub const SCREEN_CLASSES: &[&str] = &["portraitSmall", "portraitMedium", "portraitLarge", "landscapeSmall", "lotsOfSpace"];
+/// The second, closed axis: which way the screen runs.
+pub const SCREEN_ORIENTATIONS: &[&str] = &["portrait", "landscape"];
+
 impl State {
-    /// Spec priority: arrangements < focus_within < focused < hovered <
-    /// selected < held < disabled.
+    /// Spec priority: orientation < class < arrangement < a composed pair
+    /// < focus_within < focused < hovered < selected < held < disabled.
     pub fn priority(self) -> u8 {
         match self {
-            State::Arrangement(_) | State::Screen(_) => 0,
-            State::FocusWithin => 1,
-            State::Focused => 2,
-            State::Hovered => 3,
-            State::Selected => 4,
-            State::Held => 5,
-            State::StateDisabled => 6,
+            State::ScreenOrientation(_) => 0,
+            State::ScreenClass(_) => 1,
+            State::Arrangement(_) => 2,
+            State::ArrangementScreen(..) | State::ScreenPair(..) => 3,
+            State::FocusWithin => 4,
+            State::Focused => 5,
+            State::Hovered => 6,
+            State::Selected => 7,
+            State::Held => 8,
+            State::StateDisabled => 9,
         }
     }
 }
@@ -553,6 +569,21 @@ pub struct AnimTrack {
     pub start: f32,
     pub duration: f32,
     pub easing: StrId,
+    /// `from=current`: the live value is captured at PLAY start (and held
+    /// through the track's delay), not when the track begins.
+    pub current: bool,
+    /// `autoreverse=true`: out and back, the return leg with the same easing.
+    pub autoreverse: bool,
+}
+
+/// An `anim` header: how the whole chain plays.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AnimHead {
+    pub anim: StrId,
+    /// `repeat=forever`.
+    pub repeat: bool,
+    /// `speed=` (1 = as written).
+    pub speed: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -579,7 +610,20 @@ pub struct Node {
     /// `disabled=true`, a `choice`'s `value=`): `runtime::SELECTED` /
     /// `runtime::DISABLED`. The Runtime starts every node from these.
     pub initial_states: u8,
+    /// A Radio's `choice` group (index into `Page::choices`); `NO_CHOICE` = none.
+    pub choice: u32,
     pub line: u32,
+}
+
+pub const NO_CHOICE: u32 = u32::MAX;
+
+/// A `choice { Radio … }` group: the one-of-N set every Radio inside
+/// belongs to, and what its pick reports (`on:change=`, or the choice's
+/// own name as the handler).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChoiceGroup {
+    pub name: StrId,
+    pub action: Option<Action>,
 }
 
 impl Node {
@@ -598,6 +642,7 @@ impl Node {
         gap_fill: false,
         auto: Auto::NoAuto,
         initial_states: 0,
+        choice: NO_CHOICE,
         line: 0,
     };
 }
@@ -678,6 +723,8 @@ pub struct StaticPage {
     pub arrangements: &'static [StrId],
     pub transitions: &'static [Transition],
     pub anims: &'static [AnimTrack],
+    pub anim_heads: &'static [AnimHead],
+    pub choices: &'static [ChoiceGroup],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -693,6 +740,8 @@ pub struct Page {
     pub arrangements: Vec<StrId>,
     pub transitions: Vec<Transition>,
     pub anims: Vec<AnimTrack>,
+    pub anim_heads: Vec<AnimHead>,
+    pub choices: Vec<ChoiceGroup>,
 }
 
 impl Page {
@@ -709,6 +758,8 @@ impl Page {
             arrangements: s.arrangements.to_vec(),
             transitions: s.transitions.to_vec(),
             anims: s.anims.to_vec(),
+            anim_heads: s.anim_heads.to_vec(),
+            choices: s.choices.to_vec(),
         }
     }
 

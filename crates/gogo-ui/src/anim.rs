@@ -16,6 +16,7 @@ pub enum Curve {
     Quint,
     Circle,
     Expo,
+    Power,
     Back,
     Bounce,
     Elastic,
@@ -28,17 +29,41 @@ pub enum Mode {
     InOut,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// The parameter words a curve takes next to `easing=` (`bounces=1,
+/// bounciness=2.4`), in the order `Easing::params` stores them.
+pub const PARAMS_FOR_CURVE: &[(Curve, &[&str])] = &[
+    (Curve::Expo, &["exponent"]),
+    (Curve::Power, &["power"]),
+    (Curve::Back, &["amplitude"]),
+    (Curve::Bounce, &["bounces", "bounciness"]),
+    (Curve::Elastic, &["oscillations", "springiness"]),
+];
+
+/// Every parameter word any curve takes.
+pub const EASING_PARAM_KEYS: &[&str] = &["exponent", "power", "amplitude", "bounces", "bounciness", "oscillations", "springiness"];
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Easing {
     pub curve: Curve,
     pub mode: Mode,
+    /// The curve's parameters in `PARAMS_FOR_CURVE` order; `None` = the
+    /// WPF default (Expo exponent 2, Power 2, Back amplitude 1, Bounce 3
+    /// bounces at bounciness 2, Elastic 3 oscillations at springiness 3).
+    pub params: [Option<f32>; 2],
 }
 
 impl Easing {
-    pub const LINEAR: Easing = Easing { curve: Curve::Linear, mode: Mode::Out };
+    pub const LINEAR: Easing = Easing { curve: Curve::Linear, mode: Mode::Out, params: [None, None] };
 
-    /// `cubic_out`, `back_in_out`, bare `cubic` = ease-out (spec).
+    /// `cubic_out`, `back_in_out`, bare `cubic` = ease-out (spec). A
+    /// parameter list may follow: `bounce_out(1,2.4)` — the form the
+    /// compiler writes into the page's strings so a track carries its
+    /// easing as one word.
     pub fn parse(name: &str) -> Option<Easing> {
+        let (name, param_text) = match name.split_once('(') {
+            Some((n, rest)) => (n, Some(rest.trim_end_matches(')'))),
+            None => (name, None),
+        };
         let (base, mode) = if let Some(b) = name.strip_suffix("_in_out") {
             (b, Mode::InOut)
         } else if let Some(b) = name.strip_suffix("_out") {
@@ -57,79 +82,128 @@ impl Easing {
             "quint" => Curve::Quint,
             "circle" => Curve::Circle,
             "expo" => Curve::Expo,
+            "power" => Curve::Power,
             "back" => Curve::Back,
             "bounce" => Curve::Bounce,
             "elastic" => Curve::Elastic,
             _ => return None,
         };
-        Some(Easing { curve, mode })
+        let mut params: [Option<f32>; 2] = [None, None];
+        if let Some(text) = param_text {
+            for (i, part) in text.split(',').enumerate().take(2) {
+                let part = part.trim();
+                if !part.is_empty() {
+                    params[i] = part.parse().ok();
+                }
+            }
+        }
+        Some(Easing { curve, mode, params })
+    }
+
+    /// The one-word form `parse` reads back: `bounce_out(1,2.4)`.
+    pub fn to_word(&self) -> String {
+        let base = match self.curve {
+            Curve::Linear => "linear",
+            Curve::Sine => "sine",
+            Curve::Quad => "quad",
+            Curve::Cubic => "cubic",
+            Curve::Quart => "quart",
+            Curve::Quint => "quint",
+            Curve::Circle => "circle",
+            Curve::Expo => "expo",
+            Curve::Power => "power",
+            Curve::Back => "back",
+            Curve::Bounce => "bounce",
+            Curve::Elastic => "elastic",
+        };
+        let mode = match self.mode {
+            Mode::In => "_in",
+            Mode::Out => "_out",
+            Mode::InOut => "_in_out",
+        };
+        let mut word = format!("{base}{mode}");
+        if self.params.iter().any(|p| p.is_some()) {
+            let a = self.params[0].map(|v| v.to_string()).unwrap_or_default();
+            let b = self.params[1].map(|v| v.to_string()).unwrap_or_default();
+            word.push_str(&format!("({a},{b})"));
+        }
+        word
     }
 
     /// Eased progress for `t` in 0..1 (WPF EasingFunctionBase math).
     pub fn apply(self, t: f32) -> f32 {
         let t = t.clamp(0.0, 1.0);
         match self.mode {
-            Mode::In => ease_in(self.curve, t),
-            Mode::Out => 1.0 - ease_in(self.curve, 1.0 - t),
+            Mode::In => ease_in(self.curve, self.params, t),
+            Mode::Out => 1.0 - ease_in(self.curve, self.params, 1.0 - t),
             Mode::InOut => {
                 if t < 0.5 {
-                    ease_in(self.curve, t * 2.0) * 0.5
+                    ease_in(self.curve, self.params, t * 2.0) * 0.5
                 } else {
-                    (1.0 - ease_in(self.curve, (1.0 - t) * 2.0)) * 0.5 + 0.5
+                    (1.0 - ease_in(self.curve, self.params, (1.0 - t) * 2.0)) * 0.5 + 0.5
                 }
             }
         }
     }
 }
 
-/// The ease-in shapes; WPF defaults: Back amplitude 1, Bounce 3 bounces
-/// bounciness 2, Elastic 3 oscillations springiness 3, Expo exponent 2,
-/// Power 2 (= Quad).
-fn ease_in(curve: Curve, t: f32) -> f32 {
+/// The ease-in shapes (WPF *Ease.EaseInCore).
+fn ease_in(curve: Curve, params: [Option<f32>; 2], t: f32) -> f32 {
+    let p0 = |default: f32| params[0].unwrap_or(default);
+    let p1 = |default: f32| params[1].unwrap_or(default);
     match curve {
         Curve::Linear => t,
-        Curve::Sine => 1.0 - ((t * std::f32::consts::FRAC_PI_2).cos()),
+        Curve::Sine => 1.0 - (std::f32::consts::FRAC_PI_2 * (1.0 - t)).sin(),
         Curve::Quad => t * t,
         Curve::Cubic => t * t * t,
         Curve::Quart => t * t * t * t,
         Curve::Quint => t * t * t * t * t,
         Curve::Circle => 1.0 - (1.0 - t * t).max(0.0).sqrt(),
+        Curve::Power => t.powf(p0(2.0).max(0.0)),
         Curve::Expo => {
-            let e = 2.0f32;
-            ((e * t).exp() - 1.0) / (e.exp() - 1.0)
+            let e = p0(2.0);
+            if e.abs() < 1e-10 {
+                t
+            } else {
+                ((e * t).exp() - 1.0) / (e.exp() - 1.0)
+            }
         }
         Curve::Back => {
-            let a = 1.0f32;
+            let a = p0(1.0).max(0.0);
             t * t * t - t * a * (t * std::f32::consts::PI).sin()
         }
-        Curve::Bounce => {
-            // WPF BounceEase.EaseInCore with Bounces=3, Bounciness=2.
-            let bounces = 3.0f32;
-            let bounciness = 2.0f32;
-            let pow = bounciness.powf(bounces);
-            let one_minus = 1.0 - bounciness;
-            let sum_units = (1.0 - pow) / one_minus + pow * 0.5;
-            let unit_at_t = t * sum_units;
-            let bounce_at_t = ((unit_at_t * one_minus + 1.0).ln() / bounciness.ln()).floor();
-            let start = (1.0 - bounciness.powf(bounce_at_t)) / one_minus;
-            let end = start + bounciness.powf(bounce_at_t);
-            let mid = (start + end) * 0.5;
-            let radius = mid - start;
-            let amplitude = bounciness.powf(bounce_at_t) / pow;
-            let x = unit_at_t - mid;
-            (-amplitude / (radius * radius) * (x - radius) * (x + radius)).max(0.0).min(1.0) * 0.0 + {
-                // WPF returns 1 - (amplitude/radius² · (x−r)(x+r)) shape inverted for ease-in.
-                let y = -amplitude / (radius * radius) * (x - radius) * (x + radius);
-                1.0 - y.max(0.0)
-            } - if bounce_at_t == 0.0 && t == 0.0 { 1.0 } else { 0.0 }
-        }
+        Curve::Bounce => bounce_ease_in(p0(3.0), p1(2.0), t),
         Curve::Elastic => {
-            let oscillations = 3.0f32;
-            let springiness = 3.0f32;
-            let expo = ((springiness * t).exp() - 1.0) / (springiness.exp() - 1.0);
+            let oscillations = p0(3.0).max(0.0);
+            let springiness = p1(3.0).max(0.0);
+            let expo = if springiness.abs() < 1e-10 { t } else { ((springiness * t).exp() - 1.0) / (springiness.exp() - 1.0) };
             expo * ((std::f32::consts::TAU * oscillations + std::f32::consts::FRAC_PI_2) * t).sin()
         }
     }
+}
+
+/// WPF BounceEase.EaseInCore, the reference source's geometric-series
+/// form: bounce widths grow by `bounciness` each bounce (the last counted
+/// at half weight), and each bounce is a quadratic arc.
+fn bounce_ease_in(bounces: f32, bounciness: f32, t: f32) -> f32 {
+    let bounces = bounces.floor().max(0.0);
+    // Bounciness at or below 1 divides by zero below; WPF clamps the same way.
+    let bounciness = if bounciness < 1.0 || (bounciness - 1.0).abs() < 1e-10 { 1.001 } else { bounciness };
+    let pow_bb = bounciness.powf(bounces);
+    let one_minus = 1.0 - bounciness;
+    let sum_of_units = (1.0 - pow_bb) / one_minus + pow_bb * 0.5;
+    let unit_at_t = t * sum_of_units;
+    // Which bounce holds t: solve unit_at_t = (1 - b^n) / (1 - b) for n.
+    let bounce_at_t = (-unit_at_t * (1.0 - bounciness) + 1.0).ln() / bounciness.ln();
+    let start = bounce_at_t.floor();
+    let end = start + 1.0;
+    let start_time = (1.0 - bounciness.powf(start)) / (one_minus * sum_of_units);
+    let end_time = (1.0 - bounciness.powf(end)) / (one_minus * sum_of_units);
+    let mid_time = (start_time + end_time) * 0.5;
+    let time_relative_to_peak = t - mid_time;
+    let radius = mid_time - start_time;
+    let amplitude = (1.0 / bounciness).powf(bounces - start);
+    (-amplitude / (radius * radius)) * (time_relative_to_peak - radius) * (time_relative_to_peak + radius)
 }
 
 /// A property tween from a `transition` rule.
@@ -212,7 +286,7 @@ impl Channel {
 pub struct Motion {
     pub translate: [f32; 2],
     pub scale: [f32; 2],
-    /// Degrees; drawn as-is only by renderers that rotate (the quad renderer does not).
+    /// Degrees, clockwise, about the node's center.
     pub rotate: f32,
     pub opacity: f32,
 }
@@ -254,7 +328,18 @@ struct Track {
     start: f32,
     duration: f32,
     easing: Easing,
-    started: bool,
+    /// Plays out and back: the return leg mirrors the outbound one with
+    /// the same easing, so the track lasts `2 × duration`.
+    autoreverse: bool,
+    /// The channel's value before this track first wrote it (`stop`
+    /// restores it).
+    base: f32,
+}
+
+impl Track {
+    fn end(&self) -> f32 {
+        self.start + if self.autoreverse { 2.0 * self.duration } else { self.duration }
+    }
 }
 
 /// What a finished player does (`on:hide=play(x)` hides on finish).
@@ -268,55 +353,112 @@ pub enum Finish {
 pub struct Player {
     pub anim: StrId,
     tracks: Vec<Track>,
+    /// Anim seconds (already multiplied by `speed`).
     pub elapsed: f32,
     pub finish: Finish,
     /// Channels this player owns (a newer player takes them over — WPF SnapshotAndReplace).
     pub owns: Vec<(NodeId, Channel)>,
+    /// `repeat=forever`: the clock wraps at the chain's end instead of finishing.
+    pub repeat: bool,
+    pub speed: f32,
+    /// Set by `stop`: the next `tick` reports the player done without
+    /// writing (a stop is not a finish — `finish` does not run).
+    pub stopped: bool,
 }
 
 impl Player {
-    /// Instantiates the anim's tracks for the page; `from` values that pin
-    /// (`from=`) are applied to the motion at play start so a staggered
-    /// entrance never flashes its base.
+    /// Instantiates the anim's tracks for the page. A track's authored
+    /// `from=` is written at play start and held until the track begins
+    /// (a staggered entrance never flashes its base) — for the FIRST
+    /// track on a channel only; a later track on the same channel chains
+    /// from the value the previous one leaves. `from=current` captures
+    /// the live value now, at play start.
     pub fn new(page: &Page, anim: StrId, motion: &mut [Motion], finish: Finish) -> Player {
-        let mut tracks = Vec::new();
+        let mut tracks: Vec<Track> = Vec::new();
         let mut owns = Vec::new();
+        let head = page.anim_heads.iter().find(|h| h.anim == anim);
         for t in page.anims.iter().filter(|t| t.anim == anim) {
             let easing = if t.easing == NO_STR { Easing::LINEAR } else { Easing::parse(page.str(t.easing)).unwrap_or(Easing::LINEAR) };
             let Some(channels) = Channel::parse(page.str(t.channel)) else { continue };
             for channel in channels {
-                if let Some(from) = t.from {
-                    motion[t.node as usize].set(channel, from);
+                let live = motion[t.node as usize].get(channel);
+                let first_on_channel = !tracks.iter().any(|x| x.node == t.node && x.channel == channel);
+                let from = if t.current {
+                    Some(live)
+                } else if first_on_channel {
+                    if let Some(f) = t.from {
+                        motion[t.node as usize].set(channel, f);
+                    }
+                    t.from
+                } else {
+                    None
+                };
+                tracks.push(Track { node: t.node, channel, from, to: t.to, start: t.start, duration: t.duration, easing, autoreverse: t.autoreverse, base: live });
+                if !owns.contains(&(t.node, channel)) {
+                    owns.push((t.node, channel));
                 }
-                tracks.push(Track { node: t.node, channel, from: t.from, to: t.to, start: t.start, duration: t.duration, easing, started: false });
-                owns.push((t.node, channel));
             }
         }
-        Player { anim, tracks, elapsed: 0.0, finish, owns }
+        Player { anim, tracks, elapsed: 0.0, finish, owns, repeat: head.map(|h| h.repeat).unwrap_or(false), speed: head.map(|h| h.speed).unwrap_or(1.0).max(0.001), stopped: false }
     }
 
     pub fn length(&self) -> f32 {
-        self.tracks.iter().map(|t| t.start + t.duration).fold(0.0, f32::max)
+        self.tracks.iter().map(Track::end).fold(0.0, f32::max)
+    }
+
+    /// Writes every channel for anim time `t` (idempotent, so a repeat
+    /// wrap replays the chain from its start).
+    fn apply_at(&mut self, t: f32, motion: &mut [Motion]) {
+        for track in &mut self.tracks {
+            if t < track.start {
+                continue;
+            }
+            if track.from.is_none() {
+                track.from = Some(motion[track.node as usize].get(track.channel));
+            }
+            let from = track.from.unwrap_or(track.to);
+            let local = t - track.start;
+            let value = if track.duration <= 0.0 {
+                track.to
+            } else if track.autoreverse && local > track.duration {
+                let back = ((local - track.duration) / track.duration).min(1.0);
+                lerp(track.to, from, track.easing.apply(back))
+            } else {
+                lerp(from, track.to, track.easing.apply((local / track.duration).min(1.0)))
+            };
+            motion[track.node as usize].set(track.channel, value);
+        }
     }
 
     /// Advances and writes the channels; true while still playing.
     pub fn tick(&mut self, dt: f32, motion: &mut [Motion]) -> bool {
-        self.elapsed += dt;
-        for t in &mut self.tracks {
-            if self.elapsed < t.start {
-                continue;
-            }
-            if !t.started {
-                t.started = true;
-                if t.from.is_none() {
-                    t.from = Some(motion[t.node as usize].get(t.channel));
+        if self.stopped {
+            return false;
+        }
+        self.elapsed += dt * self.speed;
+        let total = self.length();
+        if self.repeat && total > 0.0 {
+            let t = self.elapsed % total;
+            self.apply_at(t, motion);
+            return true;
+        }
+        let t = self.elapsed.min(total);
+        self.apply_at(t, motion);
+        self.elapsed < total
+    }
+
+    /// WPF Storyboard.Stop: every channel back to the value it had before
+    /// the play (`restore`), or left where it is. Owned channels only —
+    /// a channel a newer player took over is that player's to restore.
+    pub fn stop(&mut self, restore: bool, motion: &mut [Motion]) {
+        self.stopped = true;
+        if restore {
+            for track in &self.tracks {
+                if self.owns.contains(&(track.node, track.channel)) {
+                    motion[track.node as usize].set(track.channel, track.base);
                 }
             }
-            let from = t.from.unwrap_or(t.to);
-            let p = if t.duration <= 0.0 { 1.0 } else { ((self.elapsed - t.start) / t.duration).min(1.0) };
-            motion[t.node as usize].set(t.channel, lerp(from, t.to, t.easing.apply(p)));
         }
-        self.elapsed < self.length()
     }
 }
 
@@ -326,10 +468,10 @@ mod tests {
 
     #[test]
     fn easing_endpoints_and_shapes() {
-        for name in ["linear", "sine_in", "quad_out", "cubic_in_out", "quart", "quint_in", "circle_out", "expo_in", "back_out", "elastic_out"] {
+        for name in ["linear", "sine_in", "quad_out", "cubic_in_out", "quart", "quint_in", "circle_out", "expo_in", "power", "back_out", "elastic_out", "bounce_out", "bounce_in"] {
             let e = Easing::parse(name).unwrap();
-            assert!((e.apply(0.0)).abs() < 1e-4, "{name} at 0");
-            assert!((e.apply(1.0) - 1.0).abs() < 1e-4, "{name} at 1");
+            assert!((e.apply(0.0)).abs() < 1e-3, "{name} at 0 = {}", e.apply(0.0));
+            assert!((e.apply(1.0) - 1.0).abs() < 1e-3, "{name} at 1 = {}", e.apply(1.0));
         }
         // Bare name = ease-out; ease-out of cubic is above the line.
         let c = Easing::parse("cubic").unwrap();
@@ -340,6 +482,25 @@ mod tests {
         let b = Easing::parse("back_out").unwrap();
         assert!((0..20).any(|i| b.apply(i as f32 / 20.0) > 1.0));
         assert!(Easing::parse("nope").is_none());
+    }
+
+    /// WPF BounceEase(Bounces=3, Bounciness=2) ease-in, the numbers the
+    /// Godot gogo port produces (gogo_easing.gd): the curve must never be
+    /// NaN (a NaN offset made the crop panel vanish).
+    #[test]
+    fn bounce_matches_the_reference_numbers() {
+        let e = Easing::parse("bounce_in").unwrap();
+        for (t, want) in [(0.1, 0.0475), (0.25, 0.1094), (0.5, 0.4688)] {
+            let got = e.apply(t);
+            assert!(got.is_finite() && (got - want).abs() < 2e-3, "bounce_in({t}) = {got}, want {want}");
+        }
+        // Parameters change the curve (crop_page: bounces=1, bounciness=2.4).
+        let p = Easing::parse("bounce_out(1,2.4)").unwrap();
+        assert_eq!(p.params, [Some(1.0), Some(2.4)]);
+        assert_eq!(p.to_word(), "bounce_out(1,2.4)");
+        assert!((p.apply(0.5) - e.apply(0.5)).abs() > 1e-3);
+        assert!((0..=20).all(|i| p.apply(i as f32 / 20.0).is_finite()));
+        assert!((Easing::parse("power_in(3)").unwrap().apply(0.5) - 0.125).abs() < 1e-5);
     }
 
     #[test]

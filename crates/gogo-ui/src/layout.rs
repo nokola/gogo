@@ -118,6 +118,8 @@ pub const DEFAULT_FONT_SIZE: f32 = 15.0;
 /// A Button with no `padding` declared gets this air around its content.
 pub const BUTTON_PADDING: [f32; 4] = [12.0, 6.0, 12.0, 6.0];
 pub const SLIDER_HEIGHT: f32 = 32.0;
+/// The Slider's knob; the pointer math parks its edges at the track's ends.
+pub const SLIDER_KNOB_EPX: f32 = 16.0;
 pub const INPUT_HEIGHT: f32 = 36.0;
 /// The native Check/Radio mark (no body of its own): a 20-epx square / ring.
 pub const CHECK_BOX_EPX: f32 = 20.0;
@@ -167,12 +169,23 @@ impl<'a> Lay<'a> {
         self.res.gone(self.page, id)
     }
 
-    /// The children that take part in layout: not `gone`, and not a
-    /// `repeat` with no items — an empty repeat is nothing on screen, so it
-    /// takes no stack slot and no `spacing` (it did: the test page's menu
-    /// carried a 4-epx gap for a list with no tasks).
+    /// The children that take part in layout: not `gone`; a `repeat`
+    /// stands for its shown items (they take the parent's slots as if
+    /// written there — a Column's `spacing` spaces them), so an empty
+    /// repeat is nothing on screen: no slot, no spacing.
     fn visible_children(&self, id: NodeId) -> Vec<NodeId> {
-        self.res.children(self.page, id).into_iter().filter(|c| !self.gone(*c) && !(self.node(*c).kind == Kind::Repeat && self.node(*c).children.1 == 0)).collect()
+        let mut out: Vec<NodeId> = Vec::new();
+        for c in self.res.children(self.page, id) {
+            if self.gone(c) {
+                continue;
+            }
+            if self.node(c).kind == Kind::Repeat {
+                out.extend(self.res.children(self.page, c).into_iter().filter(|g| !self.gone(*g)));
+            } else {
+                out.push(c);
+            }
+        }
+        out
     }
 
     /// The children that count toward `id`'s minimum: `overlay=true` boxes
@@ -257,17 +270,22 @@ impl<'a> Lay<'a> {
     }
 
     /// How much a child gets when its parent already has a width and is
-    /// splitting it: a fill child's `min_width` only (it will take its
-    /// share of what's left), any other child its own size. `cross` = the
-    /// other axis's known size, for wrapped text. (A parent that is still
-    /// asking its children how wide to be uses `stack_min` instead.)
+    /// splitting it: a fill child its FLOOR — its content (a Button never
+    /// goes under its label; Godot's BoxContainer clamps an expanding
+    /// child to its minimum) or its declared `min_*`, whichever is more —
+    /// then it takes its share of what's left; any other child its own
+    /// size. `cross` = the other axis's known size, for wrapped text. (A
+    /// parent that is still asking its children how wide to be uses
+    /// `stack_min` instead.)
     fn main_min(&self, id: NodeId, axis: Axis, cross: Option<f32>) -> f32 {
         let p = self.placement(id);
-        if let Len::Fill(_) = self.main_len(id, axis) {
-            return if axis == Axis::X { p.min_width } else { p.min_height };
-        }
         let (w, h) = self.size_at(id, if axis == Axis::Y { cross } else { None });
-        if axis == Axis::X { w } else { h }
+        let content = if axis == Axis::X { w } else { h };
+        if let Len::Fill(_) = self.main_len(id, axis) {
+            let declared = if axis == Axis::X { p.min_width } else { p.min_height };
+            return declared.max(content);
+        }
+        content
     }
 
     /// The share weight along a stack's axis (0 = a fixed slot).
@@ -322,12 +340,47 @@ impl<'a> Lay<'a> {
             Kind::Label => {
                 let wrap = self.res.bool(self.page, id, PropKey::Wrap).unwrap_or(false);
                 let text = self.text_of(id).unwrap_or("");
-                // Hug measures unwrapped; wrapping needs a bound width.
-                let bound = if wrap { inner_w.or(self.placement(id).max_width) } else { None };
+                let p = self.placement(id);
+                // Wrapping happens only where a width BINDS the text: `fill`
+                // asks the parent for space, an exact number IS the box, an
+                // UNALIGNED axis with no width word stretches over the frame
+                // (the tip dialogs' paragraphs), and a cap (`max_width=`)
+                // stops a hug. Only a HUG axis — declared, or an aligned
+                // axis with no width — measures UNWRAPPED, "size to the
+                // text", staying one line until a cap binds it.
+                let hugs = matches!(p.width, Len::Hug(_)) || (matches!(p.width, Len::Unset) && p.halign != Align::AlignUnset);
+                let bound = if !wrap {
+                    None
+                } else if !hugs {
+                    match p.width {
+                        Len::Exact(n) => Some(inner_w.map_or(n - inset[0] - inset[2], |i| i.min(n - inset[0] - inset[2])).max(0.0)),
+                        _ => inner_w,
+                    }
+                } else {
+                    let cap = if p.max_width_fill { inner_w } else { p.max_width.map(|c| (c - inset[0] - inset[2]).max(0.0)) };
+                    cap.map(|c| inner_w.map_or(c, |i| c.min(i)))
+                };
                 let (w, h) = self.text.measure(text, self.font_size(id), bound, self.font_key(id));
                 // A wrapping label that fills its width has no width of its
                 // own (Godot's autowrap minimum): the text bends to the box.
-                let w = if wrap && matches!(self.placement(id).width, Len::Fill(_)) { 0.0 } else { w };
+                // A `clip_text=true` label demands no width either — it cuts
+                // itself to whatever it gets (the effect captions in tiles).
+                let claims_nothing = (wrap && matches!(p.width, Len::Fill(_))) || self.res.bool(self.page, id, PropKey::ClipText).unwrap_or(false);
+                let w = if claims_nothing { 0.0 } else { w };
+                (w, h)
+            }
+            // A seat's minimum is its occupant's, margins never counted (the
+            // occupant is fitted to the socket rect); a hug occupant measures
+            // unbounded (wrap-text on one line), a fill or exact one at the
+            // socket's width.
+            Kind::Seat => {
+                let (mut w, mut h) = (0.0f32, 0.0f32);
+                for c in self.sizing_children(id) {
+                    let binds = matches!(self.placement(c).width, Len::Fill(_) | Len::Exact(_));
+                    let (cw, ch) = self.size_at(c, if binds { inner_w } else { None });
+                    w = w.max(cw);
+                    h = h.max(ch);
+                }
                 (w, h)
             }
             Kind::Button | Kind::Check | Kind::Toggle | Kind::Radio => {
@@ -355,7 +408,7 @@ impl<'a> Lay<'a> {
             Kind::Row => self.stack_min(id, Axis::X, inner_w),
             Kind::Flow => self.flow_min(id, inner_w),
             Kind::Tiles => self.tiles_min(id, inner_w),
-            Kind::View | Kind::Layers | Kind::Panel | Kind::ListItem | Kind::Repeat | Kind::Custom | Kind::Slot | Kind::Seat | Kind::Empty => {
+            Kind::View | Kind::Layers | Kind::Panel | Kind::ListItem | Kind::Repeat | Kind::Custom | Kind::Slot | Kind::Empty => {
                 let (mut w, mut h) = (0.0f32, 0.0f32);
                 for c in self.sizing_children(id) {
                     let (cw, ch) = self.child_extent(c, inner_w);
@@ -511,6 +564,14 @@ impl<'a> Lay<'a> {
             Kind::Tiles => self.place_tiles(id, inner),
             Kind::Grid => self.place_grid(id, inner),
             Kind::Scroll => self.place_scroll(id, inner),
+            // The occupant takes the socket's whole rect: its own alignment
+            // and margins never bind here.
+            Kind::Seat => {
+                for c in self.visible_children(id) {
+                    self.rects[c as usize] = inner;
+                    self.place_children(c, inner);
+                }
+            }
             _ => {
                 for c in self.visible_children(id) {
                     self.place(c, inner, false);
@@ -598,13 +659,14 @@ impl<'a> Lay<'a> {
 
     // ----- tiles -------------------------------------------------------------
 
-    /// The Tiles lattice: unit = width / cols; a cell is `span` units
-    /// (`full_row` = all of them), packed first-fit in declaration order,
-    /// wrapping whole; a row is as tall as its tallest cell.
+    /// The Tiles lattice: unit = width / cols, cells abut (no gutters —
+    /// `spacing=` says nothing here); a cell is `span` units (`full_row` =
+    /// all of them), packed first-fit in declaration order, wrapping
+    /// whole; a row is as tall as its tallest cell.
     fn tiles_cells(&self, id: NodeId, inner_w: f32) -> (Vec<(NodeId, Rect)>, f32) {
-        let spacing = self.spacing(id);
+        let spacing = 0.0f32;
         let cols = self.res.num(self.page, id, PropKey::Cols).unwrap_or(1.0).max(1.0) as usize;
-        let unit = ((inner_w - spacing * (cols as f32 - 1.0)) / cols as f32).max(0.0);
+        let unit = (inner_w / cols as f32).max(0.0);
         let mut out: Vec<(NodeId, Rect)> = Vec::new();
         let mut col = 0usize;
         let mut y = 0.0f32;
@@ -652,13 +714,11 @@ impl<'a> Lay<'a> {
     fn place_tiles(&mut self, id: NodeId, inner: Rect) {
         let (cells, _) = self.tiles_cells(id, inner.w);
         for (c, r) in cells {
-            let p = *self.placement(c);
             let (_, own_h) = self.size_at(c, Some(r.w));
-            // A cell is as tall as its own minimum, top-aligned in its row.
-            let h = match p.height {
-                Len::Fill(_) => r.h,
-                _ => own_h.min(r.h.max(own_h)),
-            };
+            // A cell is as tall as its own minimum, top-aligned in its row —
+            // heights are content truth, `height=fill` does not stretch a
+            // cell to the row.
+            let h = own_h;
             let rect = Rect::new(inner.x + r.x, inner.y + r.y, r.w, h);
             self.rects[c as usize] = rect;
             self.place_children(c, rect);
@@ -706,24 +766,8 @@ impl<'a> Lay<'a> {
         self.res.scroll.get(_id as usize).copied().unwrap_or([0.0, 0.0])
     }
 
-    /// Which axes a Scroll pans: `allow=` when present, else inferred from
-    /// the triad (a hug axis is content-sized, nothing to scroll).
     fn scroll_axes(&self, id: NodeId) -> (bool, bool) {
-        if let Some(allow) = self.res.ident(self.page, id, PropKey::Allow) {
-            return match allow {
-                "horizontal" => (true, false),
-                "both" => (true, true),
-                _ => (false, true),
-            };
-        }
-        let p = self.placement(id);
-        let sx = !matches!(p.width, Len::Hug(_)) || p.max_width.is_some();
-        let sy = !matches!(p.height, Len::Hug(_)) || p.max_height.is_some();
-        // Default (no allow=, no hug): vertical only, the WPF ScrollViewer reading.
-        if sx && sy && !matches!(p.width, Len::Exact(_) | Len::Fill(_)) {
-            return (false, true);
-        }
-        (sx && matches!(p.width, Len::Exact(_) | Len::Fill(_)) && matches!(p.height, Len::Hug(_)), sy)
+        scroll_axes_of(self.page, self.res, id)
     }
 
     // ----- grid --------------------------------------------------------------
@@ -959,6 +1003,27 @@ fn free_axis(start: f32, extent: f32, len: Len, align: Align, m_near: Option<f32
         }
     };
     (pos, size)
+}
+
+/// Which axes a Scroll pans: `allow=` when present, else inferred from
+/// the triad (a hug axis is content-sized, nothing to scroll). The one
+/// rule for layout and input.
+pub fn scroll_axes_of(page: &Page, res: &Resolved, id: NodeId) -> (bool, bool) {
+        if let Some(allow) = res.ident(page, id, PropKey::Allow) {
+            return match allow {
+                "horizontal" => (true, false),
+                "both" => (true, true),
+                _ => (false, true),
+            };
+        }
+        let p = &res.placement[id as usize];
+        let sx = !matches!(p.width, Len::Hug(_)) || p.max_width.is_some();
+        let sy = !matches!(p.height, Len::Hug(_)) || p.max_height.is_some();
+        // Default (no allow=, no hug): vertical only, the WPF ScrollViewer reading.
+        if sx && sy && !matches!(p.width, Len::Exact(_) | Len::Fill(_)) {
+            return (false, true);
+        }
+        (sx && matches!(p.width, Len::Exact(_) | Len::Fill(_)) && matches!(p.height, Len::Hug(_)), sy)
 }
 
 #[cfg(test)]
