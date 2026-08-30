@@ -46,13 +46,10 @@ fn is_page(source: &str) -> bool {
 /// What `build_pages` needs from the host beyond the folders.
 #[derive(Clone, Copy)]
 pub struct BuildOptions<'a> {
-    /// The folder asset paths resolve against: `source="x/y.png"` (or
-    /// `<asset_prefix>x/y.png`) = `res_root/x/y.png`. A missing file fails
-    /// the build.
+    /// The folder `res://` resolves against: `source="res://x/y.png"` =
+    /// `res_root/x/y.png` (the scheme is gogo's, required on every asset
+    /// path — G0071). A missing file fails the build.
     pub res_root: &'a Path,
-    /// A scheme prefix stripped from asset paths before joining with
-    /// `res_root`; `""` = none. Default `"res://"`.
-    pub asset_prefix: &'a str,
     /// The face text falls back to: the first named font whose key contains
     /// this text goes first in `FONTS`. `None` = the first font in key
     /// order.
@@ -67,10 +64,10 @@ pub struct BuildOptions<'a> {
 }
 
 impl<'a> BuildOptions<'a> {
-    /// The defaults with `res_root` set: `res://` prefix, `.ignore` fence,
-    /// no default font, no host options.
+    /// The defaults with `res_root` set: `.ignore` fence, no default
+    /// font, no host options.
     pub fn new(res_root: &'a Path) -> Self {
-        BuildOptions { res_root, asset_prefix: "res://", default_font: None, ignore_marker: Some(".ignore"), compile: CompileOptions::default() }
+        BuildOptions { res_root, default_font: None, ignore_marker: Some(".ignore"), compile: CompileOptions::default() }
     }
 }
 
@@ -105,12 +102,18 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
         }
         let compiled = compile_file_with(path, options.compile)?;
         for s in &compiled.page.strings {
+            // Only `res://` strings are assets (G0071 makes the scheme
+            // mandatory) — a label whose TEXT ends in ".png" no longer
+            // reaches the embed tables.
+            if !s.starts_with("res://") {
+                continue;
+            }
             let lower = s.to_ascii_lowercase();
-            if lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") {
+            if compile::IMAGE_EXTS.iter().any(|e| lower.ends_with(e)) {
                 if !images.contains(s) {
                     images.push(s.clone());
                 }
-            } else if lower.ends_with(".ttf") || lower.ends_with(".otf") {
+            } else if compile::FONT_EXTS.iter().any(|e| lower.ends_with(e)) {
                 if !fonts.contains(s) {
                     fonts.push(s.clone());
                 }
@@ -139,7 +142,7 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
     let table = |name: &str, doc: &str, keys: &[String], errors: &mut String| -> String {
         let mut t = format!("/// {doc}\npub const {name}: &[(&str, &[u8])] = &[\n");
         for key in keys {
-            let rel = if options.asset_prefix.is_empty() { key.as_str() } else { key.strip_prefix(options.asset_prefix).unwrap_or(key) };
+            let rel = key.strip_prefix("res://").unwrap_or(key);
             let file = res_root.join(rel);
             if !file.is_file() {
                 errors.push_str(&format!("asset `{key}` not found at {}\n", file.display()));

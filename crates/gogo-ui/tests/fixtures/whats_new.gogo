@@ -37,11 +37,11 @@ View whatsNewRoot visibility=gone, on:show=play(pageIn), on:hide=play(pageOut) {
                     gap 20
                     Label text="After a few years, we're back with few significant updates:", wrap=true
                     gap 20
-                    Image source="assets/Images/New/30_gradient.jpg", width=250, height=100
+                    Image source="res://assets/Images/New/30_gradient.jpg", width=250, height=100
                     gap 20
                     Label font_size=$fontNormal, wrap=true,
                         text="• Pleasant, high quality gradients\n• Richer color, light, and high-precision painting\n• More than 30 fixes for crashes, and similar issues\n\n"
-                    Image source="assets/Images/New/30_logo.jpg", width=200, height=200
+                    Image source="res://assets/Images/New/30_logo.jpg", width=200, height=200
                     Label font_size=$fontNormal, wrap=true,
                         text="Let me know what works or doesn't - thank you!\nI read all reviews from the last 3 years."
                     gap 20

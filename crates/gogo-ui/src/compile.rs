@@ -33,6 +33,12 @@ pub struct CompileOptions<'a> {
 /// in the node's own epx space) — a code-drawn control's input.
 const EVENTS: &[&str] = &["activate", "press", "release", "change", "edit", "show", "hide", "touch"];
 
+/// The extensions the build embeds (`build_pages` collects every literal
+/// carrying one) — a literal naming one must write the `res://` scheme
+/// (G0071), so the two lists and the check stay one rule.
+pub(crate) const IMAGE_EXTS: &[&str] = &[".png", ".jpg", ".jpeg"];
+pub(crate) const FONT_EXTS: &[&str] = &[".ttf", ".otf"];
+
 #[derive(Clone, Default)]
 struct StyleDef {
     props: Vec<AstProp>,
@@ -766,6 +772,14 @@ impl<'a> Compiler<'a> {
                 }
             }
             AstValue::Str { text, key: term } => {
+                // Asset paths carry gogo's `res://` scheme, always: the
+                // prefix says in the file itself "resolved against the
+                // build's resource root and embedded" — a bare spelling
+                // would be a second way to write the same thing.
+                let lower = text.to_ascii_lowercase();
+                if !text.starts_with("res://") && IMAGE_EXTS.iter().chain(FONT_EXTS).any(|e| lower.ends_with(e)) {
+                    self.error("G0071", line, format!("`{text}` names an asset — write `res://{text}` (every asset path carries the scheme)"));
+                }
                 let text_id = self.intern(text);
                 let key_id = match term {
                     Some(k) => {
@@ -1869,6 +1883,19 @@ mod tests {
         assert_eq!(p.transitions[0].node, NO_NODE);
         assert_eq!(p.transitions[0].to, Some(State::Arrangement(0)));
         assert_eq!(p.transitions[1].node, bar);
+    }
+
+    /// G0071: every asset path writes the `res://` scheme — a bare
+    /// `source=`, `font=` or theme-var path is refused naming the fix; a
+    /// label's TEXT ending in ".png" is refused the same way (any such
+    /// string reaches the embed tables). `source=""` (code-filled) passes.
+    #[test]
+    fn asset_paths_carry_the_res_scheme() {
+        assert!(codes("View v { Image i source=\"assets/x.png\" }").contains(&"G0071".to_string()));
+        assert!(codes("View v { Label l text=\"see x.png\" }").contains(&"G0071".to_string()));
+        assert!(codes("theme { $f = \"fonts/a.ttf\" }\nView v { Label l text=\"hi\", font=$f }").contains(&"G0071".to_string()));
+        assert!(!codes("View v { Image i source=\"res://assets/x.png\" }").contains(&"G0071".to_string()));
+        assert!(!codes("View v { Image i source=\"\" }").contains(&"G0071".to_string()));
     }
 
     #[test]
