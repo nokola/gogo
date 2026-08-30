@@ -8,6 +8,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use cosmic_text::{Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Weight, Wrap};
 use gogo::layout::TextMeasure;
@@ -99,10 +100,28 @@ pub struct TextEngine {
     dirty: bool,
     /// Set when the atlas grew: every uv handed out before is stale.
     pub generation: u32,
-    measure_cache: HashMap<(String, u32, u32, String), (f32, f32)>,
-    /// Shaped quads at the origin, per (text, size, width, font, box_w, halign),
-    /// with the atlas generation they were shaped against.
-    shape_cache: HashMap<(String, u32, u32, String, u32, u8), (u32, Vec<GlyphQuad>)>,
+    /// Keyed by a hash of (text, size, width, font) — no String is built
+    /// to look a measure up (a page lays out every animated frame). The
+    /// engine serves every page, and their `StrId`s overlap, so the text
+    /// itself is hashed, not its id. A 64-bit collision would return a
+    /// wrong size for one string in ~10^19; accepted.
+    measure_cache: HashMap<u64, (f32, f32)>,
+    /// Shaped quads at the origin, keyed by a hash of (text, size, width,
+    /// font, box_w, halign), with the atlas generation they were shaped
+    /// against.
+    shape_cache: HashMap<u64, (u32, Vec<GlyphQuad>)>,
+}
+
+/// The measure / shape cache key: a hash over the request, no allocation.
+fn cache_key(text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>, box_w: f32, halign: u8) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut h);
+    font_size.to_bits().hash(&mut h);
+    max_width.unwrap_or(-1.0).to_bits().hash(&mut h);
+    font.unwrap_or("").hash(&mut h);
+    box_w.to_bits().hash(&mut h);
+    halign.hash(&mut h);
+    h.finish()
 }
 
 impl TextEngine {
@@ -196,7 +215,7 @@ impl TextEngine {
 
     /// Width and height in device pixels.
     pub fn measure(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> (f32, f32) {
-        let key = (text.to_string(), font_size.to_bits(), max_width.unwrap_or(-1.0).to_bits(), font.unwrap_or("").to_string());
+        let key = cache_key(text, font_size, max_width, font, 0.0, 0);
         if let Some(v) = self.measure_cache.get(&key) {
             return *v;
         }
@@ -217,7 +236,7 @@ impl TextEngine {
     /// of the text box; rasterizes new glyphs into the atlas. `halign`:
     /// 0 start, 1 center, 2 end within `box_w` (when wrapping).
     pub fn shape(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>, x: f32, y: f32, box_w: f32, halign: u8) -> Vec<GlyphQuad> {
-        let key = (text.to_string(), font_size.to_bits(), max_width.unwrap_or(-1.0).to_bits(), font.unwrap_or("").to_string(), box_w.to_bits(), halign);
+        let key = cache_key(text, font_size, max_width, font, box_w, halign);
         if let Some((generation, quads)) = self.shape_cache.get(&key) {
             if *generation == self.generation {
                 let (dx, dy) = (x.round(), y.round());
