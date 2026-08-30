@@ -3,9 +3,9 @@
 //! in file order, so later = on top). Opacity multiplies down the walk.
 //! `gogo` never sees a device pixel; rects are epx.
 
-use crate::layout::{DEFAULT_FONT_SIZE, Rect};
+use crate::layout::{CHECK_BOX_EPX, DEFAULT_FONT_SIZE, MARK_TEXT_GAP, Rect, SCROLL_BAR_EPX, TOGGLE_PILL};
 use crate::page::*;
-use crate::runtime::Resolved;
+use crate::runtime::{DISABLED, Resolved, SELECTED};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextAlign {
@@ -43,7 +43,32 @@ pub enum Draw {
 }
 
 pub const DEFAULT_TEXT_COLOR: Rgba = Rgba([0xFF, 0xFF, 0xFF, 0xFF]);
-pub const DEFAULT_BUTTON_BACKGROUND: Rgba = Rgba([0x3C, 0x3C, 0x3C, 0xFF]);
+
+// The default look of the native kinds (spec "Default look"): the same
+// numbers on every engine, so a bare `Button text="OK"` is one picture
+// everywhere. A file restyles any of it with the ordinary words.
+/// A text-only Button's plate: gray 0.1 at 0.6 (Godot's default theme).
+pub const DEFAULT_BUTTON_BACKGROUND: Rgba = Rgba([0x1A, 0x1A, 0x1A, 0x99]);
+/// The Check box / Radio ring outline.
+pub const MARK_BORDER_EPX: f32 = 1.5;
+/// The Radio's inner dot when selected.
+pub const RADIO_DOT_EPX: f32 = 10.0;
+/// The Check's inner square when selected.
+pub const CHECK_DOT_EPX: f32 = 10.0;
+/// The Toggle's knob, inset 2 in the pill.
+pub const TOGGLE_KNOB_EPX: f32 = 18.0;
+/// The Toggle pill when off (`gray`); on = `accent`.
+pub const TOGGLE_OFF: Rgba = Rgba([0x70, 0x80, 0x90, 0xFF]);
+/// The Slider's track: 4 epx, gray, with the filled part white at 0.6,
+/// and a white 16-epx knob.
+pub const SLIDER_TRACK_EPX: f32 = 4.0;
+pub const SLIDER_KNOB_EPX: f32 = 16.0;
+pub const SLIDER_TRACK: Rgba = Rgba([0x5A, 0x5A, 0x5A, 0xFF]);
+pub const SLIDER_FILL: Rgba = Rgba([0xFF, 0xFF, 0xFF, 0x99]);
+/// Content of a `disabled` control dims to this.
+pub const DISABLED_OPACITY: f32 = 0.3;
+/// The auto scroll bar's grabber (Godot's default theme, measured #737373).
+pub const SCROLL_GRABBER: Rgba = Rgba([0x73, 0x73, 0x73, 0xFF]);
 
 pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
     let mut out = Vec::new();
@@ -76,7 +101,11 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     let node = &page.nodes[id as usize];
     let motion = res.motion.get(id as usize).copied().unwrap_or(crate::anim::Motion::IDENTITY);
     let rect = moved(rects[id as usize], &motion);
-    let opacity = opacity * res.num(page, id, PropKey::Opacity).unwrap_or(1.0).clamp(0.0, 1.0) * motion.opacity.clamp(0.0, 1.0);
+    let state: u8 = res.states.get(id as usize).copied().unwrap_or(0);
+    // A disabled control dims its whole subtree (the file's `when disabled`
+    // may say otherwise on top).
+    let disabled_dim: f32 = if state & DISABLED != 0 && res.num(page, id, PropKey::Opacity).is_none() { DISABLED_OPACITY } else { 1.0 };
+    let opacity = opacity * res.num(page, id, PropKey::Opacity).unwrap_or(1.0).clamp(0.0, 1.0) * motion.opacity.clamp(0.0, 1.0) * disabled_dim;
     let color = |key: PropKey| res.color(page, id, key).map(|c| mul_alpha(c, opacity));
     let corner = res.num(page, id, PropKey::CornerRadius).unwrap_or(0.0);
     let border = res.num(page, id, PropKey::BorderThickness).unwrap_or(0.0);
@@ -106,11 +135,48 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             }
         }
         Kind::Button | Kind::Check | Kind::Toggle | Kind::Radio => {
-            let bg = color(PropKey::Background).or_else(|| if templated { None } else { Some(mul_alpha(DEFAULT_BUTTON_BACKGROUND, opacity)) });
+            // Only a Button has a plate by default; a native mark draws its
+            // box/ring/pill and nothing behind it.
+            let native_mark = node.kind != Kind::Button && !templated;
+            let bg = color(PropKey::Background).or_else(|| if templated || native_mark { None } else { Some(mul_alpha(DEFAULT_BUTTON_BACKGROUND, opacity)) });
             if let Some(bg) = bg {
                 out.push(Draw::Quad { rect, color: bg, corner, border, border_color });
             } else if border > 0.0 {
                 out.push(Draw::Quad { rect, color: Rgba::TRANSPARENT, corner, border, border_color });
+            }
+            let mut text_rect = text_rect;
+            let mut halign_default = TextAlign::Center;
+            if native_mark {
+                let selected = state & SELECTED != 0;
+                let white = mul_alpha(DEFAULT_TEXT_COLOR, opacity);
+                let accent = mul_alpha(palette_color("accent").unwrap_or(DEFAULT_TEXT_COLOR), opacity);
+                let (mw, mh) = if node.kind == Kind::Toggle { TOGGLE_PILL } else { (CHECK_BOX_EPX, CHECK_BOX_EPX) };
+                let mark = Rect::new(text_rect.x, text_rect.y + (text_rect.h - mh) / 2.0, mw, mh);
+                match node.kind {
+                    Kind::Check => {
+                        out.push(Draw::Quad { rect: mark, color: if selected { accent } else { Rgba::TRANSPARENT }, corner: 2.0, border: MARK_BORDER_EPX, border_color: white });
+                        if selected {
+                            let inset = (CHECK_BOX_EPX - CHECK_DOT_EPX) / 2.0;
+                            out.push(Draw::Quad { rect: mark.inset(inset, inset, inset, inset), color: white, corner: 1.0, border: 0.0, border_color: Rgba::TRANSPARENT });
+                        }
+                    }
+                    Kind::Radio => {
+                        out.push(Draw::Circle { rect: mark, color: Rgba::TRANSPARENT, border: MARK_BORDER_EPX, border_color: white });
+                        if selected {
+                            let inset = (CHECK_BOX_EPX - RADIO_DOT_EPX) / 2.0;
+                            out.push(Draw::Circle { rect: mark.inset(inset, inset, inset, inset), color: accent, border: 0.0, border_color: Rgba::TRANSPARENT });
+                        }
+                    }
+                    _ => {
+                        let pill = if selected { accent } else { mul_alpha(TOGGLE_OFF, opacity) };
+                        out.push(Draw::Quad { rect: mark, color: pill, corner: mh / 2.0, border: 0.0, border_color: Rgba::TRANSPARENT });
+                        let inset = (mh - TOGGLE_KNOB_EPX) / 2.0;
+                        let x = if selected { mark.right() - inset - TOGGLE_KNOB_EPX } else { mark.x + inset };
+                        out.push(Draw::Circle { rect: Rect::new(x, mark.y + inset, TOGGLE_KNOB_EPX, TOGGLE_KNOB_EPX), color: white, border: 0.0, border_color: Rgba::TRANSPARENT });
+                    }
+                }
+                text_rect = text_rect.inset(mw + MARK_TEXT_GAP, 0.0, 0.0, 0.0);
+                halign_default = TextAlign::Start;
             }
             if let Some(Value::VText { text, key }) = res.prop(page, id, PropKey::Text) {
                 out.push(Draw::Text {
@@ -119,7 +185,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                     key,
                     font_size: res.num(page, id, PropKey::FontSize).unwrap_or(DEFAULT_FONT_SIZE),
                     color: text_color(),
-                    halign: text_align(page, res, id, PropKey::TextHalign, TextAlign::Center),
+                    halign: text_align(page, res, id, PropKey::TextHalign, halign_default),
                     valign: text_align(page, res, id, PropKey::TextValign, TextAlign::Center),
                     wrap: false,
                     font: res.font(page, id).unwrap_or(NO_STR),
@@ -127,7 +193,10 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             }
         }
         Kind::Rectangle => {
-            let c = color(PropKey::Color).or_else(|| color(PropKey::Background)).unwrap_or(Rgba::TRANSPARENT);
+            // A Rectangle with no color is white (Godot's ColorRect default;
+            // the swatch squares in new_painting rely on it). A Circle with
+            // none draws nothing (gogo_circle.gd).
+            let c = color(PropKey::Color).or_else(|| color(PropKey::Background)).unwrap_or(mul_alpha(DEFAULT_TEXT_COLOR, opacity));
             out.push(Draw::Quad { rect, color: c, corner, border, border_color });
         }
         Kind::Circle => {
@@ -186,13 +255,13 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             let max = res.num(page, id, PropKey::Max).unwrap_or(100.0);
             let value = res.num(page, id, PropKey::Value).unwrap_or(min);
             let t = if max > min { ((value - min) / (max - min)).clamp(0.0, 1.0) } else { 0.0 };
-            let track = Rect::new(rect.x, rect.y + rect.h / 2.0 - 2.0, rect.w, 4.0);
-            let track_color = color(PropKey::Background).unwrap_or(mul_alpha(Rgba([0x5A, 0x5A, 0x5A, 0xFF]), opacity));
-            let fill = color(PropKey::Color).unwrap_or(mul_alpha(Rgba([0x1B, 0xA1, 0xE2, 0xFF]), opacity));
-            out.push(Draw::Quad { rect: track, color: track_color, corner: 2.0, border: 0.0, border_color: Rgba::TRANSPARENT });
-            out.push(Draw::Quad { rect: Rect::new(track.x, track.y, track.w * t, track.h), color: fill, corner: 2.0, border: 0.0, border_color: Rgba::TRANSPARENT });
-            let thumb = 20.0;
-            out.push(Draw::Circle { rect: Rect::new(rect.x + (rect.w - thumb) * t, rect.y + rect.h / 2.0 - thumb / 2.0, thumb, thumb), color: fill, border: 0.0, border_color: Rgba::TRANSPARENT });
+            let track = Rect::new(rect.x, rect.y + (rect.h - SLIDER_TRACK_EPX) / 2.0, rect.w, SLIDER_TRACK_EPX);
+            let track_color = color(PropKey::Background).unwrap_or(mul_alpha(SLIDER_TRACK, opacity));
+            let fill = color(PropKey::Color).unwrap_or(mul_alpha(SLIDER_FILL, opacity));
+            out.push(Draw::Quad { rect: track, color: track_color, corner: SLIDER_TRACK_EPX / 2.0, border: 0.0, border_color: Rgba::TRANSPARENT });
+            out.push(Draw::Quad { rect: Rect::new(track.x, track.y, track.w * t, track.h), color: fill, corner: SLIDER_TRACK_EPX / 2.0, border: 0.0, border_color: Rgba::TRANSPARENT });
+            let knob = SLIDER_KNOB_EPX;
+            out.push(Draw::Circle { rect: Rect::new(rect.x + (rect.w - knob) * t, rect.y + (rect.h - knob) / 2.0, knob, knob), color: mul_alpha(DEFAULT_TEXT_COLOR, opacity), border: 0.0, border_color: Rgba::TRANSPARENT });
         }
         Kind::Input => {
             // Godot's default LineEdit plate: (0.1, 0.1, 0.1) at 0.6, no border.
@@ -222,16 +291,22 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             walk(page, res, rects, c, opacity, out);
         }
     }
-    if node.kind == Kind::Scroll {
-        // Godot's auto scroll bar: a gray grabber in the right column, as
-        // long as the viewport's share of the content.
+    if node.kind == Kind::Scroll && res.ident(page, id, PropKey::Bars) != Some("never") {
+        // Godot's auto scroll bars: a gray grabber in the right column /
+        // bottom row, as long as the viewport's share of the content.
+        let content_w = res.children(page, id).iter().map(|c| rects[*c as usize].w).fold(0.0, f32::max);
         let content_h = res.children(page, id).iter().map(|c| rects[*c as usize].h).fold(0.0, f32::max);
-        if content_h > rect.h && res.ident(page, id, PropKey::Bars) != Some("never") {
-            let track = rect.h;
-            let len = (track * rect.h / content_h).max(8.0);
-            let offset = res.scroll.get(id as usize).map(|s| s[1]).unwrap_or(0.0);
-            let y = rect.y + (track - len) * (offset / (content_h - rect.h)).clamp(0.0, 1.0);
-            out.push(Draw::Quad { rect: Rect::new(rect.right() - crate::layout::SCROLL_BAR_EPX, y + 1.0, crate::layout::SCROLL_BAR_EPX, len - 1.0), color: mul_alpha(Rgba([0x6F, 0x6F, 0x6F, 0xFF]), opacity), corner: 0.0, border: 0.0, border_color: Rgba::TRANSPARENT });
+        let grabber = mul_alpha(SCROLL_GRABBER, opacity);
+        let offset = res.scroll.get(id as usize).copied().unwrap_or([0.0, 0.0]);
+        if content_h > rect.h {
+            let len = (rect.h * rect.h / content_h).max(8.0);
+            let y = rect.y + (rect.h - len) * (offset[1] / (content_h - rect.h)).clamp(0.0, 1.0);
+            out.push(Draw::Quad { rect: Rect::new(rect.right() - SCROLL_BAR_EPX, y + 1.0, SCROLL_BAR_EPX, len - 1.0), color: grabber, corner: 0.0, border: 0.0, border_color: Rgba::TRANSPARENT });
+        }
+        if content_w > rect.w {
+            let len = (rect.w * rect.w / content_w).max(8.0);
+            let x = rect.x + (rect.w - len) * (offset[0] / (content_w - rect.w)).clamp(0.0, 1.0);
+            out.push(Draw::Quad { rect: Rect::new(x + 1.0, rect.bottom() - SCROLL_BAR_EPX, len - 1.0, SCROLL_BAR_EPX), color: grabber, corner: 0.0, border: 0.0, border_color: Rgba::TRANSPARENT });
         }
     }
     if clip {
@@ -315,5 +390,33 @@ mod tests {
         let res = resolve(&c.page, &rt);
         let list = draw(&c.page, &res, &rects);
         assert!(matches!(list[2], Draw::Quad { color, .. } if color == Rgba([255, 255, 255, 128])), "{:?}", list[2]);
+    }
+
+    /// PR3 + PR8: the file's start states draw — a selected Radio shows
+    /// the accent dot, a selected Toggle the accent pill, a disabled
+    /// Button dims — and native marks draw no plate.
+    #[test]
+    fn start_states_and_native_marks() {
+        let src = "View v {\n Column c {\n  choice size value=medium { Radio small text=\"Small\"; Radio medium text=\"Medium\" }\n  Toggle mute text=\"Mute\", selected=true\n  Check save text=\"Save\"\n  Button undo text=\"Undo\", disabled=true\n }\n}\n";
+        let c = compile(src, &|_| None);
+        assert!(!crate::diag::has_errors(&c.diags), "{:#?}", c.diags);
+        let rt = Runtime::new(&c.page);
+        let medium = c.page.find("medium").unwrap();
+        let small = c.page.find("small").unwrap();
+        assert!(rt.has(medium, crate::runtime::SELECTED));
+        assert!(!rt.has(small, crate::runtime::SELECTED));
+        assert!(rt.has(c.page.find("mute").unwrap(), crate::runtime::SELECTED));
+        assert!(rt.has(c.page.find("undo").unwrap(), crate::runtime::DISABLED));
+        let res = resolve(&c.page, &rt);
+        let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        let list = draw(&c.page, &res, &rects);
+        let accent = palette_color("accent").unwrap();
+        // small: ring + text; medium: ring + dot + text; mute: pill + knob + text; save: box + text; undo: plate + text.
+        let circles = list.iter().filter(|d| matches!(d, Draw::Circle { .. })).count();
+        assert_eq!(circles, 4, "{list:#?}");
+        assert!(list.iter().any(|d| matches!(d, Draw::Circle { color, .. } if *color == accent)), "the medium dot");
+        assert!(list.iter().any(|d| matches!(d, Draw::Quad { color, corner, .. } if *color == accent && *corner == TOGGLE_PILL.1 / 2.0)), "the on pill");
+        assert!(!list.iter().any(|d| matches!(d, Draw::Quad { color, .. } if *color == DEFAULT_BUTTON_BACKGROUND)), "no plate under a mark; the undo plate is dimmed");
+        assert!(list.iter().any(|d| matches!(d, Draw::Text { color, .. } if color.0[3] == (255.0 * DISABLED_OPACITY) as u8 + 1 || color.0[3] == (255.0 * DISABLED_OPACITY).round() as u8)), "undo text dimmed: {list:#?}");
     }
 }

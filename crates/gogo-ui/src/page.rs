@@ -593,6 +593,10 @@ pub struct Node {
     pub gap_fill: bool,
     /// A slot region's `automatic=` coupling.
     pub auto: Auto,
+    /// State bits the file switches on at build (`selected=true`,
+    /// `disabled=true`, a `choice`'s `value=`): `runtime::SELECTED` /
+    /// `runtime::DISABLED`. The Runtime starts every node from these.
+    pub initial_states: u8,
     pub line: u32,
 }
 
@@ -611,9 +615,74 @@ impl Node {
         gap: 0.0,
         gap_fill: false,
         auto: Auto::NoAuto,
+        initial_states: 0,
         line: 0,
     };
 }
+
+/// The color words every `.gogo` can use bare (`color=red`), the one
+/// table for every engine — the same values as the Godot gogo resolver
+/// (gogo_resolver.gd PALETTE): CSS-named, readable on white and black. A
+/// theme block overrides a word for the file (`theme { red = #E51400 }`).
+pub const PALETTE: &[(&str, u32)] = &[
+    ("black", 0x000000),
+    ("white", 0xFFFFFF),
+    ("red", 0xFF6347),     // tomato
+    ("orange", 0xF4A460),  // sandy brown
+    ("yellow", 0xDAA520),  // goldenrod
+    ("green", 0x3CB371),   // medium sea green
+    ("teal", 0x5F9EA0),    // cadet blue
+    ("blue", 0x6495ED),    // cornflower
+    ("indigo", 0x6A5ACD),  // slate blue
+    ("purple", 0x9370DB),  // medium purple
+    ("pink", 0xDB7093),    // pale violet red
+    ("brown", 0xBC8F8F),   // rosy brown
+    ("smoke", 0xF5F4F0),   // warm off-white
+    ("silver", 0xDCDCDC),  // gainsboro
+    ("gray", 0x708090),    // slate gray
+    ("charcoal", 0x2F4F4F), // dark slate
+];
+
+/// Words that name a palette word: `accent` follows `blue` (remap one and
+/// the other follows).
+pub const PALETTE_ALIASES: &[(&str, &str)] = &[
+    ("accent", "blue"),
+    ("on_accent", "white"),
+    ("danger", "red"),
+    ("warning", "yellow"),
+    ("success", "green"),
+    ("info", "teal"),
+    ("text_muted", "gray"),
+];
+
+/// A palette word's color, aliases followed (`None` = not a palette word).
+pub fn palette_color(word: &str) -> Option<Rgba> {
+    let word = PALETTE_ALIASES.iter().find(|(a, _)| *a == word).map_or(word, |(_, of)| *of);
+    PALETTE.iter().find(|(w, _)| *w == word).map(|(_, hex)| Rgba([(hex >> 16) as u8, (hex >> 8) as u8, *hex as u8, 0xFF]))
+}
+
+/// Property words the compiler accepts and no pass reads, each with the
+/// reason. Needed because a key that parses and reaches nobody is a
+/// silent drop (`selected=`, `disabled=` and a `choice`'s `value=` were
+/// dropped for a round, 2026-08-30): the `every_prop_key_is_read` test
+/// fails on any key that is neither read by layout/draw/runtime/input/anim
+/// nor listed here.
+pub const UNREAD_BY_DESIGN: &[(PropKey, &str)] = &[
+    (PropKey::Loading, "`loading=lazy` — the decode-on-demand catalog is owed (Q4); every image decodes at boot for now"),
+    (PropKey::TouchTarget, "Godot-side touch-slop plate; hit testing here uses the node's own rect"),
+    (PropKey::TapPulse, "the press feedback pulse is a code-behind-round item (G12)"),
+    (PropKey::AccessibilityName, "no screen-reader bridge yet"),
+    (PropKey::KeyboardTarget, "no keyboard focus routing yet"),
+    (PropKey::Select, "List selection mode; Lists get items from code (G12)"),
+    (PropKey::Render, "`render=native|gogo` picked a Godot backend; one renderer here"),
+    (PropKey::Step, "Slider steps arrive with the drag wiring (G7)"),
+    (PropKey::IconSrc, "Godot-only icon file hint"),
+    (PropKey::Automatic, "read at compile into `Node.auto`, not as a prop"),
+    (PropKey::SeatOf, "read at resolve through `Resolved.seat`, not as a prop"),
+    (PropKey::ToggleMode, "`toggle=true` on a Button; the selected flip is a code-behind-round item (G12)"),
+    (PropKey::RowHeight, "Grid `row_height=`: rows size by `row height=` here; the prop form is owed"),
+    (PropKey::RowSpan, "Grid `row_span=`: only column spans are laid out (D82 subset); owed"),
+];
 
 /// The build-time shape: the same pools as `&'static` slices.
 pub struct StaticPage {
@@ -717,5 +786,39 @@ impl Page {
             Value::VList(first, count) => &self.values[first as usize..(first + count) as usize],
             _ => &[],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every word `PropKey::from_word` accepts is read somewhere, or says
+    /// why not in `UNREAD_BY_DESIGN`.
+    #[test]
+    fn every_prop_key_is_read() {
+        let page_src = include_str!("page.rs");
+        let readers = [include_str!("layout.rs"), include_str!("draw.rs"), include_str!("runtime.rs"), include_str!("input.rs"), include_str!("anim.rs"), include_str!("compile.rs")];
+        let from_word_start = page_src.find("pub fn from_word").expect("from_word");
+        let from_word = &page_src[from_word_start..];
+        let mut unread: Vec<String> = Vec::new();
+        for line in from_word.lines() {
+            if line.contains("split_once") {
+                continue;
+            }
+            let Some((_, rest)) = line.split_once("=> PropKey::") else { continue };
+            let variant: &str = rest.trim_end_matches(',').trim();
+            if variant.contains('(') {
+                continue;
+            }
+            let needle = format!("PropKey::{variant}");
+            // `compile.rs` reads a key when it matches on it outside `prop_key`
+            // (the placement keys, Text, Wrap …); the enum and from_word lines
+            // in page.rs do not count.
+            let read = readers.iter().any(|src| src.contains(&needle));
+            let excused = page_src.contains(&format!("(PropKey::{variant}, \""));
+            if !read && !excused {
+                unread.push(variant.to_string());
+            }
+        }
+        assert!(unread.is_empty(), "prop keys nobody reads — read them or list them in UNREAD_BY_DESIGN: {unread:?}");
     }
 }

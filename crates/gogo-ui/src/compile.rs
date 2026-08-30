@@ -8,6 +8,7 @@ use crate::anim::{Channel, Easing};
 use crate::ast::{AstItem, AstNode, AstProp, AstValue, Document};
 use crate::diag::Diagnostic;
 use crate::page::*;
+use crate::runtime::{DISABLED, SELECTED};
 use crate::parser::parse;
 
 /// Reads a `uses "path"` file relative to the current one; `None` = not found.
@@ -151,37 +152,17 @@ pub fn compile(source: &str, loader: Loader<'_>) -> Compiled {
     Compiled { page: c.page, diags: c.diags }
 }
 
+/// The bare color words: `page::PALETTE` (the one table, shared with the
+/// Godot resolver) plus its aliases and `transparent`.
 fn default_palette() -> HashMap<String, Rgba> {
     let mut p = HashMap::new();
-    let mut add = |name: &str, hex: u32| {
-        p.insert(name.to_string(), Rgba([(hex >> 16) as u8, (hex >> 8) as u8, hex as u8, 0xFF]));
-    };
-    add("black", 0x000000);
-    add("white", 0xFFFFFF);
-    add("red", 0xE51400);
-    add("orange", 0xFA6800);
-    add("yellow", 0xE3C800);
-    add("green", 0x60A917);
-    add("teal", 0x00ABA9);
-    add("blue", 0x1BA1E2);
-    add("indigo", 0x6A00FF);
-    add("purple", 0xAA00FF);
-    add("pink", 0xF472D0);
-    add("brown", 0x825A2C);
-    add("smoke", 0xEEEEEE);
-    add("silver", 0xBBBBBB);
-    add("gray", 0x7F7F7F);
-    add("charcoal", 0x333333);
-    add("surface", 0x1F1F1F);
-    add("panel", 0x2B2B2B);
-    add("border", 0x3C3C3C);
-    add("text", 0xFFFFFF);
-    p.insert("transparent".to_string(), Rgba::TRANSPARENT);
-    // Semantic aliases (resolved at theme time in Godot gogo; here at compile).
-    for (alias, of) in [("accent", "blue"), ("on_accent", "white"), ("danger", "red"), ("warning", "yellow"), ("success", "green"), ("info", "teal"), ("text_muted", "gray")] {
-        let c = p[of];
-        p.insert(alias.to_string(), c);
+    for (name, _) in PALETTE {
+        p.insert(name.to_string(), palette_color(name).expect("palette word"));
     }
+    for (alias, _) in PALETTE_ALIASES {
+        p.insert(alias.to_string(), palette_color(alias).expect("palette alias"));
+    }
+    p.insert("transparent".to_string(), Rgba::TRANSPARENT);
     p
 }
 
@@ -775,7 +756,15 @@ impl<'a> Compiler<'a> {
                 self.warning("G0042", p.line, format!("`{}` is not a known property of `{kind:?}`", p.key));
             }
         }
-        let value = self.value(&p.value, p.line, Some(key));
+        let mut value = self.value(&p.value, p.line, Some(key));
+        // `text=25` / `text=live($value)` with a number: the digits, so a
+        // value label needs no code to show its number.
+        if key == PropKey::Text {
+            if let Value::VNum(n) = value {
+                let digits: String = if n.fract() == 0.0 { format!("{}", n as i64) } else { format!("{n}") };
+                value = Value::VText { text: self.intern(&digits), key: NO_STR };
+            }
+        }
         Some(Prop { key, value })
     }
 
@@ -965,6 +954,22 @@ impl<'a> Compiler<'a> {
             }
         }
         tmp.node.placement = self.placement(&placement_props, n.line, parent_kind, kind);
+        // Start states the file declares; the Runtime seeds from them.
+        for prop in &tmp.props {
+            match (prop.key, prop.value) {
+                (PropKey::SelectedProp, Value::VBool(true)) => tmp.node.initial_states |= SELECTED,
+                (PropKey::Disabled, Value::VBool(true)) => tmp.node.initial_states |= DISABLED,
+                _ => {}
+            }
+        }
+        // A wrap label whose width never binds (G1004, the spec's lint):
+        // hug measures unwrapped (D254), so the text stays one line.
+        if kind == Kind::Label && tmp.props.iter().any(|p| p.key == PropKey::Wrap && p.value == Value::VBool(true)) {
+            let pl = &tmp.node.placement;
+            if matches!(pl.width, Len::Hug(_)) && pl.max_width.is_none() && !pl.max_width_fill {
+                self.warning("G1004", n.line, "`wrap=true` with `width=hug` and no `max_width` never wraps — the text measures unwrapped (D254); give it `width=fill` or a `max_width`");
+            }
+        }
 
         // Whens and transitions: style's first, then the node's.
         let own_whens = n.children.iter().filter_map(|c| match c {
@@ -993,11 +998,24 @@ impl<'a> Compiler<'a> {
                 // (one group under this node); with no code-behind its
                 // name and `on:change` carry nothing.
                 AstItem::Node(c) if c.type_word == "choice" => {
+                    // `value=<name>`: the Radio of that name starts selected.
+                    let start: Option<String> = c.props.iter().find(|p| p.key == "value").and_then(|p| p.value.as_ident().map(str::to_string));
+                    let mut found = start.is_none();
                     for item in &c.children {
                         if let AstItem::Node(k) = item {
-                            let child = self.node(k, Some(kind), None);
+                            if k.props.iter().any(|p| p.key == "selected") {
+                                self.error("G0068", k.line, "`selected=` on a Radio inside `choice` — the group's `value=<name>` picks the start");
+                            }
+                            let mut child = self.node(k, Some(kind), None);
+                            if start.is_some() && k.name == start {
+                                child.node.initial_states |= SELECTED;
+                                found = true;
+                            }
                             tmp.children.push(child);
                         }
+                    }
+                    if !found {
+                        self.error("G0069", c.line, format!("`choice value={}`: no Radio of that name in the group", start.unwrap_or_default()));
                     }
                 }
                 // A repeat's template needs items from code; with none, only

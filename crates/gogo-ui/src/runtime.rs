@@ -49,7 +49,9 @@ impl Runtime {
             arrangement: BASE,
             variant: NO_STR,
             screen: Vec::new(),
-            states: vec![0; page.nodes.len()],
+            // The file's start states (`selected=true`, `disabled=true`, a
+            // `choice`'s `value=`).
+            states: page.nodes.iter().map(|n| n.initial_states).collect(),
             scroll: vec![[0.0; 2]; page.nodes.len()],
             dirty: true,
             safe: [0.0; 4],
@@ -238,6 +240,9 @@ pub struct Resolved {
     pub motion: Vec<Motion>,
     /// Per node: the `seat` socket it sits in (`NO_NODE` = its declared home).
     pub seat: Vec<NodeId>,
+    /// Per node: the state bits (`SELECTED`, `DISABLED` …) — the native
+    /// looks draw the mark from them.
+    pub states: Vec<u8>,
 }
 
 impl Resolved {
@@ -373,7 +378,7 @@ pub fn deref(page: &Page, variant: StrId, v: Value) -> Value {
 }
 
 pub fn resolve(page: &Page, rt: &Runtime) -> Resolved {
-    let mut r = Resolved { placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: rt.motion.clone(), seat: vec![NO_NODE; page.nodes.len()] };
+    let mut r = Resolved { placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: rt.motion.clone(), seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone() };
     for (i, node) in page.nodes.iter().enumerate() {
         let id = i as NodeId;
         let mut placement = node.placement;

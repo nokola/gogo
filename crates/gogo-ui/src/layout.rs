@@ -1,10 +1,27 @@
 //! The layout pass: `layout(page, resolved, viewport, text) -> Vec<Rect>`.
-//! Pure — nothing is written back into the page. Two walks: minimums
-//! bottom-up (`min_size`), placement top-down (`place`). Semantics follow
+//! Pure — nothing is written back into the page. Measure and arrange, two
+//! questions with two names:
+//!
+//! - `size_at(node, width)` — MEASURE: the box the node wants given the
+//!   width its parent can offer (wrapped text and Flow rows need it).
+//!   Hugging parents, cross axes and "the height at the width I got" ask
+//!   this. Memoized per pass.
+//! - `main_min(node, axis)` — the floor a stack or grid grants along the
+//!   axis it splits: a `fill` child's `min_*` alone (fill takes its share,
+//!   never its content), a hug/exact child's measure.
+//! - `star_split` — ARRANGE along an axis: fixed slots take their size,
+//!   fills share what is left by weight, a fill under its floor takes the
+//!   floor and the rest re-share (Godot BoxContainer / WPF star).
+//!
+//! Then `place` lays each child into its slot top-down. Semantics follow
 //! the spec's Placement section: the sizing triad, alignment as position
 //! only, margins as inset / offset / pin, `spacing`/`gap` in stacks,
 //! weighted fills, Layers minimum = biggest child, Scroll content takes
-//! the viewport.
+//! the viewport. No invalidation graph: a dirty frame lays the whole page
+//! out again — at these page sizes that is cheaper than tracking.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
 
 use crate::page::*;
 use crate::runtime::Resolved;
@@ -90,8 +107,13 @@ pub const DEFAULT_FONT_SIZE: f32 = 15.0;
 pub const BUTTON_PADDING: [f32; 4] = [12.0, 6.0, 12.0, 6.0];
 pub const SLIDER_HEIGHT: f32 = 32.0;
 pub const INPUT_HEIGHT: f32 = 36.0;
-pub const CHECK_SIZE: (f32, f32) = (48.0, 32.0);
-/// The vertical scroll bar's column (Godot's default theme at 2× is 8 px).
+/// The native Check/Radio mark (no body of its own): a 20-epx square / ring.
+pub const CHECK_BOX_EPX: f32 = 20.0;
+/// The native Toggle switch: a 44×22 pill.
+pub const TOGGLE_PILL: (f32, f32) = (44.0, 22.0);
+/// Air between a native mark and its text.
+pub const MARK_TEXT_GAP: f32 = 8.0;
+/// A scroll bar's column (right) or row (bottom); Godot's default theme at 2× is 8 px.
 pub const SCROLL_BAR_EPX: f32 = 4.0;
 pub const ICON_SIZE: f32 = 24.0;
 
@@ -100,10 +122,13 @@ struct Lay<'a> {
     res: &'a Resolved,
     text: &'a dyn TextMeasure,
     rects: Vec<Rect>,
+    /// `size_at` answers per (node, width bits; `u32::MAX` = unbounded):
+    /// a parent asks for each child's measure more than once per pass.
+    memo: RefCell<HashMap<(NodeId, u32), (f32, f32)>>,
 }
 
 pub fn layout(page: &Page, res: &Resolved, viewport: Rect, text: &dyn TextMeasure) -> Vec<Rect> {
-    let mut lay = Lay { page, res, text, rects: vec![Rect::ZERO; page.nodes.len()] };
+    let mut lay = Lay { page, res, text, rects: vec![Rect::ZERO; page.nodes.len()], memo: RefCell::new(HashMap::new()) };
     if !page.nodes.is_empty() {
         lay.place(0, viewport, true);
     }
@@ -189,11 +214,54 @@ impl<'a> Lay<'a> {
         self.res.num(self.page, id, PropKey::Spacing).unwrap_or(0.0)
     }
 
-    // ----- minimums ----------------------------------------------------------
+    // ----- measure -----------------------------------------------------------
 
-    /// The node's minimum box (its own size under `hug`), given the width
-    /// its parent can offer for wrapping (`None` = unbounded).
-    fn min_size(&self, id: NodeId, avail_w: Option<f32>) -> (f32, f32) {
+    /// MEASURE: the box the node wants (its size under `hug`), given the
+    /// width its parent can offer for wrapping (`None` = unbounded).
+    fn size_at(&self, id: NodeId, avail_w: Option<f32>) -> (f32, f32) {
+        let key = (id, avail_w.map_or(u32::MAX, f32::to_bits));
+        if let Some(v) = self.memo.borrow().get(&key) {
+            return *v;
+        }
+        let v = self.size_at_uncached(id, avail_w);
+        self.memo.borrow_mut().insert(key, v);
+        v
+    }
+
+    /// The main-axis word a stack reads: no word on the main axis hugs
+    /// (a Label in a Column is as tall as its text); an aligned axis hugs.
+    fn main_len(&self, id: NodeId, axis: Axis) -> Len {
+        let p = self.placement(id);
+        let (len, align) = if axis == Axis::X { (p.width, p.halign) } else { (p.height, p.valign) };
+        match len {
+            Len::Unset if align != Align::AlignUnset => Len::Hug(1.0),
+            Len::Unset => Len::Hug(1.0),
+            other => other,
+        }
+    }
+
+    /// The floor a stack or grid grants `id` along the axis it splits: a
+    /// `fill` child's `min_*` alone — fill takes its share, never its
+    /// content — a hug/exact child's measure (`cross` = the known extent
+    /// on the other axis, for wrapped text).
+    fn main_min(&self, id: NodeId, axis: Axis, cross: Option<f32>) -> f32 {
+        let p = self.placement(id);
+        if let Len::Fill(_) = self.main_len(id, axis) {
+            return if axis == Axis::X { p.min_width } else { p.min_height };
+        }
+        let (w, h) = self.size_at(id, if axis == Axis::Y { cross } else { None });
+        if axis == Axis::X { w } else { h }
+    }
+
+    /// The share weight along a stack's axis (0 = a fixed slot).
+    fn fill_weight(&self, id: NodeId, axis: Axis) -> f32 {
+        match self.main_len(id, axis) {
+            Len::Fill(n) => n,
+            _ => 0.0,
+        }
+    }
+
+    fn size_at_uncached(&self, id: NodeId, avail_w: Option<f32>) -> (f32, f32) {
         let p = self.placement(id);
         let (cw, ch) = self.content_min(id, avail_w);
         let w = match p.width {
@@ -222,7 +290,7 @@ impl<'a> Lay<'a> {
     /// A child's contribution to a free parent's minimum: its minimum plus
     /// the margins it declares on that axis.
     fn child_extent(&self, child: NodeId, avail_w: Option<f32>) -> (f32, f32) {
-        let (w, h) = self.min_size(child, avail_w);
+        let (w, h) = self.size_at(child, avail_w);
         let m = self.margins(child);
         let mw = m[0].unwrap_or(0.0).max(0.0) + m[2].unwrap_or(0.0).max(0.0);
         let mh = m[1].unwrap_or(0.0).max(0.0) + m[3].unwrap_or(0.0).max(0.0);
@@ -239,7 +307,11 @@ impl<'a> Lay<'a> {
                 let text = self.text_of(id).unwrap_or("");
                 // Hug measures unwrapped (D254); wrapping needs a bound width.
                 let bound = if wrap { inner_w.or(self.placement(id).max_width) } else { None };
-                self.text.measure(text, self.font_size(id), bound, self.font_key(id))
+                let (w, h) = self.text.measure(text, self.font_size(id), bound, self.font_key(id));
+                // A wrapping label that fills its width has no width of its
+                // own (Godot's autowrap minimum): the text bends to the box.
+                let w = if wrap && matches!(self.placement(id).width, Len::Fill(_)) { 0.0 } else { w };
+                (w, h)
             }
             Kind::Button | Kind::Check | Kind::Toggle | Kind::Radio => {
                 let (mut w, mut h) = (0.0f32, 0.0f32);
@@ -253,11 +325,12 @@ impl<'a> Lay<'a> {
                     w = w.max(cw);
                     h = h.max(ch);
                 }
-                // The native check/radio chrome; a templated one (a body)
-                // is a blank surface sized by its body alone.
+                // The native mark (spec "Default look"); a templated one (a
+                // body) is a blank surface sized by its body alone.
                 if matches!(node.kind, Kind::Check | Kind::Toggle | Kind::Radio) && node.children.1 == 0 {
-                    w += CHECK_SIZE.0;
-                    h = h.max(CHECK_SIZE.1);
+                    let (mw, mh) = if node.kind == Kind::Toggle { TOGGLE_PILL } else { (CHECK_BOX_EPX, CHECK_BOX_EPX) };
+                    w += mw + if self.text_of(id).is_some() { MARK_TEXT_GAP } else { 0.0 };
+                    h = h.max(mh);
                 }
                 (w, h)
             }
@@ -338,13 +411,12 @@ impl<'a> Lay<'a> {
         let (mut main, mut cross) = (0.0f32, 0.0f32);
         for (i, c) in children.iter().enumerate() {
             let node = self.node(*c);
-            let (w, h) = if node.kind == Kind::Gap {
-                let g = if node.gap_fill { 0.0 } else { node.gap };
-                if axis == Axis::Y { (0.0, g) } else { (g, 0.0) }
+            let (m, x) = if node.kind == Kind::Gap {
+                (if node.gap_fill { 0.0 } else { node.gap }, 0.0)
             } else {
-                self.min_size(*c, if axis == Axis::Y { inner_w } else { None })
+                let (w, h) = self.size_at(*c, if axis == Axis::Y { inner_w } else { None });
+                (self.main_min(*c, axis, inner_w), if axis == Axis::Y { w } else { h })
             };
-            let (m, x) = if axis == Axis::Y { (h, w) } else { (w, h) };
             main += m;
             if i > 0 {
                 main += spacing;
@@ -357,7 +429,7 @@ impl<'a> Lay<'a> {
     fn flow_min(&self, id: NodeId, inner_w: Option<f32>) -> (f32, f32) {
         let spacing = self.spacing(id);
         let children = self.visible_children(id);
-        let sizes: Vec<(f32, f32)> = children.iter().map(|c| self.min_size(*c, None)).collect();
+        let sizes: Vec<(f32, f32)> = children.iter().map(|c| self.size_at(*c, None)).collect();
         let widest = sizes.iter().map(|s| s.0).fold(0.0, f32::max);
         match inner_w {
             None => {
@@ -389,17 +461,17 @@ impl<'a> Lay<'a> {
         let frame = match self.node(id).auto {
             Auto::Length(f) => Rect::new(frame.x, frame.y, frame.w * f, frame.h),
             Auto::Position(f) => {
-                let (own_w, _) = self.min_size(id, Some(frame.w));
+                let (own_w, _) = self.size_at(id, Some(frame.w));
                 p.width = Len::Hug(1.0);
                 Rect::new(frame.x + (frame.w - own_w) * f, frame.y, own_w, frame.h)
             }
             _ => frame,
         };
-        let (min_w, _) = self.min_size(id, Some(frame.w));
+        let (min_w, _) = self.size_at(id, Some(frame.w));
         let (x, w) = free_axis(frame.x, frame.w, p.width, p.halign, m[0], m[2], min_w, p.min_width, p.max_width, p.max_width_fill, root);
         // The height minimum at the width the node actually got (wrap
         // text, Flow rows).
-        let (_, min_h) = self.min_size(id, Some(w));
+        let (_, min_h) = self.size_at(id, Some(w));
         let (y, h) = free_axis(frame.y, frame.h, p.height, p.valign, m[1], m[3], min_h, p.min_height, p.max_height, p.max_height_fill, root);
         let rect = Rect::new(x, y, w, h);
         self.rects[id as usize] = rect;
@@ -429,38 +501,23 @@ impl<'a> Lay<'a> {
         let spacing = self.spacing(id);
         let children = self.visible_children(id);
         let extent = if axis == Axis::Y { inner.h } else { inner.w };
-        // Minimums along the axis and the fill weights.
-        let mut mins = Vec::with_capacity(children.len());
-        let mut weights = Vec::with_capacity(children.len());
-        let mut used = 0.0f32;
-        let mut weight_sum = 0.0f32;
-        for (i, c) in children.iter().enumerate() {
-            let node = self.node(*c);
-            let p = *self.placement(*c);
-            let (m, weight) = if node.kind == Kind::Gap {
-                if node.gap_fill { (0.0, node.gap) } else { (node.gap, 0.0) }
-            } else {
-                let (w, h) = self.min_size(*c, Some(inner.w));
-                let len = if axis == Axis::Y { p.height } else { p.width };
-                let m = if axis == Axis::Y { h } else { w };
-                let weight = match len {
-                    Len::Fill(n) => n,
-                    _ => 0.0,
-                };
-                (m, weight)
-            };
-            mins.push(m);
-            weights.push(weight);
-            used += m;
-            if i > 0 {
-                used += spacing;
-            }
-            weight_sum += weight;
-        }
-        let leftover = (extent - used).max(0.0);
+        let cross = if axis == Axis::Y { Some(inner.w) } else { None };
+        // Each child's slot: (floor or fixed size, share weight).
+        let slots: Vec<(f32, f32)> = children
+            .iter()
+            .map(|c| {
+                let node = self.node(*c);
+                if node.kind == Kind::Gap {
+                    if node.gap_fill { (0.0, node.gap) } else { (node.gap, 0.0) }
+                } else {
+                    (self.main_min(*c, axis, cross), self.fill_weight(*c, axis))
+                }
+            })
+            .collect();
+        let sizes = star_split(extent - spacing * children.len().saturating_sub(1) as f32, &slots);
         let mut cursor = if axis == Axis::Y { inner.y } else { inner.x };
         for (i, c) in children.iter().enumerate() {
-            let size = mins[i] + if weight_sum > 0.0 { leftover * weights[i] / weight_sum } else { 0.0 };
+            let size = sizes[i];
             let node = self.node(*c);
             if node.kind == Kind::Gap {
                 self.rects[*c as usize] = if axis == Axis::Y { Rect::new(inner.x, cursor, inner.w, size) } else { Rect::new(cursor, inner.y, size, inner.h) };
@@ -478,13 +535,14 @@ impl<'a> Lay<'a> {
                     p.valign = Align::Center;
                 }
             }
-            // The cross axis is a free axis; the main axis is the slot.
+            // The cross axis is a free axis; the main axis is the slot. The
+            // cross measure is taken at the width the child got.
             let rect = if axis == Axis::Y {
-                let (min_w, _) = self.min_size(*c, Some(inner.w));
+                let (min_w, _) = self.size_at(*c, Some(inner.w));
                 let (x, w) = free_axis(inner.x, inner.w, p.width, p.halign, None, None, min_w, p.min_width, p.max_width, p.max_width_fill, false);
                 Rect::new(x, cursor, w, size)
             } else {
-                let (_, min_h) = self.min_size(*c, None);
+                let (_, min_h) = self.size_at(*c, Some(size));
                 let (y, h) = free_axis(inner.y, inner.h, p.height, p.valign, None, None, min_h, p.min_height, p.max_height, p.max_height_fill, false);
                 Rect::new(cursor, y, size, h)
             };
@@ -497,7 +555,7 @@ impl<'a> Lay<'a> {
     fn place_flow(&mut self, id: NodeId, inner: Rect) {
         let spacing = self.spacing(id);
         let children = self.visible_children(id);
-        let sizes: Vec<(f32, f32)> = children.iter().map(|c| self.min_size(*c, None)).collect();
+        let sizes: Vec<(f32, f32)> = children.iter().map(|c| self.size_at(*c, None)).collect();
         let rows = flow_rows(&sizes, inner.w, spacing);
         let mut y = inner.y;
         for row in rows {
@@ -543,7 +601,7 @@ impl<'a> Lay<'a> {
                 row_h = 0.0;
             }
             let w = unit * span as f32 + spacing * (span as f32 - 1.0);
-            let (_, h) = self.min_size(c, Some(w));
+            let (_, h) = self.size_at(c, Some(w));
             let x = (unit + spacing) * col as f32;
             out.push((c, Rect::new(x, y, w, h)));
             row_h = row_h.max(h);
@@ -559,7 +617,7 @@ impl<'a> Lay<'a> {
     fn tiles_min(&self, id: NodeId, inner_w: Option<f32>) -> (f32, f32) {
         // Minimum width is the widest cell's own minimum (FlowContainer's
         // rule); the height needs a granted width.
-        let widest = self.visible_children(id).iter().map(|c| self.min_size(*c, None).0).fold(0.0, f32::max);
+        let widest = self.visible_children(id).iter().map(|c| self.size_at(*c, None).0).fold(0.0, f32::max);
         match inner_w {
             None => (widest, 0.0),
             Some(w) => {
@@ -573,7 +631,7 @@ impl<'a> Lay<'a> {
         let (cells, _) = self.tiles_cells(id, inner.w);
         for (c, r) in cells {
             let p = *self.placement(c);
-            let (_, own_h) = self.min_size(c, Some(r.w));
+            let (_, own_h) = self.size_at(c, Some(r.w));
             // A cell is as tall as its own minimum, top-aligned in its row.
             let h = match p.height {
                 Len::Fill(_) => r.h,
@@ -585,25 +643,33 @@ impl<'a> Lay<'a> {
         }
     }
 
-    /// Godot's ScrollContainer keeps the vertical bar's column out of the
-    /// content when the bar shows (`bars=` not `never`, content taller
-    /// than the viewport): 8 device px on the phone theme, 4 epx here.
-    fn scroll_bar_width(&self, id: NodeId, inner: Rect) -> f32 {
-        let (_, sy) = self.scroll_axes(id);
-        if !sy || self.res.ident(self.page, id, PropKey::Bars) == Some("never") {
-            return 0.0;
+    /// The bars' lanes (bottom bar height, right bar width): Godot's
+    /// ScrollContainer keeps a bar's lane out of the content when the
+    /// content overflows that axis and `bars=` is not `never` — 8 device
+    /// px on the phone theme, 4 epx here.
+    fn scroll_bars(&self, id: NodeId, inner: Rect) -> (f32, f32) {
+        if self.res.ident(self.page, id, PropKey::Bars) == Some("never") {
+            return (0.0, 0.0);
         }
-        let content_h = self.visible_children(id).iter().map(|c| self.min_size(*c, Some(inner.w)).1).fold(0.0, f32::max);
-        if content_h > inner.h { SCROLL_BAR_EPX } else { 0.0 }
+        let (sx, sy) = self.scroll_axes(id);
+        let (mut content_w, mut content_h) = (0.0f32, 0.0f32);
+        for c in self.visible_children(id) {
+            let (w, h) = self.size_at(c, if sx { None } else { Some(inner.w) });
+            content_w = content_w.max(w);
+            content_h = content_h.max(h);
+        }
+        let bottom = if sx && content_w > inner.w { SCROLL_BAR_EPX } else { 0.0 };
+        let right = if sy && content_h > inner.h { SCROLL_BAR_EPX } else { 0.0 };
+        (bottom, right)
     }
 
     fn place_scroll(&mut self, id: NodeId, inner: Rect) {
         let (sx, sy) = self.scroll_axes(id);
         let offset = self.res_scroll(id);
-        let bar = self.scroll_bar_width(id, inner);
-        let inner = Rect::new(inner.x, inner.y, (inner.w - bar).max(0.0), inner.h);
+        let (bar_bottom, bar_right) = self.scroll_bars(id, inner);
+        let inner = Rect::new(inner.x, inner.y, (inner.w - bar_right).max(0.0), (inner.h - bar_bottom).max(0.0));
         for c in self.visible_children(id) {
-            let (min_w, min_h) = self.min_size(c, if sx { None } else { Some(inner.w) });
+            let (min_w, min_h) = self.size_at(c, if sx { None } else { Some(inner.w) });
             // Content takes the viewport and scrolls past it when larger.
             let w = if sx { inner.w.max(min_w) } else { inner.w };
             let h = if sy { inner.h.max(min_h) } else { inner.h };
@@ -691,15 +757,18 @@ impl<'a> Lay<'a> {
         for r in &rows {
             let mut h = 0.0f32;
             for (c, first, span) in self.row_cells(*r) {
-                let (w, ch) = self.min_size(c, inner_w);
+                let (w, ch) = self.size_at(c, inner_w);
                 h = h.max(ch);
-                if span == 1 && first < track_min.len() && !matches!(tracks[first], Len::Exact(_)) {
+                // A hug track is as wide as its widest single-span cell; a
+                // fill track takes its share (no content floor).
+                if span == 1 && first < track_min.len() && matches!(tracks[first], Len::Hug(_)) {
                     track_min[first] = track_min[first].max(w);
                 }
             }
             let rp = self.placement(*r);
             let h = match rp.height {
                 Len::Exact(n) => n,
+                Len::Fill(_) => rp.min_height,
                 _ => h.max(rp.min_height),
             };
             row_min.push(h);
@@ -717,29 +786,13 @@ impl<'a> Lay<'a> {
 
     fn place_grid(&mut self, id: NodeId, inner: Rect) {
         let spacing = self.spacing(id);
-        let (tracks, mut track_size, mut row_size) = self.grid_measure(id, Some(inner.w));
-        // Fill tracks split the leftover by weight.
-        let used: f32 = track_size.iter().sum::<f32>() + spacing * tracks.len().saturating_sub(1) as f32;
-        let weight_sum: f32 = tracks.iter().map(|t| if let Len::Fill(w) = t { *w } else { 0.0 }).sum();
-        if weight_sum > 0.0 {
-            let leftover = (inner.w - used).max(0.0);
-            for (i, t) in tracks.iter().enumerate() {
-                if let Len::Fill(w) = t {
-                    track_size[i] += leftover * w / weight_sum;
-                }
-            }
-        }
+        let (tracks, track_min, row_min) = self.grid_measure(id, Some(inner.w));
+        // Tracks and rows split the way a stack does: the star rule.
+        let track_slots: Vec<(f32, f32)> = tracks.iter().zip(&track_min).map(|(t, m)| (*m, if let Len::Fill(w) = t { *w } else { 0.0 })).collect();
+        let track_size: Vec<f32> = star_split(inner.w - spacing * tracks.len().saturating_sub(1) as f32, &track_slots);
         let rows = self.visible_children(id);
-        let row_used: f32 = row_size.iter().sum::<f32>() + spacing * rows.len().saturating_sub(1) as f32;
-        let row_weight: f32 = rows.iter().map(|r| if let Len::Fill(w) = self.placement(*r).height { w } else { 0.0 }).sum();
-        if row_weight > 0.0 {
-            let leftover = (inner.h - row_used).max(0.0);
-            for (i, r) in rows.iter().enumerate() {
-                if let Len::Fill(w) = self.placement(*r).height {
-                    row_size[i] += leftover * w / row_weight;
-                }
-            }
-        }
+        let row_slots: Vec<(f32, f32)> = rows.iter().zip(&row_min).map(|(r, m)| (*m, if let Len::Fill(w) = self.placement(*r).height { w } else { 0.0 })).collect();
+        let row_size: Vec<f32> = star_split(inner.h - spacing * rows.len().saturating_sub(1) as f32, &row_slots);
         let mut track_x = Vec::with_capacity(tracks.len());
         let mut x = inner.x;
         for s in &track_size {
@@ -762,6 +815,42 @@ impl<'a> Lay<'a> {
             y += rh + spacing;
         }
     }
+}
+
+/// ARRANGE along one axis (spec "Placement", the star rule): fixed slots
+/// take their size, fill slots share what is left by weight, and a fill
+/// slot whose share is under its floor takes the floor — the rest
+/// re-share. `slots`: (size, or floor for a fill; fill weight, 0 = fixed).
+/// `extent` = the room after spacing.
+fn star_split(extent: f32, slots: &[(f32, f32)]) -> Vec<f32> {
+    let mut out: Vec<f32> = slots.iter().map(|(m, _)| *m).collect();
+    let mut fixed: Vec<bool> = slots.iter().map(|(_, w)| *w <= 0.0).collect();
+    loop {
+        let used: f32 = out.iter().zip(&fixed).filter(|(_, f)| **f).map(|(s, _)| *s).sum();
+        let weight: f32 = slots.iter().zip(&fixed).filter(|(_, f)| !**f).map(|((_, w), _)| *w).sum();
+        if weight <= 0.0 {
+            break;
+        }
+        let left = (extent - used).max(0.0);
+        let mut clamped = false;
+        for (i, (floor, w)) in slots.iter().enumerate() {
+            if fixed[i] {
+                continue;
+            }
+            let share = left * w / weight;
+            if share < *floor {
+                out[i] = *floor;
+                fixed[i] = true;
+                clamped = true;
+            } else {
+                out[i] = share;
+            }
+        }
+        if !clamped {
+            break;
+        }
+    }
+    out
 }
 
 struct FlowRow {
@@ -921,6 +1010,47 @@ mod tests {
         // 26 chars × 5.5 = 143 unwrapped; frame 600 − 300 = 300 binds nothing → one line.
         assert_eq!(toast.h, 12.5);
         assert!((toast.x - (600.0 - toast.w) / 2.0).abs() < 0.01);
+    }
+
+    /// PR2: fills share what the fixed slots leave — `fill(2)`/`fill(3)`
+    /// is 2:5 of the room no matter what the children hold — and a
+    /// content-bearing fill still gets an equal share (the app bars).
+    #[test]
+    fn fills_share_the_room_by_weight_not_by_content() {
+        let (p, r) = lay("View v {\n Column col spacing=0 {\n  Panel a height=fill(2) { Rectangle x height=300 }\n  Panel b height=fill(3) { Rectangle y height=10 }\n }\n Row bar valign=bottom, height=50 {\n  Panel back width=fill { Rectangle z 10x10, halign=left }\n  Rectangle mid width=160\n  Panel dots width=fill { Rectangle q 50x10, halign=right }\n }\n}\n", 360.0, 1000.0);
+        assert_eq!(rect(&p, &r, "a").h, 400.0);
+        assert_eq!(rect(&p, &r, "b").h, 600.0);
+        assert_eq!(rect(&p, &r, "back").w, 100.0);
+        assert_eq!(rect(&p, &r, "mid").x, 100.0);
+        assert_eq!(rect(&p, &r, "dots").w, 100.0);
+    }
+
+    /// A fill under its `min_` floor takes the floor; the others re-share.
+    #[test]
+    fn a_fill_under_its_floor_takes_the_floor() {
+        let (p, r) = lay("View v {\n Row row height=20 {\n  Rectangle a width=fill, min_width=150\n  Rectangle b width=fill\n  Rectangle c width=fill\n }\n}\n", 300.0, 100.0);
+        assert_eq!(rect(&p, &r, "a").w, 150.0);
+        assert_eq!(rect(&p, &r, "b").w, 75.0);
+        assert_eq!(rect(&p, &r, "c").x, 225.0);
+    }
+
+    /// PR1: a wrapping fill-width label bends to what the button leaves
+    /// instead of pushing the button off the edge (ad_plate).
+    #[test]
+    fn a_wrapping_fill_label_leaves_room_for_the_button() {
+        let (p, r) = lay("View v {\n Row plate height=50 {\n  Label info text=\"one two three four five six seven eight nine ten eleven twelve\", font_size=10, width=fill, wrap=true\n  Button buy text=\"buy\", width=60\n }\n}\n", 200.0, 100.0);
+        assert_eq!(rect(&p, &r, "info").w, 140.0);
+        assert_eq!(rect(&p, &r, "buy"), Rect::new(140.0, 0.0, 60.0, 50.0));
+        assert!(rect(&p, &r, "info").h > 12.5, "wrapped to more than one line");
+    }
+
+    /// PR6: a horizontal Scroll whose content is wider keeps the bottom
+    /// bar's lane out of the content.
+    #[test]
+    fn a_horizontal_scroll_keeps_the_bottom_bar_lane() {
+        let (p, r) = lay("View v {\n Scroll strip allow=horizontal, height=60, valign=top {\n  Row content { Rectangle a 150x40; Rectangle b 150x40 }\n }\n}\n", 200.0, 300.0);
+        assert_eq!(rect(&p, &r, "content").h, 56.0);
+        assert_eq!(rect(&p, &r, "content").w, 300.0);
     }
 
     #[test]
