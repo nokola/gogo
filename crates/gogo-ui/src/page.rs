@@ -668,7 +668,7 @@ pub fn palette_color(word: &str) -> Option<Rgba> {
 /// fails on any key that is neither read by layout/draw/runtime/input/anim
 /// nor listed here.
 pub const UNREAD_BY_DESIGN: &[(PropKey, &str)] = &[
-    (PropKey::Loading, "`loading=lazy` — the decode-on-demand catalog is owed (Q4); every image decodes at boot for now"),
+    (PropKey::Loading, "`loading=lazy` is read by the SHELL, not a gogo pass: shell::lazy_image_keys defers those images' decode to their first draw"),
     (PropKey::TouchTarget, "Godot-side touch-slop plate; hit testing here uses the node's own rect"),
     (PropKey::TapPulse, "the press feedback pulse is a code-behind-round item (G12)"),
     (PropKey::AccessibilityName, "no screen-reader bridge yet"),
