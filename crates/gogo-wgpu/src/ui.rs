@@ -233,7 +233,12 @@ impl UiRenderer {
         self.batches.clear();
         self.skipped = 0;
         self.screen = screen;
-        let px = |r: &Rect| [r.x * epx, r.y * epx, r.w * epx, r.h * epx];
+        // Each rect's origin snaps to a whole device pixel here, at draw time,
+        // so a fractional size upstream (`Image height=205.7`) never blurs
+        // the glyph runs and quads below it; the layout keeps its fractions
+        // (Godot snaps per node, compounding — this rounds each node once
+        // from its true position).
+        let px = |r: &Rect| [(r.x * epx).round(), (r.y * epx).round(), r.w * epx, r.h * epx];
         let mut clips: Vec<[u32; 4]> = Vec::new();
         let mut batch_first = 0u32;
         let mut current: Option<[u32; 4]> = None;

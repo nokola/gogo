@@ -12,28 +12,43 @@ use std::collections::HashMap;
 use cosmic_text::{Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Weight, Wrap};
 use gogo::layout::TextMeasure;
 
-/// Line height as a multiple of the font size (WPF/Roboto-like).
-/// Roboto's ascent + descent (hhea 1900 + 500 over 2048 units).
-pub const FONT_HEIGHT: f32 = 1.172;
 /// Godot's default `Label` line_spacing (px), added between lines.
 pub const LINE_SPACING_PX: f32 = 3.0;
 
-/// The pitch between lines in px, the way Godot's Label lays them out:
-/// the face's height at the size, plus the theme's line spacing.
-pub fn line_height(font_size: f32) -> f32 {
-    font_height(font_size) + LINE_SPACING_PX
+/// A face's vertical metrics in font units, read from the file at load.
+#[derive(Clone, Copy, Debug)]
+pub struct FaceMetrics {
+    pub ascent: f32,
+    pub descent: f32,
+    pub units_per_em: f32,
 }
 
-/// One line's own height (no spacing) — a single-line label's box.
-pub fn font_height(font_size: f32) -> f32 {
-    (font_size * FONT_HEIGHT).round()
-}
+impl FaceMetrics {
+    /// Roboto's hhea metrics (1900 / 500 over 2048): the fallback when a
+    /// face carries none.
+    pub const ROBOTO: FaceMetrics = FaceMetrics { ascent: 1900.0, descent: 500.0, units_per_em: 2048.0 };
 
-/// The box height of `lines` lines: spacing sits only BETWEEN lines
-/// (Godot: lines × font height + (lines − 1) × line_spacing).
-pub fn block_height(font_size: f32, lines: f32) -> f32 {
-    let n = lines.max(1.0);
-    n * font_height(font_size) + (n - 1.0) * LINE_SPACING_PX
+    /// One line's own height in px at `font_size` px (no spacing) — a
+    /// single-line label's box, the way Godot measures it: FreeType rounds
+    /// the scaled ascender up and the descender down to whole pixels
+    /// (`FT_Size_Metrics`), so 24 px Roboto is 23 + 6 = 29, not
+    /// round(28.13) = 28 — one pixel per list row otherwise.
+    pub fn font_height(&self, font_size: f32) -> f32 {
+        let scale = font_size / self.units_per_em;
+        (self.ascent * scale).ceil() + (self.descent * scale).ceil()
+    }
+
+    /// The pitch between lines: the face height plus the line spacing.
+    pub fn line_height(&self, font_size: f32) -> f32 {
+        self.font_height(font_size) + LINE_SPACING_PX
+    }
+
+    /// The box height of `lines` lines: spacing sits only BETWEEN lines
+    /// (Godot: lines × font height + (lines − 1) × line_spacing).
+    pub fn block_height(&self, font_size: f32, lines: f32) -> f32 {
+        let n = lines.max(1.0);
+        n * self.font_height(font_size) + (n - 1.0) * LINE_SPACING_PX
+    }
 }
 
 /// Where a glyph sits in the atlas plus its placement relative to the pen.
@@ -59,11 +74,13 @@ pub struct GlyphQuad {
     pub uv: [f32; 4],
 }
 
-/// A loaded font file: which family/weight `Attrs` asks for.
+/// A loaded font file: which family/weight `Attrs` asks for, and its
+/// vertical metrics.
 #[derive(Clone, Debug)]
 struct Face {
     family: String,
     weight: Weight,
+    metrics: FaceMetrics,
 }
 
 pub struct TextEngine {
@@ -93,22 +110,36 @@ impl TextEngine {
     /// default face.
     pub fn new(fonts: &[(&str, Vec<u8>)]) -> TextEngine {
         let mut db = cosmic_text::fontdb::Database::new();
-        let mut faces = HashMap::new();
-        let mut default_face = None;
+        let mut loaded: Vec<(String, cosmic_text::fontdb::ID, String, Weight)> = Vec::new();
         for (key, bytes) in fonts {
             let before: Vec<_> = db.faces().map(|f| f.id).collect();
             db.load_font_data(bytes.clone());
             if let Some(face) = db.faces().find(|f| !before.contains(&f.id)) {
                 let family = face.families.first().map(|(n, _)| n.clone()).unwrap_or_default();
-                let f = Face { family, weight: face.weight };
-                if default_face.is_none() {
-                    default_face = Some(f.clone());
-                }
-                faces.insert(key.to_string(), f);
+                loaded.push((key.to_string(), face.id, family, face.weight));
             }
         }
         // Only our fonts: no system-font scan (hundreds of ms on Android).
-        let fs = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
+        let mut fs = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
+        let mut faces = HashMap::new();
+        let mut default_face = None;
+        for (key, id, family, weight) in loaded {
+            // The file's own ascent/descent: the line height comes from
+            // them, not from a constant fitted to one size.
+            let metrics = fs
+                .get_font(id, weight)
+                .map(|font| {
+                    let m = font.as_swash().metrics(&[]);
+                    FaceMetrics { ascent: m.ascent, descent: m.descent, units_per_em: m.units_per_em as f32 }
+                })
+                .filter(|m| m.units_per_em > 0.0 && m.ascent > 0.0)
+                .unwrap_or(FaceMetrics::ROBOTO);
+            let f = Face { family, weight, metrics };
+            if default_face.is_none() {
+                default_face = Some(f.clone());
+            }
+            faces.insert(key, f);
+        }
         let atlas_size = 1024;
         TextEngine {
             fs,
@@ -136,16 +167,25 @@ impl TextEngine {
         std::mem::replace(&mut self.dirty, false)
     }
 
+    fn face(&self, font: Option<&str>) -> Option<&Face> {
+        font.and_then(|f| self.faces.get(f)).or(self.default_face.as_ref())
+    }
+
     fn attrs<'a>(&'a self, font: Option<&str>) -> Attrs<'a> {
-        let face = font.and_then(|f| self.faces.get(f)).or(self.default_face.as_ref());
-        match face {
+        match self.face(font) {
             Some(f) => Attrs::new().family(Family::Name(&f.family)).weight(f.weight),
             None => Attrs::new(),
         }
     }
 
+    /// The metrics of the face `font` names (the default face, else Roboto's).
+    pub fn metrics(&self, font: Option<&str>) -> FaceMetrics {
+        self.face(font).map_or(FaceMetrics::ROBOTO, |f| f.metrics)
+    }
+
     fn buffer(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> Buffer {
-        let mut buffer = Buffer::new(&mut self.fs, Metrics::new(font_size, line_height(font_size)));
+        let line_height = self.metrics(font).line_height(font_size);
+        let mut buffer = Buffer::new(&mut self.fs, Metrics::new(font_size, line_height));
         buffer.set_wrap(if max_width.is_some() { Wrap::WordOrGlyph } else { Wrap::None });
         buffer.set_size(max_width, None);
         let attrs = self.attrs(font);
@@ -167,7 +207,7 @@ impl TextEngine {
             w = w.max(run.line_w);
             lines += 1.0;
         }
-        let h = block_height(font_size, lines);
+        let h = self.metrics(font).block_height(font_size, lines);
         let v = (w.ceil(), h);
         self.measure_cache.insert(key, v);
         v
@@ -330,12 +370,31 @@ mod tests {
         TextEngine::new(&[("assets/Fonts/Roboto Regular.ttf", bytes)])
     }
 
+    /// The Roboto faces' metrics as the files carry them (the layout
+    /// contract reads them, never a fitted constant).
+    #[test]
+    fn roboto_faces_carry_their_metrics() {
+        for name in ["Roboto Regular", "Roboto Light", "Roboto Medium", "Roboto Bold"] {
+            let path = format!("{}/../../assets/Fonts/{name}.ttf", env!("CARGO_MANIFEST_DIR"));
+            let bytes = std::fs::read(&path).expect("font");
+            let e = TextEngine::new(&[(name, bytes)]);
+            let m = e.metrics(None);
+            println!("{name}: ascent {} descent {} upem {} -> 24px {} 28px {} 36px {} 48px {}", m.ascent, m.descent, m.units_per_em, m.font_height(24.0), m.font_height(28.0), m.font_height(36.0), m.font_height(48.0));
+            assert!(m.units_per_em > 0.0);
+        }
+    }
+
     #[test]
     fn measures_wraps_and_rasterizes() {
         let mut e = engine();
         let (w, h) = e.measure("Hello", 20.0, None, None);
         assert!(w > 30.0 && w < 70.0, "{w}");
         assert_eq!(h, 24.0);
+        // PR4: Godot's per-size whole-pixel ascent + descent, not a ratio.
+        let m = e.metrics(None);
+        assert_eq!(m.font_height(24.0), 29.0);
+        assert_eq!(m.font_height(28.0), 33.0);
+        assert_eq!(m.font_height(20.0), 24.0);
         let (_, h2) = e.measure("one two three four five six seven", 20.0, Some(100.0), None);
         assert!(h2 >= 48.0, "{h2}");
         let quads = e.shape("Hi", 20.0, None, None, 10.0, 5.0, 0.0, 0);
