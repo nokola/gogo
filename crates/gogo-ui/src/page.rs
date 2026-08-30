@@ -475,10 +475,58 @@ pub enum State {
 
 /// The five screen classes a `when screen.<class>` may pose for — a CLOSED
 /// set, so a file reads the same in every project; the host names the
-/// live one (`Runtime::set_screen`).
-pub const SCREEN_CLASSES: &[&str] = &["portraitSmall", "portraitMedium", "portraitLarge", "landscapeSmall", "lotsOfSpace"];
+/// live one (`Runtime::set_screen`). Which class a given view size falls
+/// in is the host's call — gogo owns the names, never the thresholds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScreenClass {
+    PortraitSmall,
+    PortraitMedium,
+    PortraitLarge,
+    LandscapeSmall,
+    LotsOfSpace,
+}
+
+impl ScreenClass {
+    /// The word as written in a `when screen.<class>`.
+    pub(crate) const fn word(self) -> &'static str {
+        match self {
+            ScreenClass::PortraitSmall => "portraitSmall",
+            ScreenClass::PortraitMedium => "portraitMedium",
+            ScreenClass::PortraitLarge => "portraitLarge",
+            ScreenClass::LandscapeSmall => "landscapeSmall",
+            ScreenClass::LotsOfSpace => "lotsOfSpace",
+        }
+    }
+}
+
 /// The second, closed axis: which way the screen runs.
-pub const SCREEN_ORIENTATIONS: &[&str] = &["portrait", "landscape"];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Orientation {
+    Portrait,
+    Landscape,
+}
+
+impl Orientation {
+    /// The word as written in a `when screen.<orientation>`.
+    pub(crate) const fn word(self) -> &'static str {
+        match self {
+            Orientation::Portrait => "portrait",
+            Orientation::Landscape => "landscape",
+        }
+    }
+}
+
+/// Every class word, for the compiler's `when screen.*` check (G0036) —
+/// derived from `ScreenClass` so the enum stays the one source.
+pub const SCREEN_CLASSES: &[&str] = &[
+    ScreenClass::PortraitSmall.word(),
+    ScreenClass::PortraitMedium.word(),
+    ScreenClass::PortraitLarge.word(),
+    ScreenClass::LandscapeSmall.word(),
+    ScreenClass::LotsOfSpace.word(),
+];
+/// Every orientation word, same purpose, derived from `Orientation`.
+pub const SCREEN_ORIENTATIONS: &[&str] = &[Orientation::Portrait.word(), Orientation::Landscape.word()];
 
 impl State {
     /// Spec priority: orientation < class < arrangement < a composed pair

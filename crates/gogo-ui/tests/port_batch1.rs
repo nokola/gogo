@@ -32,7 +32,7 @@ fn composed_when_needs_both_halves() {
     assert_eq!(width(&page, &rt), gogo::page::Len::Exact(100.0));
     rt.go(0);
     assert_eq!(width(&page, &rt), gogo::page::Len::Exact(100.0), "the arrangement alone must not pose");
-    rt.set_screen(&page, "landscape", "lotsOfSpace");
+    rt.set_screen(&page, gogo::Orientation::Landscape, gogo::ScreenClass::LotsOfSpace);
     assert_eq!(width(&page, &rt), gogo::page::Len::Exact(300.0));
     rt.go(u32::MAX);
     assert_eq!(width(&page, &rt), gogo::page::Len::Exact(100.0), "the class alone must not pose");

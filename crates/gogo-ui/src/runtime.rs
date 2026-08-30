@@ -378,13 +378,12 @@ impl Runtime {
         self.go(target);
     }
 
-    /// The host names the live screen orientation and class (one of
-    /// `SCREEN_ORIENTATIONS`, one of `SCREEN_CLASSES`); every `when
+    /// The host names the live screen orientation and class; every `when
     /// screen.*` re-poses at once, instantly (no transition, like a
     /// rotation). A word the page never mentions is simply not active.
-    pub fn set_screen(&mut self, page: &Page, orientation: &str, class: &str) {
+    pub fn set_screen(&mut self, page: &Page, orientation: Orientation, class: ScreenClass) {
         let mut words: Vec<StrId> = Vec::new();
-        for w in [orientation, class] {
+        for w in [orientation.word(), class.word()] {
             let id = page.intern_lookup(w);
             if id != NO_STR {
                 words.push(id);
