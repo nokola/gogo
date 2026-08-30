@@ -26,7 +26,6 @@ pub enum Kind {
     Label,
     Button,
     Image,
-    Icon,
     Rectangle,
     Circle,
     Gradient,
@@ -85,7 +84,6 @@ impl Kind {
             "Label" => Kind::Label,
             "Button" => Kind::Button,
             "Image" => Kind::Image,
-            "Icon" => Kind::Icon,
             "Rectangle" => Kind::Rectangle,
             "Circle" => Kind::Circle,
             "Gradient" => Kind::Gradient,
@@ -210,7 +208,6 @@ pub enum PropKey {
     /// `source=` on an Image: the file path, resolved by the build against
     /// its asset root (`BuildOptions::res_root`).
     Source,
-    IconName,
     Value,
     Min,
     Max,
@@ -308,7 +305,6 @@ impl PropKey {
             "visibility" => PropKey::Visibility,
             "disabled" => PropKey::Disabled,
             "source" => PropKey::Source,
-            "name" => PropKey::IconName,
             "value" => PropKey::Value,
             "min" => PropKey::Min,
             "max" => PropKey::Max,

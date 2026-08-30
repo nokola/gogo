@@ -259,8 +259,8 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                 }
             }
         }
-        Kind::Image | Kind::Icon => {
-            let src = match res.prop(page, id, if node.kind == Kind::Image { PropKey::Source } else { PropKey::IconName }) {
+        Kind::Image => {
+            let src = match res.prop(page, id, PropKey::Source) {
                 Some(Value::VText { text, .. }) => text,
                 Some(Value::VIdent(id)) => id,
                 _ => NO_STR,

@@ -129,7 +129,6 @@ pub const TOGGLE_PILL: (f32, f32) = (44.0, 22.0);
 pub const MARK_TEXT_GAP: f32 = 8.0;
 /// A scroll bar's column (right) or row (bottom); Godot's default theme at 2× is 8 px.
 pub const SCROLL_BAR_EPX: f32 = 4.0;
-pub const ICON_SIZE: f32 = 24.0;
 
 struct Lay<'a> {
     page: &'a Page,
@@ -440,7 +439,6 @@ impl<'a> Lay<'a> {
             Kind::GridRow => (0.0, 0.0),
             Kind::Gap | Kind::Skip => (0.0, 0.0),
             Kind::Image => self.image_min(id, avail_w),
-            Kind::Icon => (ICON_SIZE, ICON_SIZE),
             Kind::Rectangle | Kind::Circle | Kind::Gradient => (0.0, 0.0),
             Kind::Slider => (0.0, SLIDER_HEIGHT),
             Kind::Input => (0.0, INPUT_HEIGHT),
