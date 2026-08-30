@@ -9,6 +9,9 @@ pub type NodeId = u32;
 pub type StrId = u32;
 /// No node (a root's parent).
 pub const NO_NODE: NodeId = u32::MAX;
+/// Content of a `disabled` control dims to this unless the theme or a
+/// `when disabled` says otherwise (`Page::disabled_opacity`).
+pub const DISABLED_OPACITY: f32 = 0.3;
 /// The empty string; `name == NO_STR` = unnamed.
 pub const NO_STR: StrId = 0;
 
@@ -235,6 +238,9 @@ pub enum PropKey {
     FontColor,
     /// `color.a` — a Rectangle/Circle fill's alpha alone (whens/anims).
     ColorA,
+    /// `theme { disabled_opacity = … }`: how far a `disabled` node's
+    /// content dims when no `when disabled` on it says otherwise.
+    DisabledOpacity,
     ClipText,
     ClipContents,
     /// Tiles cell props.
@@ -327,6 +333,7 @@ impl PropKey {
             "font" => PropKey::Font,
             "font_color" => PropKey::FontColor,
             "color.a" => PropKey::ColorA,
+            "disabled_opacity" => PropKey::DisabledOpacity,
             "modulate.a" => PropKey::Opacity,
             "clip_text" => PropKey::ClipText,
             "clip_contents" => PropKey::ClipContents,
@@ -889,6 +896,17 @@ impl Page {
             .chain(self.theme.iter().filter(|t| t.name == name && t.variant == NO_STR))
             .map(|t| t.value)
             .next()
+    }
+
+    /// A `disabled` node dims like a built-in `when disabled opacity=N` at
+    /// the bottom of the ladder: an authored `when disabled opacity=` on
+    /// the node replaces it (`opacity=1` opts out). N is the theme's
+    /// `disabled_opacity` (kept on the root kind's defaults), else 0.3.
+    pub fn disabled_opacity(&self) -> f32 {
+        match self.kind_default(Kind::View, PropKey::DisabledOpacity) {
+            Some(Value::VNum(n)) => n,
+            _ => DISABLED_OPACITY,
+        }
     }
 
     pub fn kind_default(&self, kind: Kind, key: PropKey) -> Option<Value> {

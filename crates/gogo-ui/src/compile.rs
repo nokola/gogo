@@ -317,6 +317,15 @@ impl<'a> Compiler<'a> {
                     // Control defaults: `font = $x`, `font_size = 15` land on
                     // every text-bearing kind.
                     if let Some(pk) = PropKey::from_word(key) {
+                        if pk == PropKey::DisabledOpacity {
+                            // Page-wide: parked on the root kind's defaults,
+                            // `Page::disabled_opacity` reads it back.
+                            let v = self.value(value, *line, Some(pk));
+                            let first = self.page.props.len() as u32;
+                            self.page.props.push(Prop { key: pk, value: v });
+                            self.page.kind_defaults.push(KindDefault { kind: Kind::View, props: (first, 1) });
+                            continue;
+                        }
                         if matches!(pk, PropKey::Font | PropKey::FontSize | PropKey::Color) {
                             let v = self.value(value, *line, Some(pk));
                             for kind in [Kind::Label, Kind::Button, Kind::Input, Kind::Check, Kind::Toggle, Kind::Radio, Kind::View, Kind::Panel] {
@@ -1393,7 +1402,11 @@ impl<'a> Compiler<'a> {
     /// would sit dead without a word.
     fn check_event_kind(&mut self, event: &str, kind: Kind, line: u32) {
         match event {
-            "press" | "release" | "activate" if !kind.is_press_surface() => {
+            // A Slider brackets its drag with press/release (no activate).
+            "press" | "release" if !kind.is_press_surface() && kind != Kind::Slider => {
+                self.error("G0072", line, format!("`on:{event}` fires only on a press surface (Button, Check, Toggle, Radio, ListItem) or a Slider — a {kind:?} never emits it"));
+            }
+            "activate" if !kind.is_press_surface() => {
                 self.error("G0072", line, format!("`on:{event}` fires only on a press surface (Button, Check, Toggle, Radio, ListItem) — a {kind:?} never emits it"));
             }
             "pointer" if kind.is_press_surface() || matches!(kind, Kind::Scroll | Kind::Slider | Kind::Input) => {

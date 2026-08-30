@@ -73,8 +73,7 @@ pub const SLIDER_TRACK_EPX: f32 = 4.0;
 pub const SLIDER_KNOB_EPX: f32 = 16.0;
 pub const SLIDER_TRACK: Rgba = Rgba([0x5A, 0x5A, 0x5A, 0xFF]);
 pub const SLIDER_FILL: Rgba = Rgba([0xFF, 0xFF, 0xFF, 0x99]);
-/// Content of a `disabled` control dims to this.
-pub const DISABLED_OPACITY: f32 = 0.3;
+pub use crate::page::DISABLED_OPACITY;
 /// The auto scroll bar's grabber (Godot's default theme, measured #737373).
 pub const SCROLL_GRABBER: Rgba = Rgba([0x73, 0x73, 0x73, 0xFF]);
 
@@ -102,6 +101,15 @@ fn text_align(page: &Page, res: &Resolved, id: NodeId, key: PropKey, default: Te
     }
 }
 
+/// Does a `when disabled` on this node (its own or a style's) write
+/// `opacity`? Then the file decides the disabled look, not the built-in.
+fn authored_disabled_opacity(page: &Page, id: NodeId) -> bool {
+    let n = &page.nodes[id as usize];
+    page.whens[n.whens.0 as usize..(n.whens.0 + n.whens.1) as usize]
+        .iter()
+        .any(|w| w.state == State::StateDisabled && page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize].iter().any(|p| p.key == PropKey::Opacity))
+}
+
 fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, out: &mut Vec<Draw>) {
     if res.gone(page, id) || res.hidden(page, id) {
         return;
@@ -110,10 +118,11 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     let motion = res.motion.get(id as usize).copied().unwrap_or(crate::anim::Motion::IDENTITY);
     let rect = moved(rects[id as usize], &motion);
     let state: u8 = res.states.get(id as usize).copied().unwrap_or(0);
-    // A disabled control dims its whole subtree (the file's `when disabled`
-    // may say otherwise on top).
-    let disabled_dim: f32 = if state & DISABLED != 0 && res.num(page, id, PropKey::Opacity).is_none() { DISABLED_OPACITY } else { 1.0 };
-    let opacity = opacity * res.num(page, id, PropKey::Opacity).unwrap_or(1.0).clamp(0.0, 1.0) * motion.opacity.clamp(0.0, 1.0) * disabled_dim;
+    // A disabled control dims its whole subtree like a built-in `when
+    // disabled opacity=N` at the bottom of the ladder: an authored `when
+    // disabled opacity=` replaces it, a plain `opacity=` does not.
+    let own: f32 = if state & DISABLED != 0 && !authored_disabled_opacity(page, id) { page.disabled_opacity() } else { res.num(page, id, PropKey::Opacity).unwrap_or(1.0) };
+    let opacity = opacity * own.clamp(0.0, 1.0) * motion.opacity.clamp(0.0, 1.0);
     let color = |key: PropKey| res.color(page, id, key).map(|c| mul_alpha(c, opacity));
     let corner = res.num(page, id, PropKey::CornerRadius).unwrap_or(0.0);
     let border = res.num(page, id, PropKey::BorderThickness).unwrap_or(0.0);

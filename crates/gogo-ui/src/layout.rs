@@ -214,11 +214,6 @@ impl<'a> Lay<'a> {
             }
         }
         let kind = self.node(id).kind;
-        // The text-only Button gets air around its label; a Button that
-        // holds its own content (a `face` Panel) spells its own padding.
-        if kind == Kind::Button && pad == [0.0; 4] && self.node(id).children.1 == 0 {
-            pad = BUTTON_PADDING;
-        }
         let border = if matches!(kind, Kind::Panel | Kind::Button | Kind::View) { self.res.num(self.page, id, PropKey::BorderThickness).unwrap_or(0.0) } else { 0.0 };
         [pad[0] + border, pad[1] + border, pad[2] + border, pad[3] + border]
     }

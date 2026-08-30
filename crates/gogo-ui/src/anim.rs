@@ -358,6 +358,11 @@ pub struct Player {
     pub finish: Finish,
     /// Channels this player owns (a newer player takes them over — WPF SnapshotAndReplace).
     pub owns: Vec<(NodeId, Channel)>,
+    /// The chain's length at play start. Kept apart from the tracks so a
+    /// player whose channels a newer one took still finishes ON TIME (a
+    /// deferred hide hides when the file said, not the moment it lost its
+    /// last track).
+    total: f32,
     /// `repeat=forever`: the clock wraps at the chain's end instead of finishing.
     pub repeat: bool,
     pub speed: f32,
@@ -399,11 +404,29 @@ impl Player {
                 }
             }
         }
-        Player { anim, tracks, elapsed: 0.0, finish, owns, repeat: head.map(|h| h.repeat).unwrap_or(false), speed: head.map(|h| h.speed).unwrap_or(1.0).max(0.001), stopped: false }
+        let total = tracks.iter().map(Track::end).fold(0.0, f32::max);
+        Player { anim, tracks, elapsed: 0.0, finish, owns, total, repeat: head.map(|h| h.repeat).unwrap_or(false), speed: head.map(|h| h.speed).unwrap_or(1.0).max(0.001), stopped: false }
     }
 
     pub fn length(&self) -> f32 {
-        self.tracks.iter().map(Track::end).fold(0.0, f32::max)
+        self.total
+    }
+
+    /// A newer player takes `(node, channel)`: this player's tracks on it
+    /// go (its clock and finish stay), and the value the channel had
+    /// before ANY player wrote it comes back for the taker to inherit, so
+    /// a later `stop(restore)` lands there and not mid-flight.
+    pub fn hand_over(&mut self, node: NodeId, channel: Channel) -> Option<f32> {
+        let base = self.tracks.iter().find(|t| t.node == node && t.channel == channel).map(|t| t.base);
+        self.tracks.retain(|t| !(t.node == node && t.channel == channel));
+        self.owns.retain(|o| *o != (node, channel));
+        base
+    }
+
+    pub fn inherit_base(&mut self, node: NodeId, channel: Channel, base: f32) {
+        for t in self.tracks.iter_mut().filter(|t| t.node == node && t.channel == channel) {
+            t.base = base;
+        }
     }
 
     /// Writes every channel for anim time `t` (idempotent, so a repeat

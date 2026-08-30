@@ -4,7 +4,7 @@
 //! layout and draw passes read only the `Resolved` result.
 
 use crate::anim::{Easing, Finish, Motion, Player, Tween, lerp_value};
-use crate::layout::Rect;
+use crate::layout::{BUTTON_PADDING, Rect};
 use crate::page::*;
 
 pub const HELD: u8 = 1;
@@ -124,11 +124,18 @@ impl Runtime {
     /// Plays `anim` on this page (`play(name)`); a newer player owns the
     /// channels it animates (WPF SnapshotAndReplace).
     pub fn play(&mut self, page: &Page, anim: StrId, finish: Finish) {
-        let player = Player::new(page, anim, &mut self.motion, finish);
-        for p in &mut self.players {
-            p.owns.retain(|o| !player.owns.contains(o));
+        let mut player = Player::new(page, anim, &mut self.motion, finish);
+        // The channels move to the new player; the older ones keep their
+        // clocks (a deferred hide still hides on time) and hand over the
+        // true base, so `stop(restore)` lands where the FIRST play found
+        // the channel.
+        for (node, channel) in player.owns.clone() {
+            for p in &mut self.players {
+                if let Some(base) = p.hand_over(node, channel) {
+                    player.inherit_base(node, channel, base);
+                }
+            }
         }
-        self.players.retain(|p| !p.owns.is_empty());
         self.players.push(player);
         self.dirty = true;
     }
@@ -582,6 +589,12 @@ pub fn resolve(page: &Page, rt: &Runtime) -> Resolved {
     for (i, node) in page.nodes.iter().enumerate() {
         let id = i as NodeId;
         let mut placement = node.placement;
+        // The text-only Button gets air around its label — a kind default,
+        // like its font size; a Button holding its own content spells its
+        // own padding. Decided here so layout and draw inset by ONE value.
+        if node.kind == Kind::Button && placement.padding == [0.0; 4] && node.children.1 == 0 {
+            placement.padding = BUTTON_PADDING;
+        }
         // Active whens, lowest priority first (stable: file order within a level).
         let mut active: Vec<&When> = page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize].iter().filter(|w| rt.state_active(page, if w.of == NO_NODE { id } else { w.of }, w.state)).collect();
         active.sort_by_key(|w| w.state.priority());

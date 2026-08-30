@@ -69,11 +69,14 @@ pub struct Touch {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EventKind {
-    /// Finger down on a press surface (`on:press=`).
+    /// Finger down on a press surface or a Slider (`on:press=`); on a
+    /// Slider the press/release pair brackets the drag (a host pauses its
+    /// live preview between them).
     Press,
-    /// The end of a press-surface gesture (`on:release=`): exactly one per
-    /// press, however it ends — lift inside or out, cancel, a Scroll
-    /// stealing the gesture, the node disabling/hiding under the finger.
+    /// The end of a press-surface or Slider gesture (`on:release=`):
+    /// exactly one per press, however it ends — lift inside or out, cancel,
+    /// a Scroll taking the gesture, the node disabling/hiding under the
+    /// finger.
     Release,
     Activate,
     Change(Value),
@@ -190,6 +193,22 @@ fn scroll_ancestor(page: &Page, node: NodeId) -> Option<NodeId> {
     while n != NO_NODE {
         if page.nodes[n as usize].kind == Kind::Scroll {
             return Some(n);
+        }
+        n = page.nodes[n as usize].parent;
+    }
+    None
+}
+
+/// The innermost Scroll around `node` (`node` itself counts) that scrolls
+/// the way the finger committed to; `None` = nothing here scrolls that way.
+fn scroll_taker(page: &Page, res: &Resolved, node: NodeId, vertical: bool) -> Option<NodeId> {
+    let mut n = node;
+    while n != NO_NODE {
+        if page.nodes[n as usize].kind == Kind::Scroll {
+            let axes = scroll_axes(page, res, n);
+            if if vertical { axes.1 } else { axes.0 } {
+                return Some(n);
+            }
         }
         n = page.nodes[n as usize].parent;
     }
@@ -372,7 +391,7 @@ impl Input {
                 }
                 let scroll = if kind == Kind::Scroll { Some(node) } else { scroll_ancestor(page, node) };
                 let mut value_from = 0.0;
-                let pressed = kind.is_press_surface() && !caught;
+                let pressed = (kind.is_press_surface() || kind == Kind::Slider) && !caught;
                 if pressed {
                     rt.set_state(node, HELD, true);
                     if let Some(action) = event_action(page, node, "press") {
@@ -383,7 +402,6 @@ impl Input {
                     value_from = if rt.writes.iter().any(|(n, w)| *n == node && w.key == PropKey::Value) { value_of(rt, res, page, node) } else if rt.has(node, SELECTED) { 1.0 } else { 0.0 };
                 }
                 if kind == Kind::Slider && !caught {
-                    rt.set_state(node, HELD, true);
                     value_from = value_of(rt, res, page, node);
                     let v = slider_value(page, res, rects, node, t.x);
                     rt.set_prop(node, PropKey::Value, Value::VNum(v));
@@ -397,8 +415,22 @@ impl Input {
                 if p.id != t.id {
                     return events;
                 }
-                if rt.disabled(page, p.node) || res.gone(page, p.node) || res.hidden(page, p.node) {
-                    // Disabled or hidden under the finger: the gesture ends here.
+                let dead = |n: NodeId| rt.disabled(page, n) || res.gone(page, n) || res.hidden(page, n);
+                if p.panning {
+                    // The Scroll owns the gesture now: only ITS death ends it;
+                    // the child the finger landed on may hide under the pan.
+                    if p.scroll.map_or(false, dead) {
+                        self.press = None;
+                        return events;
+                    }
+                } else if dead(p.node) {
+                    // Disabled or hidden under the finger: the gesture ends
+                    // here, and a raw owner hears the cancel (it would
+                    // otherwise keep its grab until the next touch).
+                    if let Some(action) = p.raw {
+                        let r = rects[p.node as usize];
+                        self.push_event(rt, &mut events, p.node, EventKind::Pointer { phase: Phase::Cancel, x: t.x - r.x, y: t.y - r.y }, Some(action));
+                    }
                     self.release(page, rt, &mut events, &mut p);
                     self.cancel_press(page, rt, &p);
                     self.press = None;
@@ -415,6 +447,32 @@ impl Input {
                 let dt = (t.t - p.last_t).max(1e-4) as f32;
                 let delta = (t.x - p.last.0, t.y - p.last.1);
                 p.samples.push(dt, [delta.0, delta.1]);
+                if !p.panning && p.scroll.is_some() {
+                    let dx = (t.x - p.start.0).abs();
+                    let dy = (t.y - p.start.1).abs();
+                    if (dx * dx + dy * dy).sqrt() > SCROLL_DEADZONE {
+                        // Decided once, by the direction the finger committed
+                        // to: a Slider keeps a sideways drag (its own axis), a
+                        // Toggle keeps a drag it already started, otherwise the
+                        // innermost Scroll that scrolls THAT way takes the
+                        // gesture and the press is cancelled (a Slider's value
+                        // goes back to where the finger found it). Nothing
+                        // scrolls that way: the child keeps the finger for good.
+                        let vertical = dy > dx;
+                        let child_keeps = (p.kind == Kind::Slider && !vertical) || (p.kind == Kind::Toggle && p.toggle_moved);
+                        let taker = if child_keeps { None } else { scroll_taker(page, res, p.node, vertical) };
+                        match taker {
+                            Some(scroll) => {
+                                p.scroll = Some(scroll);
+                                p.panning = true;
+                                self.release(page, rt, &mut events, &mut p);
+                                self.cancel_press(page, rt, &p);
+                                p.accum = rt.scroll[scroll as usize];
+                            }
+                            None => p.scroll = None,
+                        }
+                    }
+                }
                 if p.kind == Kind::Slider && !p.panning {
                     let v = slider_value(page, res, rects, p.node, t.x);
                     rt.set_prop(p.node, PropKey::Value, Value::VNum(v));
@@ -426,16 +484,8 @@ impl Input {
                     let f = toggle_fraction(res, rects, p.node, t.x);
                     rt.set_prop(p.node, PropKey::Value, Value::VNum(f));
                     rt.set_state(p.node, SELECTED, f >= 0.5);
-                } else if let Some(scroll) = p.scroll {
-                    let travel = ((t.x - p.start.0).powi(2) + (t.y - p.start.1).powi(2)).sqrt();
-                    if !p.panning && travel > SCROLL_DEADZONE {
-                        // The Scroll takes the gesture: the child's press is cancelled.
-                        p.panning = true;
-                        rt.set_state(p.node, HELD, false);
-                        self.release(page, rt, &mut events, &mut p);
-                        p.accum = rt.scroll[scroll as usize];
-                    }
-                    if p.panning {
+                } else if p.panning {
+                    if let Some(scroll) = p.scroll {
                         let axes = scroll_axes(page, res, scroll);
                         let range = scroll_range(page, rects, scroll);
                         if axes.0 {
@@ -801,15 +851,123 @@ mod tests {
         fx.touch(Phase::Up, 50.0, 0.0, 0.006);
         let f = fx.input.fling.expect("a flick glides");
         assert!((f.v[1] - FLING_MAX_SPEED).abs() < 1.0, "capped: {:?}", f.v);
-        // A sideways flick on a vertical list leaves no x component.
+        // A slanted (mostly vertical) flick on a vertical list leaves no x
+        // component; a SIDEWAYS one never scrolls it at all (the button
+        // keeps the finger — see `drag_direction_decides_who_gets_the_finger`).
         let mut fx = Fx::new(src);
         fx.touch(Phase::Down, 50.0, 100.0, 0.0);
-        fx.touch(Phase::Move, 90.0, 90.0, 0.01);
-        fx.touch(Phase::Move, 130.0, 80.0, 0.02);
-        fx.touch(Phase::Up, 130.0, 80.0, 0.03);
+        fx.touch(Phase::Move, 60.0, 60.0, 0.01);
+        fx.touch(Phase::Move, 70.0, 20.0, 0.02);
+        fx.touch(Phase::Up, 70.0, 20.0, 0.03);
         let f = fx.input.fling.expect("glides");
         assert_eq!(f.v[0], 0.0);
         assert!(f.v[1] > 0.0);
+    }
+
+    /// GPAR7: the direction the finger commits to decides who owns the
+    /// gesture. On a Slider in a scrolling page a sideways drag is the
+    /// slider's (the page never moves); a downward one scrolls the page and
+    /// puts the slider back where the finger found it. On a horizontal
+    /// strip inside a vertical page, down scrolls the page, sideways the
+    /// strip. A sideways drag on a Button in a vertical list scrolls
+    /// nothing and the Button keeps its press.
+    #[test]
+    fn drag_direction_decides_who_gets_the_finger() {
+        let src = "View v { Scroll page width=400, height=300, halign=left, valign=top { Column c width=fill { Slider s width=fill, height=40, min=0, max=100, value=50; Button b width=fill, height=40, text=\"x\", on:activate=tap; Rectangle tall width=fill, height=2000 } } }";
+        let mut fx = Fx::new(src);
+        let page = fx.page.find("page").unwrap();
+        let s = fx.page.find("s").unwrap();
+        let b = fx.page.find("b").unwrap();
+        // Sideways on the slider.
+        fx.touch(Phase::Down, 200.0, 20.0, 0.0);
+        fx.touch(Phase::Move, 240.0, 22.0, 0.1);
+        fx.touch(Phase::Move, 280.0, 24.0, 0.2);
+        assert_eq!(fx.rt.scroll[page as usize], [0.0, 0.0], "a sideways drag never scrolls the page");
+        let ev = fx.touch(Phase::Up, 280.0, 24.0, 0.3);
+        let changed = ev.iter().find_map(|e| if let EventKind::Change(Value::VNum(v)) = e.kind { Some(v) } else { None }).unwrap_or_else(|| panic!("the slider changed: {ev:?}"));
+        assert!(changed > 65.0 && changed < 75.0, "{changed}");
+        // Down the slider: the page scrolls, the slider goes back to where the finger found it.
+        fx.touch(Phase::Down, 100.0, 30.0, 1.0);
+        {
+            let (res, _) = fx.lay();
+            let v = value_of(&fx.rt, &res, &fx.page, s);
+            assert!(v > 20.0 && v < 30.0, "the down jumped the value: {v}");
+        }
+        fx.touch(Phase::Move, 102.0, -10.0, 1.1);
+        fx.touch(Phase::Move, 104.0, -50.0, 1.2);
+        assert!(fx.rt.scroll[page as usize][1] > 0.0, "the page took the drag");
+        {
+            let (res, _) = fx.lay();
+            assert_eq!(value_of(&fx.rt, &res, &fx.page, s), changed, "the slider is back where the finger found it");
+        }
+        let ev = fx.touch(Phase::Up, 104.0, -50.0, 1.3);
+        assert!(!ev.iter().any(|e| matches!(e.kind, EventKind::Change(_))), "no slider change from a scroll: {ev:?}");
+        // Sideways on the button: nothing scrolls, the press survives to the tap.
+        let mut fx = Fx::new(src);
+        fx.touch(Phase::Down, 100.0, 60.0, 0.0);
+        fx.touch(Phase::Move, 130.0, 62.0, 0.1);
+        fx.touch(Phase::Move, 160.0, 64.0, 0.2);
+        assert!(fx.rt.has(b, HELD), "the button keeps a sideways drag");
+        assert_eq!(fx.rt.scroll[page as usize], [0.0, 0.0]);
+        let ev = fx.touch(Phase::Up, 160.0, 64.0, 0.3);
+        assert!(ev.iter().any(|e| e.kind == EventKind::Activate), "{ev:?}");
+        // Nested: a horizontal strip inside the vertical page.
+        let nested = "View v { Scroll page width=400, height=300, halign=left, valign=top { Column c width=fill { Scroll strip allow=horizontal, width=fill, height=60 { Row r { Rectangle wide width=1200, height=40 } }; Rectangle tall width=fill, height=2000 } } }";
+        let mut fx = Fx::new(nested);
+        let page = fx.page.find("page").unwrap();
+        let strip = fx.page.find("strip").unwrap();
+        fx.touch(Phase::Down, 100.0, 30.0, 0.0);
+        fx.touch(Phase::Move, 102.0, -10.0, 0.1);
+        fx.touch(Phase::Move, 104.0, -50.0, 0.2);
+        assert!(fx.rt.scroll[page as usize][1] > 0.0, "up on the strip scrolls the page");
+        assert_eq!(fx.rt.scroll[strip as usize], [0.0, 0.0]);
+        let mut fx = Fx::new(nested);
+        fx.touch(Phase::Down, 300.0, 30.0, 0.0);
+        fx.touch(Phase::Move, 260.0, 32.0, 0.1);
+        fx.touch(Phase::Move, 220.0, 34.0, 0.2);
+        assert!(fx.rt.scroll[strip as usize][0] > 0.0, "sideways on the strip scrolls the strip");
+        assert_eq!(fx.rt.scroll[page as usize], [0.0, 0.0], "and not the page");
+    }
+
+    /// GPAR13: a Slider brackets its drag with `press`/`release`, exactly
+    /// one each, however the gesture ends.
+    #[test]
+    fn slider_press_and_release_bracket_the_drag() {
+        let mut fx = Fx::new("View v { Slider s width=200, height=32, halign=left, valign=top, min=0, max=100, on:press=hold, on:release=let_go }");
+        let ev = fx.touch(Phase::Down, 100.0, 16.0, 0.0);
+        assert_eq!(ev[0].kind, EventKind::Press, "{ev:?}");
+        assert!(matches!(ev[0].action, Some(Action::Named(id)) if fx.page.str(id) == "hold"));
+        fx.touch(Phase::Move, 120.0, 16.0, 0.1);
+        let ev = fx.touch(Phase::Up, 120.0, 16.0, 0.2);
+        assert_eq!(ev.iter().filter(|e| e.kind == EventKind::Release).count(), 1, "{ev:?}");
+        assert!(matches!(ev[0].action, Some(Action::Named(id)) if fx.page.str(id) == "let_go"));
+        fx.touch(Phase::Down, 100.0, 16.0, 1.0);
+        let ev = fx.touch(Phase::Cancel, 100.0, 16.0, 1.1);
+        assert_eq!(ev.iter().filter(|e| e.kind == EventKind::Release).count(), 1, "a cancel releases too: {ev:?}");
+    }
+
+    /// GPAR51: a raw `on:pointer` owner hears `Cancel` when its node is
+    /// disabled under the finger (else it keeps its grab until the next
+    /// touch); a pan outlives the child it started on.
+    #[test]
+    fn raw_owner_hears_cancel_and_a_pan_outlives_its_child() {
+        let mut fx = Fx::new("View v { Panel pad width=200, height=200, halign=left, valign=top, interactive=true, on:pointer=track }");
+        let pad = fx.page.find("pad").unwrap();
+        fx.touch(Phase::Down, 50.0, 50.0, 0.0);
+        fx.rt.set_state(pad, DISABLED, true);
+        let ev = fx.touch(Phase::Move, 60.0, 60.0, 0.1);
+        assert!(ev.iter().any(|e| matches!(e.kind, EventKind::Pointer { phase: Phase::Cancel, .. })), "{ev:?}");
+        assert!(fx.touch(Phase::Move, 70.0, 70.0, 0.2).is_empty(), "the gesture is over");
+        let mut fx = Fx::new("View v { Scroll page width=400, height=300, halign=left, valign=top { Column c width=fill { Button b width=fill, height=40, text=\"x\"; Rectangle tall width=fill, height=2000 } } }");
+        let page = fx.page.find("page").unwrap();
+        let b = fx.page.find("b").unwrap();
+        fx.touch(Phase::Down, 100.0, 20.0, 0.0);
+        fx.touch(Phase::Move, 102.0, -20.0, 0.1);
+        let y0 = fx.rt.scroll[page as usize][1];
+        assert!(y0 > 0.0, "panning");
+        fx.rt.set_visible(&mut fx.page, b, false);
+        fx.touch(Phase::Move, 104.0, -60.0, 0.2);
+        assert!(fx.rt.scroll[page as usize][1] > y0, "the pan continues after the child hid");
     }
 
     #[test]
