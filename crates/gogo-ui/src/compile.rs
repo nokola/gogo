@@ -29,9 +29,10 @@ pub struct CompileOptions<'a> {
 /// `press` fires on finger-down (the undo/redo feel); `release` exactly
 /// once when that gesture ends, however it ends; `activate` on a
 /// completed tap.
-/// `touch` hands the host the raw finger (down/move/up/cancel with positions
-/// in the node's own epx space) — a code-drawn control's input.
-const EVENTS: &[&str] = &["activate", "press", "release", "change", "edit", "show", "hide", "touch"];
+/// `pointer` hands the host the raw pointer (down/move/up/cancel with
+/// positions in the node's own epx space) — a code-drawn control's input.
+/// A mouse is one pointer: the shell feeds it as one fixed finger.
+const EVENTS: &[&str] = &["activate", "press", "release", "change", "edit", "show", "hide", "pointer"];
 
 /// The extensions the build embeds (`build_pages` collects every literal
 /// carrying one) — a literal naming one must write the `res://` scheme
@@ -1070,6 +1071,7 @@ impl<'a> Compiler<'a> {
             }
             if let Some(action) = p.key.strip_prefix("on:") {
                 if let Some(h) = self.handler(action, p) {
+                    self.check_event_kind(action, kind, p.line);
                     tmp.handlers.push(h);
                 }
                 continue;
@@ -1383,6 +1385,24 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// Wiring a gesture event where it can never fire is an error, so the
+    /// on-one-node conflict between `on:pointer` and the interpreted
+    /// vocabulary cannot be written at all: a press surface refuses
+    /// `pointer`, a passive box refuses `press`/`release`/`activate` —
+    /// otherwise the pointer wire would win the finger and the others
+    /// would sit dead without a word.
+    fn check_event_kind(&mut self, event: &str, kind: Kind, line: u32) {
+        match event {
+            "press" | "release" | "activate" if !kind.is_press_surface() => {
+                self.error("G0072", line, format!("`on:{event}` fires only on a press surface (Button, Check, Toggle, Radio, ListItem) — a {kind:?} never emits it"));
+            }
+            "pointer" if kind.is_press_surface() || matches!(kind, Kind::Scroll | Kind::Slider | Kind::Input) => {
+                self.error("G0072", line, format!("`on:pointer` takes the raw finger, so a {kind:?}'s own gestures would never fire — put the pointer surface on a passive box (Layers, Panel)"));
+            }
+            _ => {}
+        }
+    }
+
     fn handler(&mut self, event: &str, p: &AstProp) -> Option<OnHandler> {
         if !EVENTS.contains(&event) {
             let hint = match event {
@@ -1391,10 +1411,11 @@ impl<'a> Compiler<'a> {
                 "button_up" | "released" => "release",
                 "toggled" | "changed" | "value_changed" | "text_submitted" => "change",
                 "changing" | "text_changed" | "input" => "edit",
+                "touch" | "gui_input" => "pointer",
                 _ => "",
             };
             if hint.is_empty() {
-                self.error("G0049", p.line, format!("`on:{event}` — raw signals are gone (§7); the events are activate, press, release, change, edit, show, hide, touch"));
+                self.error("G0049", p.line, format!("`on:{event}` — raw signals are gone (§7); the events are activate, press, release, change, edit, show, hide, pointer"));
             } else {
                 self.error("G0049", p.line, format!("`on:{event}` is spelled `on:{hint}`"));
             }
@@ -1671,6 +1692,24 @@ impl<'a> Compiler<'a> {
     // ----- finish ---------------------------------------------------------
 
     fn finish(&mut self) {
+        // The D103 input model: everything passive is transparent, always —
+        // only `interactive=true` declares a surface, a wired handler alone
+        // never does. So `on:pointer` on a node that never declared itself
+        // interactive is a wire nothing can ever reach; error now, not a
+        // control that silently ignores every finger. (Checked here so
+        // style-carried props are already merged into the node's range.)
+        let pointer_ev = self.page.intern("pointer");
+        for i in 0..self.page.nodes.len() {
+            let node = &self.page.nodes[i];
+            let (hf, hn) = node.handlers;
+            if !self.page.handlers[hf as usize..(hf + hn) as usize].iter().any(|h| h.event == pointer_ev) {
+                continue;
+            }
+            if self.page.prop(i as NodeId, PropKey::Interactive) != Some(Value::VBool(true)) {
+                let line = node.line;
+                self.error("G0073", line, "`on:pointer` needs `interactive=true` on the same node — passive boxes are transparent to input, always; the wire alone claims nothing");
+            }
+        }
         // Anims: flat tracks with start times.
         let decls = std::mem::take(&mut self.anim_decls);
         for (scope, n) in &decls {
@@ -1869,7 +1908,7 @@ mod tests {
 
     #[test]
     fn arrangements_handlers_and_transitions() {
-        let p = ok("arrangement wide\ntransition base -> wide duration=0.2, easing=cubic_out\nwhen wide { bar.width = 300 }\nView v {\n Panel bar width=200, on:activate=go(wide) { transition any -> held duration=0.1 }\n Button b text=\"Save\", on:activate=save\n}\n");
+        let p = ok("arrangement wide\ntransition base -> wide duration=0.2, easing=cubic_out\nwhen wide { bar.width = 300 }\nView v {\n Button bar width=200, on:activate=go(wide) { transition any -> held duration=0.1 }\n Button b text=\"Save\", on:activate=save\n}\n");
         let bar = p.find("bar").unwrap();
         let w = p.whens[p.nodes[bar as usize].whens.0 as usize];
         assert_eq!(w.state, State::Arrangement(0));
@@ -1906,6 +1945,12 @@ mod tests {
         assert!(!crate::diag::has_errors(&code.diags), "{:?}", code.diags);
         assert!(codes("View v { Panel p width=host }").contains(&"G0055".to_string()));
         assert!(codes("View v { Button b on:pressed=x }").contains(&"G0049".to_string()));
+        // Kind-checked gesture events: the pointer/interpreted conflict is
+        // unrepresentable, and a dead wire is an error, not silence.
+        assert!(codes("View v { Button b on:pointer=x }").contains(&"G0072".to_string()));
+        assert!(codes("View v { Layers l interactive=true, on:press=x }").contains(&"G0072".to_string()));
+        assert!(codes("View v { Layers l on:pointer=x }").contains(&"G0073".to_string()), "pointer without interactive=true is a dead wire");
+        assert!(!crate::diag::has_errors(&compile("View v { Layers l interactive=true, on:pointer=x }", &|_| None).diags));
         assert!(codes("Column c { Label a }").contains(&"G7003".to_string()));
         assert!(codes("View v { Label a text=\"x\"/k; Label b text=\"y\"/k }").contains(&"G8001".to_string()));
         assert!(codes("View v { Label a color=$nothing }").contains(&"G9001".to_string()));

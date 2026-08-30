@@ -1,7 +1,7 @@
 //! Pins for the instance batch (docs/todo-gogo.md GP27, GP29, GP32): a
 //! widget's own `anim` plays per instance (with `self.` and a scoped
 //! `play()`), `repeat x max=N` builds N addressable items that code shows
-//! by count and that lay out as their parent's children, and `on:touch=`
+//! by count and that lay out as their parent's children, and `on:pointer=`
 //! hands the raw finger to the host in the node's own space.
 use gogo::anim::Finish;
 use gogo::input::{EventKind, Input, Phase, Touch};
@@ -81,11 +81,11 @@ fn repeat_items_show_by_count_and_lay_out_in_the_stack() {
     assert!(!res.gone(&page, empty));
 }
 
-/// GP29: an `on:touch=` node gets down/move/up in its own space and keeps
-/// the finger; no `held`, no activate.
+/// GP29: an `on:pointer=` node gets down/move/up in its own space and
+/// keeps the pointer; no `held`, no activate.
 #[test]
-fn raw_touch_reports_every_phase_in_node_space() {
-    let src = "View v {\n Layers pad width=100, height=50, halign=left, valign=top, margin_left=20, margin_top=10, interactive=true, on:touch=pad_touch\n}\n";
+fn pointer_reports_every_phase_in_node_space() {
+    let src = "View v {\n Layers pad width=100, height=50, halign=left, valign=top, margin_left=20, margin_top=10, interactive=true, on:pointer=pad_touch\n}\n";
     let c = ok(src);
     let page = c.page;
     let pad = page.find("pad").unwrap();
@@ -97,15 +97,15 @@ fn raw_touch_reports_every_phase_in_node_space() {
     let ev = touch(Phase::Down, 25.0, 15.0, 0.0, &mut rt);
     assert_eq!(ev.len(), 1);
     assert_eq!(ev[0].node, pad);
-    assert_eq!(ev[0].kind, EventKind::Touch { phase: Phase::Down, x: 5.0, y: 5.0 });
+    assert_eq!(ev[0].kind, EventKind::Pointer { phase: Phase::Down, x: 5.0, y: 5.0 });
     assert!(matches!(ev[0].action, Some(Action::Named(id)) if page.str(id) == "pad_touch"));
     assert!(!rt.has(pad, gogo::runtime::HELD));
     // Moving off the node still reports (captured), in node space.
     let ev = touch(Phase::Move, 150.0, 100.0, 0.1, &mut rt);
-    assert_eq!(ev[0].kind, EventKind::Touch { phase: Phase::Move, x: 130.0, y: 90.0 });
+    assert_eq!(ev[0].kind, EventKind::Pointer { phase: Phase::Move, x: 130.0, y: 90.0 });
     let ev = touch(Phase::Up, 150.0, 100.0, 0.2, &mut rt);
     assert_eq!(ev.len(), 1);
-    assert!(matches!(ev[0].kind, EventKind::Touch { phase: Phase::Up, .. }));
+    assert!(matches!(ev[0].kind, EventKind::Pointer { phase: Phase::Up, .. }));
     let _ = Value::VNum(0.0);
 }
 

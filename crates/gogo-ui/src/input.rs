@@ -78,9 +78,10 @@ pub enum EventKind {
     Activate,
     Change(Value),
     Edit(Value),
-    /// The raw finger on an `on:touch=` node: every phase, the position in
-    /// the node's own epx space (0,0 = its top-left), captured until up.
-    Touch { phase: Phase, x: f32, y: f32 },
+    /// The raw pointer on an `on:pointer=` node: every phase, the position
+    /// in the node's own epx space (0,0 = its top-left), captured until up.
+    /// A mouse is one pointer — the shell feeds it as one fixed finger.
+    Pointer { phase: Phase, x: f32, y: f32 },
 }
 
 /// What happened, on which node, and the `on:` action the file names for
@@ -155,7 +156,7 @@ struct Press {
     /// fired yet. Cleared when it fires, so no two end paths fire it twice
     /// (a Scroll steal ends the press while the finger keeps moving).
     release_owed: bool,
-    /// An `on:touch=` node owns the finger raw: no held, no scroll steal.
+    /// An `on:pointer=` node owns the finger raw: no held, no scroll steal.
     raw: Option<Action>,
 }
 
@@ -362,10 +363,10 @@ impl Input {
                 if rt.disabled(page, node) {
                     return events;
                 }
-                let raw = event_action(page, node, "touch");
+                let raw = event_action(page, node, "pointer");
                 if let Some(action) = raw {
                     let r = rects[node as usize];
-                    self.push_event(rt, &mut events, node, EventKind::Touch { phase: Phase::Down, x: t.x - r.x, y: t.y - r.y }, Some(action));
+                    self.push_event(rt, &mut events, node, EventKind::Pointer { phase: Phase::Down, x: t.x - r.x, y: t.y - r.y }, Some(action));
                     self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum: [0.0; 2], value_from: 0.0, toggle_moved: false, release_owed: false, raw });
                     return events;
                 }
@@ -405,7 +406,7 @@ impl Input {
                 }
                 if let Some(action) = p.raw {
                     let r = rects[p.node as usize];
-                    self.push_event(rt, &mut events, p.node, EventKind::Touch { phase: Phase::Move, x: t.x - r.x, y: t.y - r.y }, Some(action));
+                    self.push_event(rt, &mut events, p.node, EventKind::Pointer { phase: Phase::Move, x: t.x - r.x, y: t.y - r.y }, Some(action));
                     p.last = (t.x, t.y);
                     p.last_t = t.t;
                     self.press = Some(p);
@@ -464,7 +465,7 @@ impl Input {
                 self.press = None;
                 if let Some(action) = p.raw {
                     let r = rects[p.node as usize];
-                    self.push_event(rt, &mut events, p.node, EventKind::Touch { phase: t.phase, x: t.x - r.x, y: t.y - r.y }, Some(action));
+                    self.push_event(rt, &mut events, p.node, EventKind::Pointer { phase: t.phase, x: t.x - r.x, y: t.y - r.y }, Some(action));
                     return events;
                 }
                 rt.set_state(p.node, HELD, false);
@@ -683,6 +684,19 @@ mod tests {
         // A release outside fires nothing.
         fx.touch(Phase::Down, 10.0, 10.0, 1.0);
         assert!(fx.touch(Phase::Up, 300.0, 300.0, 1.1).is_empty());
+    }
+
+    /// D103: everything passive is transparent, always — a wired handler
+    /// alone (`on:show=`) never claims input, so a full-screen Panel with
+    /// one wired handler must not eat the tap meant for the Button under it.
+    #[test]
+    fn passive_node_with_handler_stays_transparent() {
+        let mut fx = Fx::new("View v { Layers z { Button b width=100, height=40, halign=left, valign=top, on:activate=go_home; Panel cover width=fill, height=fill, on:show=shown } }");
+        let b = fx.page.find("b").unwrap();
+        fx.touch(Phase::Down, 10.0, 10.0, 0.0);
+        assert!(fx.rt.has(b, HELD), "the tap lands on the Button, not the covering Panel");
+        let ev = fx.touch(Phase::Up, 10.0, 10.0, 0.1);
+        assert!(ev.iter().any(|e| e.kind == EventKind::Activate));
     }
 
     /// `press` fires at the down; its `release` exactly once when the

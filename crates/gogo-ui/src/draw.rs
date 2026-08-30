@@ -375,10 +375,13 @@ fn paint_order(page: &Page, res: &Resolved, id: NodeId, out: &mut Vec<NodeId>) {
     }
 }
 
-/// The top-most node under (x, y) that takes input: a press surface, a
-/// node with handlers, or a Scroll — walking the paint order backwards
-/// (last painted first), honoring `visibility` and Scroll clips. `any`:
-/// return the top-most visible node of any kind instead.
+/// The top-most node under (x, y) that takes input — walking the paint
+/// order backwards (last painted first), honoring `visibility` and Scroll
+/// clips. The D103 input model: input-taking KINDS answer by default,
+/// everything passive is transparent, always — `interactive=true` declares
+/// a surface, `false` hides one, and a wired handler alone never claims
+/// input (a full-screen Panel with just `on:show=` must not eat taps).
+/// `any`: return the top-most visible node of any kind instead.
 pub fn hit(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: bool) -> Option<NodeId> {
     if page.nodes.is_empty() {
         return None;
@@ -392,9 +395,9 @@ pub fn hit(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: boo
         }
         let node = &page.nodes[i];
         // `interactive=true` claims input (the catcher plate), `false`
-        // makes a control hit-invisible; else press surfaces and handlers.
+        // makes a control hit-invisible; else input-taking kinds only.
         let interactive = res.bool(page, id, PropKey::Interactive);
-        let takes_input = any || interactive == Some(true) || (interactive != Some(false) && (node.kind.is_press_surface() || node.handlers.1 > 0 || matches!(node.kind, Kind::Scroll | Kind::Slider | Kind::Input)));
+        let takes_input = any || interactive == Some(true) || (interactive != Some(false) && (node.kind.is_press_surface() || matches!(node.kind, Kind::Scroll | Kind::Slider | Kind::Input)));
         if !takes_input {
             continue;
         }
