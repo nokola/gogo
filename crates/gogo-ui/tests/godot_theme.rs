@@ -357,8 +357,12 @@ fn palette_words_are_values_in_color_positions() {
 /// read the light column by default (#FBFAF7), flip under the well-known
 /// variant `dark` (#1E1F22 / #9AA3AD), stay light under any other variant
 /// name, and a `theme dark { surface = }` beats the built-in dark column.
+/// GPAR111 (user 2026-08-31): compile keeps both halves (`VColorPair`),
+/// `deref` picks the active one — also pinned: a plain-block override
+/// replaces the pair for ALL modes (REFERENCE.md), a theme `$value`
+/// carries the pair through the ref, and a mode word in `stops=` is
+/// refused (G2008 — a stop bakes one color).
 #[test]
-#[ignore = "GP38: mode tokens surface/panel/border/text not ported (color=surface is G2007 today)"]
 fn mode_tokens_flip_under_dark() {
     let dsrc = "View v { Row r {\n    Rectangle s color=surface\n    Rectangle m color=text_muted\n} }\n";
     assert_eq!(Fx::new(dsrc).color("s", PropKey::Color), rgb(0xFBFAF7), "light default");
@@ -368,13 +372,18 @@ fn mode_tokens_flip_under_dark() {
     assert_eq!(Fx::with_variant(dsrc, "night").color("s", PropKey::Color), rgb(0xFBFAF7), "any other variant reads light");
     let dover = Fx::with_variant("theme dark {\n    surface = #141414\n}\nView v { Rectangle s color=surface }\n", "dark");
     assert_eq!(dover.color("s", PropKey::Color), rgb(0x141414));
+    let psrc = "theme {\n    surface = #223344\n}\nView v { Rectangle s color=surface }\n";
+    assert_eq!(Fx::new(psrc).color("s", PropKey::Color), rgb(0x223344));
+    assert_eq!(Fx::with_variant(psrc, "dark").color("s", PropKey::Color), rgb(0x223344), "a plain override replaces the pair for all modes");
+    let rsrc = "theme {\n    $ground = surface\n}\nView v { Rectangle s color=$ground }\n";
+    assert_eq!(Fx::with_variant(rsrc, "dark").color("s", PropKey::Color), rgb(0x1E1F22), "a $value carries the pair through the ref");
+    assert!(codes("View v { Gradient g stops=[surface@0, white@1], width=10, height=10 }").contains(&"G2008".to_string()), "a mode word in stops= is refused");
 }
 
 /// `_palette_tests` 2665, 2684-2686 (`palette.font_color`): a palette
 /// word in `font_color=` colors the text — the mode token `text` is
 /// #2E3338 in the light column.
 #[test]
-#[ignore = "GP38: mode token `text` not ported; GPAR30: font_color is not a color position for palette words"]
 fn font_color_takes_a_palette_word() {
     let fx = Fx::new("View v { Label f text=\"y\", font_color=text }\n");
     assert_eq!(fx.color("f", PropKey::FontColor), rgb(0x2E3338));

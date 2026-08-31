@@ -309,6 +309,10 @@ pub struct Compiler<'a> {
     styles: HashMap<String, StyleDef>,
     widgets: HashMap<String, WidgetDef>,
     palette: HashMap<String, Rgba>,
+    /// The variant-flipping words, (light, dark) — `page::MODE_COLORS`
+    /// plus any theme overrides (a plain-block override replaces BOTH
+    /// halves, `theme dark { surface = … }` the dark one — REFERENCE.md).
+    mode_palette: HashMap<String, (Rgba, Rgba)>,
     /// Widget param scopes, innermost last.
     scopes: Vec<HashMap<String, AstValue>>,
     /// Widget-scoped styles, alive while that widget's body builds
@@ -425,6 +429,7 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         styles: HashMap::new(),
         widgets: HashMap::new(),
         palette: default_palette(),
+        mode_palette: MODE_COLORS.iter().map(|(w, l, d)| ((*w).to_string(), (Rgba::opaque(*l), Rgba::opaque(*d)))).collect(),
         scopes: Vec::new(),
         style_scopes: Vec::new(),
         control_scopes: HashSet::new(),
@@ -449,6 +454,10 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         pending_repeats: Vec::new(),
     };
     c.page.intern("");
+    // The well-known variant name exists on every page, so a host can set
+    // `Runtime::variant` to it whether or not the file has a `theme dark`
+    // block (GPAR111 — mode tokens flip on pages that never mention dark).
+    c.page.intern("dark");
     c.document(&doc, true);
     c.finish();
     Compiled { page: c.page, diags: c.diags, keys: c.local_keys }
@@ -654,7 +663,7 @@ impl<'a> Compiler<'a> {
                         }
                     }
                     // Palette override: `red = #E51400` (§7: bare names only here).
-                    if !self.palette.contains_key(key) {
+                    if !self.palette.contains_key(key) && !self.mode_palette.contains_key(key) {
                         self.error("G6003", *line, format!("`{key}` is not a palette color (new names are `$values`)"));
                         continue;
                     }
@@ -680,9 +689,17 @@ impl<'a> Compiler<'a> {
                             }
                         }
                     }
+                    let is_dark_block = self.page.str(variant) == "dark";
                     match self.color_value(value, *line) {
                         Some(c) => {
-                            self.palette.insert(key.clone(), c);
+                            if let Some(halves) = self.mode_palette.get_mut(key) {
+                                // A plain-block override replaces the pair
+                                // for ALL modes; a `theme dark { }` one
+                                // beats only the dark half (REFERENCE.md).
+                                if is_dark_block { halves.1 = c } else { *halves = (c, c) }
+                            } else {
+                                self.palette.insert(key.clone(), c);
+                            }
                         }
                         None => {
                             let pool: Vec<String> = self.palette.keys().cloned().collect();
@@ -1929,11 +1946,25 @@ impl<'a> Compiler<'a> {
                         // RGB; the file says which.
                         self.error("G2006", line, "`transparent` in `stops=` hides which color the fade passes through — spell it: `white/0` or `black/0`");
                     }
+                    if let Some(&(l, d)) = self.mode_palette.get(word.as_str()) {
+                        if key == Some(PropKey::Stops) {
+                            // A stop bakes ONE color; baking the light
+                            // half would silently un-flip the gradient.
+                            self.error("G2008", line, format!("`{word}` flips with the dark variant and a gradient stop bakes one color — write the hex for the mode you mean"));
+                            return self.stop_value(l, *pos, key, line);
+                        }
+                        if let Some(p) = pos {
+                            self.error("G0040", line, format!("`@{p}` positions a gradient stop — it only goes on entries of a Gradient's `stops=` list"));
+                        }
+                        let (l, d) = opacity.map_or((l, d), |o| (l.with_opacity(o), d.with_opacity(o)));
+                        return Value::VColorPair { light: l, dark: d };
+                    }
                     if let Some(c) = self.palette.get(word).copied() {
                         let c = opacity.map_or(c, |o| c.with_opacity(o));
                         return self.stop_value(c, *pos, key, line);
                     }
-                    let pool: Vec<String> = self.palette.keys().cloned().collect();
+                    let mut pool: Vec<String> = self.palette.keys().cloned().collect();
+                    pool.extend(self.mode_palette.keys().cloned());
                     let hint = suggest(word, &pool);
                     let tail = if hint.is_empty() { String::new() } else { format!(" — {hint}") };
                     self.error("G2007", line, format!("`{word}` is not a color{tail}"));

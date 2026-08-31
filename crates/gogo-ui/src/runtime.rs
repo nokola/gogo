@@ -1165,6 +1165,11 @@ pub fn deref(page: &Page, variant: StrId, v: Value) -> Value {
             _ => break,
         }
     }
+    // A variant-flipping word collapses to the half the active variant
+    // reads: `dark` takes the dark half, anything else the light one.
+    if let Value::VColorPair { light, dark } = v {
+        v = Value::VColor(if page.str(variant) == "dark" { dark } else { light });
+    }
     match (v, opacity) {
         (Value::VColor(c), Some(o)) => Value::VColor(c.with_opacity(o)),
         _ => v,

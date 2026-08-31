@@ -599,6 +599,10 @@ pub struct Rgba(pub [u8; 4]);
 
 impl Rgba {
     pub const TRANSPARENT: Rgba = Rgba([0, 0, 0, 0]);
+    /// The opaque color of `0xRRGGBB` — how the palette tables spell bytes.
+    pub const fn opaque(hex: u32) -> Rgba {
+        Rgba([(hex >> 16) as u8, (hex >> 8) as u8, hex as u8, 0xFF])
+    }
     pub fn with_opacity(self, opacity: f32) -> Rgba {
         let mut c = self;
         c.0[3] = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
@@ -616,6 +620,10 @@ pub enum Value {
     /// A bare number; lengths are epx.
     VNum(f32),
     VColor(Rgba),
+    /// Both halves of a variant-flipping color word (`surface`, `text`,
+    /// … — `page::MODE_COLORS`): compile keeps the pair, `runtime::deref`
+    /// picks the half the active variant reads.
+    VColorPair { light: Rgba, dark: Rgba },
     /// A displayed string: `text` is the literal as the file wrote it (the
     /// English), `key` its translation key or `NO_KEY`. With a key, what
     /// shows is `Locale::text(key)` when the runtime has a locale, else the
@@ -1007,7 +1015,18 @@ pub const PALETTE_ALIASES: &[(&str, &str)] = &[
     ("warning", "yellow"),
     ("success", "green"),
     ("info", "teal"),
-    ("text_muted", "gray"),
+];
+
+/// Colors that follow the theme variant named `dark` (the well-known
+/// name — any other variant reads the light half, the addon's rule).
+/// Literal colors and the plain palette words never flip. `text_muted`'s
+/// light half is `gray`'s bytes (GPAR111, user 2026-08-31).
+pub const MODE_COLORS: &[(&str, u32, u32)] = &[
+    ("surface", 0xFBFAF7, 0x1E1F22),
+    ("panel", 0xFFFFFF, 0x27282C),
+    ("border", 0xE4E2DC, 0x3A3B40),
+    ("text", 0x2E3338, 0xE8E6E1),
+    ("text_muted", 0x708090, 0x9AA3AD),
 ];
 
 /// A palette word's color, aliases followed (`None` = not a palette word).

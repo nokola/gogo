@@ -225,7 +225,7 @@ mod tests {
         assert!(src.contains("pub enum Handler {\n        ClearAll,\n        SaveButton,\n    }"), "{src}");
         assert!(src.contains("pub save_button: NodeId"));
         assert!(src.contains("kind: Button"));
-        assert!(src.contains("strings: &[\"\", \"View\", \"v\""));
+        assert!(src.contains("strings: &[\"\", \"dark\", \"View\", \"v\""), "the well-known variant name is interned on every page (GPAR111)");
     }
 
     #[test]
