@@ -846,11 +846,22 @@ fn apply_placement(p: &mut Placement, page: &Page, prop: Prop) {
         _ => Len::Unset,
     };
     let num = |v: Value| if let Value::VNum(n) = v { n } else { 0.0 };
-    let align = |v: Value| match v {
+    // Per-axis maps (cross-axis and `start`/`end` are load errors — the
+    // compile G0057 fence; an unknown word from a code write stays Unset).
+    let align_h = |v: Value| match v {
         Value::VIdent(id) => match page.str(id) {
-            "left" | "top" | "start" => Align::Start,
+            "left" => Align::Start,
             "center" => Align::Center,
-            "right" | "bottom" | "end" => Align::End,
+            "right" => Align::End,
+            _ => Align::AlignUnset,
+        },
+        _ => Align::AlignUnset,
+    };
+    let align_v = |v: Value| match v {
+        Value::VIdent(id) => match page.str(id) {
+            "top" => Align::Start,
+            "center" => Align::Center,
+            "bottom" => Align::End,
             _ => Align::AlignUnset,
         },
         _ => Align::AlignUnset,
@@ -862,8 +873,8 @@ fn apply_placement(p: &mut Placement, page: &Page, prop: Prop) {
         PropKey::MinHeight => p.min_height = num(prop.value),
         PropKey::MaxWidth => p.max_width = Some(num(prop.value)),
         PropKey::MaxHeight => p.max_height = Some(num(prop.value)),
-        PropKey::Halign => p.halign = align(prop.value),
-        PropKey::Valign => p.valign = align(prop.value),
+        PropKey::Halign => p.halign = align_h(prop.value),
+        PropKey::Valign => p.valign = align_v(prop.value),
         PropKey::MarginLeft => p.margin[0] = Some(num(prop.value)),
         PropKey::MarginTop => p.margin[1] = Some(num(prop.value)),
         PropKey::MarginRight => p.margin[2] = Some(num(prop.value)),

@@ -379,9 +379,23 @@ fn placement_guard_errors_refuse() {
 /// `_placement_tests` 1719-1720 (`place.err-cross-axis`): `halign=top` is
 /// a cross-axis word and a build error pointing at `valign`.
 #[test]
-#[ignore = "GPAR16: cross-axis alignment words accepted — Rust reads `halign=top` as Start"]
 fn cross_axis_alignment_word_is_refused() {
     assert!(refused("View v { Button b halign=top }"), "{}", messages("View v { Button b halign=top }"));
+    assert!(refused("View v { Button b valign=right }"));
+    // In a `when` response too — the runtime pose used to read it silently.
+    assert!(refused("View v { Button b { when held halign=top } }"));
+    // The text pair splits the same way.
+    assert!(refused("View v { Label a text=\"x\", horizontal_alignment=top }"));
+}
+
+/// GPAR16, E9 (2026-08-31): `start`/`end` were Rust-only inventions — two
+/// more spellings of left/right that only earn their keep with RTL
+/// mirroring, and that is a whole milestone (G14: alignment, margins and
+/// direction flip together). Until then they are unknown words.
+#[test]
+fn start_and_end_wait_for_the_rtl_milestone() {
+    assert!(refused("View v { Button b halign=start }"), "{}", messages("View v { Button b halign=start }"));
+    assert!(refused("View v { Button b valign=end }"));
 }
 
 /// `_placement_tests` 1725-1728 (`place.err-weights-differ`, `place.err-

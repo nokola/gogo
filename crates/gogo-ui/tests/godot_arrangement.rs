@@ -683,9 +683,9 @@ fn screen_when_build_rules_match() {
 }
 
 /// `screen.err-align-value` (6999): a posed `halign=up` is not a valid
-/// alignment and is refused. Rust builds it (the value lands as unset).
+/// alignment and is refused (the E9 per-axis G0057 fence — before it,
+/// Rust built this and the value landed as unset).
 #[test]
-#[ignore = "NEW: Godot refuses a posed `halign=up` (not a valid halign) vs Rust builds it and treats the value as unset"]
 fn posed_alignment_value_is_checked() {
     let src = "when screen.landscapeSmall { bar.halign=up }\nView v { Layers l width=100, height=100 { Rectangle bar margin_left=10, margin_right=10, height=20 } }";
     assert!(refused(src), "{:#?}", diags(src));

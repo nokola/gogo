@@ -95,10 +95,12 @@ fn mul_alpha(c: Rgba, opacity: f32) -> Rgba {
 }
 
 fn text_align(page: &Page, res: &Resolved, id: NodeId, key: PropKey, default: TextAlign) -> TextAlign {
-    match res.ident(page, id, key) {
-        Some("left") | Some("top") | Some("start") => TextAlign::Start,
-        Some("center") => TextAlign::Center,
-        Some("right") | Some("bottom") | Some("end") => TextAlign::End,
+    // Per-axis words (the compile G0057 fence refuses the rest at load).
+    let horizontal = key == PropKey::TextHalign;
+    match (res.ident(page, id, key), horizontal) {
+        (Some("left"), true) | (Some("top"), false) => TextAlign::Start,
+        (Some("center"), _) => TextAlign::Center,
+        (Some("right"), true) | (Some("bottom"), false) => TextAlign::End,
         _ => default,
     }
 }

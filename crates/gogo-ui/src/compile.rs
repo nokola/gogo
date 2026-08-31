@@ -1207,6 +1207,29 @@ impl<'a> Compiler<'a> {
             self.error("G0058", p.line, format!("`{}=` wants a number, not `{}`", p.key, spell(&p.value)));
             return None;
         }
+        // Alignment words are per-axis and physical (spec:
+        // `halign=left/center/right`, `valign=top/center/bottom`; the text
+        // pair splits the same way) — without this fence a `when held
+        // halign=top` compiled clean and silently pinned left, and the
+        // invented `start`/`end` slipped in (logical alignment waits for
+        // the RTL milestone, G14). References pass; the runtime maps them
+        // per axis.
+        let align_words: Option<&[&str]> = match key {
+            PropKey::Halign | PropKey::TextHalign => Some(&["left", "center", "right"]),
+            PropKey::Valign | PropKey::TextValign => Some(&["top", "center", "bottom"]),
+            _ => None,
+        };
+        if let Some(words) = align_words {
+            let ok = match value {
+                Value::VIdent(id) => words.contains(&self.page.str(id)),
+                Value::VRef { .. } => true,
+                _ => false,
+            };
+            if !ok {
+                self.error("G0057", p.line, format!("`{}=`: want {}", p.key, words.join("/")));
+                return None;
+            }
+        }
         // `text=25` / `text=live($value)` with a number: the digits, so a
         // value label needs no code to show its number.
         if key == PropKey::Text {
@@ -2062,15 +2085,22 @@ impl<'a> Compiler<'a> {
     }
 
     fn align(&mut self, v: Value, line: u32, key: &str) -> Align {
+        // Per-axis physical words only (spec: halign=left/center/right,
+        // valign=top/center/bottom) — a cross-axis word would silently
+        // re-mean (`halign=top` pinned left), and the logical `start`/`end`
+        // wait for the RTL milestone (G14) where margins and direction
+        // flip together. Backstop only: `prop_checked` refuses these first.
+        let horizontal = key == "halign";
         if let Value::VIdent(id) = v {
-            match self.page.str(id) {
-                "left" | "top" | "start" => return Align::Start,
-                "center" => return Align::Center,
-                "right" | "bottom" | "end" => return Align::End,
+            match (self.page.str(id), horizontal) {
+                ("left", true) | ("top", false) => return Align::Start,
+                ("center", _) => return Align::Center,
+                ("right", true) | ("bottom", false) => return Align::End,
                 _ => {}
             }
         }
-        self.error("G0057", line, format!("`{key}=`: want left/center/right (top/center/bottom)"));
+        let expected = if horizontal { "left/center/right" } else { "top/center/bottom" };
+        self.error("G0057", line, format!("`{key}=`: want {expected}"));
         Align::AlignUnset
     }
 
