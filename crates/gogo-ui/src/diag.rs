@@ -161,6 +161,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G6003", "not a palette color"),
     ("G6004", "a palette override needs a color"),
     ("G6005", "a circular palette override chain"),
+    ("G6006", "a palette override under a variant other than `dark`"),
     ("G7003", "a file has one root — `View` or `Panel`"),
     ("G7011", "unknown node type"),
     ("G7012", "`View` is the screen root only"),

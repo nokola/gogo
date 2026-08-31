@@ -205,12 +205,12 @@ fn numeric_theme_value_feeds_font_size_through_a_chain() {
 }
 
 /// `_theme_and_styles` 2500-2512 (`theme.number-length`,
-/// `theme.number-minsize`): Godot feeds a numeric `$value` into a LENGTH
-/// prop (`min_width=$rowFont`) like an inline number; the Label is then 14
-/// wide. Rust's placement pass reads lengths at compile time and refuses a
-/// `$ref` there (G0058 "`min_width=` wants a number (epx)").
+/// `theme.number-minsize`): a numeric `$value` feeds a LENGTH prop
+/// (`min_width=$rowFont`) like an inline number — placement bakes at
+/// compile and theme entries are compile-known, so the ref resolves there
+/// (GPAR88, 2026-08-31; default entries only, a variant block cannot flip
+/// a baked length).
 #[test]
-#[ignore = "NEW: Godot feeds numeric $values into length props (min_width=$rowFont) vs Rust G0058 on a $ref in a length position"]
 fn numeric_theme_value_feeds_length_props() {
     let src = "$rowFont = 14\n$rowFont2 = $rowFont\nView v { Label t text=\"x\", font_size=$rowFont2, min_width=$rowFont, halign=left, valign=top }\n";
     let fx = Fx::new(src);
@@ -282,14 +282,30 @@ fn document_theme_font_reaches_labels_and_a_body_line_beats_it() {
 }
 
 /// `_theme_and_styles` 2569-2573 (`theme.variant-font`): a named block's
-/// `font = …` applies only while that variant is active. Rust's `theme`
-/// pass pushes bare (non-`$`) entries as kind defaults with the variant
-/// dropped, so a named block's font never depends on the active variant.
+/// `font = …` applies only while that variant is active (GPAR88,
+/// 2026-08-31 — `KindDefault::variant`, the active variant's entry wins
+/// over the always-on one). A palette override in a non-`dark` variant
+/// block is refused (G6006) — only `dark` has a second color column;
+/// variant-scoped colors are `$values`.
 #[test]
-#[ignore = "NEW: Godot `theme fancy { font = b }` shows b only under fancy vs Rust ignores the variant on bare theme entries (font stays a under fancy; `theme fancy { red = #112233 }` recolors red with NO variant active)"]
 fn variant_block_font_applies_while_active() {
     let src = "theme {\n    font = \"res://fonts/a.ttf\"\n}\ntheme fancy {\n    font = \"res://fonts/b.ttf\"\n}\nView top {\n    Label t text=\"x\"\n}\n";
     assert_eq!(Fx::with_variant(src, "fancy").font("t"), "res://fonts/b.ttf");
+    assert_eq!(Fx::new(src).font("t"), "res://fonts/a.ttf", "no variant active reads the default entry");
+    let refused = codes("theme fancy {\n    red = #112233\n}\nView v { Rectangle r color=red }\n");
+    assert!(refused.contains(&"G6006".to_string()), "a palette override outside dark is refused: {refused:?}");
+}
+
+/// GPAR88 round 2: a `theme dark {{ }}` palette override compiles uses of
+/// the word (and its aliases) to a light/dark pair — the dark variant
+/// repaints them, no variant reads the plain override chain.
+#[test]
+fn dark_block_palette_override_flips_at_use() {
+    let src = "theme dark {\n    red = #112233\n}\nView v { Row w { Rectangle r color=red\n Rectangle d color=danger } }\n";
+    assert_eq!(Fx::new(src).color("r", PropKey::Color), rgb(0xFF6347), "light keeps the built-in");
+    let dark = Fx::with_variant(src, "dark");
+    assert_eq!(dark.color("r", PropKey::Color), rgb(0x112233));
+    assert_eq!(dark.color("d", PropKey::Color), rgb(0x112233), "the alias follows the dark override");
 }
 
 /// `_theme_and_styles` 2598-2626 (`export.ok`, `export.vars`,
@@ -405,7 +421,6 @@ fn theme_block_overrides_palette_words() {
 /// Rust resolves every alias to bytes when the palette is built, so an
 /// override of `red` leaves `danger` at the old tomato.
 #[test]
-#[ignore = "NEW: Godot `theme { red = #112233 }` moves `danger` (alias of red) vs Rust danger stays #FF6347 (aliases resolved eagerly at palette build)"]
 fn aliases_follow_an_override_of_their_word() {
     let fx = Fx::new("theme {\n    red = #112233\n}\nView v { Rectangle b color=danger }\n");
     assert_eq!(fx.color("b", PropKey::Color), rgb(0x112233));

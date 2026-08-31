@@ -374,6 +374,14 @@ struct Track {
     /// the author chose): `stop(restore)` re-holds it instead of releasing
     /// the channel to the ladder.
     base_held: bool,
+    /// What the channel shows BEFORE this track starts — the pinned
+    /// `from=` (else the play-start value), set for the first track on a
+    /// channel only. Needed because a `repeat=forever` wrap replays the
+    /// chain: without re-asserting this during the lead-in, the channel
+    /// keeps the chain's END value until the track starts — the loop-seam
+    /// stutter (GPAR55). A later track on the channel stays `None`: its
+    /// lead-in belongs to the previous track.
+    lead_in_from: Option<f32>,
 }
 
 impl Track {
@@ -445,7 +453,8 @@ impl Player {
                 } else {
                     None
                 };
-                tracks.push(Track { node: t.node, channel, from, to: t.to, start: t.start, duration: t.duration, easing, autoreverse: t.autoreverse, base: shown, base_held });
+                let lead_in_from = if first_on_channel { Some(if t.current { shown } else { t.from.unwrap_or(shown) }) } else { None };
+                tracks.push(Track { node: t.node, channel, from, to: t.to, start: t.start, duration: t.duration, easing, autoreverse: t.autoreverse, base: shown, base_held, lead_in_from });
                 if !owns.contains(&(t.node, channel)) {
                     owns.push((t.node, channel));
                 }
@@ -488,6 +497,9 @@ impl Player {
     fn apply_at(&mut self, t: f32, motion: &mut [Motion]) {
         for track in &mut self.tracks {
             if t < track.start {
+                if let Some(f) = track.lead_in_from {
+                    motion[track.node as usize].set(track.channel, f);
+                }
                 continue;
             }
             if track.from.is_none() {

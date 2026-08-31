@@ -227,6 +227,12 @@ pub enum PropKey {
     /// its asset root (`BuildOptions::res_root`).
     Source,
     Value,
+    /// `placeholder_text=` on an Input: drawn dimmed while the field is
+    /// empty (Godot's LineEdit word, GPAR112).
+    PlaceholderText,
+    /// `max_length=` on an Input: typing stops at this many characters;
+    /// absent or 0 = no cap (Godot's LineEdit word, GPAR112).
+    MaxLength,
     Min,
     Max,
     Cols,
@@ -333,6 +339,8 @@ pub const WORDS: &[(&str, PropKey)] = &[
     ("disabled", PropKey::Disabled),
     ("source", PropKey::Source),
     ("value", PropKey::Value),
+    ("placeholder_text", PropKey::PlaceholderText),
+    ("max_length", PropKey::MaxLength),
     ("min", PropKey::Min),
     ("max", PropKey::Max),
     ("cols", PropKey::Cols),
@@ -557,7 +565,7 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
         Kind::Gradient => &[BOX, &[PropKey::Stops, PropKey::GradientFill, PropKey::Angle]],
         // A Slider's `background=` is its track, `color=` the filled part.
         Kind::Slider => &[BOX, &[PropKey::Background, PropKey::Color, PropKey::Value, PropKey::Min, PropKey::Max, PropKey::Step]],
-        Kind::Input => &[BOX, PLATE, PADDING, TEXT, &[PropKey::Value]],
+        Kind::Input => &[BOX, PLATE, PADDING, TEXT, &[PropKey::Value, PropKey::PlaceholderText, PropKey::MaxLength]],
         Kind::Check | Kind::Radio => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::SelectedProp]],
         Kind::Toggle => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::SelectedProp, PropKey::Value]],
         Kind::Choice => &[BOX, &[PropKey::Value, PropKey::Spacing]],
@@ -847,11 +855,14 @@ pub struct ThemeEntry {
     pub value: Value,
 }
 
-/// `theme { Button background=... }` — a kind's default props.
+/// `theme { Button background=... }` — a kind's default props. `variant`
+/// gates the entry: NO_STR entries always apply, a named one only while
+/// that variant is active (`theme fancy { font = b }` — GPAR88).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct KindDefault {
     pub kind: Kind,
     pub props: (u32, u32),
+    pub variant: StrId,
 }
 
 /// One track of an `anim`, sequencing already solved at compile time:
@@ -1198,16 +1209,26 @@ impl Page {
     /// the node replaces it (`opacity=1` opts out). N is the theme's
     /// `disabled_opacity` (kept on the root kind's defaults), else 0.3.
     pub fn disabled_opacity(&self) -> f32 {
-        match self.kind_default(Kind::View, PropKey::DisabledOpacity) {
+        match self.kind_default(Kind::View, PropKey::DisabledOpacity, NO_STR) {
             Some(Value::VNum(n)) => n,
             _ => DISABLED_OPACITY,
         }
     }
 
-    pub fn kind_default(&self, kind: Kind, key: PropKey) -> Option<Value> {
-        self.kind_defaults.iter().filter(|d| d.kind == kind).find_map(|d| {
-            self.props[d.props.0 as usize..(d.props.0 + d.props.1) as usize].iter().rev().find(|p| p.key == key).map(|p| p.value)
-        })
+    /// A kind's default for `key`: an entry gated on the ACTIVE variant
+    /// wins over an always-on one (GPAR88).
+    pub fn kind_default(&self, kind: Kind, key: PropKey, variant: StrId) -> Option<Value> {
+        let find = |want: StrId| {
+            self.kind_defaults.iter().filter(|d| d.kind == kind && d.variant == want).find_map(|d| {
+                self.props[d.props.0 as usize..(d.props.0 + d.props.1) as usize].iter().rev().find(|p| p.key == key).map(|p| p.value)
+            })
+        };
+        if variant != NO_STR {
+            if let Some(v) = find(variant) {
+                return Some(v);
+            }
+        }
+        find(NO_STR)
     }
 
     pub fn list(&self, v: Value) -> &[Value] {

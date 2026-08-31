@@ -433,8 +433,16 @@ impl Input {
         self.caret = self.caret.min(text.len());
         match k {
             Key::Char(c) if !c.is_control() => {
-                text.insert(self.caret, c);
-                self.caret += 1;
+                // `max_length=` caps typing at that many characters
+                // (Godot's LineEdit word; GPAR112). Absent or 0 = no cap.
+                let cap = match page.prop(f, PropKey::MaxLength) {
+                    Some(Value::VNum(n)) if n > 0.0 => n as usize,
+                    _ => usize::MAX,
+                };
+                if text.len() < cap {
+                    text.insert(self.caret, c);
+                    self.caret += 1;
+                }
             }
             Key::Backspace if self.caret > 0 => {
                 self.caret -= 1;

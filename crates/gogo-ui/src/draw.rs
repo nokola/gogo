@@ -395,8 +395,19 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             // Godot's default LineEdit plate: (0.1, 0.1, 0.1) at 0.6, no border.
             let bg = color(PropKey::Background).unwrap_or(mul_alpha(Rgba([0x1A, 0x1A, 0x1A, 0x99]), opacity));
             out.push(Draw::Quad { rect, color: bg, corner, border, border_color });
+            let mut field_is_empty = true;
             if let Some(Value::VText { text, key }) = res.prop(page, id, PropKey::Text) {
+                field_is_empty = page.str(text).is_empty() && key == NO_KEY;
                 out.push(Draw::Text { rect: text_rect.inset(8.0, 0.0, 8.0, 0.0), text, key, font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE), color: text_color(), halign: TextAlign::Start, valign: TextAlign::Center, wrap: false, font: res.font(page, id).unwrap_or(NO_STR) });
+            }
+            // `placeholder_text=` shows while the field is empty, at half
+            // the ink's alpha (Godot's LineEdit look; GPAR112).
+            if field_is_empty {
+                if let Some(Value::VText { text, key }) = res.prop(page, id, PropKey::PlaceholderText) {
+                    let mut dim = text_color();
+                    dim.0[3] = (dim.0[3] as f32 * 0.5) as u8;
+                    out.push(Draw::Text { rect: text_rect.inset(8.0, 0.0, 8.0, 0.0), text, key, font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE), color: dim, halign: TextAlign::Start, valign: TextAlign::Center, wrap: false, font: res.font(page, id).unwrap_or(NO_STR) });
+                }
             }
             // The caret, focused fields only (GPAR112); an empty field
             // carries the interned empty string (id 0).

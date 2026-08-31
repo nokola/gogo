@@ -93,6 +93,43 @@ fn the_caret_moves_and_rides_the_draw_list() {
     assert!(list.iter().any(|d| matches!(d, Draw::Caret { index: 2, .. })), "the caret rides the draw list: {list:#?}");
 }
 
+/// GPAR112 round 2: `placeholder_text=` draws dimmed while the field is
+/// empty and leaves when text arrives; `max_length=` stops typing at that
+/// many characters (Godot's LineEdit words).
+#[test]
+fn placeholder_shows_while_empty_and_max_length_caps_typing() {
+    let c = compile("View v { Input field width=200, height=36, placeholder_text=\"Search\", max_length=3, on:edit=FieldEdit }", &|_| None);
+    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    let mut page = c.page;
+    let mut rt = Runtime::new(&page);
+    let mut input = Input::new();
+    let field = page.find("field").unwrap();
+    let shows_placeholder = |page: &Page, rt: &Runtime| {
+        let res = resolve(page, rt);
+        let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        draw(page, &res, &rects).iter().any(|d| matches!(d, Draw::Text { text, .. } if page.str(*text) == "Search"))
+    };
+    assert!(shows_placeholder(&page, &rt), "empty field shows the placeholder");
+    {
+        let res = resolve(&page, &rt);
+        let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        let r = rects[field as usize];
+        let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        input.touch(&page, &mut rt, &res, &rects, Touch { phase: Phase::Down, x, y, t: 0.0, id: 1 });
+        input.touch(&page, &mut rt, &res, &rects, Touch { phase: Phase::Up, x, y, t: 0.1, id: 1 });
+    }
+    for ch in ['a', 'b', 'c', 'd'] {
+        input.key(&mut page, &mut rt, Key::Char(ch));
+    }
+    let res = resolve(&page, &rt);
+    let text = match res.prop(&page, field, PropKey::Text) {
+        Some(Value::VText { text, .. }) => page.str(text).to_string(),
+        _ => String::new(),
+    };
+    assert_eq!(text, "abc", "typing stops at max_length");
+    assert!(!shows_placeholder(&page, &rt), "a filled field hides the placeholder");
+}
+
 #[test]
 fn an_unfocused_page_ignores_keys_and_reset_forgets_without_committing() {
     let mut fx = Fx::new();

@@ -784,3 +784,100 @@ fn unknown_style_and_a_response_reaching_a_missing_node_are_refused() {
     assert!(codes(&reaching).contains(&"G0060".to_string()), "{}", messages(&reaching));
 }
 
+// --------------------------------------------------- round 3 (2026-08-31)
+
+/// GPAR55: at a `repeat=forever` wrap, a track's lead-in shows the pinned
+/// `from=` again — without the re-assert the channel keeps the chain's END
+/// value until the track starts (the loop-seam stutter).
+#[test]
+fn a_repeat_wrap_lead_in_re_asserts_the_pinned_from() {
+    let c = ok("anim looped repeat=forever {\n abox.translate.x from=5, to=50, duration=0.5\n then bbox.translate.x from=7, to=30, duration=0.5\n}\nView v { Row r { Rectangle abox; Rectangle bbox } }\n");
+    let mut page = c.page;
+    let b = page.find("bbox").unwrap() as usize;
+    let looped = anim_id(&page, "looped");
+    let mut rt = Runtime::new(&page);
+    rt.play(&page, looped, Finish::Nothing);
+    rt.tick(&mut page, 0.0);
+    assert!(near(rt.motion[b].translate[0], 7.0, 0.01), "the lead-in holds the pinned from: {:?}", rt.motion[b]);
+    rt.tick(&mut page, 0.75);
+    assert!(near(rt.motion[b].translate[0], 18.5, 0.5), "mid-flight: {:?}", rt.motion[b]);
+    rt.tick(&mut page, 0.35);
+    assert!(near(rt.motion[b].translate[0], 7.0, 0.01), "after the wrap the lead-in shows the from again, not the end value: {:?}", rt.motion[b]);
+}
+
+/// GPAR85: a target hidden mid-anim keeps NOTHING when the anim ends — no
+/// held end pose, motion back to identity — or the next show finds the box
+/// displaced.
+#[test]
+fn a_target_hidden_mid_anim_ends_at_identity_with_no_held_pose() {
+    let c = ok("anim slide {\n sbox.translate.x to=80, duration=0.2\n}\nView v { Rectangle sbox }\n");
+    let mut page = c.page;
+    let bx = page.find("sbox").unwrap();
+    let slide = anim_id(&page, "slide");
+    let mut rt = Runtime::new(&page);
+    rt.play(&page, slide, Finish::Nothing);
+    rt.tick(&mut page, 0.1);
+    rt.set_visible(&mut page, bx, false);
+    rt.tick(&mut page, 0.2);
+    assert!(!rt.is_playing(slide));
+    assert!(near(rt.motion[bx as usize].translate[0], 0.0, 0.001), "identity, not the end pose: {:?}", rt.motion[bx as usize]);
+    assert!(!rt.held.iter().any(|h| h.0 == bx), "nothing held for a hidden box: {:?}", rt.held);
+}
+
+/// GPAR110: a hide anim that moves a DESCENDANT restores it to identity on
+/// hide-finish (gogo_visibility_fx.gd 107-119) — the re-show must not find
+/// the child displaced.
+#[test]
+fn a_hide_anim_restores_its_displaced_descendant_on_finish() {
+    let c = ok("anim out {\n child.translate.x to=100, duration=0.2\n}\nView v { Panel host on:hide=play(out) { Rectangle child } }\n");
+    let mut page = c.page;
+    let host = page.find("host").unwrap();
+    let child = page.find("child").unwrap() as usize;
+    let mut rt = Runtime::new(&page);
+    rt.show(&mut page, host, false);
+    rt.tick(&mut page, 0.1);
+    assert!(rt.motion[child].translate[0] > 10.0, "the hide anim is driving the child: {:?}", rt.motion[child]);
+    rt.tick(&mut page, 0.2);
+    assert!(near(rt.motion[child].translate[0], 0.0, 0.001), "hide-finish restores the child: {:?}", rt.motion[child]);
+    let res = resolve(&page, &rt);
+    assert!(res.hidden(&page, host) || res.ident(&page, host, PropKey::Visibility) == Some("gone"), "the host hid");
+}
+
+/// GPAR56: an entrance plays only for a node the page DRAWS at boot —
+/// `gone`, `space_only`, or a `when` posing either (here `when disabled`
+/// on a node that boots disabled) get none: the anim would burn
+/// off-screen.
+#[test]
+fn entrances_skip_nodes_the_page_does_not_draw() {
+    let c = ok("anim popA {\n na.opacity from=0, to=1, duration=0.2\n}\nanim popB {\n nb.opacity from=0, to=1, duration=0.2\n}\nanim popC {\n nc.opacity from=0, to=1, duration=0.2\n}\nanim popD {\n nd.opacity from=0, to=1, duration=0.2\n}\nView v { Column col {\n    Rectangle na on:show=play(popA)\n    Rectangle nb visibility=gone, on:show=play(popB)\n    Rectangle nc visibility=space_only, on:show=play(popC)\n    Rectangle nd disabled=true, on:show=play(popD) { when disabled visibility=space_only }\n} }\n");
+    let page = c.page;
+    let mut rt = Runtime::new(&page);
+    rt.play_entrances(&page);
+    assert!(rt.is_playing(anim_id(&page, "popA")), "a drawn node gets its entrance");
+    assert!(!rt.is_playing(anim_id(&page, "popB")), "gone gets none");
+    assert!(!rt.is_playing(anim_id(&page, "popC")), "space_only gets none");
+    assert!(!rt.is_playing(anim_id(&page, "popD")), "posed space_only at boot gets none");
+}
+
+/// GPAR109 (`_wiring/_anim` 4934, 5541 family): `transition any -> held
+/// anim=<name>` plays the named anim when the condition rises; the
+/// condition's end restores what it displaced (Godot tweens them home with
+/// the exit rule's timing; Rust snaps — recorded in the tracker).
+#[test]
+fn a_transition_anim_plays_on_the_flip_and_reverts_on_state_end() {
+    let c = ok("anim press {\n pbox.translate.y to=-10, duration=0.2\n}\nView v { Button pbox text=\"x\" {\n    transition any -> held anim=press\n} }\n");
+    let mut page = c.page;
+    let bx = page.find("pbox").unwrap();
+    let press = anim_id(&page, "press");
+    let mut rt = Runtime::new(&page);
+    rt.set_state(bx, HELD, true);
+    resolve_animated(&page, &mut rt);
+    assert!(rt.is_playing(press), "entering the state plays the named anim");
+    rt.tick(&mut page, 0.3);
+    assert!(!rt.is_playing(press));
+    assert!(near(rt.motion[bx as usize].translate[1], -10.0, 0.01), "the end pose stands while held: {:?}", rt.motion[bx as usize]);
+    rt.set_state(bx, HELD, false);
+    resolve_animated(&page, &mut rt);
+    assert!(near(rt.motion[bx as usize].translate[1], 0.0, 0.001), "the state's end restores the displaced channel: {:?}", rt.motion[bx as usize]);
+    assert!(!rt.held.iter().any(|h| h.0 == bx), "no standing pose survives the exit: {:?}", rt.held);
+}

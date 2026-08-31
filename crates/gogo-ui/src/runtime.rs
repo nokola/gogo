@@ -176,6 +176,11 @@ pub struct Runtime {
     /// The focused Input's caret (node, chars) — written by the input
     /// machine, drawn by the renderer (GPAR112).
     pub caret: Option<(NodeId, u32)>,
+    /// `transition … anim=<name>` players in flight or held (GPAR109):
+    /// who flipped, the condition entered, the anim, and what it displaced
+    /// at play start — the condition's end restores the displaced
+    /// channels (gogo_states.gd `_cancel_state_anim`).
+    state_anims: Vec<(NodeId, State, StrId, Vec<(NodeId, Channel, f32, bool)>)>,
     /// Anims that ended on their own since the last `take_finished`
     /// (one entry per player that ran out). Needed because a host
     /// sequencing on an anim's end (Godot's `finished`) otherwise polls
@@ -234,6 +239,7 @@ impl Runtime {
             held: Vec::new(),
             shown: vec![Motion::IDENTITY; page.nodes.len()],
             players: Vec::new(),
+            state_anims: Vec::new(),
             finished: Vec::new(),
             pools: Vec::new(),
             caret: None,
@@ -369,17 +375,21 @@ impl Runtime {
     }
 
     /// Plays every visible node's `on:show` once (the entrance on first
-    /// build). A node under a `gone` ancestor is not on screen: no entrance.
+    /// build). A node the page does not DRAW at boot — `gone`,
+    /// `space_only`/`hidden`, or a `when` posing either in the boot state,
+    /// on it or an ancestor — gets none: its anim would burn off-screen
+    /// (GPAR56).
     pub fn play_entrances(&mut self, page: &Page) {
-        let gone: Vec<bool> = (0..page.nodes.len()).map(|i| {
-            let n = i as NodeId;
-            page.prop(n, PropKey::Visibility).map(|v| matches!(v, Value::VIdent(id) if page.str(id) == "gone")).unwrap_or(false) || self.writes.iter().any(|(w, p)| *w == n && p.key == PropKey::Visibility && matches!(p.value, Value::VIdent(id) if page.str(id) == "gone"))
+        let res = resolve(page, self);
+        let unseen: Vec<bool> = (0..page.nodes.len()).map(|i| {
+            matches!(res.ident(page, i as NodeId, PropKey::Visibility), Some("gone") | Some("hidden") | Some("space_only"))
         }).collect();
+        drop(res);
         for i in 0..page.nodes.len() {
             let mut n = i as NodeId;
             let mut hidden = false;
             loop {
-                if gone[n as usize] {
+                if unseen[n as usize] {
                     hidden = true;
                     break;
                 }
@@ -720,6 +730,36 @@ impl Runtime {
         }
     }
 
+    /// Ends a condition's `transition anim=` play (GPAR109): the player
+    /// stops and every channel it displaced goes back to the base it had
+    /// at play start — Godot tweens them home with the exit rule's
+    /// timing, here they snap (no shipped page glides one yet). A channel
+    /// a LIVE player owns is that player's; it is left alone.
+    fn end_state_anims(&mut self, who: NodeId, state: State) {
+        let ended: Vec<(NodeId, State, StrId, Vec<(NodeId, Channel, f32, bool)>)> = {
+            let (out, keep) = self.state_anims.drain(..).partition(|e| e.0 == who && e.1 == state);
+            self.state_anims = keep;
+            out
+        };
+        for (_, _, anim, displaced) in ended {
+            for p in self.players.iter_mut().filter(|p| p.anim == anim) {
+                p.stop(false, &mut self.motion);
+            }
+            self.players.retain(|p| !p.stopped);
+            for (n, channel, base, base_held) in displaced {
+                if self.players.iter().any(|p| p.owns.contains(&(n, channel))) {
+                    continue;
+                }
+                self.held.retain(|h| !(h.0 == n && h.1 == channel));
+                self.motion[n as usize].set(channel, base);
+                if base_held {
+                    self.held.push((n, channel, base));
+                }
+            }
+            self.dirty = true;
+        }
+    }
+
     /// Advances tweens and players by `dt` seconds; true while anything moves.
     pub fn tick(&mut self, page: &mut Page, dt: f32) -> bool {
         let mut moving = false;
@@ -749,12 +789,25 @@ impl Runtime {
             if let Finish::Hide(node) = f {
                 self.set_visible(page, node, false);
                 self.motion[node as usize] = Motion::IDENTITY;
+                // The hide anim may have moved DESCENDANTS too — every
+                // driven channel goes back to identity, or the re-show
+                // finds them displaced (GPAR110, gogo_visibility_fx.gd).
+                for (n, channel) in owns {
+                    self.motion[n as usize].set(channel, Motion::IDENTITY.get(channel));
+                }
             } else {
                 // A finished anim's end pose is a standing value the author
-                // chose (WPF HoldEnd): it stays until the next writer.
+                // chose (WPF HoldEnd): it stays until the next writer. A
+                // target HIDDEN mid-anim keeps nothing — its pose means
+                // nothing off screen, and holding it would show a
+                // displaced box on the next show (GPAR85).
                 for (node, channel) in owns {
                     self.held.retain(|h| !(h.0 == node && h.1 == channel));
-                    self.held.push((node, channel, self.motion[node as usize].get(channel)));
+                    if self.visible_now(page, node) {
+                        self.held.push((node, channel, self.motion[node as usize].get(channel)));
+                    } else {
+                        self.motion[node as usize].set(channel, Motion::IDENTITY.get(channel));
+                    }
                 }
             }
         }
@@ -987,7 +1040,7 @@ impl Resolved {
             .find(|(n, p)| *n == node && p.key == key)
             .map(|(_, p)| p.value)
             .or_else(|| page.prop(node, key))
-            .or_else(|| page.kind_default(page.nodes[node as usize].kind, key))?;
+            .or_else(|| page.kind_default(page.nodes[node as usize].kind, key, self.variant))?;
         Some(deref(page, self.variant, raw))
     }
 
@@ -1077,7 +1130,7 @@ impl Resolved {
             }
             n = parent;
         }
-        page.kind_default(page.nodes[node as usize].kind, key).or_else(|| page.kind_default(Kind::Label, key)).map(|v| deref(page, self.variant, v))
+        page.kind_default(page.nodes[node as usize].kind, key, self.variant).or_else(|| page.kind_default(Kind::Label, key, self.variant)).map(|v| deref(page, self.variant, v))
     }
 
     /// `font_size=`: own, inherited, or the kind default.
@@ -1490,6 +1543,24 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
     // pressed shows its `when held` look).
     if !changes.is_empty() && !rt.held.is_empty() {
         rt.held.retain(|(node, channel, _)| !changes.iter().any(|(who, _, _)| when_writes(page, *node, *channel, *who)));
+    }
+    // `transition … anim=<name>` (GPAR109): entering the rule's `to`
+    // condition plays the named anim; leaving the condition ends it and
+    // restores what it displaced (gogo_states.gd _play_state_anim).
+    for (who, from, to) in &changes {
+        if let Some(f) = from {
+            rt.end_state_anims(*who, *f);
+        }
+        if to.is_some() {
+            if let Some(rule) = find_rule(page, *who, *from, *to) {
+                if rule.anim != NO_STR {
+                    rt.end_state_anims(*who, to.unwrap());
+                    rt.play(page, rule.anim, Finish::Nothing);
+                    let displaced = rt.players.last().map(|p| p.owned_bases()).unwrap_or_default();
+                    rt.state_anims.push((*who, to.unwrap(), rule.anim, displaced));
+                }
+            }
+        }
     }
     let mut r = resolve_ladder(page, rt);
     // An arrangement flip with a timed view rule: the boxes it re-poses

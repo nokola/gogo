@@ -309,10 +309,16 @@ pub struct Compiler<'a> {
     styles: HashMap<String, StyleDef>,
     widgets: HashMap<String, WidgetDef>,
     palette: HashMap<String, Rgba>,
-    /// The variant-flipping words, (light, dark) — `page::MODE_COLORS`
-    /// plus any theme overrides (a plain-block override replaces BOTH
-    /// halves, `theme dark { surface = … }` the dark one — REFERENCE.md).
+    /// The variant-flipping words, (light, dark) — `page::MODE_COLORS`.
+    /// Overrides live in `palette`/`palette_dark`, which `palette_lookup`
+    /// checks first, so a plain-block override replaces both halves and a
+    /// `theme dark { }` one the dark half (REFERENCE.md).
     mode_palette: HashMap<String, (Rgba, Rgba)>,
+    /// `theme dark { red = … }` overrides — read only while the active
+    /// variant is `dark` (GPAR88).
+    palette_dark: HashMap<String, Rgba>,
+    /// Word-to-word overrides in a `theme dark { }` block.
+    palette_links_dark: HashMap<String, String>,
     /// Widget param scopes, innermost last.
     scopes: Vec<HashMap<String, AstValue>>,
     /// Widget-scoped styles, alive while that widget's body builds
@@ -430,6 +436,8 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         widgets: HashMap::new(),
         palette: default_palette(),
         mode_palette: MODE_COLORS.iter().map(|(w, l, d)| ((*w).to_string(), (Rgba::opaque(*l), Rgba::opaque(*d)))).collect(),
+        palette_dark: HashMap::new(),
+        palette_links_dark: HashMap::new(),
         scopes: Vec::new(),
         style_scopes: Vec::new(),
         control_scopes: HashSet::new(),
@@ -463,14 +471,13 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
     Compiled { page: c.page, diags: c.diags, keys: c.local_keys }
 }
 
-/// The bare color words: `page::PALETTE` plus its aliases and `transparent`.
+/// The bare color words: `page::PALETTE` plus `transparent`. Aliases are
+/// NOT baked in — `palette_lookup` follows them at every use, so an
+/// override of `red` moves `danger` too (GPAR88).
 fn default_palette() -> HashMap<String, Rgba> {
     let mut p = HashMap::new();
     for (name, _) in PALETTE {
         p.insert(name.to_string(), palette_color(name).expect("palette word"));
-    }
-    for (alias, _) in PALETTE_ALIASES {
-        p.insert(alias.to_string(), palette_color(alias).expect("palette alias"));
     }
     p.insert("transparent".to_string(), Rgba::TRANSPARENT);
     p
@@ -649,7 +656,7 @@ impl<'a> Compiler<'a> {
                             let v = self.value(value, *line, Some(pk));
                             let first = self.page.props.len() as u32;
                             self.page.props.push(Prop { key: pk, value: v });
-                            self.page.kind_defaults.push(KindDefault { kind: Kind::View, props: (first, 1) });
+                            self.page.kind_defaults.push(KindDefault { kind: Kind::View, props: (first, 1), variant });
                             continue;
                         }
                         if matches!(pk, PropKey::Font | PropKey::FontSize | PropKey::Color) {
@@ -657,48 +664,78 @@ impl<'a> Compiler<'a> {
                             for kind in [Kind::Label, Kind::Button, Kind::Input, Kind::Check, Kind::Toggle, Kind::Radio, Kind::View, Kind::Panel] {
                                 let first = self.page.props.len() as u32;
                                 self.page.props.push(Prop { key: pk, value: v });
-                                self.page.kind_defaults.push(KindDefault { kind, props: (first, 1) });
+                                self.page.kind_defaults.push(KindDefault { kind, props: (first, 1), variant });
                             }
                             continue;
                         }
                     }
                     // Palette override: `red = #E51400` (§7: bare names only here).
-                    if !self.palette.contains_key(key) && !self.mode_palette.contains_key(key) {
+                    if self.palette_lookup(key, false).is_none() {
                         self.error("G6003", *line, format!("`{key}` is not a palette color (new names are `$values`)"));
+                        continue;
+                    }
+                    let is_dark_block = self.page.str(variant) == "dark";
+                    if variant != NO_STR && !is_dark_block {
+                        // Only `dark` has a second color column; a color
+                        // scoped to any other variant is a `$value`
+                        // (which IS variant-gated) — recoloring a palette
+                        // word there would silently apply everywhere.
+                        self.error("G6006", *line, format!("a palette override in `theme {} {{ }}` has no color column of its own — only the well-known `dark` block does; a variant-scoped color is a `$value` (`theme {} {{ $name = … }}`)", self.page.str(variant), self.page.str(variant)));
                         continue;
                     }
                     if matches!(value, AstValue::Color { pos: Some(_), .. } | AstValue::Ident { pos: Some(_), .. }) {
                         self.error("G0040", *line, "`@` positions a gradient stop — it only goes on entries of a Gradient's `stops=` list");
                         continue;
                     }
-                    // A bare-word override links palette names; a chain
-                    // that returns to its start can never resolve
-                    // (G6005) — eager resolution here would silently
-                    // paint the OLD color instead.
-                    if let AstValue::Ident { word, .. } = value {
-                        self.palette_links.insert(key.clone(), word.clone());
+                    // A BARE-word override is a link, followed at every
+                    // use (`red = green` then `green = X` moves red;
+                    // GPAR88); a chain that returns to its start can
+                    // never resolve (G6005). A worded value with `/o`
+                    // bakes bytes below instead — the alpha is applied
+                    // once, here.
+                    if let AstValue::Ident { word, opacity: None, pos: None } = value {
+                        if self.palette_lookup(word, false).is_none() {
+                            let mut pool: Vec<String> = self.palette.keys().cloned().collect();
+                            pool.extend(self.mode_palette.keys().cloned());
+                            pool.extend(PALETTE_ALIASES.iter().map(|(a, _)| (*a).to_string()));
+                            let hint = suggest(word, &pool);
+                            let tail = if hint.is_empty() { String::new() } else { format!(" — {hint}") };
+                            self.error("G6004", *line, format!("`{key} = …` needs a color{tail}"));
+                            continue;
+                        }
+                        if is_dark_block {
+                            self.palette_links_dark.insert(key.clone(), word.clone());
+                            self.palette_dark.remove(key);
+                        } else {
+                            self.palette_links.insert(key.clone(), word.clone());
+                            self.palette.remove(key);
+                        }
                         let mut cur = word.clone();
-                        for _ in 0..12 {
+                        for _ in 0..16 {
                             if cur == *key {
                                 self.error("G6005", *line, format!("circular color override chain at '{key}'"));
                                 break;
                             }
-                            match self.palette_links.get(&cur) {
-                                Some(nxt) => cur = nxt.clone(),
+                            let next = if is_dark_block { self.palette_links_dark.get(&cur) } else { self.palette_links.get(&cur) };
+                            if let Some(nxt) = next {
+                                cur = nxt.clone();
+                                continue;
+                            }
+                            match PALETTE_ALIASES.iter().find(|(a, _)| *a == cur) {
+                                Some((_, of)) => cur = (*of).to_string(),
                                 None => break,
                             }
                         }
+                        continue;
                     }
-                    let is_dark_block = self.page.str(variant) == "dark";
                     match self.color_value(value, *line) {
                         Some(c) => {
-                            if let Some(halves) = self.mode_palette.get_mut(key) {
-                                // A plain-block override replaces the pair
-                                // for ALL modes; a `theme dark { }` one
-                                // beats only the dark half (REFERENCE.md).
-                                if is_dark_block { halves.1 = c } else { *halves = (c, c) }
+                            if is_dark_block {
+                                self.palette_dark.insert(key.clone(), c);
+                                self.palette_links_dark.remove(key);
                             } else {
                                 self.palette.insert(key.clone(), c);
+                                self.palette_links.remove(key);
                             }
                         }
                         None => {
@@ -747,7 +784,7 @@ impl<'a> Compiler<'a> {
                         }
                     }
                     let count = self.page.props.len() as u32 - first;
-                    self.page.kind_defaults.push(KindDefault { kind, props: (first, count) });
+                    self.page.kind_defaults.push(KindDefault { kind, props: (first, count), variant });
                 }
             }
         }
@@ -1844,6 +1881,46 @@ impl<'a> Compiler<'a> {
         matches!(key, PropKey::Background | PropKey::Color | PropKey::BorderColor | PropKey::Stops | PropKey::FontColor)
     }
 
+    /// A palette word's bytes for one mode, following override links and
+    /// aliases at USE time — so `theme { red = X }` moves `danger` too
+    /// (GPAR88). Dark reads the `theme dark { }` overrides first and falls
+    /// back to the light chain; `text_muted`'s light half is the alias
+    /// `gray` (the addon's rule), its dark half the mode table's.
+    fn palette_lookup(&self, word: &str, dark: bool) -> Option<Rgba> {
+        let mut cur = word;
+        for _ in 0..16 {
+            if dark {
+                if let Some(next) = self.palette_links_dark.get(cur) {
+                    cur = next;
+                    continue;
+                }
+                if let Some(&c) = self.palette_dark.get(cur) {
+                    return Some(c);
+                }
+            }
+            if let Some(next) = self.palette_links.get(cur) {
+                cur = next;
+                continue;
+            }
+            if let Some(&c) = self.palette.get(cur) {
+                return Some(c);
+            }
+            if let Some((_, of)) = PALETTE_ALIASES.iter().find(|(a, _)| *a == cur) {
+                cur = of;
+                continue;
+            }
+            if let Some(&(l, d)) = self.mode_palette.get(cur) {
+                if !dark && cur == "text_muted" {
+                    cur = "gray";
+                    continue;
+                }
+                return Some(if dark { d } else { l });
+            }
+            return None;
+        }
+        None
+    }
+
     /// A color from a hex, palette word or `$ref` (the ref stays live).
     fn color_value(&mut self, v: &AstValue, line: u32) -> Option<Rgba> {
         match v {
@@ -1852,7 +1929,7 @@ impl<'a> Compiler<'a> {
                 Some(opacity.map_or(c, |o| c.with_opacity(o)))
             }
             AstValue::Ident { word, opacity, .. } => {
-                let c = *self.palette.get(word)?;
+                let c = self.palette_lookup(word, false)?;
                 Some(opacity.map_or(c, |o| c.with_opacity(o)))
             }
             AstValue::Ref { name, .. } => {
@@ -1946,25 +2023,27 @@ impl<'a> Compiler<'a> {
                         // RGB; the file says which.
                         self.error("G2006", line, "`transparent` in `stops=` hides which color the fade passes through — spell it: `white/0` or `black/0`");
                     }
-                    if let Some(&(l, d)) = self.mode_palette.get(word.as_str()) {
-                        if key == Some(PropKey::Stops) {
-                            // A stop bakes ONE color; baking the light
-                            // half would silently un-flip the gradient.
-                            self.error("G2008", line, format!("`{word}` flips with the dark variant and a gradient stop bakes one color — write the hex for the mode you mean"));
-                            return self.stop_value(l, *pos, key, line);
+                    if let Some(l) = self.palette_lookup(word, false) {
+                        let d = self.palette_lookup(word, true).unwrap_or(l);
+                        if l != d {
+                            if key == Some(PropKey::Stops) {
+                                // A stop bakes ONE color; baking the light
+                                // half would silently un-flip the gradient.
+                                self.error("G2008", line, format!("`{word}` flips with the dark variant and a gradient stop bakes one color — write the hex for the mode you mean"));
+                                return self.stop_value(l, *pos, key, line);
+                            }
+                            if let Some(p) = pos {
+                                self.error("G0040", line, format!("`@{p}` positions a gradient stop — it only goes on entries of a Gradient's `stops=` list"));
+                            }
+                            let (l, d) = opacity.map_or((l, d), |o| (l.with_opacity(o), d.with_opacity(o)));
+                            return Value::VColorPair { light: l, dark: d };
                         }
-                        if let Some(p) = pos {
-                            self.error("G0040", line, format!("`@{p}` positions a gradient stop — it only goes on entries of a Gradient's `stops=` list"));
-                        }
-                        let (l, d) = opacity.map_or((l, d), |o| (l.with_opacity(o), d.with_opacity(o)));
-                        return Value::VColorPair { light: l, dark: d };
-                    }
-                    if let Some(c) = self.palette.get(word).copied() {
-                        let c = opacity.map_or(c, |o| c.with_opacity(o));
+                        let c = opacity.map_or(l, |o| l.with_opacity(o));
                         return self.stop_value(c, *pos, key, line);
                     }
                     let mut pool: Vec<String> = self.palette.keys().cloned().collect();
                     pool.extend(self.mode_palette.keys().cloned());
+                    pool.extend(PALETTE_ALIASES.iter().map(|(a, _)| (*a).to_string()));
                     let hint = suggest(word, &pool);
                     let tail = if hint.is_empty() { String::new() } else { format!(" — {hint}") };
                     self.error("G2007", line, format!("`{word}` is not a color{tail}"));
@@ -3306,6 +3385,17 @@ impl<'a> Compiler<'a> {
     fn num(&mut self, v: Value, line: u32, key: &str) -> f32 {
         match v {
             Value::VNum(n) => n,
+            // A numeric theme `$value` in a length (`min_width=$rowFont`,
+            // GPAR88): placement bakes at compile and theme entries are
+            // compile-known, so the ref resolves here. Only default
+            // entries — a variant block cannot flip a baked length.
+            Value::VRef { .. } => match crate::runtime::deref(&self.page, NO_STR, v) {
+                Value::VNum(n) => n,
+                _ => {
+                    self.error("G0058", line, format!("`{key}=` wants a number (epx) — the `$value` it names is not a number"));
+                    0.0
+                }
+            },
             _ => {
                 self.error("G0058", line, format!("`{key}=` wants a number (epx)"));
                 0.0
@@ -3918,7 +4008,7 @@ mod tests {
         assert_eq!(held_props[0].value, Value::VColor(Rgba([255, 255, 255, 128])));
         let accent = p.intern_lookup("accent");
         assert_eq!(p.theme_value(accent, p.intern_lookup("dark")), Some(Value::VColor(Rgba([0xFF, 0x6B, 0x4A, 0xFF]))));
-        assert_eq!(p.kind_default(Kind::Button, PropKey::FontSize), Some(Value::VNum(15.0)));
+        assert_eq!(p.kind_default(Kind::Button, PropKey::FontSize, NO_STR), Some(Value::VNum(15.0)));
     }
 
     #[test]
