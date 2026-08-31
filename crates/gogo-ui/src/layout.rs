@@ -811,61 +811,97 @@ impl<'a> Lay<'a> {
             .collect()
     }
 
-    /// Cells of one grid row: (node, first track, span).
-    fn row_cells(&self, row: NodeId) -> Vec<(NodeId, usize, usize)> {
-        let mut cells = Vec::new();
-        let mut track = 0;
-        for c in self.page.children(row).map(|i| i as NodeId) {
-            let node = self.node(c);
-            if node.kind == Kind::Skip {
-                track += 1;
-                continue;
+    /// Every cell of the grid with its lattice place and measured size —
+    /// rows walk left to right, `skip` covers one track.
+    fn grid_cells(&self, rows: &[NodeId], inner_w: Option<f32>) -> Vec<GridCell> {
+        let mut out = Vec::new();
+        for (ri, r) in rows.iter().enumerate() {
+            let mut track = 0usize;
+            for c in self.page.children(*r).map(|i| i as NodeId) {
+                if self.node(c).kind == Kind::Skip {
+                    track += 1;
+                    continue;
+                }
+                let col_span = self.res.num(self.page, c, PropKey::ColSpan).unwrap_or(1.0).max(1.0) as usize;
+                let row_span = self.res.num(self.page, c, PropKey::RowSpan).unwrap_or(1.0).max(1.0) as usize;
+                if !self.gone(c) {
+                    let (w, h) = self.size_at(c, inner_w);
+                    out.push(GridCell { node: c, row: ri, col: track, col_span, row_span, w, h });
+                }
+                track += col_span;
             }
-            let span = self.res.num(self.page, c, PropKey::ColSpan).unwrap_or(1.0).max(1.0) as usize;
-            if !self.gone(c) {
-                cells.push((c, track, span));
-            }
-            track += span;
         }
-        cells
+        out
     }
 
-    /// Track minimums from single-span cells, plus each row's minimum height.
-    fn grid_measure(&self, id: NodeId, inner_w: Option<f32>) -> (Vec<Len>, Vec<f32>, Vec<f32>) {
+    /// A row's declared height: its own `height=`, else the grid's
+    /// `row_height=` default, else content (`Unset`).
+    fn grid_row_len(&self, grid: NodeId, row: NodeId) -> Len {
+        let own = self.placement(row).height;
+        if !matches!(own, Len::Unset) {
+            return own;
+        }
+        match self.res.prop(self.page, grid, PropKey::RowHeight) {
+            Some(Value::VNum(v)) => Len::Exact(v),
+            Some(Value::VIdent(w)) if self.page.str(w) == "fill" => Len::Fill(1.0),
+            Some(Value::VCall { name, args }) if self.page.str(name) == "fill" => {
+                let w = self.page.values.get(args.0 as usize).and_then(|a| if let Value::VNum(n) = a { Some(*n) } else { None }).unwrap_or(1.0);
+                Len::Fill(w)
+            }
+            _ => Len::Unset,
+        }
+    }
+
+    /// Track and row minimums: px and written heights as declared, hug
+    /// from single-span cells, then each spanned cell's deficit spread
+    /// equally over the hug tracks/rows it covers (fill next; an
+    /// all-fixed span clips — fixed is fixed; the shipped GogoGrid
+    /// `_base_sizes`).
+    fn grid_measure(&self, id: NodeId, inner_w: Option<f32>) -> (Vec<Len>, Vec<f32>, Vec<NodeId>, Vec<Len>, Vec<f32>, Vec<GridCell>) {
+        let spacing = self.spacing(id);
         let tracks = self.grid_tracks(id);
+        let rows = self.visible_children(id);
+        let row_len: Vec<Len> = rows.iter().map(|r| self.grid_row_len(id, *r)).collect();
+        let cells = self.grid_cells(&rows, inner_w);
         let mut track_min = vec![0.0f32; tracks.len()];
         for (i, t) in tracks.iter().enumerate() {
             if let Len::Exact(n) = t {
                 track_min[i] = *n;
             }
         }
-        let rows = self.visible_children(id);
-        let mut row_min = Vec::with_capacity(rows.len());
-        for r in &rows {
-            let mut h = 0.0f32;
-            for (c, first, span) in self.row_cells(*r) {
-                let (w, ch) = self.size_at(c, inner_w);
-                h = h.max(ch);
-                // The grid asking how wide to be: a hug or fill track needs
-                // its widest single-span cell. (A grid that was told its
-                // size splits it in `place_grid`.)
-                if span == 1 && first < track_min.len() && !matches!(tracks[first], Len::Exact(_)) {
-                    track_min[first] = track_min[first].max(w);
-                }
+        for cell in &cells {
+            if cell.col_span == 1 && cell.col < tracks.len() && !matches!(tracks[cell.col], Len::Exact(_)) {
+                track_min[cell.col] = track_min[cell.col].max(cell.w);
             }
-            let rp = self.placement(*r);
-            let h = match rp.height {
-                Len::Exact(n) => n,
-                _ => h.max(rp.min_height),
-            };
-            row_min.push(h);
         }
-        (tracks, track_min, row_min)
+        for cell in &cells {
+            if cell.col_span > 1 {
+                spread(&mut track_min, cell.col, cell.col_span, cell.w, spacing, |i| !matches!(tracks.get(i), Some(Len::Exact(_)) | Some(Len::Fill(_))), |i| matches!(tracks.get(i), Some(Len::Fill(_))));
+            }
+        }
+        let mut row_min = vec![0.0f32; rows.len()];
+        for (ri, r) in rows.iter().enumerate() {
+            row_min[ri] = match row_len[ri] {
+                Len::Exact(n) => n,
+                _ => self.placement(*r).min_height,
+            };
+        }
+        for cell in &cells {
+            if cell.row_span == 1 && cell.row < rows.len() && !matches!(row_len[cell.row], Len::Exact(_)) {
+                row_min[cell.row] = row_min[cell.row].max(cell.h);
+            }
+        }
+        for cell in &cells {
+            if cell.row_span > 1 {
+                spread(&mut row_min, cell.row, cell.row_span, cell.h, spacing, |i| matches!(row_len.get(i), Some(Len::Unset) | Some(Len::Hug(_))), |i| matches!(row_len.get(i), Some(Len::Fill(_))));
+            }
+        }
+        (tracks, track_min, rows, row_len, row_min, cells)
     }
 
     fn grid_min(&self, id: NodeId, inner_w: Option<f32>) -> (f32, f32) {
         let spacing = self.spacing(id);
-        let (tracks, track_min, row_min) = self.grid_measure(id, inner_w);
+        let (tracks, track_min, _rows, _row_len, row_min, _cells) = self.grid_measure(id, inner_w);
         let w: f32 = track_min.iter().sum::<f32>() + spacing * tracks.len().saturating_sub(1) as f32;
         let h: f32 = row_min.iter().sum::<f32>() + spacing * row_min.len().saturating_sub(1) as f32;
         (w, h)
@@ -873,14 +909,13 @@ impl<'a> Lay<'a> {
 
     fn place_grid(&mut self, id: NodeId, inner: Rect) {
         let spacing = self.spacing(id);
-        let (tracks, track_min, row_min) = self.grid_measure(id, Some(inner.w));
+        let (tracks, track_min, rows, row_len, row_min, cells) = self.grid_measure(id, Some(inner.w));
         // The grid was told its size and splits it, the way a stack does:
         // a fill track shares what's left (smallest 0), a fill row shares
         // too (smallest its `min_height`); the rest take their measured size.
         let track_slots: Vec<(f32, f32)> = tracks.iter().zip(&track_min).map(|(t, m)| if let Len::Fill(w) = t { (0.0, *w) } else { (*m, 0.0) }).collect();
         let track_size: Vec<f32> = star_split(inner.w - spacing * tracks.len().saturating_sub(1) as f32, &track_slots);
-        let rows = self.visible_children(id);
-        let row_slots: Vec<(f32, f32)> = rows.iter().zip(&row_min).map(|(r, m)| if let Len::Fill(w) = self.placement(*r).height { (self.placement(*r).min_height, w) } else { (*m, 0.0) }).collect();
+        let row_slots: Vec<(f32, f32)> = rows.iter().enumerate().map(|(ri, r)| if let Len::Fill(w) = row_len[ri] { (self.placement(*r).min_height, w) } else { (row_min[ri], 0.0) }).collect();
         let row_size: Vec<f32> = star_split(inner.h - spacing * rows.len().saturating_sub(1) as f32, &row_slots);
         let mut track_x = Vec::with_capacity(tracks.len());
         let mut x = inner.x;
@@ -888,21 +923,57 @@ impl<'a> Lay<'a> {
             track_x.push(x);
             x += s + spacing;
         }
+        let mut row_y = Vec::with_capacity(rows.len());
         let mut y = inner.y;
         for (ri, r) in rows.iter().enumerate() {
-            let rh = row_size[ri];
-            self.rects[*r as usize] = Rect::new(inner.x, y, inner.w, rh);
-            for (c, first, span) in self.row_cells(*r) {
-                if first >= tracks.len() {
-                    continue;
-                }
-                let last = (first + span).min(tracks.len());
-                let cx = track_x[first];
-                let cw: f32 = track_size[first..last].iter().sum::<f32>() + spacing * (last - first - 1) as f32;
-                self.place(c, Rect::new(cx, y, cw, rh), [false, false]);
-            }
-            y += rh + spacing;
+            row_y.push(y);
+            self.rects[*r as usize] = Rect::new(inner.x, y, inner.w, row_size[ri]);
+            y += row_size[ri] + spacing;
         }
+        for cell in &cells {
+            if cell.col >= tracks.len() || cell.row >= rows.len() {
+                continue;
+            }
+            let last_c = (cell.col + cell.col_span).min(tracks.len());
+            let last_r = (cell.row + cell.row_span).min(rows.len());
+            let cw: f32 = track_size[cell.col..last_c].iter().sum::<f32>() + spacing * (last_c - cell.col - 1) as f32;
+            let ch: f32 = row_size[cell.row..last_r].iter().sum::<f32>() + spacing * (last_r - cell.row - 1) as f32;
+            self.place(cell.node, Rect::new(track_x[cell.col], row_y[cell.row], cw, ch), [false, false]);
+        }
+    }
+}
+
+/// One grid cell with its lattice place and measured natural size.
+struct GridCell {
+    node: NodeId,
+    row: usize,
+    col: usize,
+    col_span: usize,
+    row_span: usize,
+    w: f32,
+    h: f32,
+}
+
+/// Spread a spanned cell's size deficit into the spannable slots: hug
+/// slots take it equally; with none, fill slots; with none, the content
+/// clips — fixed is fixed (the shipped GogoGrid `_base_sizes`).
+fn spread(base: &mut [f32], at: usize, span: usize, need: f32, spacing: f32, hug: impl Fn(usize) -> bool, fill: impl Fn(usize) -> bool) {
+    let last = (at + span).min(base.len());
+    if last <= at {
+        return;
+    }
+    let have: f32 = base[at..last].iter().sum::<f32>() + spacing * (last - at - 1) as f32;
+    let deficit = need - have;
+    if deficit <= 0.0 {
+        return;
+    }
+    let takers: Vec<usize> = (at..last).filter(|i| hug(*i)).collect();
+    let takers: Vec<usize> = if takers.is_empty() { (at..last).filter(|i| fill(*i)).collect() } else { takers };
+    if takers.is_empty() {
+        return;
+    }
+    for i in &takers {
+        base[*i] += deficit / takers.len() as f32;
     }
 }
 

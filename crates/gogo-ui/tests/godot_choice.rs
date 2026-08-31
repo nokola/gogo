@@ -211,7 +211,6 @@ fn radio_outside_choice_is_refused() {
 /// `_choice_tests` 13592-13593 (err-check-inside): a Check inside a choice
 /// is a build error in Godot naming `Radio` as the right spelling.
 #[test]
-#[ignore = "NEW: Godot refuses a Check inside choice (says Radio) vs Rust builds it silently"]
 fn check_inside_choice_is_refused() {
     assert!(!builds("View v { Column { choice v2 { Check c text=\"x\"; Radio a text=\"A\" } } }"), "a Check inside choice must not build");
 }
@@ -219,7 +218,6 @@ fn check_inside_choice_is_refused() {
 /// `_choice_tests` 13594-13595 (err-unnamed-radio): a Radio in a choice
 /// needs a name — the name IS what the pick reports.
 #[test]
-#[ignore = "NEW: Godot refuses an unnamed Radio in a choice (needs a name) vs Rust builds it and would report an empty name"]
 fn unnamed_radio_in_choice_is_refused() {
     assert!(!builds("View v { Column { choice v2 { Radio text=\"x\" } } }"), "an unnamed Radio must not build");
 }
@@ -227,7 +225,6 @@ fn unnamed_radio_in_choice_is_refused() {
 /// `_choice_tests` 13604 (err-reserved-widget): `widget choice { … }` is a
 /// build error — a widget may not take a built-in word's name.
 #[test]
-#[ignore = "NEW: Godot refuses `widget choice` (shadows a built-in) vs Rust builds it (the widget is dead: `choice` is matched before widget lookup)"]
 fn widget_named_after_a_built_in_is_refused() {
     assert!(!builds("widget choice { Panel p }\nView c"), "a widget named `choice` must not build");
 }
@@ -307,7 +304,6 @@ fn native_and_bodied_radios_share_one_group() {
 /// with a body is a build error — the body replaces every native visual,
 /// the label included.
 #[test]
-#[ignore = "NEW: Godot refuses text= on a bodied Radio vs Rust builds it and draws the text over the body"]
 fn text_on_a_bodied_radio_is_refused() {
     assert!(!builds("View v { Column { choice v2 { Radio a text=\"x\" { Circle q 10x10 } } } }"), "text= on a bodied Radio must not build");
 }
@@ -370,7 +366,6 @@ fn bodied_check_taps_on_and_off() {
 /// `_check_body_tests` 13823-13826 (bodied-text-err): `text=` on a Check
 /// with a body is a build error — the body IS the whole look.
 #[test]
-#[ignore = "NEW: Godot refuses text= on a bodied Check vs Rust builds it and draws the text over the body"]
 fn text_on_a_bodied_check_is_refused() {
     assert!(!builds("View v { Column { Check c text=\"x\" { Circle q 10x10 } } }"), "text= on a bodied Check must not build");
 }
@@ -412,7 +407,6 @@ fn host_with_its_own_when_builds() {
 /// own inline `when selected` REPLACES the widget's response for that
 /// state (nearer scope wins, per state) — a's dot stays unlit.
 #[test]
-#[ignore = "NEW: Godot: a host's inline `when selected` replaces the for= widget's `when selected` (dot stays at opacity 0) vs Rust applies both (dot opacity 1.0)"]
 fn host_inline_when_replaces_the_widget_response() {
     let src = format!("{HOST_LOOK_HEAD}View v {{\n Column menu spacing=0 {{\n  choice pick value=a {{\n   Radio a 20x20, touch_target=off {{\n    HostLook lookA\n    when selected background=#00FF00FF\n   }}\n   Radio b 20x20, touch_target=off {{ HostLook lookB }}\n  }}\n }}\n}}\n");
     let fx = Fx::new(&src);
@@ -426,7 +420,6 @@ fn host_inline_when_replaces_the_widget_response() {
 /// not first on the widget line are all build errors. Every one is
 /// collected so the failure lists them all.
 #[test]
-#[ignore = "NEW: Godot refuses the five `widget for=` contract breaks (outside host, wrong host, when without for=, for=Column, for= not first) vs Rust builds all five"]
 fn for_widget_contract_errors() {
     let cases: [(&str, String); 5] = [
         ("outside-host", format!("{HOST_LOOK_HEAD}View v {{ Column {{ HostLook stray }} }}")),

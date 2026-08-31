@@ -151,7 +151,6 @@ fn a_skip_under_a_row_span_keeps_the_neighbour_in_its_track() {
 /// `_grid_tests` 11212: a `row_span=2` cell is as tall as both rows it
 /// covers (20 + 30 = 50), the spanned hug rows summing.
 #[test]
-#[ignore = "NEW: Godot row_span=2 cell spans both rows (h 50) vs Rust layout never reads row_span (h 20)"]
 fn a_row_span_cell_covers_both_rows() {
     let (p, r) = lay(ROW_SPAN, 400.0, 400.0);
     assert_eq!(rect(&p, &r, "e"), Rect::new(20.0, 0.0, 20.0, 50.0), "{r:?}");
@@ -178,7 +177,6 @@ fn a_spanned_cell_over_hug_tracks_builds() {
 /// covers spreads the deficit into them — the grid's minimum width is 60
 /// and each 10-px track grows to 30.
 #[test]
-#[ignore = "GP34: Grid span deficit over hug tracks — Rust measures single-span cells only (min 20, a.w 10)"]
 fn a_spanned_cells_deficit_spreads_into_hug_tracks() {
     let (p, r) = lay(&DEFICIT.replace("width=60, height=20, ", ""), 400.0, 400.0);
     assert_eq!(rect(&p, &r, "g").w, 60.0, "{r:?}");
@@ -234,7 +232,6 @@ fn nested_grid_and_widget_instance_are_cells() {
 /// `_grid_tests` 11341: `row_height=40` on the grid is every row's height
 /// when the row does not say its own.
 #[test]
-#[ignore = "NEW: Godot row_height=40 on the Grid sizes every row (inner.h 40) vs Rust layout never reads row_height (inner.h 18.75 = the tallest cell)"]
 fn row_height_on_the_grid_is_the_default_row_height() {
     let (p, r) = lay(NESTED, 400.0, 400.0);
     assert_eq!(rect(&p, &r, "inner").h, 40.0, "{r:?}");
@@ -245,7 +242,6 @@ const AREAS: &str = "View v {\n Grid g cols=[hug, fill], width=200, height=150, 
 /// `_grid_tests` 11358-11374: the areas form places cells by name; each
 /// row string carries its height after the colon (`: 30`, `: fill`).
 #[test]
-#[ignore = "OPEN: not ported: Grid areas= form (todo-gogo.md G2/G4 'Not yet'; no GP row)"]
 fn areas_form_places_cells_by_name_with_row_heights() {
     let (p, r) = lay(AREAS, 400.0, 400.0);
     assert_eq!(rect(&p, &r, "header"), Rect::new(0.0, 0.0, 200.0, 30.0), "{r:?}");
@@ -257,7 +253,6 @@ fn areas_form_places_cells_by_name_with_row_heights() {
 /// `_grid_tests` 11381-11384: a `.` hole in an areas row is fine; an area
 /// name no child binds to is a warning naming it, not an error.
 #[test]
-#[ignore = "OPEN: not ported: Grid areas= form (todo-gogo.md G2/G4 'Not yet'; no GP row)"]
 fn areas_hole_is_fine_and_an_unbound_area_warns() {
     ok(&in_view("Grid g cols=[hug, hug], areas=[\"a . : hug\"] { Rectangle a min_size=10x10 }"));
     let w = warnings(&in_view("Grid g cols=[hug, hug], areas=[\"a b : hug\"] { Rectangle a min_size=10x10 }"));
@@ -273,7 +268,6 @@ fn areas_hole_is_fine_and_an_unbound_area_warns() {
 /// `width=fill(2)` and a `col_span` outside a grid refused; `cols=`
 /// never from a style; no `when` between cells.
 #[test]
-#[ignore = "GP41: load-time lints Godot refuses — Rust has no Grid shape fences (GP34 'bad shapes compile silently')"]
 fn grid_shape_fences_refuse_bad_structure() {
     let bad: &[&str] = &[
         "Grid g { row { Rectangle r } }",
@@ -324,7 +318,6 @@ fn columns_and_rows_are_signposted_errors() {
 /// named child by a known name, one `:` and a real height per row, holes
 /// spelled `.` (not `skip`), at least one row, no `row_height=` beside.
 #[test]
-#[ignore = "OPEN: not ported: Grid areas= form (todo-gogo.md G2/G4 'Not yet'; no GP row)"]
 fn areas_fences_refuse_bad_area_strings() {
     let bad: &[&str] = &[
         "Grid g cols=[hug], areas=[\"a : hug\"] { row { Rectangle a } }",
@@ -368,7 +361,7 @@ fn an_empty_grid_is_legal() {
 /// prop's line). Godot also pins the COLUMN; Rust diagnostics carry a
 /// line only, so only the line is pinned here.
 #[test]
-#[ignore = "OPEN: not ported: Grid areas= form (todo-gogo.md G2/G4 'Not yet'; no GP row)"]
+#[ignore = "diagnostics carry one line per prop here — every areas error points at the `areas=` line (Godot pins the row string's own line + column)"]
 fn areas_errors_point_at_the_row_strings_line() {
     // `in_view` puts the snippet on line 2, so every Godot line is + 1.
     let line_of = |src: &str| -> Vec<u32> { build(src).diags.iter().filter(|d| d.severity == gogo::Severity::Error).map(|d| d.line).collect() };
@@ -387,7 +380,6 @@ fn areas_errors_point_at_the_row_strings_line() {
 /// leftover", a `width=fill` grid with no fill column warns for columns;
 /// a fill row / an unsized grid stays quiet.
 #[test]
-#[ignore = "OPEN: not ported: Grid areas= form (todo-gogo.md G2/G4 'Not yet'; no GP row)"]
 fn dead_space_lint_on_the_areas_form() {
     let w = warnings(&in_view("Grid g cols=[hug], height=fill, areas=[\"a : 40\"] { Rectangle a min_size=10x10 }"));
     assert!(w.iter().any(|m| m.contains("no row takes the leftover")), "{w:?}");
@@ -411,7 +403,6 @@ fn a_fill_row_in_a_fill_grid_is_quiet() {
 /// warns that no row takes the leftover (the row form gets the D89 lint
 /// too).
 #[test]
-#[ignore = "GP41: load-time lints Godot refuses — Rust has no D89 dead-space lint"]
 fn a_fill_grid_with_only_fixed_rows_warns() {
     let w = warnings("View v { Grid g cols=[hug], height=fill { row height=20 { Rectangle r min_size=10x10 } } }\n");
     assert!(w.iter().any(|m| m.contains("no row takes the leftover")), "{w:?}");
@@ -423,7 +414,6 @@ fn a_fill_grid_with_only_fixed_rows_warns() {
 /// required, a whole number (not a track list, not 2.5); `span=` within
 /// the lattice and never beside `full_row=true`; `full_row=` a bool.
 #[test]
-#[ignore = "GP41: load-time lints Godot refuses — Rust has no Tiles fences (a missing/odd cols= silently becomes 1 column, span clamps)"]
 fn tiles_fences_refuse_bad_cols_and_spans() {
     let bad: &[&str] = &[
         "Tiles t { Rectangle a min_size=10x10 }",

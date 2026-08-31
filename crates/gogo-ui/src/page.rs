@@ -230,6 +230,9 @@ pub enum PropKey {
     Min,
     Max,
     Cols,
+    /// `areas=` on a Grid: the named-region form, expanded at compile into
+    /// the same `row { }` structure the row form builds.
+    Areas,
     RowHeight,
     ColSpan,
     RowSpan,
@@ -333,6 +336,7 @@ pub const WORDS: &[(&str, PropKey)] = &[
     ("min", PropKey::Min),
     ("max", PropKey::Max),
     ("cols", PropKey::Cols),
+    ("areas", PropKey::Areas),
     ("row_height", PropKey::RowHeight),
     ("col_span", PropKey::ColSpan),
     ("row_span", PropKey::RowSpan),
@@ -543,7 +547,7 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
         Kind::Panel | Kind::Layers | Kind::Custom => SHARED,
         Kind::Column | Kind::Row | Kind::Flow => &[BOX, PLATE, PADDING, &[PropKey::Spacing]],
         Kind::Scroll => &[BOX, PLATE, PADDING, &[PropKey::Allow, PropKey::Bars]],
-        Kind::Grid => &[BOX, PLATE, PADDING, &[PropKey::Cols, PropKey::RowHeight, PropKey::Spacing]],
+        Kind::Grid => &[BOX, PLATE, PADDING, &[PropKey::Cols, PropKey::Areas, PropKey::RowHeight, PropKey::Spacing]],
         Kind::Tiles => &[BOX, PLATE, PADDING, &[PropKey::Cols, PropKey::Spacing]],
         Kind::Label => &[BOX, PLATE, PADDING, TEXT],
         Kind::Button => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::ToggleMode, PropKey::SelectedProp, PropKey::IconSrc, PropKey::IconSize]],
@@ -989,8 +993,7 @@ pub const UNREAD_BY_DESIGN: &[(PropKey, &str)] = &[
     (PropKey::Automatic, "read at compile into `Node.auto`, not as a prop"),
     (PropKey::SeatOf, "read at resolve through `Resolved.seat`, not as a prop"),
     (PropKey::ToggleMode, "`toggle=true` on a Button; the selected flip is not built yet"),
-    (PropKey::RowHeight, "Grid `row_height=`: rows size by `row height=` here; the prop form is not built yet"),
-    (PropKey::RowSpan, "Grid `row_span=`: only column spans are laid out; not built yet"),
+    (PropKey::Areas, "read at compile: `Compiler::grid_areas` expands it into `row { }` structure before the node builds"),
 ];
 
 /// The build-time shape: the same pools as `&'static` slices.
