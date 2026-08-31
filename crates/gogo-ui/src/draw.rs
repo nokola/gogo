@@ -135,8 +135,33 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     // surface: no chrome unless the file paints it.
     let templated = node.kind.is_press_surface() && node.kind != Kind::Button && node.children.1 > 0;
     // Scroll viewports and slot regions clip; so does `clip_contents=true`,
-    // and a Label with `clip_text=true` cuts its own text.
-    let clip = matches!(node.kind, Kind::Scroll | Kind::Slot) || res.bool(page, id, PropKey::ClipContents).unwrap_or(false) || (node.kind == Kind::Label && res.bool(page, id, PropKey::ClipText).unwrap_or(false));
+    // and a Label with `clip_text=true` cuts its own text. A WRITTEN size
+    // is hard too: a box with an exact `width=`/`height=` or a `max_*` cap
+    // cuts whatever pokes past it on that axis — the human wrote the
+    // number, so the box is neither enlarged nor spilled. Two children are
+    // left alone: one hanging out through a NEGATIVE margin (a badge, the
+    // app-bar labels — "stick out on purpose") and an `overlay=true` one
+    // (outside the box's accounting by declaration). A Label with a written
+    // size always cuts — only the renderer can measure its text.
+    let pl = &res.placement[id as usize];
+    let written_x = pl.max_width.is_some() || pl.max_width_fill || matches!(pl.width, Len::Exact(_));
+    let written_y = pl.max_height.is_some() || pl.max_height_fill || matches!(pl.height, Len::Exact(_));
+    let written_overflow = (written_x || written_y)
+        && (node.kind == Kind::Label || {
+            let own = rects[id as usize];
+            let neg = |m: Option<f32>| m.map_or(false, |v| v < 0.0);
+            page.children(id).any(|c| {
+                let r = rects[c];
+                let pc = &res.placement[c];
+                if res.gone(page, c as NodeId) || res.bool(page, c as NodeId, PropKey::Overlay).unwrap_or(false) {
+                    return false;
+                }
+                let px = written_x && ((r.x < own.x - 0.01 && !neg(pc.margin[0])) || (r.x + r.w > own.x + own.w + 0.01 && !neg(pc.margin[2])));
+                let py = written_y && ((r.y < own.y - 0.01 && !neg(pc.margin[1])) || (r.y + r.h > own.y + own.h + 0.01 && !neg(pc.margin[3])));
+                px || py
+            })
+        });
+    let clip = matches!(node.kind, Kind::Scroll | Kind::Slot) || res.bool(page, id, PropKey::ClipContents).unwrap_or(false) || (node.kind == Kind::Label && res.bool(page, id, PropKey::ClipText).unwrap_or(false)) || written_overflow;
     if clip {
         out.push(Draw::ClipPush(rect));
     }
@@ -303,7 +328,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             // Track + thumb from `value`/`min`/`max` (the drag is not wired yet).
             let min = res.num(page, id, PropKey::Min).unwrap_or(0.0);
             let max = res.num(page, id, PropKey::Max).unwrap_or(100.0);
-            let value = res.num(page, id, PropKey::Value).unwrap_or(min);
+            let value = res.slider_value(page, id);
             let t = if max > min { ((value - min) / (max - min)).clamp(0.0, 1.0) } else { 0.0 };
             let track = Rect::new(rect.x, rect.y + (rect.h - SLIDER_TRACK_EPX) / 2.0, rect.w, SLIDER_TRACK_EPX);
             let track_color = color(PropKey::Background).unwrap_or(mul_alpha(SLIDER_TRACK, opacity));

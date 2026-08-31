@@ -471,6 +471,23 @@ impl Resolved {
         Some(c)
     }
 
+    /// A Slider value the way the control shows it: snapped to `step`
+    /// from `min` and clamped. One quantizer for every writer — the file's
+    /// `value=`, a code write and the finger all land on a step.
+    pub fn snap_slider(&self, page: &Page, node: NodeId, v: f32) -> f32 {
+        let min = self.num(page, node, PropKey::Min).unwrap_or(0.0);
+        let max = self.num(page, node, PropKey::Max).unwrap_or(100.0);
+        let step = self.num(page, node, PropKey::Step).unwrap_or(0.0);
+        let v = if step > 0.0 { min + ((v - min) / step).round() * step } else { v };
+        v.clamp(min.min(max), max.max(min))
+    }
+
+    /// The Slider's shown value (`value=` or the last write, quantized).
+    pub fn slider_value(&self, page: &Page, node: NodeId) -> f32 {
+        let min = self.num(page, node, PropKey::Min).unwrap_or(0.0);
+        self.snap_slider(page, node, self.num(page, node, PropKey::Value).unwrap_or(min))
+    }
+
     pub fn num(&self, page: &Page, node: NodeId, key: PropKey) -> Option<f32> {
         match self.prop(page, node, key)? {
             Value::VNum(n) => Some(n),

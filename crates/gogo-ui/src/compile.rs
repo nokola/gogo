@@ -1219,6 +1219,14 @@ impl<'a> Compiler<'a> {
                 }
             }
         }
+        // A written box of 1 epx or less is an anchor, not a container: it
+        // clips its content like any written size, so a child hanging off
+        // it vanishes unless the file says the child is a satellite.
+        let anchor = matches!(tmp.node.placement.width, Len::Exact(w) if w <= 1.0) && matches!(tmp.node.placement.height, Len::Exact(h) if h <= 1.0);
+        if anchor && tmp.children.iter().any(|c| !c.props.iter().any(|p| p.key == PropKey::Overlay && p.value == Value::VBool(true))) {
+            let name = if tmp.node.name == NO_STR { n.type_word.clone() } else { self.page.str(tmp.node.name).to_string() };
+            self.warning("G0074", n.line, format!("`{name}` is a 1x1 box: it clips its children — mark the parts that hang off it `overlay=true` (satellites, not content)"));
+        }
         tmp
     }
 
@@ -1948,6 +1956,16 @@ mod tests {
         assert!(codes("theme { $f = \"fonts/a.ttf\" }\nView v { Label l text=\"hi\", font=$f }").contains(&"G0071".to_string()));
         assert!(!codes("View v { Image i source=\"res://assets/x.png\" }").contains(&"G0071".to_string()));
         assert!(!codes("View v { Image i source=\"\" }").contains(&"G0071".to_string()));
+    }
+
+    /// G0074: a written 1x1 anchor with a child that is not `overlay=true`
+    /// warns — the clip rule would swallow the child (the gradient marks,
+    /// user-caught 2026-08-30); satellites marked overlay pass.
+    #[test]
+    fn one_by_one_anchor_warns_about_non_overlay_children() {
+        assert!(codes("View v { Layers a width=1, height=1 { Rectangle r 10x10, margin_top=20 } }").contains(&"G0074".to_string()));
+        assert!(!codes("View v { Layers a width=1, height=1 { Rectangle r 10x10, margin_top=20, overlay=true } }").contains(&"G0074".to_string()));
+        assert!(!codes("View v { Layers a width=100, height=100 { Rectangle r 10x10 } }").contains(&"G0074".to_string()));
     }
 
     #[test]

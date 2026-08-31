@@ -279,15 +279,14 @@ fn slider_value(page: &Page, res: &Resolved, rects: &[Rect], node: NodeId, x: f3
 
 /// `step=`: quantized from `min`, then clamped (Range's rule).
 fn snap_step(page: &Page, res: &Resolved, node: NodeId, v: f32) -> f32 {
-    let min = res.num(page, node, PropKey::Min).unwrap_or(0.0);
-    let max = res.num(page, node, PropKey::Max).unwrap_or(100.0);
-    let step = res.num(page, node, PropKey::Step).unwrap_or(0.0);
-    let v = if step > 0.0 { min + ((v - min) / step).round() * step } else { v };
-    v.clamp(min.min(max), max.max(min))
+    res.snap_slider(page, node, v)
 }
 
+/// The value as shown: a write this frame (not yet resolved) or the
+/// resolved one, quantized either way.
 fn value_of(rt: &Runtime, res: &Resolved, page: &Page, node: NodeId) -> f32 {
-    rt.writes.iter().find(|(n, w)| *n == node && w.key == PropKey::Value).and_then(|(_, w)| if let Value::VNum(v) = w.value { Some(v) } else { None }).or_else(|| res.num(page, node, PropKey::Value)).unwrap_or(0.0)
+    let raw = rt.writes.iter().find(|(n, w)| *n == node && w.key == PropKey::Value).and_then(|(_, w)| if let Value::VNum(v) = w.value { Some(v) } else { None }).or_else(|| res.num(page, node, PropKey::Value)).unwrap_or(0.0);
+    res.snap_slider(page, node, raw)
 }
 
 /// A Toggle's knob fraction under the finger: the pill sits at the node's
@@ -352,6 +351,18 @@ impl Input {
             _ => {}
         }
         let _ = page;
+    }
+
+    /// Forgets the gesture in flight and any glide: for the host to call
+    /// when the page leaves the screen, so a list closed mid-fling is
+    /// where the user left it on return and no `held` ghost survives a
+    /// page swap. Nothing is reported (the finger is not on this page).
+    pub fn reset(&mut self, rt: &mut Runtime) {
+        if let Some(p) = self.press.take() {
+            rt.set_state(p.node, HELD, false);
+        }
+        self.fling = None;
+        self.expected = None;
     }
 
     /// Feeds one touch sample; returns the events it completed.
@@ -499,8 +510,10 @@ impl Input {
                     }
                 }
                 if p.kind.is_press_surface() && !p.panning && !p.caught_fling {
-                    // Slide-off clears the press, slide-back re-arms it.
-                    let inside = hit(page, res, rects, t.x, t.y, false) == Some(p.node);
+                    // Slide-off clears the press, slide-back re-arms it. The
+                    // node's OWN rect decides, not the top-most hit — a
+                    // plate opening over it mid-press is not a slide-off.
+                    let inside = rects[p.node as usize].contains(t.x, t.y);
                     rt.set_state(p.node, HELD, inside);
                 }
                 p.last = (t.x, t.y);
@@ -551,7 +564,9 @@ impl Input {
                 if p.caught_fling {
                     return events;
                 }
-                let inside = hit(page, res, rects, t.x, t.y, false) == Some(p.node);
+                // Released inside = inside the pressed node's OWN rect (a dialog
+                // opening under the finger does not turn the tap into a miss).
+                let inside = rects[p.node as usize].contains(t.x, t.y) && !(rt.disabled(page, p.node) || res.gone(page, p.node) || res.hidden(page, p.node));
                 match p.kind {
                     Kind::Slider => {
                         // changed means CHANGED: a release on the value the
@@ -561,13 +576,16 @@ impl Input {
                             self.push_event(rt, &mut events, p.node, EventKind::Change(Value::VNum(v)), event_action(page, p.node, "change"));
                         }
                     }
+                    // Order on every toggling surface: `change` first, then
+                    // `activate` (Godot's BaseButton emits toggled before
+                    // pressed) — an activate handler reads the new value.
                     Kind::Button if inside => {
-                        self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                         if res.bool(page, p.node, PropKey::ToggleMode).unwrap_or(false) {
                             let on = !rt.has(p.node, SELECTED);
                             rt.set_state(p.node, SELECTED, on);
                             self.push_event(rt, &mut events, p.node, EventKind::Change(Value::VBool(on)), event_action(page, p.node, "change"));
                         }
+                        self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                     }
                     Kind::ListItem if inside => {
                         self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
@@ -575,8 +593,8 @@ impl Input {
                     Kind::Check if inside => {
                         let on = !rt.has(p.node, SELECTED);
                         rt.set_state(p.node, SELECTED, on);
-                        self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                         self.push_event(rt, &mut events, p.node, EventKind::Change(Value::VBool(on)), event_action(page, p.node, "change"));
+                        self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                     }
                     Kind::Toggle if inside || p.toggle_moved => {
                         let was = p.value_from >= 0.5;
@@ -586,10 +604,10 @@ impl Input {
                         let on = if p.toggle_moved { f >= 0.5 } else { !was };
                         rt.set_prop(p.node, PropKey::Value, Value::VNum(if on { 1.0 } else { 0.0 }));
                         rt.set_state(p.node, SELECTED, on);
-                        self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                         if on != was {
                             self.push_event(rt, &mut events, p.node, EventKind::Change(Value::VBool(on)), event_action(page, p.node, "change"));
                         }
+                        self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                     }
                     Kind::Radio if inside => {
                         // One of N across the whole `choice` scope (nested
@@ -619,10 +637,10 @@ impl Input {
                                 rt.set_state(p.node, SELECTED, true);
                             }
                         }
-                        self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                         if !already {
                             self.push_event(rt, &mut events, p.node, EventKind::Change(Value::VIdent(page.nodes[p.node as usize].name)), change_action);
                         }
+                        self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                     }
                     _ => {}
                 }
@@ -927,6 +945,69 @@ mod tests {
         fx.touch(Phase::Move, 220.0, 34.0, 0.2);
         assert!(fx.rt.scroll[strip as usize][0] > 0.0, "sideways on the strip scrolls the strip");
         assert_eq!(fx.rt.scroll[page as usize], [0.0, 0.0], "and not the page");
+    }
+
+    /// GPAR59: on every toggling surface `change` lands before `activate`
+    /// (Godot's BaseButton emits toggled before pressed), so an activate
+    /// handler reads the committed value.
+    #[test]
+    fn change_lands_before_activate() {
+        let src = "View v { Column c { Check k text=\"k\", on:activate=a, on:change=c; Button tb text=\"tb\", toggle=true, on:activate=a, on:change=c; Toggle t text=\"t\", on:activate=a, on:change=c; choice pick on:change=c { Radio r1 text=\"1\", on:activate=a; Radio r2 text=\"2\", on:activate=a } } }";
+        let mut fx = Fx::new(src);
+        let (_, rects) = fx.lay();
+        for name in ["k", "tb", "t", "r2"] {
+            let n = fx.page.find(name).unwrap();
+            let r = rects[n as usize];
+            fx.touch(Phase::Down, r.x + 5.0, r.y + r.h / 2.0, 0.0);
+            let ev = fx.touch(Phase::Up, r.x + 5.0, r.y + r.h / 2.0, 0.1);
+            let order: Vec<&str> = ev.iter().filter_map(|e| match e.kind { EventKind::Change(_) => Some("change"), EventKind::Activate => Some("activate"), _ => None }).collect();
+            assert_eq!(order, vec!["change", "activate"], "{name}: {ev:?}");
+        }
+    }
+
+    /// GPAR60: `reset` drops the gesture and the glide with no report;
+    /// a Slider's declared and code-written values are quantized like a
+    /// touch; a release counts inside by the pressed node's OWN rect.
+    #[test]
+    fn reset_quantized_writes_and_own_rect_release() {
+        let src = "View v { Scroll page width=400, height=300, halign=left, valign=top { Column c width=fill { Button b width=fill, height=40, text=\"x\"; Rectangle tall width=fill, height=2000 } } }";
+        let mut fx = Fx::new(src);
+        fx.touch(Phase::Down, 100.0, 20.0, 0.0);
+        for i in 1..=5 {
+            fx.touch(Phase::Move, 100.0, 20.0 - 30.0 * i as f32, 0.01 * i as f64);
+        }
+        fx.touch(Phase::Up, 100.0, -130.0, 0.06);
+        assert!(fx.input.fling.is_some(), "gliding");
+        fx.input.reset(&mut fx.rt);
+        assert!(fx.input.fling.is_none() && fx.input.press.is_none());
+        let mut fx = Fx::new(src);
+        let b = fx.page.find("b").unwrap();
+        fx.touch(Phase::Down, 100.0, 20.0, 1.0);
+        assert!(fx.rt.has(b, HELD));
+        fx.input.reset(&mut fx.rt);
+        assert!(!fx.rt.has(b, HELD), "no held ghost");
+        assert!(fx.touch(Phase::Move, 100.0, 0.0, 1.1).is_empty(), "the gesture is gone");
+
+        let mut fx = Fx::new("View v { Slider s width=200, height=32, halign=left, valign=top, min=0, max=100, step=5, value=33.3 }");
+        let s = fx.page.find("s").unwrap();
+        {
+            let (res, _) = fx.lay();
+            assert_eq!(value_of(&fx.rt, &res, &fx.page, s), 35.0, "the declared value sits on a step");
+            assert_eq!(res.slider_value(&fx.page, s), 35.0, "and the knob draws there");
+        }
+        fx.rt.set_prop(s, PropKey::Value, Value::VNum(47.9));
+        {
+            let (res, _) = fx.lay();
+            assert_eq!(value_of(&fx.rt, &res, &fx.page, s), 50.0, "a code write too");
+            assert_eq!(res.slider_value(&fx.page, s), 50.0);
+        }
+
+        let mut fx = Fx::new("View v { Layers z { Button b width=100, height=40, halign=left, valign=top, on:activate=tap; Panel cover width=fill, height=fill, interactive=true, visibility=gone } }");
+        let cover = fx.page.find("cover").unwrap();
+        fx.touch(Phase::Down, 10.0, 10.0, 0.0);
+        fx.rt.set_visible(&mut fx.page, cover, true);
+        let ev = fx.touch(Phase::Up, 10.0, 10.0, 0.1);
+        assert!(ev.iter().any(|e| e.kind == EventKind::Activate), "a plate opening under the finger is not a miss: {ev:?}");
     }
 
     /// GPAR13: a Slider brackets its drag with `press`/`release`, exactly

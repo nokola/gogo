@@ -1,5 +1,5 @@
 //! Pins for the first parity batch (docs/todo-gogo-parity.md GPAR11,
-//! GPAR42, GPAR52): the built-in disabled dim is a bottom-of-the-ladder
+//! GPAR37, GPAR42, GPAR52): the built-in disabled dim is a bottom-of-the-ladder
 //! `when`, a text-only Button's padding reaches the draw pass, and a
 //! player whose channels a newer one took keeps its clock and hands over
 //! the true base.
@@ -109,4 +109,103 @@ fn superseded_player_keeps_its_clock_and_hands_over_the_base() {
     rt.tick(&mut page, 0.05);
     rt.stop(blink, true);
     assert_eq!(rt.motion[a as usize].opacity, 1.0, "restored to the pre-fade value, not fade's mid-flight 0.5");
+}
+
+/// GPAR37: a written ceiling is hard — a capped box keeps the cap and
+/// CLIPS what pokes past it (a capped Label always cuts its text); an
+/// uncapped hug box grows around its content and clips nothing.
+#[test]
+fn a_written_ceiling_clips_what_pokes_past_it() {
+    let c = ok("View v {\n Layers z halign=left, valign=top {\n  Panel plate max_width=100, halign=left, valign=top { Label l text=\"a very long label that does not wrap at all\", font_size=10 }\n  Panel loose halign=left, valign=top, margin_top=100 { Rectangle r 300x10 }\n  Label cap text=\"also long text here\", font_size=10, max_width=40, halign=left, valign=top, margin_top=200\n }\n}\n");
+    let page = &c.page;
+    let rt = Runtime::new(page);
+    let res = resolve(page, &rt);
+    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let list = draw(page, &res, &rects);
+    let plate = rects[page.find("plate").unwrap() as usize];
+    let l = rects[page.find("l").unwrap() as usize];
+    assert_eq!(plate.w, 100.0, "the cap holds: {plate:?}");
+    assert!(l.w > 100.0, "the label keeps the width its text needs (text does not bend to a box): {l:?}");
+    let clips: Vec<Rect> = list.iter().filter_map(|d| if let Draw::ClipPush(r) = d { Some(*r) } else { None }).collect();
+    assert!(clips.contains(&plate), "the capped plate clips: {clips:?}");
+    assert!(clips.contains(&rects[page.find("cap").unwrap() as usize]), "a capped Label cuts its text: {clips:?}");
+    assert_eq!(clips.len(), 2, "the uncapped box clips nothing: {clips:?}");
+    assert_eq!(rects[page.find("loose").unwrap() as usize].w, 300.0, "an unwritten size grows around its content");
+}
+
+/// GPAR40 (exact half): an exact-sized box cuts a child that pokes past it
+/// — the human wrote the size. A child hanging out through a NEGATIVE
+/// margin or marked `overlay=true` is left alone (that hang is written
+/// too); a hug box grows and cuts nothing.
+#[test]
+fn an_exact_size_clips_but_a_written_overhang_stays() {
+    let c = ok("View v {\n Layers z halign=left, valign=top {\n  Panel box width=100, height=40, halign=left, valign=top { Rectangle r 300x10 }\n  Panel hang width=100, height=40, halign=left, valign=top, margin_top=100 { Rectangle badge 20x20, halign=right, valign=top, margin_right=-10 }\n  Panel ov width=100, height=40, halign=left, valign=top, margin_top=200 { Rectangle o 300x10, overlay=true }\n  Panel grows halign=left, valign=top, margin_top=300 { Rectangle g 300x10 }\n }\n}\n");
+    let page = &c.page;
+    let rt = Runtime::new(page);
+    let res = resolve(page, &rt);
+    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let list = draw(page, &res, &rects);
+    let clips: Vec<Rect> = list.iter().filter_map(|d| if let Draw::ClipPush(r) = d { Some(*r) } else { None }).collect();
+    let rect = |n: &str| rects[page.find(n).unwrap() as usize];
+    assert_eq!(rect("box").w, 100.0);
+    assert!(clips.contains(&rect("box")), "an exact box cuts the poking child: {clips:?}");
+    assert!(!clips.contains(&rect("hang")), "a negative-margin hang is written: {clips:?}");
+    assert!(!clips.contains(&rect("ov")), "an overlay child is outside the accounting: {clips:?}");
+    assert!(!clips.contains(&rect("grows")), "a hug box grows instead: {clips:?}");
+    assert_eq!(rect("grows").w, 300.0);
+    assert_eq!(clips.len(), 1, "{clips:?}");
+}
+
+/// A box that fills a WRITTEN box takes that box (decided 2026-08-30, the
+/// toolbar regression): the author wrote 80, so the unwritten filler is 80
+/// even when its child is 150 — and so is a filler of that filler. The
+/// child itself keeps its size (the written box clips it). The floor still
+/// holds where the room comes from nowhere the author wrote: a filler in a
+/// free parent grows to its content; a hug box is sized by content, so its
+/// filler is too; a `min_*` floor is a written number and still wins.
+#[test]
+fn a_filler_inside_a_written_box_takes_the_box() {
+    let c = ok("View v {\n Layers box width=200, height=80, halign=left, valign=top { Layers filler { Layers deeper { Rectangle big width=100, height=150, halign=left, valign=top } } }\n Panel hug width=200, height=hug, halign=left, valign=top, margin_top=300 { Layers hfill { Rectangle big3 width=100, height=150, halign=left, valign=top } }\n Layers box2 width=200, height=80, halign=left, valign=top, margin_top=500 { Layers floored min_height=100 { Rectangle big4 width=100, height=150 } }\n}\n");
+    let page = &c.page;
+    let rt = Runtime::new(page);
+    let res = resolve(page, &rt);
+    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 60.0), &FixedAdvance);
+    let rect = |n: &str| rects[page.find(n).unwrap() as usize];
+    assert_eq!(rect("box").h, 80.0);
+    assert_eq!(rect("filler").h, 80.0, "the filler takes the written 80: {:?}", rect("filler"));
+    assert_eq!(rect("deeper").h, 80.0, "written flows down through fillers: {:?}", rect("deeper"));
+    assert_eq!(rect("big").h, 150.0, "the child keeps its own size: {:?}", rect("big"));
+    // The floor where the room comes from the viewport: a 60-tall
+    // viewport, a 150-tall child — the root and its filler both grow.
+    let c = ok("View v {\n Layers free { Rectangle big2 width=100, height=150, halign=left, valign=top }\n}\n");
+    let page = &c.page;
+    let rt = Runtime::new(page);
+    let res = resolve(page, &rt);
+    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 60.0), &FixedAdvance);
+    let free = rects[page.find("free").unwrap() as usize];
+    assert_eq!(free.h, 150.0, "a filler of the viewport still floors at its content: {free:?}");
+    assert_eq!(rect("hfill").h, 150.0, "a hug box is sized by content, so is its filler: {:?}", rect("hfill"));
+    assert_eq!(rect("floored").h, 100.0, "a min_height floor is a written number and wins: {:?}", rect("floored"));
+}
+
+/// A NEGATIVE margin is the part that hangs out on purpose and comes off
+/// the claim a child makes on a content-sized parent (decided 2026-08-30,
+/// away from the Godot addon's "counts as zero", D242): a 100-wide box
+/// with `margin_right=-30` asks its hug parent for 70; a positive margin
+/// still adds; the claim never goes below zero; and a filler in a free
+/// parent whose child hangs 70 below through a negative margin floors at
+/// the part that stays inside.
+#[test]
+fn a_negative_margin_hangs_out_and_is_not_claimed() {
+    let c = ok("View v {\n Panel plate width=hug, height=hug, halign=left, valign=top { Rectangle r width=100, height=40, halign=left, valign=top, margin_right=-30 }\n Panel plate2 width=hug, height=hug, halign=left, valign=top, margin_top=100 { Rectangle r2 width=100, height=40, halign=left, valign=top, margin_right=30 }\n Panel plate3 width=hug, height=hug, halign=left, valign=top, margin_top=200 { Rectangle r3 width=100, height=40, halign=left, valign=top, margin_right=-300 }\n Layers zone margin_top=300 { Rectangle bg width=fill, height=150, valign=bottom, margin_bottom=-70 }\n}\n");
+    let page = &c.page;
+    let rt = Runtime::new(page);
+    let res = resolve(page, &rt);
+    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 380.0), &FixedAdvance);
+    let rect = |n: &str| rects[page.find(n).unwrap() as usize];
+    assert_eq!(rect("plate").w, 70.0, "the hanging 30 is not claimed: {:?}", rect("plate"));
+    assert_eq!(rect("r").w, 100.0, "the child is still 100 wide and hangs out: {:?}", rect("r"));
+    assert_eq!(rect("plate2").w, 130.0, "a positive margin is space to keep: {:?}", rect("plate2"));
+    assert_eq!(rect("plate3").w, 0.0, "never below zero: {:?}", rect("plate3"));
+    assert_eq!(rect("zone").h, 80.0, "the filler floors at the part inside (150 - 70), which fits the 80 it was given: {:?}", rect("zone"));
 }

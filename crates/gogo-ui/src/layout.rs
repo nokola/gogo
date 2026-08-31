@@ -135,15 +135,21 @@ struct Lay<'a> {
     res: &'a Resolved,
     text: &'a dyn TextMeasure,
     rects: Vec<Rect>,
+    /// Per node and axis: does the room this box hands its children come
+    /// from a number the author wrote? True for an exact size or a cap on
+    /// the box itself, passed on unchanged by a box that merely fills its
+    /// parent, false for a hug box (sized by content) and for the viewport.
+    written: Vec<[bool; 2]>,
     /// `size_at` answers per (node, width bits; `u32::MAX` = unbounded):
     /// a parent asks for each child's measure more than once per pass.
     memo: RefCell<HashMap<(NodeId, u32), (f32, f32)>>,
 }
 
 pub fn layout(page: &Page, res: &Resolved, viewport: Rect, text: &dyn TextMeasure) -> Vec<Rect> {
-    let mut lay = Lay { page, res, text, rects: vec![Rect::ZERO; page.nodes.len()], memo: RefCell::new(HashMap::new()) };
+    let mut lay = Lay { page, res, text, rects: vec![Rect::ZERO; page.nodes.len()], written: vec![[false; 2]; page.nodes.len()], memo: RefCell::new(HashMap::new()) };
     if !page.nodes.is_empty() {
-        lay.place(0, viewport, true);
+        // The viewport is not a number the author wrote.
+        lay.place(0, viewport, [false, false]);
     }
     lay.rects
 }
@@ -318,12 +324,19 @@ impl<'a> Lay<'a> {
 
     /// A child's contribution to a free parent's minimum: its minimum plus
     /// the margins it declares on that axis.
+    /// What a free child asks its content-sized parent to hold: its size
+    /// plus its margins. A positive margin is empty space the parent must
+    /// keep; a NEGATIVE margin is the part that hangs out of the parent on
+    /// purpose (the app-bar strip's 70 below the screen edge) and is not
+    /// the parent's to hold, so it comes off the claim — never below zero.
+    /// (WPF and CSS read it the same way; the Godot addon counted a
+    /// negative margin as zero, D242, decided away 2026-08-30.)
     fn child_extent(&self, child: NodeId, avail_w: Option<f32>) -> (f32, f32) {
         let (w, h) = self.size_at(child, avail_w);
         let m = self.margins(child);
-        let mw = m[0].unwrap_or(0.0).max(0.0) + m[2].unwrap_or(0.0).max(0.0);
-        let mh = m[1].unwrap_or(0.0).max(0.0) + m[3].unwrap_or(0.0).max(0.0);
-        (w + mw, h + mh)
+        let mw = m[0].unwrap_or(0.0) + m[2].unwrap_or(0.0);
+        let mh = m[1].unwrap_or(0.0) + m[3].unwrap_or(0.0);
+        ((w + mw).max(0.0), (h + mh).max(0.0))
     }
 
     fn content_min(&self, id: NodeId, avail_w: Option<f32>) -> (f32, f32) {
@@ -516,14 +529,12 @@ impl<'a> Lay<'a> {
     // ----- placement ---------------------------------------------------------
 
     /// Lays `id` into `frame` (the space its parent offers, margins not yet
-    /// applied) and recurses. `root`: the document root ignores the free-
-    /// fill default? No — the root fills its viewport unless it says otherwise.
-    fn place(&mut self, id: NodeId, frame: Rect, root: bool) {
+    /// applied) and recurses. `written`: per axis, whether the frame's
+    /// extent is a number the author wrote (see `Lay::written`). The
+    /// document root fills its viewport unless it says otherwise.
+    fn place(&mut self, id: NodeId, frame: Rect, written: [bool; 2]) {
         let mut p = *self.placement(id);
         let m = self.margins(id);
-        // The document root is host-placed: the shell offers the viewport
-        // and the root's own placement words seat the box in it.
-        let _ = root;
         // An `automatic=` slot: the value picks its extent or its seat
         // along the host's width (the sliders here are horizontal).
         let frame = match self.node(id).auto {
@@ -535,14 +546,27 @@ impl<'a> Lay<'a> {
             }
             _ => frame,
         };
+        // Text is the one content a box cannot bend: a Label keeps the
+        // width its text needs even inside a written box, and the written
+        // box cuts it (draw) — otherwise the overflow would hide inside a
+        // label rect that never pokes past, and nothing would clip it.
+        let written = if self.node(id).kind == Kind::Label { [false, false] } else { written };
         let (min_w, _) = self.size_at(id, Some(frame.w));
-        let (x, w) = free_axis(frame.x, frame.w, p.width, p.halign, m[0], m[2], min_w, p.min_width, p.max_width, p.max_width_fill, root);
+        let (x, w) = free_axis(frame.x, frame.w, p.width, p.halign, m[0], m[2], min_w, p.min_width, p.max_width, p.max_width_fill, written[0]);
         // The height minimum at the width the node actually got (wrap
         // text, Flow rows).
         let (_, min_h) = self.size_at(id, Some(w));
-        let (y, h) = free_axis(frame.y, frame.h, p.height, p.valign, m[1], m[3], min_h, p.min_height, p.max_height, p.max_height_fill, root);
+        let (y, h) = free_axis(frame.y, frame.h, p.height, p.valign, m[1], m[3], min_h, p.min_height, p.max_height, p.max_height_fill, written[1]);
         let rect = Rect::new(x, y, w, h);
         self.rects[id as usize] = rect;
+        // What this box hands its own children: a written size or cap is
+        // the author's number; a box that merely fills passes on what it
+        // was given; a hug box is sized by content, not by a number.
+        let fills = |len: Len, align: Align| matches!(len, Len::Fill(_)) || (len == Len::Unset && align == Align::AlignUnset);
+        self.written[id as usize] = [
+            matches!(p.width, Len::Exact(_)) || p.max_width.is_some() || p.max_width_fill || (fills(p.width, p.halign) && written[0]),
+            matches!(p.height, Len::Exact(_)) || p.max_height.is_some() || p.max_height_fill || (fills(p.height, p.valign) && written[1]),
+        ];
         self.place_children(id, rect);
     }
 
@@ -566,8 +590,9 @@ impl<'a> Lay<'a> {
                 }
             }
             _ => {
+                let written = self.written[id as usize];
                 for c in self.visible_children(id) {
-                    self.place(c, inner, false);
+                    self.place(c, inner, written);
                 }
             }
         }
@@ -615,11 +640,11 @@ impl<'a> Lay<'a> {
             // cross measure is taken at the width the child got.
             let rect = if axis == Axis::Y {
                 let (min_w, _) = self.size_at(*c, Some(inner.w));
-                let (x, w) = free_axis(inner.x, inner.w, p.width, p.halign, None, None, min_w, p.min_width, p.max_width, p.max_width_fill, false);
+                let (x, w) = free_axis(inner.x, inner.w, p.width, p.halign, None, None, min_w, p.min_width, p.max_width, p.max_width_fill, self.written[id as usize][0]);
                 Rect::new(x, cursor, w, size)
             } else {
                 let (_, min_h) = self.size_at(*c, Some(size));
-                let (y, h) = free_axis(inner.y, inner.h, p.height, p.valign, None, None, min_h, p.min_height, p.max_height, p.max_height_fill, false);
+                let (y, h) = free_axis(inner.y, inner.h, p.height, p.valign, None, None, min_h, p.min_height, p.max_height, p.max_height_fill, self.written[id as usize][1]);
                 Rect::new(cursor, y, size, h)
             };
             self.rects[*c as usize] = rect;
@@ -749,7 +774,8 @@ impl<'a> Lay<'a> {
             let w = if sx { inner.w.max(min_w) } else { inner.w };
             let h = if sy { inner.h.max(min_h) } else { inner.h };
             let frame = Rect::new(inner.x - if sx { offset[0] } else { 0.0 }, inner.y - if sy { offset[1] } else { 0.0 }, w, h);
-            self.place(c, frame, false);
+            let written = self.written[id as usize];
+            self.place(c, frame, [!sx && written[0], !sy && written[1]]);
         }
     }
 
@@ -871,7 +897,7 @@ impl<'a> Lay<'a> {
                 let last = (first + span).min(tracks.len());
                 let cx = track_x[first];
                 let cw: f32 = track_size[first..last].iter().sum::<f32>() + spacing * (last - first - 1) as f32;
-                self.place(c, Rect::new(cx, y, cw, rh), false);
+                self.place(c, Rect::new(cx, y, cw, rh), [false, false]);
             }
             y += rh + spacing;
         }
@@ -948,7 +974,7 @@ fn flow_rows(sizes: &[(f32, f32)], avail: f32, spacing: f32) -> Vec<FlowRow> {
 /// minimum on this axis; `floor`/`cap` = min_*/max_*; `cap_fill` =
 /// `max_*=fill`.
 #[allow(clippy::too_many_arguments)]
-fn free_axis(start: f32, extent: f32, len: Len, align: Align, m_near: Option<f32>, m_far: Option<f32>, content: f32, floor: f32, cap: Option<f32>, cap_fill: bool, _root: bool) -> (f32, f32) {
+fn free_axis(start: f32, extent: f32, len: Len, align: Align, m_near: Option<f32>, m_far: Option<f32>, content: f32, floor: f32, cap: Option<f32>, cap_fill: bool, frame_written: bool) -> (f32, f32) {
     let near = m_near.unwrap_or(0.0);
     let far = m_far.unwrap_or(0.0);
     let filled = extent - near - far;
@@ -958,11 +984,20 @@ fn free_axis(start: f32, extent: f32, len: Len, align: Align, m_near: Option<f32
     // (the toast: `width=hug, max_width=fill, halign=center, margins`),
     // the margins only inset the measuring frame.
     if m_near.is_some() && m_far.is_some() && !matches!(len, Len::Exact(_)) && align == Align::AlignUnset {
-        return (start + near, filled.max(floor));
+        return (start + near, if frame_written { filled.max(floor) } else { filled.max(floor).max(content) });
     }
     let (start, extent) = if align != Align::AlignUnset && m_near.is_some() && m_far.is_some() { (start + near, filled) } else { (start, extent) };
+    // An unwritten size (stretch, fill) takes the room it is given. When
+    // that room comes from nowhere the author wrote (the viewport, a chain
+    // of unwritten boxes) it is never smaller than its content — the same
+    // rule a stack's fill child follows. When the room IS a number the
+    // author wrote (an exact size or a cap up the chain), that number is
+    // the answer: a written box is hard for itself and for what fills it
+    // (decided 2026-08-30 after the toolbar's app bar, filling an 80-tall
+    // strip, grew to its 150-tall content and carried its bottom-anchored
+    // buttons off the screen). The written box clips what pokes past (draw).
     let mut size = match len {
-        Len::Unset | Len::Fill(_) => filled,
+        Len::Unset | Len::Fill(_) => if frame_written { filled } else { filled.max(content) },
         Len::Exact(n) => n,
         Len::Hug(_) => content,
     };
