@@ -209,3 +209,19 @@ fn a_negative_margin_hangs_out_and_is_not_claimed() {
     assert_eq!(rect("plate3").w, 0.0, "never below zero: {:?}", rect("plate3"));
     assert_eq!(rect("zone").h, 80.0, "the filler floors at the part inside (150 - 70), which fits the 80 it was given: {:?}", rect("zone"));
 }
+
+/// `layout::offscreen` names the nodes shoved wholly past the viewport
+/// (the toolbar's buttons, GPAR100) and stays quiet about a box parked
+/// there on purpose through a negative margin (the fullscreen tile at
+/// `margin_right=-80`, its children with it), about gone nodes, and about
+/// a Scroll's content below the fold.
+#[test]
+fn offscreen_names_shoved_nodes_not_parked_ones() {
+    let c = ok("View v {\n Rectangle low width=50, height=50, halign=left, valign=top, margin_top=900\n Button tile 60x60, halign=right, valign=bottom, margin_right=-80 { Rectangle inner 10x10 }\n Rectangle gone width=50, height=50, halign=left, valign=top, margin_top=950, visibility=gone\n Scroll list width=100, height=100, halign=left, valign=top { Column { Rectangle a width=100, height=300; Rectangle b width=100, height=300 } }\n Layers box width=200, height=80, halign=left, valign=top, margin_top=200 { Rectangle bottomed width=100, height=40, valign=bottom, margin_bottom=-500 }\n}\n");
+    let page = &c.page;
+    let rt = Runtime::new(page);
+    let res = resolve(page, &rt);
+    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let names: Vec<&str> = gogo::layout::offscreen(page, &res, &rects, Rect::new(0.0, 0.0, 400.0, 400.0)).iter().map(|id| page.str(page.nodes[*id as usize].name)).collect();
+    assert_eq!(names, vec!["low"], "{rects:?}");
+}

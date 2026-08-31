@@ -1256,3 +1256,51 @@ mod tests {
         assert_eq!(rect(&c.page, &r, "bar").w, 100.0);
     }
 }
+
+/// Visible nodes laid out WHOLLY outside `viewport` that the file did not
+/// park there on purpose — the topmost such node of each subtree, so the
+/// list stays short. Needed because a layout rule that grows a box can
+/// shove its bottom- or right-anchored children past the screen edge while
+/// a pixel diff of a dark page barely moves (the toolbar vanished and the
+/// parity mean read 0.26 %, user-caught 2026-08-30): the parity run counts
+/// these per page and a count that grew is a failure. "On purpose" = the
+/// node left through a side it hangs past by a NEGATIVE margin (the
+/// fullscreen tile parked at `margin_right=-80`); its subtree is parked
+/// with it. Gone/hidden subtrees and a Scroll's content (meant to run past
+/// the viewport) never count.
+pub fn offscreen(page: &Page, res: &Resolved, rects: &[Rect], viewport: Rect) -> Vec<NodeId> {
+    let mut out: Vec<NodeId> = Vec::new();
+    if !page.nodes.is_empty() {
+        offscreen_walk(page, res, rects, viewport, 0, &mut out);
+    }
+    out
+}
+
+fn offscreen_walk(page: &Page, res: &Resolved, rects: &[Rect], vp: Rect, id: NodeId, out: &mut Vec<NodeId>) {
+    if res.gone(page, id) || res.hidden(page, id) {
+        return;
+    }
+    let r = rects[id as usize];
+    if r.w > 0.0 && r.h > 0.0 {
+        let m = res.placement[id as usize].margin;
+        let neg = |m: Option<f32>| m.map_or(false, |v| v < 0.0);
+        let left = r.x + r.w <= vp.x;
+        let right = r.x >= vp.x + vp.w;
+        let top = r.y + r.h <= vp.y;
+        let bottom = r.y >= vp.y + vp.h;
+        if left || right || top || bottom {
+            let parked = (left && neg(m[0])) || (right && neg(m[2])) || (top && neg(m[1])) || (bottom && neg(m[3]));
+            if !parked {
+                out.push(id);
+            }
+            // The subtree follows its topmost box either way.
+            return;
+        }
+    }
+    if page.nodes[id as usize].kind == Kind::Scroll {
+        return;
+    }
+    for c in page.children(id) {
+        offscreen_walk(page, res, rects, vp, c as NodeId, out);
+    }
+}
