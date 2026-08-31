@@ -136,6 +136,21 @@ fn duplicate_params_and_true_as_a_name_are_refused() {
     assert!(codes(check).contains(&"G0046".to_string()) && messages(check).contains("selected=true"), "{}", messages(check));
 }
 
+/// GPAR28 (E5, 2026-08-31): `base`/`any` are reserved everywhere, not
+/// only in type position — a child called `base` next to `transition
+/// base -> held` would read as two things. The message names the rule
+/// (it used to say "a property is `key=value`", the wrong reason).
+#[test]
+fn base_and_any_never_name_a_node() {
+    for word in ["base", "any"] {
+        let src = format!("View v {{ Button {word} }}");
+        assert!(codes(&src).contains(&"G0046".to_string()), "{}", messages(&src));
+        assert!(messages(&src).contains("reserved") && !messages(&src).contains("key=value"), "{}", messages(&src));
+    }
+    ok("View v { Button basic }
+");
+}
+
 /// GPAR23: a transition rule has one arrow and one endpoint each side —
 /// extras used to be dropped; and the first word of a `transition` line
 /// is its from-endpoint, never a node name (`transition wide -> any` used

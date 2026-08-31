@@ -1297,6 +1297,11 @@ impl<'a> Compiler<'a> {
             } else if kind != Kind::Gap && kind != Kind::Repeat {
                 let msg = match a {
                     AstValue::Ident { word, .. } if word == "true" || word == "false" => format!("`{word}` is a value, not a name — a property is `key=value` (`selected={word}`)"),
+                    // Needed so a state word never doubles as a node's
+                    // address: `transition base -> held` next to a child
+                    // called `base` would read as two things (reserved
+                    // everywhere, as `match` is in Rust — E5, 2026-08-31).
+                    AstValue::Ident { word, .. } if word == "base" || word == "any" => format!("`{word}` is reserved (a state endpoint) and cannot name a node — pick another name"),
                     other => format!("unexpected `{}` on `{}` — a property is `key=value`", spell(other), n.type_word),
                 };
                 self.error("G0046", n.line, msg);
