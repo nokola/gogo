@@ -506,9 +506,8 @@ fn posed_sizes_move_the_real_box() {
 /// clause) + 7620-7635 `psize.floor-under`, `psize.floor-wins`,
 /// `psize.floor-restores` (user case 2026-08-10): a DECLARED `min_width=30`
 /// stands under any posed width — 40 clears it, 20 loses to it, `base`
-/// restores the declared 50. Rust refuses the declaration itself.
+/// restores the declared 50 (G1012 retired — GPAR79, user 2026-08-31).
 #[test]
-#[ignore = "NEW: Godot builds `min_width=30, width=50` (the floor a smaller POSED width loses to) vs Rust G1012 error \"min_width next to an exact width is dead\""]
 fn declared_floor_stands_under_a_posed_width() {
     let mut fx = Fx::new("arrangement abc\narrangement xyz\nwhen abc { floored.width = 40 }\nwhen xyz { floored.width = 20 }\nView v { Layers floored min_width=30, width=50, height=20, halign=left, valign=center }");
     assert_eq!(fx.rect("floored").w, 50.0, "psize.base");

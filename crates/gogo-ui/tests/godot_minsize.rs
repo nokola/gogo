@@ -496,23 +496,25 @@ fn a_circle_refuses_corner_keys() {
 
 // --------------------------------------------------------- min/max band
 
-/// `_min_max_band_tests` 1091-1094 (band.err-crossed, band.err-fixed-min):
-/// a floor above the cap and a floor next to an exact width refuse at
-/// build (Rust G1013 / G1012).
+/// `_min_max_band_tests` 1091-1096 (band.err-crossed, band.err-fixed-min,
+/// band.err-fixed-min-size): a floor above the cap refuses at build
+/// (G1013). FLIP: a floor next to an exact size is LEGAL on any axis and
+/// the floor still wins over a smaller written size — it exists to bound
+/// POSED sizes, so it is not dead (GPAR79, user 2026-08-31; G1012
+/// retired; Godot refuses both fixture lines).
 #[test]
-fn crossed_band_and_floor_next_to_exact_width_refuse() {
+fn crossed_band_refuses_and_a_floor_beside_an_exact_size_builds_and_clamps() {
     assert!(codes("View v { Layers { Panel p width=hug, min_width=300, max_width=100 } }").contains(&"G1013".to_string()));
-    assert!(codes("View v { Panel p width=100, min_width=50 }").contains(&"G1012".to_string()));
-}
-
-/// `_min_max_band_tests` 1095-1096 (band.err-fixed-min-size): `size=
-/// 100x40, min_height=50` "fixes the axis" in Godot. Rust's G1012 checks
-/// the WIDTH pair only, so the height twin builds clean.
-#[test]
-#[ignore = "NEW: Godot refuses min_height next to an exact height (size=100x40, min_height=50) vs Rust builds clean (G1012 checks width only)"]
-fn a_floor_next_to_an_exact_height_refuses() {
-    assert!(errs("View v { Panel p size=100x40, min_height=50 }"));
-    assert!(errs("View v { Panel p height=40, min_height=50 }"));
+    let c = ok("View v { Layers { Panel p size=100x40, min_height=50, halign=left, valign=top } }");
+    let rt = Runtime::new(&c.page);
+    let (_res, rects) = lay(&c.page, &rt, 400.0, 800.0);
+    let p = c.page.find("p").unwrap() as usize;
+    assert_eq!((rects[p].w, rects[p].h), (100.0, 50.0), "the floor beats the smaller written height");
+    let c = ok("View v { Column { Panel q width=100, height=40, min_width=120 } }");
+    let rt = Runtime::new(&c.page);
+    let (_res, rects) = lay(&c.page, &rt, 400.0, 800.0);
+    let q = c.page.find("q").unwrap() as usize;
+    assert_eq!(rects[q].w, 120.0, "the clamp holds on a stack child too");
 }
 
 /// `_min_max_band_tests` 1097-1098 (band.err-aspect-min): a floor on the

@@ -134,7 +134,6 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G1006", "both margins and an exact size over-constrain the axis"),
     ("G1010", "`height=fill` but no row takes the leftover (lint)"),
     ("G1011", "an aligned axis with `fill` leaves nothing to position"),
-    ("G1012", "`min_width` beside an exact `width` is dead"),
     ("G1013", "`min_width` above `max_width`"),
     ("G1014", "margins under a Column/Row/Flow/Grid"),
     ("G1015", "a seat declaration's shape — a named, empty socket in a container"),
@@ -184,4 +183,4 @@ pub const SHARED_WITH_ADDON: &[&str] = &[
 /// Numbers this crate once used and vacated (or skipped) in the GPAR61
 /// renumber — kept so they never come back: an old log or doc citing one
 /// must never match a new, different error.
-pub const RETIRED: &[&str] = &["G0010", "G0042", "G0053", "G1007", "G1008", "G5104"];
+pub const RETIRED: &[&str] = &["G0010", "G0042", "G0053", "G1007", "G1008", "G1012", "G5104"];

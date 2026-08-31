@@ -3392,9 +3392,6 @@ impl<'a> Compiler<'a> {
         if p.valign == Align::Center && matches!(p.height, Len::Fill(_)) && p.max_height.is_none() {
             self.error("G1011", line, "`valign=center` with `height=fill`: fill leaves nothing to position (use `hug`, or a `max_height` cap)");
         }
-        if let (Len::Exact(_), true) = (p.width, p.min_width > 0.0) {
-            self.error("G1012", line, "`min_width` next to an exact `width` is dead (an exact size is its own floor)");
-        }
         if let (Some(max), true) = (p.max_width, p.min_width > 0.0) {
             if p.min_width > max {
                 self.error("G1013", line, "`min_width` above `max_width`");
