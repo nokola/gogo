@@ -164,3 +164,32 @@ fn a_transition_rule_has_one_arrow_and_names_its_from_end() {
     assert_eq!(c.page.transitions[0].from, Some(State::Arrangement(0)));
     assert_eq!(c.page.transitions[0].to, None);
 }
+
+/// GPAR31 / E6 (decided 2026-08-31, A): `/o` replaces the alpha of the
+/// value it is written on — the suffix at the slot is the alpha the slot
+/// gets, through a theme value with its own alpha, a variant, a
+/// `$a = $b/o` hop and a widget param, and on a pasted 8-digit hex. Rust
+/// used to apply the INNER suffix on a chain: `$a = $b/0.5` + `$a/0.3`
+/// drew 0.5 while Godot drew 0.3, both from a clean build.
+#[test]
+fn the_suffix_at_the_slot_sets_the_alpha() {
+    fn bg(src: &str, node: &str, variant: Option<&str>) -> Rgba {
+        let c = ok(src);
+        let page = c.page;
+        let n = page.find(node).unwrap();
+        let mut rt = Runtime::new(&page);
+        if let Some(v) = variant {
+            rt.variant = page.intern_lookup(v);
+        }
+        let r = resolve_animated(&page, &mut rt);
+        r.color(&page, n, PropKey::Background).unwrap()
+    }
+    let a = |o: f32| (o * 255.0).round() as u8;
+    assert_eq!(bg("View v { Panel p background=#00000080/0.5 }", "p", None), Rgba([0, 0, 0, a(0.5)]), "a pasted 8-digit hex takes the suffix");
+    assert_eq!(bg("$flash = #FFFFFF6B\nView v { Panel p background=$flash/0 }", "p", None), Rgba([0xFF, 0xFF, 0xFF, 0]), "the fade idiom: the same color, transparent");
+    assert_eq!(bg("$dim = #80808080\nView v { Panel p background=$dim/0.3 }", "p", None), Rgba([0x80, 0x80, 0x80, a(0.3)]), "over a theme value with its own alpha");
+    assert_eq!(bg("$dim = gray\ntheme dark { $dim = #80808080 }\nView v { Panel p background=$dim/0.3 }", "p", Some("dark")), Rgba([0x80, 0x80, 0x80, a(0.3)]), "through a variant");
+    assert_eq!(bg("$a = $b/0.5\n$b = #101010\nView v { Panel p background=$a/0.3 }", "p", None), Rgba([0x10, 0x10, 0x10, a(0.3)]), "the slot's suffix over a hop's (Rust drew the hop's 0.5)");
+    assert_eq!(bg("$a = $b/0.3\n$b = #10101080\nView v { Panel p background=$a }", "p", None), Rgba([0x10, 0x10, 0x10, a(0.3)]), "a hop's suffix over a value defined later in the file");
+    assert_eq!(bg("widget Chip $tint=red { Panel face background=$tint/0.2 }\nView v { Chip c tint=#20202080 }", "c", None), Rgba([0x20, 0x20, 0x20, a(0.2)]), "the widget's suffix over the caller's alpha");
+}

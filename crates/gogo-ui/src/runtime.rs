@@ -643,14 +643,18 @@ impl Resolved {
 }
 
 /// Follows `$refs` through the theme (variant first, then defaults) and
-/// applies a ref's `/opacity` to the color it lands on.
+/// applies a ref's `/opacity` to the color it lands on. The first `/` met
+/// is the slot's own and it is the one that counts: `/o` replaces the
+/// alpha of the value it is written on, so `$a/0.3` over `$a = $b/0.5`
+/// draws 0.3 (decided 2026-08-31, E6). GPAR31 had this the other way
+/// round — the theme's number drew, under a clean build.
 pub fn deref(page: &Page, variant: StrId, v: Value) -> Value {
     let mut v = v;
     let mut opacity: Option<f32> = None;
     for _ in 0..8 {
         match v {
             Value::VRef { name, opacity: o } => {
-                if o.is_some() {
+                if opacity.is_none() {
                     opacity = o;
                 }
                 match page.theme_value(name, variant) {
