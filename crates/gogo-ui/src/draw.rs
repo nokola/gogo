@@ -269,7 +269,9 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             // No `angle=`: left → right (Godot's fill_from (0,0) → fill_to
             // (1,0)), which is 90 on the compass.
             let angle = res.num(page, id, PropKey::Angle).unwrap_or(90.0);
-            // (color, position): `@pos` as written, else spread evenly.
+            // (color, position): `@pos` as written, else spread evenly —
+            // the compiler holds `@` to all-or-none (G2005), so a list is
+            // wholly pinned or wholly even, never a mix.
             let mut colored: Vec<(Rgba, Option<f32>)> = stops.iter().filter_map(|v| match v {
                 Value::VStop { color, pos } => Some((mul_alpha(*color, opacity), *pos)),
                 Value::VColor(c) => Some((mul_alpha(*c, opacity), None)),

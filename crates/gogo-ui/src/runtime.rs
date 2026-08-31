@@ -897,10 +897,20 @@ fn placement_value(p: &Placement, key: PropKey) -> Option<Value> {
 /// (arrangements): exact pair > entering > leaving > bare. Going home with
 /// no rule of its own mirrors the entering rule's timing.
 fn find_rule(page: &Page, node: NodeId, from: Option<State>, to: Option<State>) -> Option<Transition> {
+    // Needed so `transition base -> held` on a node matches a press: a
+    // built-in flip comes in as from/to NOTHING (`None`), and `base` written
+    // on a node rule means exactly that rest state (GPAR9). The view's
+    // `base` is its own arrangement and never meets a `None` end.
+    let rest = |x: Option<State>| x == Some(State::Arrangement(BASE)) && node != NO_NODE;
     let same = |a: Option<State>, b: Option<State>| match (a, b) {
         (Some(State::Arrangement(x)), Some(State::Arrangement(y))) => x == y,
+        (a, None) if rest(a) => true,
+        (None, b) if rest(b) => true,
         (a, b) => a == b,
     };
+    // An entering rule to mirror: `any -> X` or `base -> X` (at the view
+    // `base` is the home arrangement, on a node the rest state).
+    let from_rest = |t: &Transition| t.from.is_none() || t.from == Some(State::Arrangement(BASE));
     let rules: Vec<&Transition> = page.transitions.iter().filter(|t| t.node == node).collect();
     let score = |t: &Transition| -> Option<u8> {
         match (t.from, t.to) {
@@ -914,11 +924,12 @@ fn find_rule(page: &Page, node: NodeId, from: Option<State>, to: Option<State>) 
     if best.is_none() {
         // Home (base) with no rule: mirror the entering rule of where we came from.
         if let Some(State::Arrangement(BASE)) = to {
-            return rules.iter().find(|t| t.from.is_none() && same(t.to, from)).map(|t| **t);
+            return rules.iter().find(|t| from_rest(t) && same(t.to, from)).map(|t| **t);
         }
-        // Leaving a built-in state with no rule: mirror its entering rule.
+        // Leaving a built-in state with no rule: mirror its entering rule
+        // (`any -> held` or `base -> held`).
         if to.is_none() {
-            return rules.iter().find(|t| t.from.is_none() && same(t.to, from)).map(|t| **t);
+            return rules.iter().find(|t| from_rest(t) && same(t.to, from)).map(|t| **t);
         }
     }
     best

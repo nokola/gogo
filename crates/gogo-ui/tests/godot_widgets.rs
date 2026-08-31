@@ -745,11 +745,10 @@ fn automatic_kind_set_is_closed_and_the_coupling_is_spelled() {
 /// coupling is fully spelled and type-checked — `by` before `in`, `by`
 /// drives from `$value`, the range is `$min..$max`, bare words are not
 /// `$params`, a bool has no range, a presence driver is a state word (no
-/// `$`), and a `by` on a slot with no `automatic=` is stray. Rust reads
-/// the clauses by key in any order with no checks (bare `min..max`
-/// solves to 0).
+/// `$`), and a `by` on a slot with no `automatic=` is stray. PORT (E4):
+/// the parser fixes the clause order and the compiler types every
+/// clause (G5104).
 #[test]
-#[ignore = "GPAR24: `repeat`/`slot` clause fences gone (by/in in any order, unchecked driver, range and presence forms)"]
 fn coupling_clauses_are_type_checked() {
     let f = fader_static();
     let case = |src: String, want: &str| {

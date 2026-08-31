@@ -340,26 +340,28 @@ fn repeat_line_takes_no_props() {
 /// `.err-by-root`, `.err-collision`, `.err-as-after-by`): the clause
 /// fences — `by` required (G9002), `by`'s root must be the binding
 /// (G9003), `$item` may not also be a theme value (G9004), `as` comes
-/// before `by`. Rust parses the clauses and drops them.
+/// before `by`. FLIP on `by`: Rust's `repeat x max=N` form has no items
+/// to key (GP27), so `by` is optional here and the rest is checked (E4).
 #[test]
-#[ignore = "GPAR24: repeat clause fences gone — `as`/`by` in any order, unchecked, unread"]
 fn repeat_clause_fences() {
     let cases = [
-        ("repeat.err-no-by", "View v { Column c { repeat t { empty { } Label text=\"x\" } } }"),
-        ("repeat.err-by-root", "View v { Column c { repeat t as $a by $b.id { empty { } Label text=\"x\" } } }"),
-        ("repeat.err-collision", "$item = 5\nView v { Column c { repeat t by $item.id { empty { } Label text=\"x\" } } }"),
-        ("repeat.err-as-after-by", "View v { Column c { repeat t by $item.id as $x { empty { } Label text=\"x\" } } }"),
+        ("repeat.err-by-root", "View v { Column c { repeat t as $a by $b.id { empty { } Label text=\"x\" } } }", "G9003"),
+        ("repeat.err-collision", "$item = 5\nView v { Column c { repeat t by $item.id { empty { } Label text=\"x\" } } }", "G9004"),
+        ("repeat.err-as-after-by", "View v { Column c { repeat t by $item.id as $x { empty { } Label text=\"x\" } } }", "G9002"),
+        ("as-without-sigil", "View v { Column c { repeat t as a by $a.id { empty { } Label text=\"x\" } } }", "G9002"),
     ];
-    for (name, src) in cases {
-        assert!(!builds(src), "{name}: Godot refuses, Rust built it: {:?}", codes(src));
+    for (name, src, code) in cases {
+        assert!(codes(src).contains(&code.to_string()), "{name}: want {code}, got {:?}", codes(src));
     }
+    // FLIP `repeat.err-no-by`: the `max=N` form keys nothing, so `by` is optional.
+    assert!(builds("View v { Column c { repeat t max=2 { empty { } Label text=\"x\" } } }"));
+    assert!(builds("View v { Column c { repeat t as $row by $row.id, max=2 { empty { } Label text=\"x\" } } }"), "the full clause form still builds");
 }
 
 /// `_repeat_tests` 12706 (`repeat.err-dotted-theme`): `$a.b = 4` — a
-/// theme value name holds no `.` (that spelling is the item-field path).
-/// Rust declares it.
+/// theme value name holds no `.` (that spelling is the item-field path) —
+/// G9008 in Rust too (E4).
 #[test]
-#[ignore = "GPAR25: `.` allowed in `$names` (Godot refuses `$a.b = 4`)"]
 fn dotted_theme_value_name_refused() {
     let src = "$a.b = 4\nView v { Label text=\"x\" }";
     assert!(!builds(src), "{:?}", codes(src));

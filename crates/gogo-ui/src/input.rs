@@ -611,9 +611,9 @@ impl Input {
                     }
                     Kind::Radio if inside => {
                         // One of N across the whole `choice` scope (nested
-                        // Rows included); a Radio outside any choice is
-                        // exclusive with its Radio siblings. Re-tapping the
-                        // current pick stays pressed and reports nothing.
+                        // Rows included) — every Radio has one, a lone Radio
+                        // is refused at build (G0069). Re-tapping the current
+                        // pick stays pressed and reports nothing.
                         let already = rt.has(p.node, SELECTED);
                         let choice = page.nodes[p.node as usize].choice;
                         let mut change_action: Option<Action> = None;
@@ -624,18 +624,6 @@ impl Input {
                                 }
                             }
                             change_action = page.choices[choice as usize].action;
-                        } else {
-                            let parent = page.nodes[p.node as usize].parent;
-                            if parent != NO_NODE {
-                                for c in page.children(parent) {
-                                    if page.nodes[c].kind == Kind::Radio {
-                                        rt.set_state(c as NodeId, SELECTED, c as NodeId == p.node);
-                                    }
-                                }
-                                change_action = event_action(page, parent, "change");
-                            } else {
-                                rt.set_state(p.node, SELECTED, true);
-                            }
                         }
                         if !already {
                             self.push_event(rt, &mut events, p.node, EventKind::Change(Value::VIdent(page.nodes[p.node as usize].name)), change_action);

@@ -142,6 +142,36 @@ pub struct Compiler<'a> {
     /// Per widget instance being expanded: the instance's `on:` props still
     /// waiting for the body's `signals` node (`None` = the root took them).
     instance_on: Vec<Option<Vec<AstProp>>>,
+    /// While a Gradient's own line compiles: its name and the
+    /// gradient-only words it carries, so G2003's Rectangle rewrite can be
+    /// spelled out (`check_stops`).
+    stops_ctx: Option<(String, Vec<String>)>,
+}
+
+/// A value as the file spells it, for a message.
+fn spell(v: &AstValue) -> String {
+    let suffixes = |opacity: &Option<f32>, pos: &Option<f32>| {
+        let mut s = String::new();
+        if let Some(o) = opacity {
+            s.push_str(&format!("/{o}"));
+        }
+        if let Some(p) = pos {
+            s.push_str(&format!("@{p}"));
+        }
+        s
+    };
+    match v {
+        AstValue::Bool(b) => b.to_string(),
+        AstValue::Num { value, unit } => format!("{value}{unit}"),
+        AstValue::Color { rgba, opacity, pos } => format!("#{:02X}{:02X}{:02X}{:02X}{}", rgba[0], rgba[1], rgba[2], rgba[3], suffixes(opacity, pos)),
+        AstValue::Str { text, .. } => format!("\"{text}\""),
+        AstValue::Ref { name, opacity } => format!("${name}{}", suffixes(opacity, &None)),
+        AstValue::Ident { word, opacity, pos } => format!("{word}{}", suffixes(opacity, pos)),
+        AstValue::Size { w, h } => format!("{}x{}", w.map(|x| x.to_string()).unwrap_or_default(), h.map(|x| x.to_string()).unwrap_or_default()),
+        AstValue::Call { name, args } => format!("{name}({})", args.iter().map(spell).collect::<Vec<_>>().join(", ")),
+        AstValue::List(items) => format!("[{}]", items.iter().map(spell).collect::<Vec<_>>().join(", ")),
+        AstValue::Range(a, b) => format!("{}..{}", spell(a), spell(b)),
+    }
 }
 
 pub struct Compiled {
@@ -177,6 +207,7 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         unnamed_instances: 0,
         fills: Vec::new(),
         instance_on: Vec::new(),
+        stops_ctx: None,
     };
     c.page.intern("");
     c.document(&doc, true);
@@ -286,6 +317,10 @@ impl<'a> Compiler<'a> {
             self.error("G0023", n.line, "`uses` needs a quoted path");
             return;
         };
+        if let Some(AstValue::Str { key: Some(k), .. }) = n.args.first() {
+            self.error("G0023", n.line, format!("`uses` takes one quoted path — `/{k}` is a translation key, and a path is never translated"));
+            return;
+        }
         if !self.used.insert(path.to_string()) {
             return;
         }
@@ -344,6 +379,10 @@ impl<'a> Compiler<'a> {
                         self.error("G3002", *line, format!("`{key}` is not a palette color (new names are `$values`)"));
                         continue;
                     }
+                    if matches!(value, AstValue::Color { pos: Some(_), .. } | AstValue::Ident { pos: Some(_), .. }) {
+                        self.error("G0040", *line, "`@` positions a gradient stop — it only goes on entries of a Gradient's `stops=` list");
+                        continue;
+                    }
                     match self.color_value(value, *line) {
                         Some(c) => {
                             self.palette.insert(key.clone(), c);
@@ -394,7 +433,25 @@ impl<'a> Compiler<'a> {
         };
         // A `control` body holds its behavior lines (`script`, `state`,
         // `state_builtin`, `signal`, a default `transition`) beside the root;
-        // with no code-behind here they carry nothing for the picture.
+        // with no code-behind here they carry nothing for the picture. A
+        // `widget` has no script to raise or read them, so there they are
+        // refused, not skipped; `state_builtin` names must be built-ins.
+        for b in n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }) {
+            match b.type_word.as_str() {
+                "script" | "state" | "state_builtin" | "signal" if n.type_word == "widget" => {
+                    self.error("G0077", b.line, format!("`{}` lines belong to a `control` body (they describe its script) — a `widget` has none", b.type_word));
+                }
+                "state_builtin" => {
+                    for word in b.args.iter().filter_map(|a| a.as_ident()) {
+                        match self.state_from_word(word, b.line, false) {
+                            Some(State::Held | State::Hovered | State::Focused | State::FocusWithin | State::Selected | State::StateDisabled) | None => {}
+                            Some(_) => self.error("G0077", b.line, format!("`state_builtin {word}`: the built-ins are held, hovered, focused, focus_within, selected, disabled")),
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
         let bodies: Vec<&AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| !matches!(b.type_word.as_str(), "script" | "state" | "state_builtin" | "signal" | "transition" | "when" | "anim" | "style")).collect();
         if bodies.len() != 1 {
             self.error("G0028", n.line, format!("widget `{name}` needs exactly one root node in its body"));
@@ -650,6 +707,17 @@ impl<'a> Compiler<'a> {
 
     fn transition(&mut self, n: &AstNode, node: NodeId) -> Transition {
         let mut t = Transition { node, from: None, to: None, duration: 0.0, easing: NO_STR, anim: NO_STR, line: n.line };
+        // One arrow, one endpoint each side. A lone endpoint used to read
+        // as `s -> any` and `-> held` as `any -> held`, silently (GPAR23).
+        let ends: Vec<&str> = n.args.iter().filter_map(|a| a.as_ident()).collect();
+        if ends.len() > 1 || n.arrows.len() > 1 {
+            self.error("G0034", n.line, "a transition rule is `transition A -> B` — one arrow, one endpoint each side (`any` is the wildcard)");
+        }
+        match (ends.first(), n.arrows.first()) {
+            (Some(from), None) => self.error("G0034", n.line, format!("`transition {from}`: an endpoint needs the arrow — `{from} -> any` (leaving) or `any -> {from}` (entering)")),
+            (None, Some(to)) => self.error("G0034", n.line, format!("`transition -> {to}`: say where from — `any -> {to}`")),
+            _ => {}
+        }
         if let Some(from) = n.args.first().and_then(|a| a.as_ident()) {
             if let Some(f) = self.endpoint(from, n.line, node) {
                 t.from = f;
@@ -725,8 +793,13 @@ impl<'a> Compiler<'a> {
             self.error("G0037", n.line, "`when` needs a state");
             return None;
         };
+        let conditions: Vec<&str> = n.args.iter().filter_map(|a| a.as_ident()).collect();
+        if conditions.len() > 1 {
+            self.error("G0038", n.line, format!("a `when` composes at most two conditions — `{}` is a third; conditions AND (the block holds only while ALL hold): `when <arrangement> screen.<class>` / `when screen.<orientation> screen.<class>`. If two screen words meant EITHER-OR (this class or that one), say the axis they share: `screen.landscape` / `screen.portrait`", conditions[1]));
+            return None;
+        }
         let first = self.state_from_word(&word, n.line, top_level)?;
-        let second = n.args.iter().find_map(|a| a.as_ident()).map(str::to_string);
+        let second = conditions.first().map(|s| s.to_string());
         let Some(second) = second else { return Some(first) };
         let second_state = self.state_from_word(&second, n.line, top_level)?;
         match (first, second_state) {
@@ -768,6 +841,19 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    /// A color where it lands: a `stops=` entry (with its `@pos`), else a
+    /// plain color — an `@pos` anywhere else is refused (G0040) instead of
+    /// being thrown away.
+    fn stop_value(&mut self, c: Rgba, pos: Option<f32>, key: Option<PropKey>, line: u32) -> Value {
+        if key == Some(PropKey::Stops) {
+            return Value::VStop { color: c, pos };
+        }
+        if let Some(p) = pos {
+            self.error("G0040", line, format!("`@{p}` positions a gradient stop — it only goes on entries of a Gradient's `stops=` list (`stops=[white@0, blue/0.5@0.24, accent@1]`)"));
+        }
+        Value::VColor(c)
+    }
+
     fn value(&mut self, v: &AstValue, line: u32, key: Option<PropKey>) -> Value {
         match v {
             AstValue::Bool(b) => Value::VBool(*b),
@@ -780,11 +866,7 @@ impl<'a> Compiler<'a> {
             AstValue::Color { rgba, opacity, pos } => {
                 let c = Rgba(*rgba);
                 let c = opacity.map_or(c, |o| c.with_opacity(o));
-                match pos {
-                    Some(p) => Value::VStop { color: c, pos: Some(*p) },
-                    None if key == Some(PropKey::Stops) => Value::VStop { color: c, pos: None },
-                    None => Value::VColor(c),
-                }
+                self.stop_value(c, *pos, key, line)
             }
             AstValue::Str { text, key: term } => {
                 // Asset paths carry gogo's `res://` scheme, always: the
@@ -792,8 +874,12 @@ impl<'a> Compiler<'a> {
                 // build's resource root and embedded" — a bare spelling
                 // would be a second way to write the same thing.
                 let lower = text.to_ascii_lowercase();
-                if !text.starts_with("res://") && IMAGE_EXTS.iter().chain(FONT_EXTS).any(|e| lower.ends_with(e)) {
+                let is_asset = IMAGE_EXTS.iter().chain(FONT_EXTS).any(|e| lower.ends_with(e));
+                if !text.starts_with("res://") && is_asset {
                     self.error("G0071", line, format!("`{text}` names an asset — write `res://{text}` (every asset path carries the scheme)"));
+                }
+                if let (Some(k), true) = (term, is_asset) {
+                    self.error("G0023", line, format!("`/{k}` on an asset path — a path is never translated; the key goes on text"));
                 }
                 let text_id = self.intern(text);
                 let key_id = match term {
@@ -828,13 +914,14 @@ impl<'a> Compiler<'a> {
             AstValue::Ident { word, opacity, pos } => {
                 let color_position = key.map(Self::is_color_key).unwrap_or(false);
                 if color_position {
+                    if key == Some(PropKey::Stops) && word == "transparent" {
+                        // Straight-alpha blending fades THROUGH the hidden
+                        // RGB; the file says which.
+                        self.error("G2006", line, "`transparent` in `stops=` hides which color the fade passes through — spell it: `white/0` or `black/0`");
+                    }
                     if let Some(c) = self.palette.get(word).copied() {
                         let c = opacity.map_or(c, |o| c.with_opacity(o));
-                        return match pos {
-                            Some(p) => Value::VStop { color: c, pos: Some(*p) },
-                            None if key == Some(PropKey::Stops) => Value::VStop { color: c, pos: None },
-                            None => Value::VColor(c),
-                        };
+                        return self.stop_value(c, *pos, key, line);
                     }
                     self.error("G2001", line, format!("`{word}` is not a color"));
                 }
@@ -900,7 +987,30 @@ impl<'a> Compiler<'a> {
                 self.warning("G0042", p.line, format!("`{}` is not a known property of `{kind:?}`", p.key));
             }
         }
+        // The list kind ships with Grid's `cols=`/`areas=` and Gradient's
+        // `stops=` and nothing else — no prop becomes list-accepting by
+        // accident (the spec's Values table).
+        if let AstValue::List(_) = p.value {
+            let takes_list = match key {
+                PropKey::Cols | PropKey::Stops => true,
+                PropKey::Other(id) => self.page.str(id) == "areas",
+                _ => false,
+            };
+            if !takes_list {
+                self.error("G0040", p.line, format!("`{}=` doesn't take a list — only Grid's `cols=`/`areas=` and Gradient's `stops=` do", p.key));
+                return None;
+            }
+        }
+        if key == PropKey::Stops {
+            self.check_stops(&p.value, p.line);
+        }
         let mut value = self.value(&p.value, p.line, Some(key));
+        // A number key given a word, color or string: refused, never read
+        // as "unset" (`opacity=red`, `when held scale=big`).
+        if key.is_number() && !matches!(value, Value::VNum(_) | Value::VRef { .. } | Value::VCall { .. }) {
+            self.error("G0058", p.line, format!("`{}=` wants a number, not `{}`", p.key, spell(&p.value)));
+            return None;
+        }
         // `text=25` / `text=live($value)` with a number: the digits, so a
         // value label needs no code to show its number.
         if key == PropKey::Text {
@@ -910,6 +1020,101 @@ impl<'a> Compiler<'a> {
             }
         }
         Some(Prop { key, value })
+    }
+
+    /// The `stops=` list's authoring rules (the addon's
+    /// `_apply_gradient_stops`): a non-empty list of colors; one stop is a
+    /// solid (G2003 — that's a Rectangle, the rewrite is spelled out);
+    /// `@` positions all-or-none and never decreasing. Checked on the
+    /// file's spelling so a message can quote it.
+    fn check_stops(&mut self, v: &AstValue, line: u32) {
+        let AstValue::List(items) = v else {
+            self.error("G2005", line, "`stops=` takes the gradient's color list — `stops=[white, black]` spaces evenly; @positions pin entries (`white@0, blue@0.24`)");
+            return;
+        };
+        if items.is_empty() {
+            self.error("G2005", line, "`stops=` is empty — a gradient needs colors (`stops=[white, black]`)");
+            return;
+        }
+        let mut positioned = 0;
+        let mut prev: Option<f32> = None;
+        let mut decreasing: Option<(f32, f32)> = None;
+        for it in items {
+            let pos = match it {
+                AstValue::Color { pos, .. } | AstValue::Ident { pos, .. } => *pos,
+                AstValue::Ref { .. } => None,
+                other => {
+                    self.error("G2005", line, format!("`stops=` entries are colors — got `{}`", spell(other)));
+                    return;
+                }
+            };
+            if let Some(p) = pos {
+                positioned += 1;
+                if let Some(q) = prev {
+                    if p < q && decreasing.is_none() {
+                        decreasing = Some((q, p));
+                    }
+                }
+                prev = Some(p);
+            }
+        }
+        if items.len() == 1 {
+            let c = spell(&items[0]);
+            let (name, extras) = self.stops_ctx.clone().unwrap_or_default();
+            let name = if name.is_empty() { String::new() } else { format!("{name} ") };
+            let drop = if extras.is_empty() { String::new() } else { format!(", dropping gradient-only `{}=`", extras.join("=`, `")) };
+            self.error("G2003", line, format!("a one-stop gradient renders as a solid — that's a Rectangle: `Rectangle {name}color={c}`{drop}"));
+            return;
+        }
+        if positioned != 0 && positioned != items.len() {
+            self.error("G2005", line, format!("@positions are all-or-none — {positioned} of {} stops pinned; pin every stop (`white@0, gray@0.3, black@1`) or none (even spacing)", items.len()));
+        }
+        if let Some((q, p)) = decreasing {
+            self.error("G2005", line, format!("stop positions never decrease — `@{p}` after `@{q}`"));
+        }
+    }
+
+    /// A Gradient's own line: `stops=` is required (no hidden ramp — the
+    /// box would be invisible), `fill=` is linear or radial, `angle=` aims
+    /// linear fills only. The list's own rules: `check_stops`.
+    fn gradient_line(&mut self, n: &AstNode, props: &[AstProp]) {
+        let find = |k: &str| props.iter().find(|p| p.key == k);
+        if find("stops").is_none() {
+            self.error("G2005", n.line, "Gradient needs `stops=` — the colors it paints; `stops=[white, black]` fades white to black; one color is a `Rectangle`");
+        }
+        let fill = find("fill").and_then(|p| p.value.as_ident()).unwrap_or("linear").to_string();
+        if !matches!(fill.as_str(), "linear" | "radial") {
+            self.error("G2005", n.line, format!("`fill={fill}`: want linear or radial (Godot's square|conic are not drawn by this runtime)"));
+        }
+        if find("angle").is_some() && fill != "linear" {
+            self.error("G2005", n.line, "`angle=` only aims LINEAR gradients — a round fill (radial) has no direction");
+        }
+    }
+
+    /// `repeat x [as $b] by $b.field`: `as` names the binding (a `$ref`),
+    /// `by` keys the item on that binding, and the binding may not shadow
+    /// a `$` value in scope (G9002/G9003/G9004, the addon's codes). `by`
+    /// is optional here: the `max=N` form has no items to key (GP27).
+    fn repeat_clauses(&mut self, n: &AstNode) {
+        let binding = match n.clauses.iter().find(|(k, _)| k == "as") {
+            Some((_, AstValue::Ref { name, opacity: None })) if !name.contains('.') => name.clone(),
+            Some((_, v)) => {
+                self.error("G9002", n.line, format!("`as` declares the item binding — `as $name`, sigil and all (got `{}`)", spell(v)));
+                return;
+            }
+            None => "item".to_string(),
+        };
+        if let Some((_, v)) = n.clauses.iter().find(|(k, _)| k == "by") {
+            match v {
+                AstValue::Ref { name, .. } if *name == binding || name.starts_with(&format!("{binding}.")) => {}
+                other => self.error("G9003", n.line, format!("`by` is a field path on the item binding — `by ${binding}.<field>` (got `{}`)", spell(other))),
+            }
+        }
+        let id = self.page.intern_lookup(&binding);
+        let shadows = (id != NO_STR && self.page.theme.iter().any(|t| t.name == id)) || self.scopes.iter().any(|s| s.contains_key(&binding));
+        if shadows {
+            self.error("G9004", n.line, format!("the item binding `${binding}` would shadow a `$` value in scope — rename it with `as $<other>`"));
+        }
     }
 
     // ----- nodes ----------------------------------------------------------
@@ -1027,6 +1232,21 @@ impl<'a> Compiler<'a> {
                 self.error("G0045", n.line, "`gap` takes one size word and nothing else");
             }
         }
+        if kind == Kind::Empty {
+            // The zero-items view holds ONE child (decided 2026-08-31, E4):
+            // Godot stacked several, Rust overlaid them, and neither
+            // arrangement was written anywhere.
+            let kids = n.children.iter().filter(|c| matches!(c, AstItem::Node(k) if !matches!(k.type_word.as_str(), "when" | "transition" | "theme"))).count();
+            if kids > 1 {
+                self.error("G9007", n.line, format!("`empty {{ }}` holds one child, this one has {kids} — wrap them in a Column or Layers (the arrangement is written, not guessed)"));
+            }
+            if n.name.is_some() || !n.args.is_empty() || !n.props.is_empty() {
+                self.error("G9007", n.line, "`empty { … }` takes nothing on its line — its look lives on the child");
+            }
+        }
+        if kind == Kind::Repeat {
+            self.repeat_clauses(n);
+        }
 
         // Props: style base → node props → instance props (later wins on lookup).
         let mut all_props: Vec<AstProp> = Vec::new();
@@ -1048,7 +1268,12 @@ impl<'a> Compiler<'a> {
             if let AstItem::Node(t) = c {
                 if t.type_word == "theme" {
                     // `theme font=…` inside a block: a default for this subtree
-                    // (font inherits down the draw walk).
+                    // (font inherits down the draw walk). A variant block
+                    // here (`theme dark { }`) would be a silent no-op.
+                    if t.name.is_some() || !t.children.is_empty() || !t.args.is_empty() {
+                        self.error("G3004", t.line, "a theme override inside a node is props on one line: `theme font=$x` — theme variants (`theme dark { $name = value }`) go at the top of the file");
+                        continue;
+                    }
                     all_props.extend(t.props.iter().cloned());
                 }
             }
@@ -1070,16 +1295,20 @@ impl<'a> Compiler<'a> {
             if let AstValue::Size { .. } = a {
                 all_props.push(AstProp { key: "size".to_string(), value: a.clone(), line: n.line });
             } else if kind != Kind::Gap && kind != Kind::Repeat {
-                self.error("G0046", n.line, format!("unexpected value {a:?} on `{}`", n.type_word));
-            }
-        }
-        if !matches!(kind, Kind::Slot | Kind::Repeat) {
-            for (k, v) in &n.clauses {
-                all_props.push(AstProp { key: k.clone(), value: v.clone(), line: n.line });
+                let msg = match a {
+                    AstValue::Ident { word, .. } if word == "true" || word == "false" => format!("`{word}` is a value, not a name — a property is `key=value` (`selected={word}`)"),
+                    other => format!("unexpected `{}` on `{}` — a property is `key=value`", spell(other), n.type_word),
+                };
+                self.error("G0046", n.line, msg);
             }
         }
         if kind == Kind::Slot {
             tmp.node.auto = self.automatic(n);
+        }
+        if kind == Kind::Gradient {
+            self.gradient_line(n, &all_props);
+            let extras: Vec<String> = all_props.iter().filter(|p| matches!(p.key.as_str(), "fill" | "angle" | "repeat" | "from" | "to")).map(|p| p.key.clone()).collect();
+            self.stops_ctx = Some((n.name.clone().unwrap_or_default(), extras));
         }
 
         let mut placement_props: Vec<Prop> = Vec::new();
@@ -1101,6 +1330,7 @@ impl<'a> Compiler<'a> {
                 tmp.props.push(prop);
             }
         }
+        self.stops_ctx = None;
         tmp.node.placement = self.placement(&placement_props, n.line, parent_kind, kind);
         // Start states the file declares; the Runtime seeds from them.
         for prop in &tmp.props {
@@ -1252,29 +1482,65 @@ impl<'a> Compiler<'a> {
     /// `automatic=<kind> by $value in $min..$max` on a slot line, solved
     /// to a fraction now: nothing writes `$value` at runtime here.
     fn automatic(&mut self, n: &AstNode) -> Auto {
-        let Some(kind_prop) = n.props.iter().find(|p| p.key == "automatic") else { return Auto::NoAuto };
-        let kind = kind_prop.value.as_ident().unwrap_or("").to_string();
         let by = n.clauses.iter().find(|(k, _)| k == "by").map(|(_, v)| v.clone());
         let range = n.clauses.iter().find(|(k, _)| k == "in").map(|(_, v)| v.clone());
+        let Some(kind_prop) = n.props.iter().find(|p| p.key == "automatic") else {
+            if by.is_some() || range.is_some() {
+                self.error("G5104", n.line, "`by`/`in` couple a slot to an `automatic=` driver — this slot declares none");
+            }
+            return Auto::NoAuto;
+        };
+        let kind = kind_prop.value.as_ident().unwrap_or("").to_string();
         let num = |c: &mut Self, v: &AstValue| -> f32 {
             match c.value(v, n.line, None) {
                 Value::VNum(x) => x,
                 _ => 0.0,
             }
         };
+        // The coupling is fully spelled and type-checked (D134): v1 drives
+        // from `$value` over `$min..$max`, a presence driver is a state word.
         match kind.as_str() {
             "length" | "position" => {
-                let (Some(by), Some(AstValue::Range(lo, hi))) = (by, range) else {
+                let Some(by) = by else {
                     self.error("G5104", n.line, format!("`automatic={kind}` wants `by $value in $min..$max`"));
                     return Auto::NoAuto;
                 };
+                if !matches!(&by, AstValue::Ref { name, .. } if name == "value") {
+                    self.error("G5104", n.line, format!("`automatic={kind}` v1 drives from `$value` — `by $value` (got `{}`)", spell(&by)));
+                    return Auto::NoAuto;
+                }
+                let Some(AstValue::Range(lo, hi)) = range else {
+                    self.error("G5104", n.line, format!("`automatic={kind}` needs its range — `in $min..$max`"));
+                    return Auto::NoAuto;
+                };
+                match (&*lo, &*hi) {
+                    (AstValue::Ref { name: l, .. }, AstValue::Ref { name: h, .. }) if l == "min" && h == "max" => {}
+                    (AstValue::Ref { .. }, AstValue::Ref { .. }) => {
+                        self.error("G5104", n.line, format!("`automatic={kind}` normalizes over `$min..$max` — `in $min..$max` (got `in {}..{}`)", spell(&lo), spell(&hi)));
+                        return Auto::NoAuto;
+                    }
+                    _ => {
+                        self.error("G5104", n.line, format!("`in` spells the driver's range as two `$params` — `in $min..$max` (got `in {}..{}`)", spell(&lo), spell(&hi)));
+                        return Auto::NoAuto;
+                    }
+                }
                 let v = num(self, &by);
                 let lo = num(self, &lo);
                 let hi = num(self, &hi);
                 let f = if hi > lo { ((v - lo) / (hi - lo)).clamp(0.0, 1.0) } else { 0.0 };
                 if kind == "length" { Auto::Length(f) } else { Auto::Position(f) }
             }
-            "presence" => Auto::Presence(false),
+            "presence" => {
+                if range.is_some() {
+                    self.error("G5104", n.line, "`automatic=presence`: a bool has no range — drop the `in` clause");
+                }
+                match &by {
+                    Some(AstValue::Ident { .. }) => {}
+                    Some(other) => self.error("G5104", n.line, format!("a presence driver is a state word — `by` names one (no `$`): `by selected` (got `{}`)", spell(other))),
+                    None => self.error("G5104", n.line, "`automatic=presence` wants `by <state>` (`by selected`)"),
+                }
+                Auto::Presence(false)
+            }
             other => {
                 self.error("G5104", n.line, format!("`automatic={other}`: want length, position or presence"));
                 Auto::NoAuto
@@ -1738,6 +2004,16 @@ impl<'a> Compiler<'a> {
             if self.page.prop(i as NodeId, PropKey::Interactive) != Some(Value::VBool(true)) {
                 let line = node.line;
                 self.error("G0073", line, "`on:pointer` needs `interactive=true` on the same node — passive boxes are transparent to input, always; the wire alone claims nothing");
+            }
+        }
+        // A Radio outside any `choice` has nothing to be exclusive with:
+        // refused, as the addon does (Rust used to invent sibling
+        // exclusivity and report through the parent, GPAR22).
+        for i in 0..self.page.nodes.len() {
+            let n = &self.page.nodes[i];
+            if n.kind == Kind::Radio && n.choice == NO_CHOICE {
+                let line = n.line;
+                self.error("G0069", line, "exclusivity needs a choice scope — Radio lives inside `choice { }` (`choice size value=medium { Radio small text=\"Small\"; … }`); an independent toggle is `Check`");
             }
         }
         // Anims: flat tracks with start times.

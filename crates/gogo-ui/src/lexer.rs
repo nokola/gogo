@@ -154,7 +154,7 @@ impl<'a> Lexer<'a> {
                 'x' if self.peek_at(1).is_ascii_digit() && !self.prev_is_ident() => {
                     // `x110` — a size with only a height.
                     self.pos += 1;
-                    let h = self.digits();
+                    let h = self.digits().unwrap_or(0.0);
                     self.push(Tok::Size { w: None, h: Some(h) });
                 }
                 _ if is_ident_start(c) => self.ident(),
@@ -196,20 +196,47 @@ impl<'a> Lexer<'a> {
         word
     }
 
-    fn digits(&mut self) -> f32 {
+    /// The number at the cursor: digits with at most one `.`, a digit
+    /// first. `1.2.3` and `.5` are errors (G0009), never a silent 0 — a
+    /// length that reads as zero is invisible on screen. `0..1` stops
+    /// before the range dots.
+    fn digits(&mut self) -> Option<f32> {
         let start = self.pos;
-        while self.peek().is_ascii_digit() || self.peek() == '.' {
+        while self.peek().is_ascii_digit() || (self.peek() == '.' && self.peek_at(1) != '.') {
             self.pos += 1;
         }
         let text: String = self.chars[start..self.pos].iter().collect();
-        text.parse().unwrap_or(0.0)
+        let shape_ok = text.starts_with(|c: char| c.is_ascii_digit()) && text.matches('.').count() <= 1;
+        match text.parse::<f32>() {
+            Ok(v) if shape_ok => Some(v),
+            _ => {
+                let hint = if text.starts_with('.') { format!(" — write `0{text}`") } else { String::new() };
+                self.error("G0009", format!("bad number `{text}`{hint}"));
+                None
+            }
+        }
+    }
+
+    /// A `/` or `@` suffix's number, which must sit in 0..1: `black/50`
+    /// used to read as opaque black and `white@2` as a stop past the end,
+    /// both silently. `None` = refused (already reported).
+    fn unit_suffix(&mut self, what: &str, example: &str) -> Option<f32> {
+        let start = self.pos;
+        let mark = self.chars[start - 1];
+        let v = self.digits()?;
+        if (0.0..=1.0).contains(&v) {
+            return Some(v);
+        }
+        let text: String = self.chars[start..self.pos].iter().collect();
+        self.error(if mark == '/' { "G0007" } else { "G0008" }, format!("`{mark}{text}` — {what} is 0..1 after `{mark}` ({example})"));
+        None
     }
 
     /// `/0.5` after a value.
     fn opacity_suffix(&mut self) -> Option<f32> {
         if self.peek() == '/' && (self.peek_at(1).is_ascii_digit() || self.peek_at(1) == '.') {
             self.pos += 1;
-            return Some(self.digits());
+            return self.unit_suffix("an opacity", "`black/0.5`");
         }
         None
     }
@@ -218,7 +245,7 @@ impl<'a> Lexer<'a> {
     fn pos_suffix(&mut self) -> Option<f32> {
         if self.peek() == '@' && (self.peek_at(1).is_ascii_digit() || self.peek_at(1) == '.') {
             self.pos += 1;
-            return Some(self.digits());
+            return self.unit_suffix("a stop position", "`white@0.24`");
         }
         None
     }
@@ -235,11 +262,11 @@ impl<'a> Lexer<'a> {
         if negative {
             self.pos += 1;
         }
-        let value = self.digits() * if negative { -1.0 } else { 1.0 };
+        let value = self.digits().unwrap_or(0.0) * if negative { -1.0 } else { 1.0 };
         if self.peek() == 'x' && !negative {
             // `220x110` / `220x`.
             self.pos += 1;
-            let h = if self.peek().is_ascii_digit() { Some(self.digits()) } else { None };
+            let h = if self.peek().is_ascii_digit() { Some(self.digits().unwrap_or(0.0)) } else { None };
             self.push(Tok::Size { w: Some(value), h });
             return;
         }
@@ -321,9 +348,12 @@ impl<'a> Lexer<'a> {
                     [(v >> 24) as u8, (v >> 16) as u8, (v >> 8) as u8, v as u8]
                 }
             }
+            // One hex form (decided 2026-08-31, E4): `#F00` is refused so a
+            // color has one spelling to grep for; the message writes it out.
             3 => {
-                let d: Vec<u8> = hex.chars().map(|c| c.to_digit(16).unwrap_or(0) as u8 * 17).collect();
-                [d[0], d[1], d[2], 0xFF]
+                let full: String = hex.chars().flat_map(|c| [c, c]).collect();
+                self.error("G0005", format!("`#{hex}` — one hex form: `#RRGGBB` or `#RRGGBBAA` (alpha last); write `#{full}`"));
+                [0, 0, 0, 0xFF]
             }
             _ => {
                 self.error("G0005", format!("bad color `#{hex}` (want #RRGGBB or #RRGGBBAA, alpha last)"));

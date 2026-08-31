@@ -381,6 +381,37 @@ impl PropKey {
         })
     }
 
+    /// Keys that take a number: `opacity=red` or `scale=big` is refused
+    /// (G0058) instead of reading as "no value" — a bare word here is a
+    /// typo that would otherwise do nothing on screen. `value=` stays open
+    /// (a Slider's number, an Input's text).
+    pub fn is_number(self) -> bool {
+        matches!(
+            self,
+            PropKey::FontSize
+                | PropKey::Spacing
+                | PropKey::CornerRadius
+                | PropKey::BorderThickness
+                | PropKey::Opacity
+                | PropKey::Min
+                | PropKey::Max
+                | PropKey::Step
+                | PropKey::RowHeight
+                | PropKey::ColSpan
+                | PropKey::RowSpan
+                | PropKey::Angle
+                | PropKey::DisabledOpacity
+                | PropKey::Span
+                | PropKey::Scale
+                | PropKey::ScaleX
+                | PropKey::ScaleY
+                | PropKey::TranslateX
+                | PropKey::TranslateY
+                | PropKey::Rotate
+                | PropKey::ColorA
+        )
+    }
+
     pub fn is_placement(self) -> bool {
         matches!(
             self,

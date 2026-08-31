@@ -361,9 +361,8 @@ fn two_bare_transitions_are_refused() {
 }
 
 /// `arr.err-transition-no-arrow` (6777): `transition s duration=0.1` has
-/// an endpoint but no arrow and is refused. Rust reads it as `s -> any`.
+/// an endpoint but no arrow and is refused — in Rust too (G0034, E4).
 #[test]
-#[ignore = "GPAR23: a transition endpoint without `->` is silently read as `s -> any`; Godot refuses"]
 fn transition_endpoint_needs_the_arrow() {
     let src = "arrangement s\ntransition s duration=0.1\nView v { Rectangle bar }";
     assert!(refused(src), "{:#?}", diags(src));
@@ -960,10 +959,9 @@ fn orientation_pairs_build_and_unknown_words_name_both_vocabularies() {
 
 /// `orient.err-three-conditions` (7194): a third `when` condition gets the
 /// composition rule ("at most two conditions") and the either-or hint
-/// (same-axis classes never AND). Rust refuses it only as a generic
-/// parse error (G0017 "missing `,`") that names neither.
+/// (same-axis classes never AND). PORT (E4): Rust names both (G0038);
+/// before E4 it was a bare G0017 "missing `,`" that named neither.
 #[test]
-#[ignore = "GPAR23: a third when condition is refused as a bare parse error (G0017); Godot names the two-condition rule and the EITHER-OR trap"]
 fn a_third_when_condition_names_the_composition_rule() {
     let src = "arrangement previewAbove\nwhen previewAbove screen.landscape screen.lotsOfSpace { bar.opacity=0.5 }\nView v { Rectangle bar }";
     assert!(refused(src));

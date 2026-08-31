@@ -713,7 +713,6 @@ fn stops_are_live_per_stop_properties() {
 /// all-or-none and never decreasing; `fill=` takes linear|radial|conic;
 /// `angle=` aims LINEAR gradients only.
 #[test]
-#[ignore = "GPAR18: no Gradient authoring rules in Rust (all eight build clean)"]
 fn the_stops_rules_and_the_fill_fences() {
     assert!(mentions("View v { Gradient g }", "stops="));
     assert!(mentions("View v { Gradient g stops=[] }", "empty"));
@@ -743,7 +742,6 @@ fn equal_positions_and_spelled_transparent_stops_build() {
 /// entries — `Rectangle r color=white@0.5` is refused naming `stops=`; a
 /// position past 1 (`white@2`) does not even parse.
 #[test]
-#[ignore = "GPAR17: @pos accepted outside stops= and unbounded (Rust builds `color=white@0.5` and `white@2` clean)"]
 fn a_stop_position_only_goes_on_stops_entries_and_stays_in_range() {
     assert!(mentions("View v { Rectangle r color=white@0.5 }", "stops="));
     assert!(fails("View v { Gradient g stops=[white@2] }"));
@@ -768,7 +766,6 @@ fn solid_until_and_color_are_not_gradient_words() {
 /// is refused with the honest spellings (`white/0`) in hand, pinned or
 /// not.
 #[test]
-#[ignore = "GPAR18: no Gradient authoring rules in Rust (bare `transparent` in stops builds clean)"]
 fn bare_transparent_in_stops_is_refused() {
     assert!(mentions("View v { Gradient g stops=[white, transparent] }", "white/0"));
     assert!(mentions("View v { Gradient g stops=[white@0, transparent@1] }", "white/0"));
@@ -784,7 +781,6 @@ fn bare_transparent_in_stops_is_refused() {
 /// `applicability`/`edits` fields have no Rust counterpart, so the fix is
 /// asserted through the message text.
 #[test]
-#[ignore = "GPAR18: no Gradient authoring rules in Rust (a one-stop Gradient builds clean; Diagnostic has no machine edits)"]
 fn a_one_stop_gradient_is_g2003_with_the_rectangle_rewrite() {
     let one = "View v { Gradient veil stops=[blue] }";
     assert!(codes(one).contains(&"G2003".to_string()), "{:#?}", diags(one));

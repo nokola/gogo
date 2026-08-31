@@ -424,7 +424,6 @@ fn transparent_and_the_opacity_suffix() {
 /// `_palette_tests` 2800-2802 (`palette.err-opacity-range`): `red/2` is
 /// refused — opacity is 0..1.
 #[test]
-#[ignore = "GPAR17: /opacity is unbounded in Rust (red/2 clamps to opaque, no diagnostic)"]
 fn opacity_suffix_out_of_range_is_refused() {
     let errs = errors("View v { Rectangle a color=red/2 }\n");
     assert!(errs.iter().any(|d| d.message.contains("0..1")), "{errs:#?}");
@@ -447,7 +446,6 @@ fn opacity_suffix_off_a_color_position_is_refused() {
 /// `_palette_tests` 2810-2812 (`palette.err-not-global`): color words are
 /// contextual — `opacity=red` is refused ("a number"), never coerced.
 #[test]
-#[ignore = "GPAR17: no value fences — Rust accepts `opacity=red` (a bare word in a number position builds clean and reads as no opacity)"]
 fn palette_word_in_a_number_position_is_refused() {
     let errs = errors("View v { Button b text=\"x\", opacity=red }\n");
     assert!(!errs.is_empty(), "opacity=red must not build");
@@ -592,9 +590,8 @@ fn key_suffix_misuse_is_refused() {
 
 /// `_translation_tests` 2968-2969 (`tr.err-uses-path`): a key on a `uses`
 /// path is refused ("uses needs one quoted path"). With the include
-/// present, Rust takes the path, registers the key and builds.
+/// present, Rust refuses it too (G0023, E4).
 #[test]
-#[ignore = "GPAR25: translation keys registered on uses/font paths — `uses \"x.gogo\"/trPath` builds clean when the file exists"]
 fn uses_path_never_carries_a_key() {
     let loader = |path: &str| if path == "styles/theme.gogo" { Some("$pad = 4\n".to_string()) } else { None };
     let c = compile("uses \"styles/theme.gogo\"/trPath\nView v { Button b text=\"x\" }\n", &loader);

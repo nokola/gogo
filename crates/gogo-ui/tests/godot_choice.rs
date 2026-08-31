@@ -204,7 +204,6 @@ fn choice_error_battery() {
 /// `_choice_tests` 13591 (err-radio-alone): a Radio outside any `choice` is
 /// a build error in Godot — exclusivity needs a written home.
 #[test]
-#[ignore = "GPAR22: Radio outside choice — Godot refuses at load, Rust invents parent-sibling exclusivity"]
 fn radio_outside_choice_is_refused() {
     assert!(!builds("View v { Radio r text=\"x\" }"), "a lone Radio must not build");
 }

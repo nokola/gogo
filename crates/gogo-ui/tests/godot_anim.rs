@@ -616,7 +616,6 @@ fn rotate_component_is_refused() {
 /// `_motion_tests` 5526-5527 (motion.err-when-scale-type): `scale=red`
 /// in a `when` is refused — a motion word takes a number.
 #[test]
-#[ignore = "GPAR17: value fences — `when held scale=red` builds clean and the response is silently dropped"]
 fn scale_of_a_non_number_is_refused() {
     let src = "style S { when held scale=red }\nView v { Button b .S }";
     assert!(fails(src), "{}", messages(src));

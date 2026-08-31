@@ -245,9 +245,8 @@ fn bare_interactive_word_is_refused() {
 
 /// `_mouse_filter_retirement_tests` 8612-8613 (retire.bare-as-name): a
 /// bare `interactive` in the NAME position is the same typo and fails the
-/// build naming `interactive=true`. Rust names the Button `interactive`.
+/// build naming `interactive=true` — Rust's parser nets it too (E4).
 #[test]
-#[ignore = "GPAR25: bare `interactive` becomes a node name in Rust; Godot has the D103 typo net"]
 fn bare_interactive_as_name_is_refused() {
     let c = compile("View v { Button interactive }", &|_| None);
     assert!(gogo::has_errors(&c.diags), "{:#?}", c.diags);

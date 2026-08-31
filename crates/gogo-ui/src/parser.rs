@@ -7,7 +7,9 @@ use crate::lexer::{Tok, Token, lex};
 
 /// Reserved words that are never a node name.
 const FLAGS: &[&str] = &["signals"];
-const CLAUSES: &[&str] = &["as", "by", "in"];
+/// Line heads that carry a NAME LIST, never a single node name
+/// (`state_builtin hovered, focused`): every bare word is an entry.
+const LIST_HEADS: &[&str] = &["state", "state_builtin", "signal"];
 
 pub fn parse(source: &str, diags: &mut Vec<Diagnostic>) -> Document {
     let tokens = lex(source, diags);
@@ -89,6 +91,9 @@ impl<'a> Parser<'a> {
                     self.error("G0012", format!("`${name}` needs `= value` here"));
                     self.recover();
                     return None;
+                }
+                if name.contains('.') {
+                    self.error("G9008", format!("`${name}` — a value name holds no `.` (`$x.field` reads a repeat item; theme values and widget params are flat)"));
                 }
                 let value = self.value()?;
                 self.terminator();
@@ -195,21 +200,48 @@ impl<'a> Parser<'a> {
                     need_comma = false;
                 }
                 Tok::Ident { word, opacity, pos } => {
-                    if CLAUSES.contains(&word.as_str()) {
+                    let next_is_eq = self.tokens.get(self.pos + 1).map(|t| t.tok == Tok::Eq).unwrap_or(false);
+                    // Keyword-anchored clauses, on the two lines that take
+                    // them: `repeat x as $t by $t.id`, `slot p automatic=length
+                    // by $value in $min..$max`. Comma-free (the keyword
+                    // delimits); fixed order — introduce, then use.
+                    let clause_here = (node.type_word == "repeat" && matches!(word.as_str(), "as" | "by")) || (node.type_word == "slot" && matches!(word.as_str(), "by" | "in"));
+                    if clause_here && !next_is_eq {
                         self.pos += 1;
+                        let has = |k: &str| node.clauses.iter().any(|(c, _)| c == k);
+                        if has(&word) {
+                            self.error("G9002", format!("duplicate `{word}` clause"));
+                        } else if word == "as" && has("by") {
+                            self.error("G9002", format!("'as' comes before 'by' — introduce the binding, then key it (`repeat {} as $x by $x.<field>`)", node.name.as_deref().unwrap_or("x")));
+                        } else if word == "by" && has("in") {
+                            self.error("G5104", "'by' comes before 'in' — name the driver, then its range (`automatic=length by $value in $min..$max`)".to_string());
+                        }
                         let Some(v) = self.value() else { break };
                         node.clauses.push((word, v));
                         need_comma = false;
                         continue;
                     }
+                    // `state_builtin hovered, focused`: every bare word is an entry.
+                    if LIST_HEADS.contains(&node.type_word.as_str()) && !next_is_eq {
+                        if need_comma {
+                            self.error("G0017", format!("missing `,` before `{word}` — names are comma-separated"));
+                        }
+                        self.pos += 1;
+                        node.args.push(AstValue::Ident { word, opacity, pos });
+                        need_comma = true;
+                        continue;
+                    }
+                    // `when open screen.landscape`: the words after the first
+                    // are more conditions (the compiler caps them at two).
+                    let when_condition = node.type_word == "when" && node.name.is_some() && !next_is_eq && opacity.is_none() && pos.is_none();
                     // `then group drop …` / `and play appear`: the word after the
                     // connective's step word is that step's own name.
-                    let step_name = matches!(node.type_word.as_str(), "and" | "then") && matches!(node.name.as_deref(), Some("group") | Some("each") | Some("play")) && node.args.is_empty() && node.props.is_empty() && self.tokens.get(self.pos + 1).map(|t| t.tok != Tok::Eq).unwrap_or(true);
-                    if need_comma && !step_name {
+                    let step_name = matches!(node.type_word.as_str(), "and" | "then") && matches!(node.name.as_deref(), Some("group") | Some("each") | Some("play")) && node.args.is_empty() && node.props.is_empty() && !next_is_eq;
+                    if need_comma && !step_name && !when_condition {
                         self.error("G0017", format!("missing `,` before `{word}`"));
                     }
                     self.pos += 1;
-                    if step_name {
+                    if step_name || when_condition {
                         node.args.push(AstValue::Ident { word, opacity, pos });
                         need_comma = false;
                         continue;
@@ -222,6 +254,11 @@ impl<'a> Parser<'a> {
                         node.flags.push(word);
                     } else if *self.peek() == Tok::LParen {
                         node.args.push(self.call(word));
+                    } else if word == "interactive" {
+                        // The bare-word typo net (D103): `Button interactive`
+                        // would silently become the node's NAME, and the
+                        // input switch would stay off.
+                        self.error("G0046", "`interactive` is a property, not a name or flag — did you mean `interactive=true`?".to_string());
                     } else if node.name.is_none() && node.args.is_empty() && node.props.is_empty() && opacity.is_none() && pos.is_none() && !is_value_word(&node.type_word, &word) {
                         // The name: no comma after it (`Button ok .Tool text="x"`).
                         node.name = Some(word);
@@ -238,6 +275,12 @@ impl<'a> Parser<'a> {
                     self.pos += 1;
                     if *self.peek() == Tok::Eq {
                         self.pos += 1;
+                        if name.contains('.') {
+                            self.error("G9008", format!("`${name}` — a parameter name holds no `.` (`$x.field` reads a repeat item; widget params are flat)"));
+                        }
+                        if node.params.iter().any(|p| p.key == name) {
+                            self.error("G0018", format!("duplicate parameter `${name}`"));
+                        }
                         let Some(value) = self.value() else { break };
                         node.params.push(AstProp { key: name, value, line: self.line() });
                     } else {
@@ -258,6 +301,9 @@ impl<'a> Parser<'a> {
         }
         if *self.peek() == Tok::Newline {
             self.pos += 1;
+        }
+        if LIST_HEADS.contains(&node.type_word.as_str()) && node.args.is_empty() {
+            self.diags.push(Diagnostic::error("G0076", line, format!("`{}` needs at least one name (`{} hovered, focused`)", node.type_word, node.type_word)));
         }
         // Duplicate property on one node = parse error.
         for i in 0..node.props.len() {
@@ -371,10 +417,12 @@ impl<'a> Parser<'a> {
 }
 
 /// Words that are values, never node names, in a positional slot
-/// (`gap fill`, `transition any`). `fill`/`hug` are contextual: after a
-/// control type they are a plain name (`Rectangle fill 26x26`).
+/// (`gap fill`, `transition any`, `Check true`). `fill`/`hug` are
+/// contextual: after a control type they are a plain name (`Rectangle
+/// fill 26x26`). A `transition` line names nothing — its first word is
+/// the from-endpoint (`transition wide -> any`).
 fn is_value_word(type_word: &str, word: &str) -> bool {
-    matches!(word, "any" | "base") || (type_word == "gap" && matches!(word, "fill" | "hug"))
+    matches!(word, "any" | "base" | "true" | "false") || (type_word == "gap" && matches!(word, "fill" | "hug")) || type_word == "transition"
 }
 
 fn describe(tok: &Tok) -> String {
