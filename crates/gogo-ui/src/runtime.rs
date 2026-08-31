@@ -3,8 +3,11 @@
 //! `when` responses onto the base props in the spec's priority order; the
 //! layout and draw passes read only the `Resolved` result.
 
+use std::sync::Arc;
+
 use crate::anim::{Channel, Easing, Finish, Motion, Player, Tween, lerp_value};
 use crate::layout::{BUTTON_PADDING, Rect};
+use crate::locale::{KeyName, Locale};
 use crate::page::*;
 
 pub const HELD: u8 = 1;
@@ -29,6 +32,10 @@ pub struct Runtime {
     pub scroll: Vec<[f32; 2]>,
     /// Set by anything that changes what layout/draw would produce.
     pub dirty: bool,
+    /// The language every `text="x"/key` on this page shows (`set_locale`);
+    /// `None` = the literals as written. Shared between pages — one table,
+    /// swapped whole, so a switch is one relayout and never a half state.
+    pub locale: Option<Arc<Locale>>,
     /// Safe-area insets in epx (left, top, right, bottom) for `padding=safe`.
     pub safe: [f32; 4],
     /// Props written from code (`set_prop`); win over everything.
@@ -85,6 +92,7 @@ impl Runtime {
             states: page.nodes.iter().map(|n| n.initial_states).collect(),
             scroll: vec![[0.0; 2]; page.nodes.len()],
             dirty: true,
+            locale: None,
             safe: [0.0; 4],
             writes: Vec::new(),
             changes: Vec::new(),
@@ -363,7 +371,23 @@ impl Runtime {
             self.owned_text[node as usize] = id;
             id
         };
-        self.set_prop(node, PropKey::Text, Value::VText { text: id, key: NO_STR });
+        self.set_prop(node, PropKey::Text, Value::VText { text: id, key: NO_KEY });
+    }
+
+    /// Shows the translation key `key` on `node` — the string follows the
+    /// locale (`set_locale`). Takes only a build-emitted `Key`, so a key no
+    /// page declares is a rustc error. `set_text` is the other write: a
+    /// literal shown as given, never translated.
+    pub fn set_key<K: KeyName>(&mut self, node: NodeId, key: K) {
+        self.set_prop(node, PropKey::Text, Value::VText { text: NO_STR, key: key.id() });
+    }
+
+    /// Switches the language: every keyed text re-measures and redraws in
+    /// the new strings (one relayout — the table is read at layout time,
+    /// nothing per node is rewritten). `None` = literals as written.
+    pub fn set_locale(&mut self, locale: Option<Arc<Locale>>) {
+        self.locale = locale;
+        self.dirty = true;
     }
 
     pub fn set_visible(&mut self, page: &mut Page, node: NodeId, visible: bool) {
@@ -505,6 +529,9 @@ pub struct Resolved {
     pub states: Vec<u8>,
     /// Paint-order bumps (`Runtime::set_raise`), copied for draw and hit.
     pub raised: Vec<(NodeId, i32)>,
+    /// The language keyed text shows (copied from the Runtime; one Arc
+    /// bump per pass, no allocation).
+    pub locale: Option<Arc<Locale>>,
 }
 
 impl Resolved {
@@ -712,7 +739,7 @@ impl Resolved {
 }
 
 fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
-    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone() };
+    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone() };
     for (i, node) in page.nodes.iter().enumerate() {
         let id = i as NodeId;
         let mut placement = node.placement;

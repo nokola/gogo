@@ -535,7 +535,7 @@ fn view_root_minimum_answers_live_and_forgets_a_transient() {
 /// unregistered name is refused loudly (G7011), never half-built.
 #[test]
 fn registered_code_control_builds_and_an_unknown_name_is_refused() {
-    let options = CompileOptions { code_controls: &["TestCustomControl"] };
+    let options = CompileOptions { code_controls: &["TestCustomControl"], ..CompileOptions::default() };
     let c = compile_with("View v {\n    TestCustomControl demo width=200\n}\n", &|_| None, options);
     assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;

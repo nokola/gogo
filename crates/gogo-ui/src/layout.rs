@@ -228,9 +228,11 @@ impl<'a> Lay<'a> {
         self.res.num(self.page, id, PropKey::FontSize).unwrap_or(DEFAULT_FONT_SIZE)
     }
 
+    /// The string the node shows — in the runtime's language, so a keyed
+    /// label is measured at the width of the translation it will draw.
     fn text_of(&self, id: NodeId) -> Option<&'a str> {
         match self.res.prop(self.page, id, PropKey::Text)? {
-            Value::VText { text, .. } => Some(self.page.str(text)),
+            Value::VText { text, key } => Some(crate::locale::display(self.page, self.res.locale.as_deref(), text, key)),
             _ => None,
         }
     }

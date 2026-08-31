@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use crate::anim::{Channel, EASING_PARAM_KEYS, Easing, PARAMS_FOR_CURVE};
 use crate::ast::{AstItem, AstNode, AstProp, AstValue, Document};
 use crate::diag::Diagnostic;
+use crate::locale::Keys;
 use crate::page::*;
 use crate::runtime::{DISABLED, SELECTED};
 use crate::parser::parse;
@@ -23,6 +24,16 @@ pub struct CompileOptions<'a> {
     /// empty box of its declared size with a G7013 warning, so the page
     /// still lays out. Example: `&["GradientEdit"]`.
     pub code_controls: &'a [&'a str],
+    /// The build's translation-key table, shared by every page `build_pages`
+    /// compiles — keys are global (one `/ok` across files), so the id a page
+    /// bakes into `VText { key }` must index the one `KEYS` table the build
+    /// emits. `None` (a standalone compile, tests, hot reload of one file)
+    /// = the page gets its own table, ids local to it.
+    pub keys: Option<&'a std::cell::RefCell<Keys>>,
+    /// The name diagnostics use for THIS file in cross-file facts (G8001
+    /// names the file a key was first seen in). `compile_file_with` sets
+    /// it; `""` = unknown.
+    pub source_name: &'a str,
 }
 
 /// The gogo events; anything else on `on:` is a raw signal — gone (§7).
@@ -122,8 +133,8 @@ pub struct Compiler<'a> {
     /// Widget param scopes, innermost last.
     scopes: Vec<HashMap<String, AstValue>>,
     node_whens: Vec<Vec<WhenTmp>>,
-    /// Translation key → English literal (G8001).
-    terms: HashMap<String, String>,
+    /// The key table when `options.keys` is `None` (see `CompileOptions`).
+    local_keys: Keys,
     /// Top-level `when <arrangement> { node.prop = v }`, applied after the tree exists.
     deferred_whens: Vec<(State, Vec<AstItem>, u32)>,
     /// `anim` declarations, compiled after the tree exists (they name
@@ -177,6 +188,10 @@ fn spell(v: &AstValue) -> String {
 pub struct Compiled {
     pub page: Page,
     pub diags: Vec<Diagnostic>,
+    /// The key table this compile filled: its own when `options.keys` was
+    /// `None` (ids local to this page — `keys.names[key]` spells a `VText`
+    /// key), empty when the build's shared table took them.
+    pub keys: Keys,
 }
 
 /// `compile` with no host options (no code controls).
@@ -197,7 +212,7 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         palette: default_palette(),
         scopes: Vec::new(),
         node_whens: Vec::new(),
-        terms: HashMap::new(),
+        local_keys: Keys::default(),
         deferred_whens: Vec::new(),
         anim_decls: Vec::new(),
         root_seen: false,
@@ -212,7 +227,7 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
     c.page.intern("");
     c.document(&doc, true);
     c.finish();
-    Compiled { page: c.page, diags: c.diags }
+    Compiled { page: c.page, diags: c.diags, keys: c.local_keys }
 }
 
 /// The bare color words: `page::PALETTE` plus its aliases and `transparent`.
@@ -239,6 +254,29 @@ impl<'a> Compiler<'a> {
 
     fn intern(&mut self, s: &str) -> StrId {
         self.page.intern(s)
+    }
+
+    /// The id of translation key `name` carrying `english` — from the
+    /// build's shared table when there is one, else this page's own. G8001
+    /// when the name already carries another English string (checked in
+    /// the table, so it holds across every file of the build).
+    fn key(&mut self, name: &str, english: &str, line: u32) -> KeyId {
+        let origin = self.options.source_name;
+        let result = match self.options.keys {
+            Some(shared) => shared.borrow_mut().intern(name, english, origin),
+            None => self.local_keys.intern(name, english, origin),
+        };
+        match result {
+            Ok(id) => id,
+            Err((prev, first_file)) => {
+                let where_ = if first_file.is_empty() { "elsewhere".to_string() } else { format!("in {first_file}") };
+                self.error("G8001", line, format!("key `{name}` carries \"{prev}\" {where_}, here \"{english}\" — one key, one English string"));
+                match self.options.keys {
+                    Some(shared) => shared.borrow().get(name).unwrap_or(NO_KEY),
+                    None => self.local_keys.get(name).unwrap_or(NO_KEY),
+                }
+            }
+        }
     }
 
     // ----- directives -----------------------------------------------------
@@ -883,17 +921,8 @@ impl<'a> Compiler<'a> {
                 }
                 let text_id = self.intern(text);
                 let key_id = match term {
-                    Some(k) => {
-                        if let Some(prev) = self.terms.get(k) {
-                            if prev != text {
-                                self.error("G8001", line, format!("key `{k}` carries \"{prev}\" elsewhere, here \"{text}\" — one key, one English string"));
-                            }
-                        } else {
-                            self.terms.insert(k.clone(), text.clone());
-                        }
-                        self.intern(k)
-                    }
-                    None => NO_STR,
+                    Some(k) => self.key(k, text, line),
+                    None => NO_KEY,
                 };
                 Value::VText { text: text_id, key: key_id }
             }
@@ -1016,7 +1045,7 @@ impl<'a> Compiler<'a> {
         if key == PropKey::Text {
             if let Value::VNum(n) = value {
                 let digits: String = if n.fract() == 0.0 { format!("{}", n as i64) } else { format!("{n}") };
-                value = Value::VText { text: self.intern(&digits), key: NO_STR };
+                value = Value::VText { text: self.intern(&digits), key: NO_KEY };
             }
         }
         Some(Prop { key, value })

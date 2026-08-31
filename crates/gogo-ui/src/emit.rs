@@ -2,7 +2,9 @@
 //! `static` slices (`Debug` output of the `Copy` page types is valid Rust
 //! with the variant globs imported), a `Handler` enum from the file's
 //! `on:` names and auto-wired Buttons, and a `Names` struct of node ids.
+//! `emit_keys`: the build-wide translation keys as `KEYS` + `enum Key`.
 
+use crate::locale::Keys;
 use crate::page::*;
 
 /// `save_button` from `saveButton` / `SaveButton` / `save_button`.
@@ -145,10 +147,74 @@ pub fn emit_rust(page: &Page, module: &str) -> String {
     out
 }
 
+/// The Rust variant for translation key `name`: `pickColorHint` →
+/// `PickColorHint`; a key that starts with a digit gets `N` in front
+/// (`16by9` → `N16by9`), since a variant cannot.
+pub fn key_variant(name: &str) -> String {
+    let p = pascal_case(name);
+    if p.chars().next().is_some_and(|c| c.is_ascii_digit()) { format!("N{p}") } else { p }
+}
+
+/// The build's translation keys as code, at the `ui` module's top level:
+/// `KEYS: &[(name, English)]` by `KeyId`, `enum Key` (one variant per key,
+/// `key_variant` spelling, `#[repr(u32)]` = the id), `Key::from_name` for
+/// loading a translation file, and the `gogo::KeyName` impl that lets
+/// `Runtime::set_key` take a `Key` and nothing else. `Err` when two names
+/// spell the same variant (`fxColor` and `fx_color`) — a build error, not a
+/// silent merge.
+pub fn emit_keys(keys: &Keys) -> Result<String, String> {
+    let mut out = String::new();
+    let mut variants: Vec<String> = Vec::with_capacity(keys.names.len());
+    for name in &keys.names {
+        let v = key_variant(name);
+        if let Some(j) = variants.iter().position(|x| *x == v) {
+            return Err(format!("translation keys `{}` and `{name}` both become `Key::{v}` — rename one\n", keys.names[j]));
+        }
+        variants.push(v);
+    }
+    out.push_str("/// Every translation key a page names, by `KeyId`: (key as written, its English).\n");
+    out.push_str("pub static KEYS: &[(&str, &str)] = &[\n");
+    for (name, english) in keys.names.iter().zip(&keys.english) {
+        out.push_str(&format!("    ({name:?}, {english:?}),\n"));
+    }
+    out.push_str("];\n\n");
+    out.push_str("/// The translation keys as code: `Key::Ok.id()` indexes `KEYS`; a key no page declares does not compile.\n");
+    out.push_str("#[allow(clippy::enum_variant_names, non_camel_case_types)]\n#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]\n#[repr(u32)]\npub enum Key {\n");
+    for (i, v) in variants.iter().enumerate() {
+        out.push_str(&format!("    {v} = {i},\n"));
+    }
+    out.push_str("}\n\n");
+    out.push_str("impl Key {\n    /// The key spelled as the `.gogo` files (and translation files) write it.\n    pub fn from_name(name: &str) -> Option<Key> {\n        match name {\n");
+    for (name, v) in keys.names.iter().zip(&variants) {
+        out.push_str(&format!("            {name:?} => Some(Key::{v}),\n"));
+    }
+    out.push_str("            _ => None,\n        }\n    }\n\n    pub const fn id(self) -> gogo::KeyId {\n        self as u32\n    }\n}\n\n");
+    out.push_str("impl gogo::KeyName for Key {\n    fn id(self) -> gogo::KeyId {\n        self as u32\n    }\n}\n\n");
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::compile::compile;
+
+    #[test]
+    fn keys_are_code() {
+        let mut k = Keys::default();
+        k.intern("ok", "OK", "").unwrap();
+        k.intern("16by9", "16:9", "").unwrap();
+        k.intern("pickColorHint", "Pick a color", "").unwrap();
+        let src = emit_keys(&k).unwrap();
+        assert!(src.contains("pub static KEYS: &[(&str, &str)] = &[\n    (\"ok\", \"OK\"),\n    (\"16by9\", \"16:9\"),\n    (\"pickColorHint\", \"Pick a color\"),\n];"), "{src}");
+        assert!(src.contains("pub enum Key {\n    Ok = 0,\n    N16by9 = 1,\n    PickColorHint = 2,\n}"), "{src}");
+        assert!(src.contains("\"16by9\" => Some(Key::N16by9),"), "{src}");
+        assert!(src.contains("impl gogo::KeyName for Key"), "{src}");
+        let mut clash = Keys::default();
+        clash.intern("fxColor", "a", "").unwrap();
+        clash.intern("fx_color", "b", "").unwrap();
+        let err = emit_keys(&clash).unwrap_err();
+        assert!(err.contains("`fxColor` and `fx_color` both become `Key::FxColor`"), "{err}");
+    }
 
     #[test]
     fn names_and_handlers_are_code() {

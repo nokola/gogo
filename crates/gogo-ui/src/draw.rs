@@ -40,8 +40,10 @@ pub enum Draw {
     /// N−1 of these. `angle` is the CSS compass: 0 = to top, 90 = to
     /// right, clockwise.
     Gradient { rect: Rect, kind: GradientKind, from: Rgba, to: Rgba, angle: f32, band: (f32, f32) },
-    /// `text`/`key`: the English literal and its translation key.
-    Text { rect: Rect, text: StrId, key: StrId, font_size: f32, color: Rgba, halign: TextAlign, valign: TextAlign, wrap: bool, font: StrId },
+    /// `text`/`key`: the literal as the file wrote it and its translation
+    /// key (`NO_KEY` = none). The renderer shows `locale::display(page,
+    /// locale, text, key)` — the same string layout measured.
+    Text { rect: Rect, text: StrId, key: KeyId, font_size: f32, color: Rgba, halign: TextAlign, valign: TextAlign, wrap: bool, font: StrId },
     ClipPush(Rect),
     ClipPop,
     /// Everything until the matching `RotatePop` turns `angle` degrees

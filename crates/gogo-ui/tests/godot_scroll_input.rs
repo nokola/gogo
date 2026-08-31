@@ -534,12 +534,18 @@ fn reduced_motion_lands_a_timed_response_in_one_frame() {
 /// suffix on `accessibility_name` translates like any string prop — with
 /// the `xx` table `{undoA11y: "Undo-XX"}` active the name reads "Undo-XX".
 #[test]
-#[ignore = "GPAR12: translation keys are never resolved — no locale table, the name stays `Undo`"]
 fn accessibility_name_translates_by_its_key() {
+    static XX: &[(&str, &str)] = &[("undoA11y", "Undo")];
     let c = ok("View v { Button tb 44x44, text=\"U\", accessibility_name=\"Undo\"/undoA11y }");
+    assert_eq!(c.keys.names, ["undoA11y"]);
     let tb = c.page.find("tb").unwrap();
     let v = c.page.prop(tb, PropKey::AccessibilityName);
-    assert!(matches!(v, Some(Value::VText { text, .. }) if c.page.str(text) == "Undo-XX"), "{v:?}");
+    let locale = gogo::Locale::build(XX, &[(0, "Undo-XX")]);
+    let shown = match v {
+        Some(Value::VText { text, key }) => gogo::locale::display(&c.page, Some(&locale), text, key),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(shown, "Undo-XX");
 }
 
 /// `_accessibility_tests` 9609-9618 (`a11y.kb-lint`, `a11y.kb-lint-silenced`):

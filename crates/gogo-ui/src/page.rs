@@ -14,6 +14,12 @@ pub const NO_NODE: NodeId = u32::MAX;
 pub const DISABLED_OPACITY: f32 = 0.3;
 /// The empty string; `name == NO_STR` = unnamed.
 pub const NO_STR: StrId = 0;
+/// A translation key (`text="x"/key`), one id space for the WHOLE build:
+/// keys are global — `/ok` in two files is one key — so the id indexes the
+/// build's `KEYS` table and a `Locale`, not a page's strings.
+pub type KeyId = u32;
+/// No translation key: the text is a literal, shown as written.
+pub const NO_KEY: KeyId = u32::MAX;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
@@ -462,8 +468,12 @@ pub enum Value {
     /// A bare number; lengths are epx.
     VNum(f32),
     VColor(Rgba),
-    /// A displayed string with an optional translation key (`NO_STR` = none).
-    VText { text: StrId, key: StrId },
+    /// A displayed string: `text` is the literal as the file wrote it (the
+    /// English), `key` its translation key or `NO_KEY`. With a key, what
+    /// shows is `Locale::text(key)` when the runtime has a locale, else the
+    /// literal (`locale::display`). A code-set key (`Runtime::set_key`)
+    /// carries `text: NO_STR` — its English lives in the build's `KEYS`.
+    VText { text: StrId, key: KeyId },
     /// `$name` — a theme value or widget param, resolved at theme time.
     /// `opacity` overrides the alpha when `Some` (`$accent/0.3`).
     VRef { name: StrId, opacity: Option<f32> },

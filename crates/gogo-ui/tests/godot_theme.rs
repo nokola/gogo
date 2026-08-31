@@ -20,7 +20,10 @@
 //!   control input, `_gui_input` / viewport `push_input`).
 use gogo::draw::{Draw, draw};
 use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::{NodeId, PropKey, Rgba, Value};
+use std::sync::Arc;
+
+use gogo::locale::{Keys, Locale, display};
+use gogo::page::{NO_KEY, NodeId, PropKey, Rgba, Value};
 use gogo::runtime::{Resolved, Runtime, deref, resolve};
 use gogo::{Compiled, Diagnostic, Page, Severity, compile};
 
@@ -60,6 +63,9 @@ fn alpha_of(fraction: f32) -> u8 {
 /// A compiled page, resolved and laid out in a 400x400 frame.
 struct Fx {
     page: Page,
+    /// This compile's own key table (`keys.names[key]` spells a key).
+    keys: Keys,
+    rt: Runtime,
     res: Resolved,
     rects: Vec<Rect>,
     draws: Vec<Draw>,
@@ -67,19 +73,37 @@ struct Fx {
 
 impl Fx {
     fn new(src: &str) -> Fx {
-        Fx::with_variant(src, "")
+        Fx::build(src, "", None)
     }
 
     fn with_variant(src: &str, variant: &str) -> Fx {
-        let page = ok(src).page;
+        Fx::build(src, variant, None)
+    }
+
+    fn with_locale(src: &str, locale: Locale) -> Fx {
+        Fx::build(src, "", Some(Arc::new(locale)))
+    }
+
+    fn build(src: &str, variant: &str, locale: Option<Arc<Locale>>) -> Fx {
+        let c = ok(src);
+        let page = c.page;
         let mut rt = Runtime::new(&page);
         if !variant.is_empty() {
             rt.variant = page.intern_lookup(variant);
         }
+        rt.set_locale(locale);
         let res = resolve(&page, &rt);
         let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
         let draws = draw(&page, &res, &rects);
-        Fx { page, res, rects, draws }
+        Fx { page, keys: c.keys, rt, res, rects, draws }
+    }
+
+    /// Switches the language on the SAME runtime and lays out again.
+    fn set_locale(&mut self, locale: Option<Locale>) {
+        self.rt.set_locale(locale.map(Arc::new));
+        self.res = resolve(&self.page, &self.rt);
+        self.rects = layout(&self.page, &self.res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+        self.draws = draw(&self.page, &self.res, &self.rects);
     }
 
     fn id(&self, name: &str) -> NodeId {
@@ -108,12 +132,17 @@ impl Fx {
         }
     }
 
-    /// (English, key) of the drawn text that starts with `starts`.
+    /// (shown text, key) of the drawn text that starts with `starts` — the
+    /// shown text through `locale::display`, as the renderer reads it.
     fn drawn_text(&self, starts: &str) -> (String, String) {
         self.draws
             .iter()
             .find_map(|d| match d {
-                Draw::Text { text, key, .. } if self.page.str(*text).starts_with(starts) => Some((self.page.str(*text).to_string(), self.page.str(*key).to_string())),
+                Draw::Text { text, key, .. } => {
+                    let shown = display(&self.page, self.rt.locale.as_deref(), *text, *key);
+                    let name = if *key == NO_KEY { String::new() } else { self.keys.names[*key as usize].clone() };
+                    shown.starts_with(starts).then(|| (shown.to_string(), name))
+                }
                 _ => None,
             })
             .unwrap_or_else(|| panic!("no drawn text starting {starts:?} in {:#?}", self.draws))
@@ -507,16 +536,23 @@ fn literal_shows_and_the_key_rides_with_the_text() {
 /// show the table's text, a key the table lacks falls back to its literal,
 /// clearing the locale shows the literals again, and a code-side lookup
 /// follows the same fallback rule (key → literal → the key itself).
-/// Rust has no locale table or lookup API yet; the assertion below is the
-/// end state (the drawn text) and fails until one exists.
+/// Rust: `Runtime::set_locale` with a `gogo::Locale`; the code-side
+/// lookup is `locale::display` (key → table → literal; Godot's third step,
+/// the key's own name, has no caller here).
 #[test]
-#[ignore = "GPAR12: translation keys are never resolved (no locale table, no set_locale, no code-side lookup)"]
 fn locale_table_translates_and_falls_back() {
-    let fx = Fx::new("View v { Column c {\n    Label a text=\"hello\"/trGreet\n    Label b text=\"goodbye\"/trBye\n    Label d text=\"4:3\"/4by3\n} }\n");
-    // Once a locale API exists: set locale xx with the table above, re-resolve, then:
-    assert_eq!(fx.drawn_text("bonjour").0, "bonjour", "trGreet translated at build");
-    assert_eq!(fx.drawn_text("goodbye").0, "goodbye", "a missing key falls back to the literal");
+    static XX: &[(&str, &str)] = &[("trGreet", "hello"), ("trBye", "goodbye"), ("4by3", "4:3")];
+    let src = "View v { Column c {\n    Label a text=\"hello\"/trGreet\n    Label b text=\"goodbye\"/trBye\n    Label d text=\"4:3\"/4by3\n} }\n";
+    let mut fx = Fx::with_locale(src, Locale::build(XX, &[(0, "bonjour"), (2, "4:3-XX")]));
+    assert_eq!(fx.keys.names, ["trGreet", "trBye", "4by3"], "the ids the table above indexes");
+    assert_eq!(fx.drawn_text("bonjour"), ("bonjour".to_string(), "trGreet".to_string()), "trGreet translated");
+    assert_eq!(fx.drawn_text("goodbye").0, "goodbye", "a key the table lacks falls back to the literal");
     assert_eq!(fx.drawn_text("4:3-XX").0, "4:3-XX", "a digit-leading key indexes the table");
+    fx.set_locale(None);
+    assert_eq!(fx.drawn_text("hello").0, "hello", "clearing the locale shows the literals again");
+    // The translated WIDTH is pinned in tests/locale.rs
+    // (`a_keyed_label_is_measured_at_its_translated_width`); here the
+    // labels fill their Column.
 }
 
 /// `_translation_tests` 2889-2900 (`tr.widget-param`): a keyed string
@@ -554,7 +590,6 @@ fn first_use_and_in_place_edit_of_a_key_build() {
 /// refused, naming the first file. Rust checks drift only inside one
 /// compile (a page and its `uses`); two pages of one build never meet.
 #[test]
-#[ignore = "NEW: Godot refuses cross-file key drift (names the first file) vs Rust build_pages has no cross-page term registry — two pages with one key and different English build clean"]
 fn cross_file_key_drift_is_refused() {
     let dir = std::env::temp_dir().join(format!("gogo_theme_crossfile_{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
