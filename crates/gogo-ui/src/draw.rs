@@ -121,6 +121,13 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     let node = &page.nodes[id as usize];
     let motion = res.motion.get(id as usize).copied().unwrap_or(crate::anim::Motion::IDENTITY);
     let rect = moved(rects[id as usize], &motion);
+    // `scale` means the whole picture at that size (Godot's canvas
+    // transform, GPAR43): the rects shrink in the child shift below, and
+    // the sizes that come from props, not rects — glyph size, corner
+    // radius, border width — are multiplied over this walk's draws at the
+    // end. Without the second half, `when held scale=0.9` on a captioned
+    // button keeps full-size text poking out of a 90 % plate.
+    let scaled_from = if motion.scale != [1.0, 1.0] { Some(out.len()) } else { None };
     let state: u8 = res.states.get(id as usize).copied().unwrap_or(0);
     // One value per node: the ladder's `opacity` (declared, `when`, code)
     // with the built-in disabled dim as its bottom rung — an authored
@@ -421,6 +428,26 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     }
     if clip {
         out.push(Draw::ClipPop);
+    }
+    if let Some(from) = scaled_from {
+        // One factor for the scalar sizes because under a one-axis
+        // `scale.x` a glyph or stroke has no single size matching both
+        // axes: the axis average keeps strokes uniform while the box
+        // distorts (Godot's transform would distort them too; no page
+        // scales one axis). A scaled ancestor multiplies this range
+        // again on its own way out, so nested scales compose.
+        let k = (motion.scale[0] + motion.scale[1]) / 2.0;
+        for d in &mut out[from..] {
+            match d {
+                Draw::Quad { corner, border, .. } => {
+                    *corner *= k;
+                    *border *= k;
+                }
+                Draw::Circle { border, .. } => *border *= k,
+                Draw::Text { font_size, .. } => *font_size *= k,
+                _ => {}
+            }
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 //! Pins for the first parity batch (docs/todo-gogo-parity.md GPAR11,
-//! GPAR37, GPAR42, GPAR52): the built-in disabled dim is a bottom-of-the-ladder
-//! `when`, a text-only Button's padding reaches the draw pass, and a
+//! GPAR37, GPAR42, GPAR43, GPAR52): the built-in disabled dim is a
+//! bottom-of-the-ladder `when`, a text-only Button's padding reaches the
+//! draw pass, `scale` shrinks glyphs/corners/borders with the box, and a
 //! player whose channels a newer one took keeps its clock and hands over
 //! the true base.
 use gogo::anim::Finish;
@@ -278,4 +279,34 @@ fn margins_never_stretch_a_hug_box() {
     let span = rect("span");
     assert_eq!(span.w, 384.0, "no size word: two named edges still span (400 - 8 - 8): {span:?}");
     assert_eq!(span.x, 8.0);
+}
+
+/// GPAR43 (E11): `scale=` means the whole picture at that size — the box
+/// shrinks AND the sizes drawn from props shrink with it: glyph size,
+/// corner radius, border width. Without this, `when held scale=0.9` on a
+/// captioned button keeps full-size text poking out of a 90 % plate.
+#[test]
+fn scale_shrinks_glyphs_corners_and_borders_with_the_box() {
+    let c = ok("arrangement small\nView v {\n Button b text=\"OK\", width=100, height=40, halign=left, valign=top, corner_radius=8, border_thickness=2, border_color=#FF0000FF, font_size=20\n}\nwhen small { b.scale = 0.5 }\n");
+    let mut rt = Runtime::new(&c.page);
+    rt.go(0);
+    let list = draws(&c.page, &rt);
+    // The plate: half the box (about its center), half the corner, half the border.
+    let plate = list
+        .iter()
+        .find_map(|d| match d {
+            Draw::Quad { rect, corner, border, .. } if *corner > 0.0 => Some((*rect, *corner, *border)),
+            _ => None,
+        })
+        .expect("button plate");
+    assert_eq!(plate, (Rect::new(25.0, 10.0, 50.0, 20.0), 4.0, 1.0), "{list:#?}");
+    // The caption: glyphs at half size, never the written 20.
+    let size = list
+        .iter()
+        .find_map(|d| match d {
+            Draw::Text { text, font_size, .. } if c.page.str(*text) == "OK" => Some(*font_size),
+            _ => None,
+        })
+        .expect("caption");
+    assert_eq!(size, 10.0, "{list:#?}");
 }
