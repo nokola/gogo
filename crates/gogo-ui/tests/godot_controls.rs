@@ -625,11 +625,10 @@ fn toggle_reports_change() {
     assert!(ev.iter().any(|e| matches!(e.action, Some(Action::Named(id)) if fx.page.str(id) == "OnMuteChange")), "{ev:?}");
 }
 
-/// `_toggle_tests` 4626 (`tgl.min-touch-target`): the Toggle's minimum
-/// height is a 44-epx finger target. Rust's bare Toggle is its 22-epx
-/// pill.
+/// `_toggle_tests` 4626 (`tgl.min-touch-target`): a bare Toggle's box is
+/// at least 44 epx tall — a finger target — while the 22-epx pill draws
+/// centered in it (GPAR92, user 2026-08-31; `layout::TOGGLE_TOUCH_EPX`).
 #[test]
-#[ignore = "NEW: Godot Toggle min height 44 (finger target) vs Rust 22 (the pill); may fall under the decided Rust look"]
 fn toggle_min_height_is_a_finger_target() {
     let fx = toggle_fx();
     let r = fx.rect("mute");

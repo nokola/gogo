@@ -679,8 +679,9 @@ pub enum State {
 
 /// The five screen classes a `when screen.<class>` may pose for — a CLOSED
 /// set, so a file reads the same in every project; the host names the
-/// live one (`Runtime::set_screen`). Which class a given view size falls
-/// in is the host's call — gogo owns the names, never the thresholds.
+/// live one (`Runtime::set_screen`), usually from gogo's own ruler
+/// (`ScreenClass::from_view`, below); a host with its own policy can
+/// classify itself and hand the result in instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScreenClass {
     PortraitSmall,

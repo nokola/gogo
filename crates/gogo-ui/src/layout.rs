@@ -125,6 +125,11 @@ pub const INPUT_HEIGHT: f32 = 36.0;
 pub const CHECK_BOX_EPX: f32 = 20.0;
 /// The native Toggle switch: a 44×22 pill.
 pub const TOGGLE_PILL: (f32, f32) = (44.0, 22.0);
+/// A bare Toggle's minimum height. Needed because a 22-epx pill is too
+/// small a finger target — the box is at least this tall and the pill
+/// draws centered in it (GPAR92, user 2026-08-31; the addon's toggle
+/// template keeps the same floor).
+pub const TOGGLE_TOUCH_EPX: f32 = 44.0;
 /// Air between a native mark and its text.
 pub const MARK_TEXT_GAP: f32 = 8.0;
 /// A scroll bar's column (right) or row (bottom); Godot's default theme at 2× is 8 px.
@@ -457,7 +462,7 @@ impl<'a> Lay<'a> {
                 // The native mark (spec "Default look"); a templated one (a
                 // body) is a blank surface sized by its body alone.
                 if matches!(node.kind, Kind::Check | Kind::Toggle | Kind::Radio) && node.children.1 == 0 {
-                    let (mw, mh) = if node.kind == Kind::Toggle { TOGGLE_PILL } else { (CHECK_BOX_EPX, CHECK_BOX_EPX) };
+                    let (mw, mh) = if node.kind == Kind::Toggle { (TOGGLE_PILL.0, TOGGLE_TOUCH_EPX) } else { (CHECK_BOX_EPX, CHECK_BOX_EPX) };
                     w += mw + if self.text_of(id).is_some() { MARK_TEXT_GAP } else { 0.0 };
                     h = h.max(mh);
                 }
