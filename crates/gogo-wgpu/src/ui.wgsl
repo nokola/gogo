@@ -80,7 +80,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     corner = min(corner, min(half.x, half.y));
     let d = rounded_rect_sdf(p, half, corner);
     let border = in.params.y;
-    var color = in.color;
+    // Both colors premultiplied BEFORE any mix, and every mix below stays
+    // premultiplied. Needed because a straight mix drags the result toward
+    // a transparent color's rgb (black): a dark fringe inside a ring on a
+    // light background (the color picker marker), a dark middle in a
+    // gradient fading to transparent.
+    let fill_pm = vec4<f32>(in.color.rgb * in.color.a, in.color.a);
+    let border_pm = vec4<f32>(in.border_color.rgb * in.border_color.a, in.border_color.a);
+    var color = fill_pm;
     if (kind == 2.0 || kind == 3.0) {
         // Position along the run, then this quad's band of it: outside the
         // band another stop pair's quad paints (the run's ends belong to
@@ -97,11 +104,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
         let span = max(in.band.y - in.band.x, 0.0001);
         let t = clamp((run - in.band.x) / span, 0.0, 1.0);
-        color = mix(in.color, in.border_color, t);
-    } else if (border > 0.0 && d > -border) {
-        color = in.border_color;
+        color = mix(fill_pm, border_pm, t);
+    } else if (border > 0.0) {
+        // Blends fill into border over one pixel at the border's inner
+        // edge, the same ramp the rim gets below.
+        //
+        // Needed because a plain per-pixel pick shows as a staircase
+        // inside every bordered circle and rounded corner (the gradient
+        // mark knob, FanRust/docs/parity/report/report.md).
+        let border_coverage = clamp(0.5 + (d + border), 0.0, 1.0);
+        color = mix(fill_pm, border_pm, border_coverage);
     }
-    let coverage = clamp(0.5 - d, 0.0, 1.0);
-    let a = color.a * coverage;
-    return vec4<f32>(color.rgb * a, a);
+    // The rim's one-pixel ramp scales the whole premultiplied pixel.
+    return color * clamp(0.5 - d, 0.0, 1.0);
 }
