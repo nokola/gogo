@@ -361,7 +361,6 @@ fn an_empty_grid_is_legal() {
 /// prop's line). Godot also pins the COLUMN; Rust diagnostics carry a
 /// line only, so only the line is pinned here.
 #[test]
-#[ignore = "diagnostics carry one line per prop here — every areas error points at the `areas=` line (Godot pins the row string's own line + column)"]
 fn areas_errors_point_at_the_row_strings_line() {
     // `in_view` puts the snippet on line 2, so every Godot line is + 1.
     let line_of = |src: &str| -> Vec<u32> { build(src).diags.iter().filter(|d| d.severity == gogo::Severity::Error).map(|d| d.line).collect() };

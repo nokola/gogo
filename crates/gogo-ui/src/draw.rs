@@ -44,6 +44,10 @@ pub enum Draw {
     /// key (`NO_KEY` = none). The renderer shows `locale::display(page,
     /// locale, text, key)` — the same string layout measured.
     Text { rect: Rect, text: StrId, key: KeyId, font_size: f32, color: Rgba, halign: TextAlign, valign: TextAlign, wrap: bool, font: StrId },
+    /// The focused Input's caret. The renderer shapes the first `index`
+    /// chars of the text to place it — glyph positions live where glyphs
+    /// live, never in this layout-space list (GPAR112).
+    Caret { rect: Rect, text: StrId, key: KeyId, font_size: f32, font: StrId, index: u32, color: Rgba },
     ClipPush(Rect),
     ClipPop,
     /// Everything until the matching `RotatePop` turns `angle` degrees
@@ -394,6 +398,17 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             if let Some(Value::VText { text, key }) = res.prop(page, id, PropKey::Text) {
                 out.push(Draw::Text { rect: text_rect.inset(8.0, 0.0, 8.0, 0.0), text, key, font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE), color: text_color(), halign: TextAlign::Start, valign: TextAlign::Center, wrap: false, font: res.font(page, id).unwrap_or(NO_STR) });
             }
+            // The caret, focused fields only (GPAR112); an empty field
+            // carries the interned empty string (id 0).
+            if let Some((cn, index)) = res.caret {
+                if cn == id {
+                    let (ctext, ckey) = match res.prop(page, id, PropKey::Text) {
+                        Some(Value::VText { text, key }) => (text, key),
+                        _ => (0, NO_KEY),
+                    };
+                    out.push(Draw::Caret { rect: text_rect.inset(8.0, 0.0, 8.0, 0.0), text: ctext, key: ckey, font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE), font: res.font(page, id).unwrap_or(NO_STR), index, color: text_color() });
+                }
+            }
         }
         _ => {}
     }
@@ -455,6 +470,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                 }
                 Draw::Circle { border, .. } => *border *= k,
                 Draw::Text { font_size, .. } => *font_size *= k,
+                Draw::Caret { font_size, .. } => *font_size *= k,
                 _ => {}
             }
         }

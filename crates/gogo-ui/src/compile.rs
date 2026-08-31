@@ -1070,14 +1070,21 @@ impl<'a> Compiler<'a> {
             r1: usize,
             c1: usize,
             count: usize,
-        }
+            /// The row that STARTED this area — where the
+    /// not-a-rectangle error points (GPAR99, the shipped caret).
+    line: u32,
+}
         let ap = n.props.iter().find(|p| p.key == "areas").cloned().expect("areas prop");
-        let mut raw_rows: Vec<String> = Vec::new();
-        fn push_text(raw: &mut Vec<String>, text: &str) {
-            for piece in text.split('\n') {
+        // (row text, the line its errors point at): the string's own
+        // line; a row after an escaped `\n` falls back to the `areas=`
+        // line — offset math can't cross the two-chars-per-`\n` seam
+        // (GPAR99, the shipped rule).
+        let mut raw_rows: Vec<(String, u32)> = Vec::new();
+        fn push_text(raw: &mut Vec<(String, u32)>, text: &str, line: u32, fallback: u32) {
+            for (i, piece) in text.split('\n').enumerate() {
                 let stripped = piece.replace('\t', " ").trim().to_string();
                 if !stripped.is_empty() {
-                    raw.push(stripped);
+                    raw.push((stripped, if i == 0 { line } else { fallback }));
                 }
             }
         }
@@ -1085,7 +1092,7 @@ impl<'a> Compiler<'a> {
             AstValue::List(items) => {
                 for it in items {
                     match it {
-                        AstValue::Str { text, key: None } => push_text(&mut raw_rows, text),
+                        AstValue::Str { text, key: None, line } => push_text(&mut raw_rows, text, *line, ap.line),
                         AstValue::Str { key: Some(k), .. } => {
                             self.error("G1003", ap.line, format!("areas rows don't translate — no /{k} here"));
                             return None;
@@ -1097,7 +1104,7 @@ impl<'a> Compiler<'a> {
                     }
                 }
             }
-            AstValue::Str { text, key: None } => push_text(&mut raw_rows, text),
+            AstValue::Str { text, key: None, line } => push_text(&mut raw_rows, text, *line, ap.line),
             _ => {
                 self.error("G1003", ap.line, "`areas=` takes the row strings, one per grid row: `areas=[\"header header : 60\", \"nav body : fill\"]`");
                 return None;
@@ -1105,27 +1112,28 @@ impl<'a> Compiler<'a> {
         }
         let mut rects: Vec<AreaRect> = Vec::new();
         let mut nrows = 0usize;
-        for line in &raw_rows {
+        for (line, rline) in &raw_rows {
             let r = nrows;
+            let rline = *rline;
             // D89 (user call): every areas row states its height — a
             // silent `hug` default made dead space hard to diagnose.
             let Some(colon) = line.find(':') else {
-                self.error("G1003", ap.line, format!("areas row {} has no height — end the row with `: <height>` (epx, `hug` or `fill`): `\"sidebar main : fill\"`", r + 1));
+                self.error("G1003", rline, format!("areas row {} has no height — end the row with `: <height>` (epx, `hug` or `fill`): `\"sidebar main : fill\"`", r + 1));
                 return None;
             };
             if line[colon + 1..].contains(':') {
-                self.error("G1003", ap.line, "one `:` per areas line — the names, then the row height");
+                self.error("G1003", rline, "one `:` per areas line — the names, then the row height");
                 return None;
             }
             let htok = line[colon + 1..].trim();
             if htok.is_empty() {
-                self.error("G1003", ap.line, "missing row height after `:` in areas");
+                self.error("G1003", rline, "missing row height after `:` in areas");
                 return None;
             }
-            let h = self.area_height(htok, ap.line)?;
+            let h = self.area_height(htok, rline)?;
             let toks: Vec<&str> = line[..colon].split_whitespace().collect();
             if toks.len() != cols {
-                self.error("G1003", ap.line, format!("areas line {} names {} tracks; cols= declares {cols} — every line spells one name (or `.` for a hole) per column", r + 1, toks.len()));
+                self.error("G1003", rline, format!("areas line {} names {} tracks; cols= declares {cols} — every line spells one name (or `.` for a hole) per column", r + 1, toks.len()));
                 return None;
             }
             for (c, t) in toks.iter().enumerate() {
@@ -1133,7 +1141,7 @@ impl<'a> Compiler<'a> {
                     continue;
                 }
                 if !is_area_name(t) {
-                    self.error("G1003", ap.line, format!("`{t}` is not an area name — area names are plain idents; `.` marks an empty region"));
+                    self.error("G1003", rline, format!("`{t}` is not an area name — area names are plain idents; `.` marks an empty region"));
                     return None;
                 }
                 match rects.iter_mut().find(|a| a.name == *t) {
@@ -1143,7 +1151,7 @@ impl<'a> Compiler<'a> {
                         a.c1 = a.c1.max(c);
                         a.count += 1;
                     }
-                    None => rects.push(AreaRect { name: t.to_string(), r0: r, c0: c, r1: r, c1: c, count: 1 }),
+                    None => rects.push(AreaRect { name: t.to_string(), r0: r, c0: c, r1: r, c1: c, count: 1, line: rline }),
                 }
             }
             row_specs.push(h);
@@ -1155,7 +1163,7 @@ impl<'a> Compiler<'a> {
         }
         for a in &rects {
             if (a.r1 - a.r0 + 1) * (a.c1 - a.c0 + 1) != a.count {
-                self.error("G1003", ap.line, format!("area `{}` isn't a rectangle — an area is one contiguous rectangle of its name; a split shape needs two names", a.name));
+                self.error("G1003", a.line, format!("area `{}` isn't a rectangle — an area is one contiguous rectangle of its name; a split shape needs two names", a.name));
                 return None;
             }
         }
@@ -1868,7 +1876,7 @@ impl<'a> Compiler<'a> {
                 let c = opacity.map_or(c, |o| c.with_opacity(o));
                 self.stop_value(c, *pos, key, line)
             }
-            AstValue::Str { text, key: term } => {
+            AstValue::Str { text, key: term, .. } => {
                 // Asset paths carry gogo's `res://` scheme, always: the
                 // prefix says in the file itself "resolved against the
                 // build's resource root and embedded" — a bare spelling

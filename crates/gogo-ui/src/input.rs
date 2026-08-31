@@ -18,7 +18,7 @@ use crate::draw::hit;
 use crate::layout::{Rect, SLIDER_KNOB_EPX, TOGGLE_PILL};
 use crate::draw::TOGGLE_KNOB_EPX;
 use crate::page::*;
-use crate::runtime::{HELD, Resolved, Runtime, SELECTED};
+use crate::runtime::{FOCUSED, HELD, Resolved, Runtime, SELECTED};
 
 /// Pan starts after this much travel (spec: 16 epx).
 pub const SCROLL_DEADZONE: f32 = 16.0;
@@ -173,6 +173,33 @@ struct Fling {
     accum: [f32; 2],
 }
 
+/// One keyboard event, in gogo's vocabulary — the shell maps the OS
+/// keys here and the focused `Input` control consumes them (GPAR112).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Key {
+    Char(char),
+    Backspace,
+    Delete,
+    Left,
+    Right,
+    Home,
+    End,
+    Enter,
+}
+
+/// The field's text as shown: the last code write, else the file's word.
+fn input_text(page: &Page, rt: &Runtime, node: NodeId) -> String {
+    match text_value(page, rt, node) {
+        Value::VText { text, .. } => page.str(text).to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The `Value` the field's events carry.
+fn text_value(page: &Page, rt: &Runtime, node: NodeId) -> Value {
+    rt.writes.iter().rev().find(|(n, p)| *n == node && p.key == PropKey::Text).map(|(_, p)| p.value).or_else(|| page.prop(node, PropKey::Text)).unwrap_or(Value::VText { text: 0, key: NO_KEY })
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Input {
     press: Option<Press>,
@@ -180,6 +207,14 @@ pub struct Input {
     /// The offset this machine last wrote for `fling.scroll`: a different
     /// value means code moved the scroll — adopt it and stand down.
     expected: Option<(NodeId, [f32; 2])>,
+    /// The focused `Input` control — keystrokes go to it; a tap anywhere
+    /// else is the focus-loss commit door (GPAR112).
+    focus: Option<NodeId>,
+    /// The caret, in CHARS into the field's text.
+    caret: usize,
+    /// The text at focus (or the last commit): `change` fires once per
+    /// genuine transition — the shipped changed-means-CHANGED law.
+    committed: String,
 }
 
 fn event_action(page: &Page, node: NodeId, event: &str) -> Option<Action> {
@@ -377,6 +412,73 @@ impl Input {
         }
         self.fling = None;
         self.expected = None;
+        // Focus is forgotten WITHOUT a commit: the page left the screen,
+        // reporting now would land on nobody.
+        if let Some(f) = self.focus.take() {
+            rt.set_state(f, FOCUSED, false);
+        }
+        rt.caret = None;
+        self.caret = 0;
+        self.committed.clear();
+    }
+
+    /// One keyboard event to the focused Input (GPAR112): characters
+    /// edit at the caret and stream `edit`, Enter commits `change` once
+    /// per genuine change (the shipped changed-means-CHANGED law),
+    /// arrows/Home/End move the caret. Nothing focused = nothing happens.
+    pub fn key(&mut self, page: &mut Page, rt: &mut Runtime, k: Key) -> Vec<Event> {
+        let mut events = Vec::new();
+        let Some(f) = self.focus else { return events };
+        let mut text: Vec<char> = input_text(page, rt, f).chars().collect();
+        self.caret = self.caret.min(text.len());
+        match k {
+            Key::Char(c) if !c.is_control() => {
+                text.insert(self.caret, c);
+                self.caret += 1;
+            }
+            Key::Backspace if self.caret > 0 => {
+                self.caret -= 1;
+                text.remove(self.caret);
+            }
+            Key::Delete if self.caret < text.len() => {
+                text.remove(self.caret);
+            }
+            Key::Left => self.caret = self.caret.saturating_sub(1),
+            Key::Right => self.caret = (self.caret + 1).min(text.len()),
+            Key::Home => self.caret = 0,
+            Key::End => self.caret = text.len(),
+            Key::Enter => {
+                let now: String = text.iter().collect();
+                if now != self.committed {
+                    self.committed = now;
+                    self.push_event(rt, &mut events, f, EventKind::Change(text_value(page, rt, f)), event_action(page, f, "change"));
+                }
+                return events;
+            }
+            _ => return events,
+        }
+        rt.caret = Some((f, self.caret as u32));
+        rt.dirty = true;
+        if matches!(k, Key::Left | Key::Right | Key::Home | Key::End) {
+            return events;
+        }
+        let now: String = text.iter().collect();
+        rt.set_text(page, f, &now);
+        self.push_event(rt, &mut events, f, EventKind::Edit(text_value(page, rt, f)), event_action(page, f, "edit"));
+        events
+    }
+
+    /// Focus leaves the field: commit once when the text CHANGED since
+    /// focus, and the caret goes away.
+    fn blur(&mut self, page: &Page, rt: &mut Runtime, events: &mut Vec<Event>) {
+        let Some(f) = self.focus.take() else { return };
+        rt.set_state(f, FOCUSED, false);
+        rt.caret = None;
+        let now = input_text(page, rt, f);
+        if now != self.committed {
+            self.push_event(rt, events, f, EventKind::Change(text_value(page, rt, f)), event_action(page, f, "change"));
+        }
+        self.committed.clear();
     }
 
     /// Feeds one touch sample; returns the events it completed.
@@ -415,10 +517,31 @@ impl Input {
                         false
                     }
                 };
-                let Some(node) = hit_node else { return events };
+                let Some(node) = hit_node else {
+                    // A tap on nothing still blurs the field (the
+                    // focus-loss commit door).
+                    self.blur(page, rt, &mut events);
+                    return events;
+                };
                 let kind = page.nodes[node as usize].kind;
                 if rt.disabled(page, node) {
                     return events;
+                }
+                // A tap on an Input takes the caret; a tap on anything
+                // else commits-and-blurs (GPAR112 — the shipped doors:
+                // Enter, blur; once per genuine change).
+                if kind == Kind::Input {
+                    if self.focus != Some(node) {
+                        self.blur(page, rt, &mut events);
+                        self.focus = Some(node);
+                        self.committed = input_text(page, rt, node);
+                        rt.set_state(node, FOCUSED, true);
+                    }
+                    self.caret = input_text(page, rt, node).chars().count();
+                    rt.caret = Some((node, self.caret as u32));
+                    rt.dirty = true;
+                } else {
+                    self.blur(page, rt, &mut events);
                 }
                 let raw = event_action(page, node, "pointer");
                 if let Some(action) = raw {

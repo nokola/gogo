@@ -137,7 +137,7 @@ fn parser_node_anatomy() {
     let n = node(&d.items[0]);
     assert_eq!((n.type_word.as_str(), n.name.as_deref()), ("Button", Some("save")), "{n:#?}");
     assert_eq!(n.styles, vec!["Primary".to_string()], "{n:#?}");
-    assert_eq!(n.props[0].value, AstValue::Str { text: "Go\n".into(), key: None }, "{n:#?}");
+    assert_eq!(n.props[0].value, AstValue::Str { text: "Go\n".into(), key: None, line: 1 }, "{n:#?}");
     assert_eq!(n.props[1].value, AstValue::Bool(true), "{n:#?}");
     assert_eq!(n.args[0], AstValue::Size { w: Some(44.0), h: Some(36.0) }, "{n:#?}");
     assert_eq!(n.children.len(), 1, "{n:#?}");

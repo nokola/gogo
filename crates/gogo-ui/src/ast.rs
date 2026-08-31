@@ -8,7 +8,10 @@ pub enum AstValue {
     Bool(bool),
     Num { value: f32, unit: String },
     Color { rgba: [u8; 4], opacity: Option<f32>, pos: Option<f32> },
-    Str { text: String, key: Option<String> },
+    /// `line` is the string's OWN source line — an `areas=` row string
+    /// must point its errors at itself, not at the `areas=` word
+    /// (GPAR99).
+    Str { text: String, key: Option<String>, line: u32 },
     Ref { name: String, opacity: Option<f32> },
     Ident { word: String, opacity: Option<f32>, pos: Option<f32> },
     Size { w: Option<f32>, h: Option<f32> },

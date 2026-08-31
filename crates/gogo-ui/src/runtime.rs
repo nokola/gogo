@@ -173,6 +173,9 @@ pub struct Runtime {
     /// Live repeat rows, one pool per touched repeat (`set_count` /
     /// `set_items`).
     pools: Vec<Pool>,
+    /// The focused Input's caret (node, chars) — written by the input
+    /// machine, drawn by the renderer (GPAR112).
+    pub caret: Option<(NodeId, u32)>,
     /// Anims that ended on their own since the last `take_finished`
     /// (one entry per player that ran out). Needed because a host
     /// sequencing on an anim's end (Godot's `finished`) otherwise polls
@@ -233,6 +236,7 @@ impl Runtime {
             players: Vec::new(),
             finished: Vec::new(),
             pools: Vec::new(),
+            caret: None,
             motion: vec![Motion::IDENTITY; page.nodes.len()],
             owned_text: vec![NO_STR; page.nodes.len()],
             last: Vec::new(),
@@ -965,6 +969,8 @@ pub struct Resolved {
     /// Keyed repeats' live row roots, in shown order (copied from the
     /// Runtime) — `children` hands them to layout, draw and hit.
     pub repeat_rows: Vec<(NodeId, Vec<NodeId>)>,
+    /// The focused Input's caret (copied from the Runtime).
+    pub caret: Option<(NodeId, u32)>,
     /// The language keyed text shows (copied from the Runtime; one Arc
     /// bump per pass, no allocation).
     pub locale: Option<Arc<Locale>>,
@@ -1206,7 +1212,7 @@ impl Resolved {
 }
 
 fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
-    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect() };
+    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), caret: rt.caret };
     for (i, node) in page.nodes.iter().enumerate() {
         let id = i as NodeId;
         let mut placement = node.placement;

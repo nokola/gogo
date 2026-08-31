@@ -367,6 +367,7 @@ impl<'a> Parser<'a> {
     }
 
     fn value_one(&mut self) -> Option<AstValue> {
+        let line = self.line();
         let t = self.next();
         Some(match t {
             Tok::Ident { word, opacity, pos } => {
@@ -383,7 +384,7 @@ impl<'a> Parser<'a> {
             Tok::Num { value, unit } => AstValue::Num { value, unit },
             Tok::Size { w, h } => AstValue::Size { w, h },
             Tok::Color { rgba, opacity, pos } => AstValue::Color { rgba, opacity, pos },
-            Tok::Str { text, key } => AstValue::Str { text, key },
+            Tok::Str { text, key } => AstValue::Str { text, key, line },
             Tok::Ref { name, opacity } => AstValue::Ref { name, opacity },
             Tok::LBracket => {
                 let mut items = Vec::new();
@@ -519,7 +520,7 @@ Panel visibility=gone, halign=center, valign=bottom, margin_bottom=72 {
             _ => panic!(),
         };
         assert_eq!(slider.name.as_deref(), Some("sizeSlider"));
-        assert_eq!(slider.props[0].value, AstValue::Str { text: "Size".into(), key: Some("size".into()) });
+        assert!(matches!(&slider.props[0].value, AstValue::Str { text, key: Some(k), .. } if text == "Size" && k == "size"), "{:?}", slider.props[0].value);
         let preview = match &column.children[1] {
             AstItem::Node(n) => n,
             _ => panic!(),

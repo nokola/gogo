@@ -21,7 +21,7 @@ pub mod runtime;
 pub use compile::{CompileOptions, Compiled, compile, compile_with};
 pub use diag::{Diagnostic, Severity, has_errors};
 pub use draw::{Draw, Fit, GradientKind, TextAlign, draw, hit};
-pub use input::{Event, EventKind, Input, Phase, Touch};
+pub use input::{Event, EventKind, Input, Key, Phase, Touch};
 pub use layout::{FixedAdvance, Rect, TextMeasure, layout};
 pub use locale::{KeyName, Keys, Locale};
 pub use page::{Kind, KeyId, NO_KEY, NO_NODE, NO_STR, NodeId, Orientation, Page, PropKey, Rgba, ScreenClass, StaticPage, StrId, Value};
