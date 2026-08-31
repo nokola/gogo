@@ -516,7 +516,9 @@ impl<'a> Compiler<'a> {
                     let (node_name, channel) = match path.split_once('.') {
                         Some((n, rest)) if Channel::parse(rest).is_some() => (n.to_string(), rest.to_string()),
                         _ => {
-                            if Channel::parse(path).is_some() {
+                            if path.ends_with(".modulate.a") || path == "modulate.a" {
+                                self.error("G0075", step.line, "`modulate.a` is a Godot engine word — write `opacity`");
+                            } else if Channel::parse(path).is_some() {
                                 self.error("G0063", step.line, format!("`{path}` needs a node: `<node>.{path}` (bare paths only inside `each`)"));
                             } else {
                                 self.error("G0063", step.line, format!("`{path}`: want `<node>.translate.x|translate.y|scale|scale.x|scale.y|rotate|opacity`"));
@@ -644,7 +646,7 @@ impl<'a> Compiler<'a> {
     }
 
     fn transition(&mut self, n: &AstNode, node: NodeId) -> Transition {
-        let mut t = Transition { node, from: None, to: None, duration: 0.0, easing: NO_STR, anim: NO_STR };
+        let mut t = Transition { node, from: None, to: None, duration: 0.0, easing: NO_STR, anim: NO_STR, line: n.line };
         if let Some(from) = n.args.first().and_then(|a| a.as_ident()) {
             if let Some(f) = self.endpoint(from, n.line, node) {
                 t.from = f;
@@ -881,6 +883,10 @@ impl<'a> Compiler<'a> {
             }
             "texture" => {
                 self.error("G0041", p.line, "`texture=` is `source=\"<image path>\"` (checked and embedded at build)");
+                return None;
+            }
+            "modulate.a" => {
+                self.error("G0075", p.line, "`modulate.a` is a Godot engine word — write `opacity`");
                 return None;
             }
             _ => {}
@@ -1862,6 +1868,62 @@ impl<'a> Compiler<'a> {
                 self.error("G9001", line, format!("`${word}` is not a theme value or widget parameter"));
             }
         }
+        self.one_writer_guard();
+    }
+
+    /// D63's one-writer guard (Godot G4003): a `when` in a scope holds a
+    /// motion word on a target while a `transition … anim=` in the SAME
+    /// scope drives the same channel on it — two writers would fight on
+    /// every flip and the loser flickers, so the file is refused. Only the
+    /// static pair is visible here; an anim a code `play()` starts over a
+    /// standing `when` is ordered by the runtime instead (the anim is the
+    /// top writer while it plays).
+    fn one_writer_guard(&mut self) {
+        let mut found: Vec<(u32, String)> = Vec::new();
+        for t in &self.page.transitions {
+            if t.anim == NO_STR {
+                continue;
+            }
+            for lane in self.page.anims.iter().filter(|a| a.anim == t.anim) {
+                let Some(channels) = Channel::parse(self.page.str(lane.channel)) else { continue };
+                let target = &self.page.nodes[lane.node as usize];
+                for w in &self.page.whens[target.whens.0 as usize..(target.whens.0 + target.whens.1) as usize] {
+                    let owner = if w.of == NO_NODE { lane.node } else { w.of };
+                    let node_state = matches!(w.state, State::Held | State::Hovered | State::Focused | State::FocusWithin | State::Selected | State::StateDisabled);
+                    let same_scope = if t.node == NO_NODE { !node_state } else { node_state && owner == t.node };
+                    if !same_scope {
+                        continue;
+                    }
+                    let holds = self.page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize].iter().any(|p| Channel::of_key(p.key).iter().any(|c| channels.contains(c)));
+                    if holds {
+                        let word = self.page.str(lane.channel);
+                        let tname = if target.name == NO_STR { format!("{:?}", target.kind) } else { self.page.str(target.name).to_string() };
+                        let aname = self.page.str(t.anim);
+                        let state = state_word(&self.page, w.state);
+                        found.push((t.line, format!("`{word}` on `{tname}` is held by its `when {state}` AND driven by anim `{aname}` from this transition — two writers would fight on every flip; the loser flickers")));
+                    }
+                }
+            }
+        }
+        for (line, msg) in found {
+            self.error("G4003", line, msg);
+        }
+    }
+}
+
+/// The state as the file spells it, for a message.
+fn state_word(page: &Page, state: State) -> String {
+    match state {
+        State::Held => "held".to_string(),
+        State::Hovered => "hovered".to_string(),
+        State::Focused => "focused".to_string(),
+        State::FocusWithin => "focus_within".to_string(),
+        State::Selected => "selected".to_string(),
+        State::StateDisabled => "disabled".to_string(),
+        State::Arrangement(i) => page.arrangements.get(i as usize).map(|a| page.str(*a).to_string()).unwrap_or_else(|| "base".to_string()),
+        State::ScreenOrientation(w) | State::ScreenClass(w) => format!("screen.{}", page.str(w)),
+        State::ArrangementScreen(i, w) => format!("{} screen.{}", page.arrangements.get(i as usize).map(|a| page.str(*a)).unwrap_or("base"), page.str(w)),
+        State::ScreenPair(a, b) => format!("screen.{} screen.{}", page.str(a), page.str(b)),
     }
 }
 

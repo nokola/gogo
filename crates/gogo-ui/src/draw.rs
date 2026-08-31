@@ -118,11 +118,19 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     let motion = res.motion.get(id as usize).copied().unwrap_or(crate::anim::Motion::IDENTITY);
     let rect = moved(rects[id as usize], &motion);
     let state: u8 = res.states.get(id as usize).copied().unwrap_or(0);
-    // A disabled control dims its whole subtree like a built-in `when
-    // disabled opacity=N` at the bottom of the ladder: an authored `when
-    // disabled opacity=` replaces it, a plain `opacity=` does not.
-    let own: f32 = if state & DISABLED != 0 && !authored_disabled_opacity(page, id) { page.disabled_opacity() } else { res.num(page, id, PropKey::Opacity).unwrap_or(1.0) };
-    let opacity = opacity * own.clamp(0.0, 1.0) * motion.opacity.clamp(0.0, 1.0);
+    // One value per node: the ladder's `opacity` (declared, `when`, code)
+    // with the built-in disabled dim as its bottom rung — an authored
+    // `when disabled opacity=` replaces the dim, a plain `opacity=` does
+    // not — and an anim that owns the channel on top of everything. The
+    // ancestors' product multiplies down the tree; nothing else does.
+    let own: f32 = if res.anim_owns(id, crate::anim::Channel::Opacity) {
+        res.num(page, id, PropKey::Opacity).unwrap_or(1.0)
+    } else if state & DISABLED != 0 && !authored_disabled_opacity(page, id) {
+        page.disabled_opacity()
+    } else {
+        res.num(page, id, PropKey::Opacity).unwrap_or(1.0)
+    };
+    let opacity = opacity * own.clamp(0.0, 1.0);
     let color = |key: PropKey| res.color(page, id, key).map(|c| mul_alpha(c, opacity));
     let corner = res.num(page, id, PropKey::CornerRadius).unwrap_or(0.0);
     let border = res.num(page, id, PropKey::BorderThickness).unwrap_or(0.0);

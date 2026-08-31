@@ -19,6 +19,9 @@
 //!   .facade): engine nodes built by script; Rust has no code-built
 //!   controls (names become generated code). The styles themselves are
 //!   pinned below on DECLARED nodes.
+//! - Dialect (decided 2026-08-31, E1): the fixtures' `modulate.a` lanes are
+//!   spelled `opacity` — `modulate.a` is a Godot engine word and G0075 in
+//!   Rust; the anim writes the same opacity a declaration or `when` writes.
 use gogo::anim::{Easing, Finish, Mode, Motion};
 use gogo::draw::{Draw, draw};
 use gogo::layout::{FixedAdvance, Rect, layout};
@@ -373,7 +376,7 @@ fn delayed_open_start_reads_the_live_value_and_a_loop_replays_it() {
 /// helper node, so the wire is pinned by what it does.)
 #[test]
 fn show_and_hide_wires_on_a_panel_build_and_run() {
-    let c = ok("anim appear { panel.modulate.a from=0, to=1, duration=0.2 }\nView v { Panel panel on:show=play(appear), on:hide=play(appear) }\n");
+    let c = ok("anim appear { panel.opacity from=0, to=1, duration=0.2 }\nView v { Panel panel on:show=play(appear), on:hide=play(appear) }\n");
     let mut page = c.page;
     let panel = page.find("panel").unwrap();
     let appear = anim_id(&page, "appear");
@@ -390,7 +393,7 @@ fn show_and_hide_wires_on_a_panel_build_and_run() {
 /// are show/hide).
 #[test]
 fn on_visible_is_refused() {
-    let src = "anim a { p.modulate.a to=1, duration=0.1 }\nPanel p on:visible=play(a)";
+    let src = "anim a { p.opacity to=1, duration=0.1 }\nPanel p on:visible=play(a)";
     assert!(codes(src).contains(&"G0049".to_string()), "{}", messages(src));
 }
 
@@ -410,7 +413,7 @@ fn play_of_an_unknown_anim_is_refused() {
 /// own show wire plays when the root is shown.
 #[test]
 fn show_hide_on_the_view_root_builds_and_plays() {
-    let c = ok("anim fadeIn duration_each=0.2, easing=cubic_out {\n viewRoot.modulate.a from=0, to=1\n}\n\nanim fadeOut duration_each=0.15 {\n viewRoot.modulate.a to=0\n}\n\nView viewRoot visibility=gone, on:show=play(fadeIn), on:hide=play(fadeOut) {\n Column {\n  Label title text=\"hi\"\n }\n}\n");
+    let c = ok("anim fadeIn duration_each=0.2, easing=cubic_out {\n viewRoot.opacity from=0, to=1\n}\n\nanim fadeOut duration_each=0.15 {\n viewRoot.opacity to=0\n}\n\nView viewRoot visibility=gone, on:show=play(fadeIn), on:hide=play(fadeOut) {\n Column {\n  Label title text=\"hi\"\n }\n}\n");
     let mut page = c.page;
     let fade_in = anim_id(&page, "fadeIn");
     assert!(page.anim_heads.iter().any(|h| h.anim == fade_in), "{:#?}", page.anim_heads);
@@ -623,9 +626,9 @@ fn scale_of_a_non_number_is_refused() {
 /// 5623-5631 (motion.err-arrangement-anim-two-writers): D63 one-writer
 /// guard — a condition HOLDING a motion word while a transition `anim=`
 /// DRIVES the same property is refused at build (G4003), at node and at
-/// view scope.
+/// view scope. PORT — G4003 shipped 2026-08-31 with E1 (one property, one
+/// writer; `Compiler::one_writer_guard`).
 #[test]
-#[ignore = "GPAR62: G4003 two writers (when + anim on one prop) not ported"]
 fn one_writer_per_property_at_node_and_view_scope() {
     let node = "anim press { self.scale to=0.5, duration=0.1 }\nstyle S {\n transition any -> held duration=0.1, anim=press\n when held scale=0.5\n}\nView v { Button b .S }\n";
     assert!(fails(node), "{}", messages(node));

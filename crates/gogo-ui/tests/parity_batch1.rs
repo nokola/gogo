@@ -7,7 +7,7 @@ use gogo::anim::Finish;
 use gogo::draw::{Draw, draw};
 use gogo::layout::{FixedAdvance, Rect, layout};
 use gogo::page::DISABLED_OPACITY;
-use gogo::runtime::{Runtime, resolve};
+use gogo::runtime::{HELD, Runtime, resolve};
 use gogo::{Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
@@ -52,6 +52,37 @@ fn disabled_dim_is_a_bottom_of_ladder_when() {
     let c = ok(&format!("theme {{ disabled_opacity = 0.6 }}\n{src}"));
     let list = draws(&c.page, &Runtime::new(&c.page));
     assert!(about(text_alpha(&c.page, &list, "a"), 0.6), "the theme knob moves the default: {}", text_alpha(&c.page, &list, "a"));
+}
+
+/// GPAR48 (cut 2026-08-31): a plain `opacity=1` on a node does NOT switch
+/// off its style's `when held opacity=0.5` — that would be the GPAR11
+/// accident one rung up (nothing on the node's line says `held`). Opting
+/// out is written: the node's own `when held opacity=1` beats the style's
+/// at equal rank; an unstyled neighbour is untouched.
+#[test]
+fn a_plain_prop_never_cancels_a_styles_when() {
+    let src = "style Dim { when held opacity=0.5 }
+View v {
+ Column c {
+  Label a .Dim text=\"a\", opacity=1
+  Label b .Dim text=\"b\" { when held { opacity = 1 } }
+  Label d .Dim text=\"d\"
+  Label e text=\"e\"
+ }
+}
+";
+    let c = ok(src);
+    let mut rt = Runtime::new(&c.page);
+    for name in ["a", "b", "d", "e"] {
+        rt.set_state(c.page.find(name).unwrap(), HELD, true);
+    }
+    let list = draws(&c.page, &rt);
+    assert!(about(text_alpha(&c.page, &list, "a"), 0.5), "a plain `opacity=1` does not cancel the style's when: {}", text_alpha(&c.page, &list, "a"));
+    assert_eq!(text_alpha(&c.page, &list, "b"), 255, "the written `when held opacity=1` opts out");
+    assert!(about(text_alpha(&c.page, &list, "d"), 0.5), "the style's when applies to a bare wearer: {}", text_alpha(&c.page, &list, "d"));
+    assert_eq!(text_alpha(&c.page, &list, "e"), 255, "an unstyled node is untouched");
+    let list = draws(&c.page, &Runtime::new(&c.page));
+    assert_eq!(text_alpha(&c.page, &list, "a"), 255, "at rest the static prop is the look");
 }
 
 /// GPAR42: the text-only Button's default padding (12/6) is one value for

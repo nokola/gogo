@@ -3,7 +3,7 @@
 //! `when` responses onto the base props in the spec's priority order; the
 //! layout and draw passes read only the `Resolved` result.
 
-use crate::anim::{Easing, Finish, Motion, Player, Tween, lerp_value};
+use crate::anim::{Channel, Easing, Finish, Motion, Player, Tween, lerp_value};
 use crate::layout::{BUTTON_PADDING, Rect};
 use crate::page::*;
 
@@ -38,7 +38,19 @@ pub struct Runtime {
     pub changes: Vec<(NodeId, Option<State>, Option<State>)>,
     pub tweens: Vec<Tween>,
     pub players: Vec<Player>,
+    /// The ANIM LAYER: per node, what players wrote. Only the channels a
+    /// player owns (or `held` keeps) reach the picture — `resolve`
+    /// composes them over the `when` ladder.
     pub motion: Vec<Motion>,
+    /// Finished anims' end poses still standing (WPF HoldEnd): (node,
+    /// channel, value). A held value stays on top of the ladder until the
+    /// next writer of that property — a `when` flip that writes it, a code
+    /// write, another anim — or `stop(restore)`.
+    pub held: Vec<(NodeId, Channel, f32)>,
+    /// Per node, what SHOWED after the last `resolve_animated`: the
+    /// composed motion, the node's own opacity and the fill's alpha — the
+    /// live value a new play starts from.
+    pub shown: Vec<Motion>,
     /// A timed arrangement flip started this frame: every box whose laid-out
     /// rectangle changes glides there over (duration, easing) — alignment,
     /// fill, hug, cap and seat moves all tween through their final rects.
@@ -77,6 +89,8 @@ impl Runtime {
             writes: Vec::new(),
             changes: Vec::new(),
             tweens: Vec::new(),
+            held: Vec::new(),
+            shown: vec![Motion::IDENTITY; page.nodes.len()],
             players: Vec::new(),
             motion: vec![Motion::IDENTITY; page.nodes.len()],
             owned_text: vec![NO_STR; page.nodes.len()],
@@ -124,17 +138,33 @@ impl Runtime {
     /// Plays `anim` on this page (`play(name)`); a newer player owns the
     /// channels it animates (WPF SnapshotAndReplace).
     pub fn play(&mut self, page: &Page, anim: StrId, finish: Finish) {
-        let mut player = Player::new(page, anim, &mut self.motion, finish);
+        // What each channel shows right now: a held end pose, else the
+        // layer of the player that owns it, else what the last resolve
+        // showed (the ladder). Computed here so a play needs no frame in
+        // between to know where it starts.
+        let mut live: Vec<Motion> = self.shown.clone();
+        live.resize(page.nodes.len(), Motion::IDENTITY);
+        for p in self.players.iter().filter(|p| !p.stopped) {
+            for (node, channel) in &p.owns {
+                live[*node as usize].set(*channel, self.motion[*node as usize].get(*channel));
+            }
+        }
+        for (node, channel, v) in &self.held {
+            live[*node as usize].set(*channel, *v);
+        }
+        let mut player = Player::new(page, anim, &mut self.motion, &live, &self.held, finish);
         // The channels move to the new player; the older ones keep their
         // clocks (a deferred hide still hides on time) and hand over the
         // true base, so `stop(restore)` lands where the FIRST play found
-        // the channel.
+        // the channel. A held end pose on the channel is the new play's
+        // base (a standing value the author chose) and is no longer held.
         for (node, channel) in player.owns.clone() {
             for p in &mut self.players {
                 if let Some(base) = p.hand_over(node, channel) {
                     player.inherit_base(node, channel, base);
                 }
             }
+            self.held.retain(|h| !(h.0 == node && h.1 == channel));
         }
         self.players.push(player);
         self.dirty = true;
@@ -224,6 +254,20 @@ impl Runtime {
         let mut any = false;
         for p in self.players.iter_mut().filter(|p| p.anim == anim) {
             p.stop(restore, &mut self.motion);
+            if restore {
+                // Release the channels: the ladder shows again — except
+                // where the play found a held end pose, which comes back.
+                for (node, channel, base, base_held) in p.owned_bases() {
+                    if base_held {
+                        self.held.push((node, channel, base));
+                    }
+                }
+            } else {
+                // Left where it is: the current values stand as held ends.
+                for (node, channel) in &p.owns {
+                    self.held.push((*node, *channel, self.motion[*node as usize].get(*channel)));
+                }
+            }
             any = true;
         }
         if any {
@@ -245,21 +289,28 @@ impl Runtime {
         let before = self.tweens.len();
         self.tweens.retain(|t| t.elapsed < t.duration);
         moving |= before > 0;
-        let mut finished: Vec<Finish> = Vec::new();
+        let mut finished: Vec<(Finish, Vec<(NodeId, Channel)>)> = Vec::new();
         let mut players = std::mem::take(&mut self.players);
         players.retain_mut(|p| {
             let alive = p.tick(dt, &mut self.motion);
             if !alive {
-                finished.push(p.finish);
+                finished.push((p.finish, p.owns.clone()));
             }
             alive
         });
         moving |= !players.is_empty() || !finished.is_empty();
         self.players = players;
-        for f in finished {
+        for (f, owns) in finished {
             if let Finish::Hide(node) = f {
                 self.set_visible(page, node, false);
                 self.motion[node as usize] = Motion::IDENTITY;
+            } else {
+                // A finished anim's end pose is a standing value the author
+                // chose (WPF HoldEnd): it stays until the next writer.
+                for (node, channel) in owns {
+                    self.held.retain(|h| !(h.0 == node && h.1 == channel));
+                    self.held.push((node, channel, self.motion[node as usize].get(channel)));
+                }
             }
         }
         if moving {
@@ -271,6 +322,12 @@ impl Runtime {
     /// A code write: `text=`, `visibility=`, `value=`… Replaces an earlier
     /// write of the same key; a same-value write changes nothing.
     pub fn set_prop(&mut self, node: NodeId, key: PropKey, value: Value) {
+        // A code write is the next writer: a held anim end on that
+        // property yields to it.
+        let channels: &[Channel] = Channel::of_key(key);
+        if !channels.is_empty() {
+            self.held.retain(|h| !(h.0 == node && channels.contains(&h.1)));
+        }
         if let Some(w) = self.writes.iter_mut().find(|(n, p)| *n == node && p.key == key) {
             if w.1.value == value {
                 return;
@@ -310,6 +367,11 @@ impl Runtime {
     }
 
     pub fn set_visible(&mut self, page: &mut Page, node: NodeId, visible: bool) {
+        if !visible {
+            // A hidden node's standing anim values mean nothing: on the
+            // next show the ladder shows.
+            self.held.retain(|h| h.0 != node);
+        }
         let word = page.intern(if visible { "visible" } else { "gone" });
         self.set_prop(node, PropKey::Visibility, Value::VIdent(word));
     }
@@ -423,6 +485,10 @@ impl Runtime {
 /// prop overrides the active states contribute.
 #[derive(Clone, Debug, Default)]
 pub struct Resolved {
+    /// Per node: the channels an anim owns right now (`Channel::bit`) —
+    /// playing, or a finished anim's held end. Draw reads it to let an anim
+    /// outrank the built-in disabled dim on opacity.
+    pub anim_owned: Vec<u8>,
     pub placement: Vec<Placement>,
     /// (node, prop) — later entries win.
     pub overrides: Vec<(NodeId, Prop)>,
@@ -601,8 +667,48 @@ pub fn deref(page: &Page, variant: StrId, v: Value) -> Value {
     }
 }
 
+/// The `when` ladder plus the anim layer on top (see `compose_anim`).
 pub fn resolve(page: &Page, rt: &Runtime) -> Resolved {
-    let mut r = Resolved { placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: rt.motion.clone(), seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone() };
+    let mut r = resolve_ladder(page, rt);
+    compose_anim(page, rt, &mut r);
+    r
+}
+
+/// One property, one writer (decided 2026-08-30): an anim that owns a
+/// channel — playing, or a finished one whose end pose still stands — is
+/// the top of the ladder for that channel. Motion channels land in
+/// `Resolved::motion` over the `when` responses; `opacity` and `color.a`
+/// land as the LAST override, so `Resolved::num`/`color` answer with the
+/// anim's value like any other writer. Nothing multiplies.
+fn compose_anim(page: &Page, rt: &Runtime, r: &mut Resolved) {
+    let _ = page;
+    let mut apply = |node: NodeId, channel: Channel, v: f32| {
+        match channel {
+            Channel::Opacity => r.overrides.push((node, Prop { key: PropKey::Opacity, value: Value::VNum(v) })),
+            Channel::ColorA => r.overrides.push((node, Prop { key: PropKey::ColorA, value: Value::VNum(v) })),
+            _ => r.motion[node as usize].set(channel, v),
+        }
+        r.anim_owned[node as usize] |= channel.bit();
+    };
+    for (node, channel, v) in &rt.held {
+        apply(*node, *channel, *v);
+    }
+    for p in rt.players.iter().filter(|p| !p.stopped) {
+        for (node, channel) in &p.owns {
+            apply(*node, *channel, rt.motion[*node as usize].get(*channel));
+        }
+    }
+}
+
+impl Resolved {
+    /// Does an anim own this channel on this node right now?
+    pub fn anim_owns(&self, node: NodeId, channel: Channel) -> bool {
+        self.anim_owned.get(node as usize).is_some_and(|b| b & channel.bit() != 0)
+    }
+}
+
+fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
+    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone() };
     for (i, node) in page.nodes.iter().enumerate() {
         let id = i as NodeId;
         let mut placement = node.placement;
@@ -817,12 +923,30 @@ fn find_rule(page: &Page, node: NodeId, from: Option<State>, to: Option<State>) 
     best
 }
 
+/// Does a `when` on `node` that the flip on `who` (`NO_NODE` = the view:
+/// an arrangement or screen word) turns on or off write `channel`?
+fn when_writes(page: &Page, node: NodeId, channel: Channel, who: NodeId) -> bool {
+    let n = &page.nodes[node as usize];
+    page.whens[n.whens.0 as usize..(n.whens.0 + n.whens.1) as usize].iter().any(|w| {
+        let owner = if w.of == NO_NODE { node } else { w.of };
+        let node_state = matches!(w.state, State::Held | State::Hovered | State::Focused | State::FocusWithin | State::Selected | State::StateDisabled);
+        let flipped = if who == NO_NODE { !node_state } else { node_state && owner == who };
+        flipped && page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize].iter().any(|p| Channel::of_key(p.key).contains(&channel))
+    })
+}
+
 /// `resolve` plus motion: starts tweens for the state changes since the
 /// last call (where a `transition` rule times them) and overlays the
 /// in-flight tween values. Call once per frame after `tick`.
 pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
-    let mut r = resolve(page, rt);
     let changes = std::mem::take(&mut rt.changes);
+    // A state flip whose `when` writes a property is that property's next
+    // writer: a held anim end on it yields (a faded-out box that is then
+    // pressed shows its `when held` look).
+    if !changes.is_empty() && !rt.held.is_empty() {
+        rt.held.retain(|(node, channel, _)| !changes.iter().any(|(who, _, _)| when_writes(page, *node, *channel, *who)));
+    }
+    let mut r = resolve_ladder(page, rt);
     // An arrangement flip with a timed view rule: the boxes it re-poses
     // glide to their new rects (`Runtime::glide`).
     for (who, from, to) in &changes {
@@ -884,6 +1008,17 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
         }
     }
     fold_seats_and_motion(page, &mut r);
+    // The anim layer goes on last: an owning anim outranks a tween too.
+    compose_anim(page, rt, &mut r);
+    // What shows now, per node — the live value a new play starts from.
+    rt.shown.resize(page.nodes.len(), Motion::IDENTITY);
+    for i in 0..page.nodes.len() {
+        let id = i as NodeId;
+        let mut m = r.motion[i];
+        m.opacity = r.num(page, id, PropKey::Opacity).unwrap_or(1.0);
+        m.color_a = r.color(page, id, PropKey::Color).map(|c| c.0[3] as f32 / 255.0).unwrap_or(1.0);
+        rt.shown[i] = m;
+    }
     // Remember what is displayed now.
     rt.last.clear();
     for i in 0..page.nodes.len() {

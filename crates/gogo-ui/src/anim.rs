@@ -260,12 +260,19 @@ pub enum Channel {
     ScaleX,
     ScaleY,
     Rotate,
+    /// The node's own opacity — the SAME value `opacity=` declares and a
+    /// `when … opacity=` holds; an anim writes that one channel, it does
+    /// not multiply it (decided 2026-08-30, E1: one property, one writer).
     Opacity,
+    /// The fill's alpha (`x.color.a`): the color keeps its hue, alpha
+    /// alone moves — the node's opacity is untouched.
+    ColorA,
 }
 
 impl Channel {
-    /// `translate.x`, `scale`, `rotate`, `opacity`… → channels (uniform
-    /// `scale` = both axes).
+    /// `translate.x`, `scale`, `rotate`, `opacity`, `color.a` → channels
+    /// (uniform `scale` = both axes). `modulate.a` is a Godot engine word,
+    /// not a gogo one — the compiler names `opacity` as the fix.
     pub fn parse(word: &str) -> Option<Vec<Channel>> {
         Some(match word {
             "translate.x" => vec![Channel::TranslateX],
@@ -274,14 +281,39 @@ impl Channel {
             "scale.x" => vec![Channel::ScaleX],
             "scale.y" => vec![Channel::ScaleY],
             "rotate" => vec![Channel::Rotate],
-            // A fill's alpha or the engine's modulate.a both fade the node.
-            "opacity" | "modulate.a" | "color.a" => vec![Channel::Opacity],
+            "opacity" => vec![Channel::Opacity],
+            "color.a" => vec![Channel::ColorA],
             _ => return None,
         })
     }
+
+    /// The channels a `when`/code write of `key` lands on — what a held
+    /// anim value yields to (`color=` rewrites the whole fill, alpha too).
+    pub fn of_key(key: PropKey) -> &'static [Channel] {
+        match key {
+            PropKey::Scale => &[Channel::ScaleX, Channel::ScaleY],
+            PropKey::ScaleX => &[Channel::ScaleX],
+            PropKey::ScaleY => &[Channel::ScaleY],
+            PropKey::TranslateX => &[Channel::TranslateX],
+            PropKey::TranslateY => &[Channel::TranslateY],
+            PropKey::Rotate => &[Channel::Rotate],
+            PropKey::Opacity => &[Channel::Opacity],
+            PropKey::ColorA | PropKey::Color => &[Channel::ColorA],
+            _ => &[],
+        }
+    }
+
+    /// The channel's bit in `Resolved::anim_owned`.
+    pub fn bit(self) -> u8 {
+        1 << (self as u8)
+    }
 }
 
-/// The transform the draw walk applies to a node's rect.
+/// The transform the draw walk applies to a node's rect, plus the two
+/// alpha channels an anim can write. In `Runtime::motion` this is the ANIM
+/// LAYER (what players wrote); in `Resolved::motion` it is the composed
+/// value (the `when` ladder, then the anim layer on the channels an anim
+/// owns).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Motion {
     pub translate: [f32; 2],
@@ -289,10 +321,12 @@ pub struct Motion {
     /// Degrees, clockwise, about the node's center.
     pub rotate: f32,
     pub opacity: f32,
+    /// The fill's alpha (0..1).
+    pub color_a: f32,
 }
 
 impl Motion {
-    pub const IDENTITY: Motion = Motion { translate: [0.0, 0.0], scale: [1.0, 1.0], rotate: 0.0, opacity: 1.0 };
+    pub const IDENTITY: Motion = Motion { translate: [0.0, 0.0], scale: [1.0, 1.0], rotate: 0.0, opacity: 1.0, color_a: 1.0 };
 
     pub fn get(&self, c: Channel) -> f32 {
         match c {
@@ -302,6 +336,7 @@ impl Motion {
             Channel::ScaleY => self.scale[1],
             Channel::Rotate => self.rotate,
             Channel::Opacity => self.opacity,
+            Channel::ColorA => self.color_a,
         }
     }
 
@@ -313,6 +348,7 @@ impl Motion {
             Channel::ScaleY => self.scale[1] = v,
             Channel::Rotate => self.rotate = v,
             Channel::Opacity => self.opacity = v,
+            Channel::ColorA => self.color_a = v,
         }
     }
 }
@@ -334,6 +370,10 @@ struct Track {
     /// The channel's value before this track first wrote it (`stop`
     /// restores it).
     base: f32,
+    /// That value was a finished anim's held end pose (a standing value
+    /// the author chose): `stop(restore)` re-holds it instead of releasing
+    /// the channel to the ladder.
+    base_held: bool,
 }
 
 impl Track {
@@ -378,7 +418,12 @@ impl Player {
     /// track on a channel only; a later track on the same channel chains
     /// from the value the previous one leaves. `from=current` captures
     /// the live value now, at play start.
-    pub fn new(page: &Page, anim: StrId, motion: &mut [Motion], finish: Finish) -> Player {
+    ///
+    /// `layer` is the anim layer this player writes; `live` is the value
+    /// each channel SHOWS right now (the ladder, or an anim that owns it)
+    /// and `held` the finished anims' end poses still standing — the base a
+    /// later `stop(restore)` returns to.
+    pub fn new(page: &Page, anim: StrId, layer: &mut [Motion], live: &[Motion], held: &[(NodeId, Channel, f32)], finish: Finish) -> Player {
         let mut tracks: Vec<Track> = Vec::new();
         let mut owns = Vec::new();
         let head = page.anim_heads.iter().find(|h| h.anim == anim);
@@ -386,19 +431,21 @@ impl Player {
             let easing = if t.easing == NO_STR { Easing::LINEAR } else { Easing::parse(page.str(t.easing)).unwrap_or(Easing::LINEAR) };
             let Some(channels) = Channel::parse(page.str(t.channel)) else { continue };
             for channel in channels {
-                let live = motion[t.node as usize].get(channel);
+                let shown = live.get(t.node as usize).map(|m| m.get(channel)).unwrap_or(Motion::IDENTITY.get(channel));
+                let base_held = held.iter().any(|h| h.0 == t.node && h.1 == channel);
                 let first_on_channel = !tracks.iter().any(|x| x.node == t.node && x.channel == channel);
                 let from = if t.current {
-                    Some(live)
+                    Some(shown)
                 } else if first_on_channel {
-                    if let Some(f) = t.from {
-                        motion[t.node as usize].set(channel, f);
-                    }
+                    // The channel is this player's from now on: the layer
+                    // starts at the pinned `from=`, else at what shows, so
+                    // taking ownership never jumps the picture.
+                    layer[t.node as usize].set(channel, t.from.unwrap_or(shown));
                     t.from
                 } else {
                     None
                 };
-                tracks.push(Track { node: t.node, channel, from, to: t.to, start: t.start, duration: t.duration, easing, autoreverse: t.autoreverse, base: live });
+                tracks.push(Track { node: t.node, channel, from, to: t.to, start: t.start, duration: t.duration, easing, autoreverse: t.autoreverse, base: shown, base_held });
                 if !owns.contains(&(t.node, channel)) {
                     owns.push((t.node, channel));
                 }
@@ -416,17 +463,24 @@ impl Player {
     /// go (its clock and finish stay), and the value the channel had
     /// before ANY player wrote it comes back for the taker to inherit, so
     /// a later `stop(restore)` lands there and not mid-flight.
-    pub fn hand_over(&mut self, node: NodeId, channel: Channel) -> Option<f32> {
-        let base = self.tracks.iter().find(|t| t.node == node && t.channel == channel).map(|t| t.base);
+    pub fn hand_over(&mut self, node: NodeId, channel: Channel) -> Option<(f32, bool)> {
+        let base = self.tracks.iter().find(|t| t.node == node && t.channel == channel).map(|t| (t.base, t.base_held));
         self.tracks.retain(|t| !(t.node == node && t.channel == channel));
         self.owns.retain(|o| *o != (node, channel));
         base
     }
 
-    pub fn inherit_base(&mut self, node: NodeId, channel: Channel, base: f32) {
+    pub fn inherit_base(&mut self, node: NodeId, channel: Channel, base: (f32, bool)) {
         for t in self.tracks.iter_mut().filter(|t| t.node == node && t.channel == channel) {
-            t.base = base;
+            t.base = base.0;
+            t.base_held = base.1;
         }
+    }
+
+    /// Per owned channel: the value it had before this play and whether
+    /// that value was a held end pose (see `Track::base_held`).
+    pub fn owned_bases(&self) -> Vec<(NodeId, Channel, f32, bool)> {
+        self.owns.iter().filter_map(|(n, c)| self.tracks.iter().find(|t| t.node == *n && t.channel == *c).map(|t| (*n, *c, t.base, t.base_held))).collect()
     }
 
     /// Writes every channel for anim time `t` (idempotent, so a repeat
@@ -473,12 +527,14 @@ impl Player {
     /// WPF Storyboard.Stop: every channel back to the value it had before
     /// the play (`restore`), or left where it is. Owned channels only —
     /// a channel a newer player took over is that player's to restore.
-    pub fn stop(&mut self, restore: bool, motion: &mut [Motion]) {
+    /// The layer value only matters while something owns the channel; the
+    /// runtime decides what stays owned (`Runtime::stop`).
+    pub fn stop(&mut self, restore: bool, layer: &mut [Motion]) {
         self.stopped = true;
         if restore {
             for track in &self.tracks {
                 if self.owns.contains(&(track.node, track.channel)) {
-                    motion[track.node as usize].set(track.channel, track.base);
+                    layer[track.node as usize].set(track.channel, track.base);
                 }
             }
         }

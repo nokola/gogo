@@ -334,7 +334,6 @@ impl PropKey {
             "font_color" => PropKey::FontColor,
             "color.a" => PropKey::ColorA,
             "disabled_opacity" => PropKey::DisabledOpacity,
-            "modulate.a" => PropKey::Opacity,
             "clip_text" => PropKey::ClipText,
             "clip_contents" => PropKey::ClipContents,
             "span" => PropKey::Span,
@@ -628,6 +627,8 @@ pub struct Transition {
     pub duration: f32,
     pub easing: StrId,
     pub anim: StrId,
+    /// The file line, for the one-writer guard's message.
+    pub line: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
