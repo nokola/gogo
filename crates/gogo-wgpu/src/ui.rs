@@ -11,6 +11,7 @@ use std::collections::HashMap;
 
 use gogo::draw::{Draw, Fit, GradientKind, TextAlign};
 use gogo::layout::Rect;
+use gogo::locale::Locale;
 use gogo::page::{NO_STR, Page};
 use text::TextEngine;
 
@@ -229,12 +230,15 @@ impl UiRenderer {
     /// text, uploads. `screen` = the target size in device pixels.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, draws: &[Draw], epx: f32, screen: (u32, u32), page: &Page, text: &mut TextEngine) {
-        self.prepare_pages(device, queue, &[(draws, page)], epx, screen, text);
+        self.prepare_pages(device, queue, &[(draws, page)], epx, screen, text, None);
     }
 
     /// Several pages' draw lists in paint order, each with the page that
-    /// owns its strings.
-    pub fn prepare_pages(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, pages: &[(&[Draw], &Page)], epx: f32, screen: (u32, u32), text: &mut TextEngine) {
+    /// owns its strings. `locale`: the language keyed text shows — the same
+    /// table the pages laid out with, so a label is shaped at the width it
+    /// was measured (`None` = the literals).
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_pages(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, pages: &[(&[Draw], &Page)], epx: f32, screen: (u32, u32), text: &mut TextEngine, locale: Option<&Locale>) {
         self.quads.clear();
         self.batches.clear();
         self.skipped = 0;
@@ -266,12 +270,12 @@ impl UiRenderer {
                     // direction angle (0 = to the right): a quarter turn back.
                     self.quads.push(Quad { rect: px(rect), color: from.to_f32(), border_color: to.to_f32(), params: [0.0, 0.0, k, (angle - 90.0).to_radians()], uv: [band.0, band.1, 0.0, 0.0], rot });
                 }
-                Draw::Text { rect, text: text_id, key: _, font_size, color, halign, valign, wrap, font } => {
+                Draw::Text { rect, text: text_id, key, font_size, color, halign, valign, wrap, font } => {
                     if current_tex != ATLAS {
                         self.close_batch(&mut batch_first, current, current_tex);
                         current_tex = ATLAS;
                     }
-                    let s = page.str(*text_id);
+                    let s = gogo::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let r = px(rect);
                     // Truncated like Godot's `int(epx * size)` (see `EpxMeasure`).

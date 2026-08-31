@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
+use cosmic_text::fontdb;
 use cosmic_text::{Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Weight, Wrap};
 use gogo::layout::TextMeasure;
 
@@ -187,6 +188,24 @@ impl TextEngine {
 
     pub fn atlas(&self) -> (&[u8], u32) {
         (&self.atlas, self.atlas_size)
+    }
+
+    /// The language text is shaped for (a BCP-47 tag: `de`, `bn-IN`). Line
+    /// breaking and script fallback follow it, so this moves with the
+    /// string table (`gogo::Locale`) — translated strings alone would break
+    /// mid-glyph in a script the old tag never expected. Rebuilds the
+    /// font system on the SAME font database (no file re-read) and drops
+    /// the measure/shape caches; the atlas and its glyphs stay. A load-time
+    /// call, not per frame.
+    pub fn set_locale(&mut self, bcp47: &str) {
+        if self.fs.locale() == bcp47 {
+            return;
+        }
+        let placeholder = FontSystem::new_with_locale_and_db(String::new(), fontdb::Database::new());
+        let (_, db) = std::mem::replace(&mut self.fs, placeholder).into_locale_and_db();
+        self.fs = FontSystem::new_with_locale_and_db(bcp47.to_string(), db);
+        self.measure_cache.clear();
+        self.shape_cache.clear();
     }
 
     pub fn take_dirty(&mut self) -> bool {
