@@ -297,6 +297,20 @@ impl UiRenderer {
                         self.quads.push(Quad { rect: [g.x, g.y, g.w, g.h], color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_GLYPH, 0.0], uv: g.uv, rot });
                     }
                 }
+                Draw::Caret { rect, text: text_id, key, font_size, font, index, color } => {
+                    // A thin solid bar after the shaped prefix — shaping
+                    // happens here because glyph positions live here.
+                    let s = gogo::locale::display(page, locale, *text_id, *key);
+                    let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
+                    let r = px(rect);
+                    let size_px = (font_size * epx).floor().max(1.0);
+                    let byte = s.char_indices().nth(*index as usize).map(|(b, _)| b).unwrap_or(s.len());
+                    let (pw, _) = text.measure(&s[..byte], size_px, None, font_key);
+                    let h = size_px * 1.2;
+                    let x = r[0] + pw;
+                    let y = r[1] + (r[3] - h) / 2.0;
+                    self.quads.push(Quad { rect: [x, y, (1.5 * epx).max(1.0), h], color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_RECT, 0.0], uv: NO_UV, rot });
+                }
                 Draw::Image { rect, image, tint, fit } => {
                     let Some(tex) = self.images.get(page.str(*image)).copied() else {
                         self.skipped += 1;
