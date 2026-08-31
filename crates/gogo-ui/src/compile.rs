@@ -71,6 +71,9 @@ struct Fills {
 
 struct WhenTmp {
     state: State,
+    /// The `when` block's source line — the equal-rank tie-break
+    /// (`State::priority`): later line wins.
+    line: u32,
     props: Vec<Prop>,
     /// Descendant responses (`when held face.background=…`): (node name, prop).
     descendants: Vec<(String, Prop)>,
@@ -1526,7 +1529,7 @@ impl<'a> Compiler<'a> {
                 props.push(prop);
             }
         }
-        Some(WhenTmp { state, props, descendants, host: false })
+        Some(WhenTmp { state, line: w.line, props, descendants, host: false })
     }
 
     // ----- placement ------------------------------------------------------
@@ -1788,9 +1791,12 @@ impl<'a> Compiler<'a> {
                 let kind = self.page.nodes[id as usize].kind;
                 let ap = AstProp { key: prop_name.to_string(), value: value.clone(), line: *l };
                 if let Some(prop) = self.prop(&ap, kind) {
-                    match self.node_whens[id as usize].iter_mut().find(|w| w.state == state) {
+                    // One entry per BLOCK (state + line), not per state: two
+                    // `when open` blocks straddling a competing block must
+                    // each keep their own line for the later-line tie-break.
+                    match self.node_whens[id as usize].iter_mut().find(|w| w.state == state && w.line == line) {
                         Some(w) => w.props.push(prop),
-                        None => self.node_whens[id as usize].push(WhenTmp { state, props: vec![prop], descendants: Vec::new(), host: false }),
+                        None => self.node_whens[id as usize].push(WhenTmp { state, line, props: vec![prop], descendants: Vec::new(), host: false }),
                     }
                 }
             }
@@ -1808,7 +1814,7 @@ impl<'a> Compiler<'a> {
                         full == name || full.rsplit('/').next() == Some(name.as_str())
                     });
                     match target {
-                        Some(t) => moved.push((t, WhenTmp { state: w.state, props: vec![prop], descendants: Vec::new(), host: w.host })),
+                        Some(t) => moved.push((t, WhenTmp { state: w.state, line: w.line, props: vec![prop], descendants: Vec::new(), host: w.host })),
                         None => {
                             let line = self.page.nodes[owner].line;
                             self.error("G0060", line, format!("`when … {name}.…`: no node named `{name}` under this one"));
@@ -1848,7 +1854,7 @@ impl<'a> Compiler<'a> {
                 let pf = self.page.props.len() as u32;
                 self.page.props.extend(w.props);
                 let pc = self.page.props.len() as u32 - pf;
-                self.page.whens.push(When { state: w.state, props: (pf, pc), of: of[i][j] });
+                self.page.whens.push(When { state: w.state, props: (pf, pc), of: of[i][j], line: w.line });
             }
             self.page.nodes[i].whens = (first, self.page.whens.len() as u32 - first);
         }

@@ -164,11 +164,6 @@ View screen {
 const SCREEN_VIEW: &str = "\
 arrangement open
 
-when open {
-    bar.margin_bottom = -40
-    scrim.opacity = 0.5
-}
-
 when screen.landscapeSmall {
     bar.margin_bottom = -10
     bar.height = 80
@@ -176,6 +171,11 @@ when screen.landscapeSmall {
     pane.halign = left
     pane.width = 80
     pane.margin_left = 20
+}
+
+when open {
+    bar.margin_bottom = -40
+    scrim.opacity = 0.5
 }
 
 when open screen.landscapeSmall {
@@ -765,7 +765,8 @@ fn composed_pair_is_view_level_only() {
 /// `screen.pair-screen-off` 7083, `screen.arrangement-home-keeps-class`
 /// 7097, `screen.reassert-on-units` 7109 (screen_view.gogo): the class
 /// pose lands instantly (bar 10 below the frame, 80 tall, tag dimmed),
-/// under `open` the arrangement wins the contested `margin_bottom` and the
+/// under `open` the arrangement wins the contested `margin_bottom` (equal
+/// rank — its block is the LATER one in the fixture) and the
 /// class keeps `height` and the tag, a different class while open drops
 /// the pair, leaving the arrangement lands on the SCREEN pose, a relayout
 /// keeps it. Godot read anchor offsets; the rect edges say the same.
@@ -1031,28 +1032,84 @@ fn orientation_axis_poses_pairs_and_the_seat_move() {
     assert!(inside(r[mover as usize], r[mover_home as usize]), "mover {:?} back in home {:?}", r[mover as usize], r[mover_home as usize]);
 }
 
-/// `orient.arr-pair-wins` (7238): the arrangement+orientation pair
-/// outranks the orientation+class pair (spec ladder: arrangement+class >
-/// arrangement+orientation > orientation+class), so `open` in landscape
-/// with lots of space reads 52, not 44. Rust ranks every pair equal and
-/// lets file order decide — the fixture's own order happens to agree, so
-/// this pin writes the arrangement pair FIRST to make the ladder speak.
+/// `orient.arr-pair-wins` (7238), re-read under the flattened ladder
+/// (E2, 2026-08-31; GPAR47/GPAR49 closed): two composed pairs rank EQUAL
+/// (two conditions each), so the later line in the file wins. In the
+/// fixture `open screen.landscape` (52) sits below `screen.landscape
+/// screen.lotsOfSpace` (44) and wins; swap the two blocks and the screen
+/// pair wins — 44. Both orders pinned so the rule, not the fixture's
+/// accident, is what passes.
 #[test]
-#[ignore = "GPAR47: composed pairs all rank equal in Rust (file order wins); spec/Godot rank arrangement+orientation over orientation+class"]
-fn arrangement_orientation_pair_outranks_the_screen_pair() {
-    let src = ORIENT_VIEW.replace(
+fn equal_count_pairs_tie_to_the_later_line() {
+    let swapped = ORIENT_VIEW.replace(
         "when screen.landscape screen.lotsOfSpace {\n    bar.height = 44\n    chip.opacity = 0.5\n}\nwhen open screen.landscape {\n    bar.height = 52\n}\n",
         "when open screen.landscape {\n    bar.height = 52\n}\nwhen screen.landscape screen.lotsOfSpace {\n    bar.height = 44\n    chip.opacity = 0.5\n}\n",
     );
-    assert_ne!(src, ORIENT_VIEW, "the swap must have happened");
-    let c = ok(&src);
-    let page = c.page;
-    let bar = page.find("bar").unwrap();
-    let mut rt = Runtime::new(&page);
-    rt.set_screen(&page, Orientation::Landscape, ScreenClass::LotsOfSpace);
-    rt.go(0);
-    let (res, _) = lay(&page, &rt);
-    assert_eq!(res.placement[bar as usize].height, Len::Exact(52.0), "{:?}", res.placement[bar as usize]);
+    assert_ne!(swapped, ORIENT_VIEW, "the swap must have happened");
+    for (src, want) in [(ORIENT_VIEW, 52.0), (swapped.as_str(), 44.0)] {
+        let c = ok(src);
+        let page = c.page;
+        let bar = page.find("bar").unwrap();
+        let mut rt = Runtime::new(&page);
+        rt.set_screen(&page, Orientation::Landscape, ScreenClass::LotsOfSpace);
+        rt.go(0);
+        let (res, _) = lay(&page, &rt);
+        assert_eq!(res.placement[bar as usize].height, Len::Exact(want), "{:?}", res.placement[bar as usize]);
+    }
+}
+
+/// The single-vs-single half of the same rule: an arrangement `when` and
+/// a screen `when` posing one key rank equal (one condition each) — the
+/// later line wins, whichever kind it is. Before the flatten the
+/// arrangement always won; now moving the block moves the win. Pinned
+/// for a placement key (height) and a style prop (opacity) in both
+/// orders. Mirrors Godot `ladder.later-single-*`.
+#[test]
+fn arrangement_and_screen_singles_tie_to_the_later_line() {
+    let screen_last = "arrangement open
+when open {
+    bar.height = 52
+    tag.opacity = 0.2
+}
+when screen.landscape {
+    bar.height = 30
+    tag.opacity = 0.5
+}
+View v {
+    Rectangle bar width=100, height=20, halign=left, valign=top, color=#FFFFFFFF
+    Rectangle tag width=20, height=20, halign=right, valign=top, color=#FFFFFFFF
+}
+";
+    let arrangement_last = "arrangement open
+when screen.landscape {
+    bar.height = 30
+    tag.opacity = 0.5
+}
+when open {
+    bar.height = 52
+    tag.opacity = 0.2
+}
+View v {
+    Rectangle bar width=100, height=20, halign=left, valign=top, color=#FFFFFFFF
+    Rectangle tag width=20, height=20, halign=right, valign=top, color=#FFFFFFFF
+}
+";
+    for (src, want_h, want_a) in [(screen_last, 30.0, 0.5), (arrangement_last, 52.0, 0.2)] {
+        let c = ok(src);
+        let page = c.page;
+        let bar = page.find("bar").unwrap();
+        let tag = page.find("tag").unwrap();
+        let mut rt = Runtime::new(&page);
+        rt.set_screen(&page, Orientation::Landscape, ScreenClass::LotsOfSpace);
+        rt.go(0);
+        let (res, _) = lay(&page, &rt);
+        assert_eq!(res.placement[bar as usize].height, Len::Exact(want_h), "{:?}", res.placement[bar as usize]);
+        assert!(near(opacity(&page, &res, tag), want_a), "opacity {}", opacity(&page, &res, tag));
+        // Only one of the two holds → that one poses, order irrelevant.
+        rt.go(u32::MAX);
+        let (res, _) = lay(&page, &rt);
+        assert_eq!(res.placement[bar as usize].height, Len::Exact(30.0));
+    }
 }
 
 /// `orient.clear-restores` (7266): Godot clears the orientation to "" and

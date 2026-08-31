@@ -571,20 +571,23 @@ pub const SCREEN_CLASSES: &[&str] = &[
 pub const SCREEN_ORIENTATIONS: &[&str] = &[Orientation::Portrait.word(), Orientation::Landscape.word()];
 
 impl State {
-    /// Spec priority: orientation < class < arrangement < a composed pair
-    /// < focus_within < focused < hovered < selected < held < disabled.
+    /// Rank when several `when` blocks pose the same key. Placement poses
+    /// rank by how many conditions must hold: a composed pair (two) beats
+    /// any single (arrangement, screen class or orientation — all one).
+    /// Equal rank → the later line in the file wins (`When::line`), so the
+    /// winner can be read off the file, CSS-style. Above the poses the
+    /// built-in input states stack: focus_within < focused < hovered <
+    /// selected < held < disabled.
     pub fn priority(self) -> u8 {
         match self {
-            State::ScreenOrientation(_) => 0,
-            State::ScreenClass(_) => 1,
-            State::Arrangement(_) => 2,
-            State::ArrangementScreen(..) | State::ScreenPair(..) => 3,
-            State::FocusWithin => 4,
-            State::Focused => 5,
-            State::Hovered => 6,
-            State::Selected => 7,
-            State::Held => 8,
-            State::StateDisabled => 9,
+            State::ScreenOrientation(_) | State::ScreenClass(_) | State::Arrangement(_) => 0,
+            State::ArrangementScreen(..) | State::ScreenPair(..) => 1,
+            State::FocusWithin => 2,
+            State::Focused => 3,
+            State::Hovered => 4,
+            State::Selected => 5,
+            State::Held => 6,
+            State::StateDisabled => 7,
         }
     }
 }
@@ -592,12 +595,14 @@ impl State {
 /// `when <state> prop=...` on one node: the props range in `Page::props`.
 /// `of` = the node whose state is watched (`NO_NODE` = this node); a
 /// style's `when held face.background=…` lands on `face` watching the
-/// Button.
+/// Button. `line` = the `when` block's source line — the tie-break between
+/// blocks of equal `State::priority` (later line wins).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct When {
     pub state: State,
     pub props: (u32, u32),
     pub of: NodeId,
+    pub line: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

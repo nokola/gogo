@@ -718,9 +718,10 @@ fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
         if node.kind == Kind::Button && placement.padding == [0.0; 4] && node.children.1 == 0 {
             placement.padding = BUTTON_PADDING;
         }
-        // Active whens, lowest priority first (stable: file order within a level).
+        // Active whens, lowest rank first; equal rank → the later line in
+        // the file wins (applied last), so the winner reads off the file.
         let mut active: Vec<&When> = page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize].iter().filter(|w| rt.state_active(page, if w.of == NO_NODE { id } else { w.of }, w.state)).collect();
-        active.sort_by_key(|w| w.state.priority());
+        active.sort_by_key(|w| (w.state.priority(), w.line));
         for w in active {
             for p in &page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize] {
                 if p.key.is_placement() {

@@ -38,10 +38,13 @@ fn composed_when_needs_both_halves() {
     assert_eq!(width(&page, &rt), gogo::page::Len::Exact(100.0), "the class alone must not pose");
     assert!(codes("View v { Panel p { when screen.huge { width = 1 } } }").contains(&"G0036".to_string()));
     assert!(codes("View v { Panel p { when screen.landscape screen.portrait { width = 1 } } }").contains(&"G0038".to_string()));
-    // A pair outranks its single halves.
+    // A pair (two conditions) outranks every single; the singles rank
+    // equal — between them the later line in the file wins (E2 flatten,
+    // 2026-08-31; pinned in godot_arrangement.rs).
     assert!(State::ArrangementScreen(0, 0).priority() > State::Arrangement(0).priority());
-    assert!(State::Arrangement(0).priority() > State::ScreenClass(0).priority());
-    assert!(State::ScreenClass(0).priority() > State::ScreenOrientation(0).priority());
+    assert_eq!(State::ScreenPair(0, 0).priority(), State::ArrangementScreen(0, 0).priority());
+    assert_eq!(State::Arrangement(0).priority(), State::ScreenClass(0).priority());
+    assert_eq!(State::ScreenClass(0).priority(), State::ScreenOrientation(0).priority());
 }
 
 /// GP3 + GP4: three stops with an `@0.94` plateau draw as three segments
