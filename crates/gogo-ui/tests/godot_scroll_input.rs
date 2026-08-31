@@ -475,7 +475,7 @@ fn overlay_chrome_keeps_its_own_drag_and_transparent_or_hidden_chrome_lets_the_c
     fx.touch(Phase::Move, 30.0, 40.0, 2.1);
     assert_eq!(fx.scroll("sv"), before, "a drag from overlay chrome never pans");
     fx.touch(Phase::Up, 30.0, 40.0, 2.2);
-    for variant in ["interactive=false", "visibility=hidden"] {
+    for variant in ["interactive=false", "visibility=space_only"] {
         let src = OCCLUDED.replace("Button back ", &format!("Button back {variant}, "));
         let mut fx = Fx::new(&src);
         let item = fx.id("item");

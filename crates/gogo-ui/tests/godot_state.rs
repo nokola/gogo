@@ -740,7 +740,7 @@ fn explain_facts_aspect_and_disabled_cascade() {
     assert!(fx.rt.has(dgrp, DISABLED), "own");
 }
 
-const D133: &str = "View v { Layers l {\n    Panel seat visibility=hidden, width=hug, valign=top { Label s text=\"x\" }\n    Rectangle ratio color=#FFFFFFFF, width=fill, aspect=1.78, valign=top\n    Panel dgrp disabled=true, valign=bottom { Column { Button dbtn text=\"y\" } }\n} }";
+const D133: &str = "View v { Layers l {\n    Panel seat visibility=space_only, width=hug, valign=top { Label s text=\"x\" }\n    Rectangle ratio color=#FFFFFFFF, width=fill, aspect=1.78, valign=top\n    Panel dgrp disabled=true, valign=bottom { Column { Button dbtn text=\"y\" } }\n} }";
 
 /// Not a Godot check (found while porting `explain.aspect`): a fill-width
 /// Rectangle with `aspect=1.78` under a free parent should be 400 wide and
@@ -757,7 +757,6 @@ fn aspect_shapes_a_fill_width_box() {
 /// `_explain_api_tests` 6647-6648 (`explain.visibility`):
 /// `visibility=space_only` — invisible, hit-inert, still holds its space.
 #[test]
-#[ignore = "GP39: not ported: `visibility=space_only` (builds silently and the node stays visible)"]
 fn space_only_holds_its_space_invisibly() {
     let mut fx = Fx::new("View v { Layers l { Panel seat visibility=space_only, width=hug, valign=top { Label s text=\"x\" } } }");
     let seat = fx.rect("seat");

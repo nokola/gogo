@@ -682,9 +682,10 @@ impl Resolved {
         out
     }
 
-    /// `visibility=hidden` — laid out, not drawn, no input.
+    /// `visibility=space_only` — laid out (the slot holds), not drawn,
+    /// no input.
     pub fn hidden(&self, page: &Page, node: NodeId) -> bool {
-        self.ident(page, node, PropKey::Visibility) == Some("hidden")
+        self.ident(page, node, PropKey::Visibility) == Some("space_only")
     }
 }
 

@@ -731,9 +731,9 @@ impl<'a> Compiler<'a> {
 
     /// A Grid's lattice at load: `cols=` validated, then the row form
     /// walked or the areas form expanded (the shipped resolver's
-    /// `_apply_grid_children`). Needed because a bad lattice used to lay
-    /// out silently wrong — a three-cell row over two tracks just
-    /// clipped, `areas=` built an empty grid.
+    /// `_apply_grid_children`). Needed because an unchecked
+    /// lattice lays out silently wrong — a three-cell row over two
+    /// tracks clips, an `areas=` typo is an empty grid.
     ///
     /// Returns the replacement node when `areas=` expanded into rows.
     fn grid_structure(&mut self, n: &AstNode) -> Option<AstNode> {
@@ -1112,8 +1112,9 @@ impl<'a> Compiler<'a> {
     }
 
     /// The Tiles lattice at load: `cols=` is a whole column count and
-    /// every `span=` fits it. Needed because a missing `cols=` used to
-    /// become one silent column and an overlong span clamped quietly.
+    /// every `span=` fits it. Needed because without it a
+    /// missing `cols=` is one silent column and an overlong span clamps
+    /// quietly.
     fn tiles_structure(&mut self, n: &AstNode) {
         let cols: Option<usize> = match n.props.iter().find(|p| p.key == "cols") {
             None => {
@@ -1622,6 +1623,9 @@ impl<'a> Compiler<'a> {
                 if unit == "px" {
                     self.error("G0038", line, "`px` is gone — lengths are epx (§7)");
                 }
+                if unit == "%" {
+                    self.error("G0038", line, "unit `%` is not supported in gogo v1 — lengths are epx, shares are `fill(n)`");
+                }
                 Value::VNum(*value)
             }
             AstValue::Color { rgba, opacity, pos } => {
@@ -1794,19 +1798,24 @@ impl<'a> Compiler<'a> {
             self.error("G0058", p.line, format!("`{}=` wants a number, not `{}`", p.key, spell(&p.value)));
             return None;
         }
-        // Alignment words are per-axis and physical (spec:
-        // `halign=left/center/right`, `valign=top/center/bottom`; the text
-        // pair splits the same way) — without this fence a `when held
-        // halign=top` compiled clean and silently pinned left, and the
-        // invented `start`/`end` slipped in (logical alignment waits for
-        // the RTL milestone, G14). References pass; the runtime maps them
-        // per axis.
-        let align_words: Option<&[&str]> = match key {
+        // Word-valued keys are CLOSED sets — without this fence a typo
+        // (`when held halign=top`, `visibility=maybe`) compiles clean and
+        // silently reads as unset. Alignment words are per-axis and
+        // physical (the invented `start`/`end` wait for the RTL
+        // milestone, G14). References pass; the runtime maps them.
+        let closed_words: Option<&[&str]> = match key {
             PropKey::Halign | PropKey::TextHalign => Some(&["left", "center", "right"]),
             PropKey::Valign | PropKey::TextValign => Some(&["top", "center", "bottom"]),
+            PropKey::Visibility => Some(&["visible", "space_only", "gone"]),
+            PropKey::Fit => Some(&["contain", "cover", "distort"]),
+            PropKey::Allow => Some(&["horizontal", "vertical", "both"]),
+            PropKey::Bars => Some(&["auto", "never", "always", "reserve"]),
+            PropKey::Select => Some(&["one", "many", "off"]),
+            PropKey::TouchTarget | PropKey::KeyboardTarget => Some(&["off"]),
+            PropKey::GradientFill => Some(&["linear", "radial"]),
             _ => None,
         };
-        if let Some(words) = align_words {
+        if let Some(words) = closed_words {
             let ok = match value {
                 Value::VIdent(id) => words.contains(&self.page.str(id)),
                 Value::VRef { .. } => true,
@@ -1816,6 +1825,13 @@ impl<'a> Compiler<'a> {
                 self.error("G0057", p.line, format!("`{}=`: want {}", p.key, words.join("/")));
                 return None;
             }
+        }
+        // Bool keys take true/false — without the check `overlay=maybe`
+        // reads as not-overlay with a clean build.
+        let is_bool = matches!(key, PropKey::Overlay | PropKey::Interactive | PropKey::Wrap | PropKey::ClipText | PropKey::ClipContents | PropKey::Disabled | PropKey::SelectedProp | PropKey::FullRow | PropKey::ToggleMode);
+        if is_bool && !matches!(value, Value::VBool(_) | Value::VRef { .. } | Value::VCall { .. }) {
+            self.error("G0078", p.line, format!("`{}=` is true or false — got `{}`", p.key, spell(&p.value)));
+            return None;
         }
         // `text=25` / `text=live($value)` with a number: the digits, so a
         // value label needs no code to show its number.
@@ -1975,8 +1991,8 @@ impl<'a> Compiler<'a> {
             let on_props: Vec<AstProp> = n.props.iter().filter(|p| p.key.starts_with("on:")).cloned().collect();
             self.instance_on.push(if has_signals_node(&def.body) { Some(on_props) } else { None });
             // Widget-line props bake onto the body root, under its own
-            // (`widget X for=Radio, min_height=44` — the 44 used to be a
-            // silent drop).
+            // (`widget X for=Radio, min_height=44` — dropping them would
+            // lose the 44 silently).
             let body_baked: AstNode;
             let body: &AstNode = if def.props.is_empty() {
                 &def.body
@@ -2059,6 +2075,11 @@ impl<'a> Compiler<'a> {
         }
         if kind == Kind::Radio && self.choice_depth > 0 && n.name.is_none() {
             self.error("G0069", n.line, "Radio needs a name — the choice reports the chosen NAME (`Radio medium text=\"Medium\"`)");
+        }
+        // `overlay=true` cuts the box's upward size contribution;
+        // `space_only` exists to HOLD a slot — the two contradict.
+        if n.props.iter().any(|p| p.key == "overlay" && matches!(p.value, AstValue::Bool(true))) && n.props.iter().any(|p| p.key == "visibility" && p.value.as_ident() == Some("space_only")) {
+            self.error("G0078", n.line, "`overlay=true` with `visibility=space_only` — a seat-holder is not an overlay; a hidden overlay is `gone`");
         }
         // A bodied Radio/Check IS its body — the body replaces every
         // native visual, the label included.
@@ -3036,6 +3057,37 @@ impl<'a> Compiler<'a> {
                     }
                     of[i][j] = a;
                 }
+            }
+        }
+        // An overlay `fill` axis under a hug parent that no non-overlay
+        // child sizes: nothing determines the extent (the spec's overlay
+        // law) — refused rather than laid out 0-wide.
+        for i in 0..self.page.nodes.len() {
+            let node = &self.page.nodes[i];
+            if !matches!(self.page.prop(i as NodeId, PropKey::Overlay), Some(Value::VBool(true))) {
+                continue;
+            }
+            let parent = node.parent;
+            if parent == NO_NODE {
+                continue;
+            }
+            let pp = &self.page.nodes[parent as usize].placement;
+            let siblings_size: [bool; 2] = {
+                let p = &self.page.nodes[parent as usize];
+                let mut any = [false, false];
+                for s in p.children.0..p.children.0 + p.children.1 {
+                    if s as usize == i || matches!(self.page.prop(s, PropKey::Overlay), Some(Value::VBool(true))) {
+                        continue;
+                    }
+                    any = [true, true];
+                }
+                any
+            };
+            let np = &self.page.nodes[i].placement;
+            let hug_w = matches!(pp.width, Len::Hug(_) | Len::Unset) && pp.min_width <= 0.0;
+            let hug_h = matches!(pp.height, Len::Hug(_) | Len::Unset) && pp.min_height <= 0.0;
+            if matches!(np.width, Len::Fill(_)) && hug_w && !siblings_size[0] || matches!(np.height, Len::Fill(_)) && hug_h && !siblings_size[1] {
+                self.error("G0078", self.page.nodes[i].line, "an overlay `fill` axis under a hug parent with no non-overlay child — nothing determines the size; give the parent a size or the overlay an exact one");
             }
         }
         // The host's own `when` replaces a `for=` widget's response for

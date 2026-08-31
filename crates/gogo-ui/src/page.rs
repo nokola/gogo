@@ -987,12 +987,10 @@ pub const UNREAD_BY_DESIGN: &[(PropKey, &str)] = &[
     (PropKey::KeyboardTarget, "host-read: no keyboard focus routing here yet"),
     (PropKey::Select, "host-read: List selection mode; Lists get their items from the host"),
     (PropKey::Render, "accepted for old files that picked a renderer per node; one renderer here"),
-    (PropKey::Step, "Slider steps are not built yet (the drag is not wired)"),
     (PropKey::IconSrc, "accepted for old files; an icon file hint nothing reads"),
     (PropKey::IconSize, "accepted for old files beside `icon=`; icons are not drawn here"),
     (PropKey::Automatic, "read at compile into `Node.auto`, not as a prop"),
     (PropKey::SeatOf, "read at resolve through `Resolved.seat`, not as a prop"),
-    (PropKey::ToggleMode, "`toggle=true` on a Button; the selected flip is not built yet"),
     (PropKey::Areas, "read at compile: `Compiler::grid_areas` expands it into `row { }` structure before the node builds"),
 ];
 

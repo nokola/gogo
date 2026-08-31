@@ -87,7 +87,6 @@ const GREEN: Rgba = Rgba([0x22, 0xCC, 0x44, 0xFF]);
 /// `visibility=maybe` with an error naming the triad. Rust compiles it
 /// clean and the node is simply visible.
 #[test]
-#[ignore = "NEW: Godot refuses `visibility=maybe` (error names the triad) vs Rust compiles it with no diagnostic"]
 fn visibility_refuses_a_word_outside_the_triad() {
     assert!(fails("View v { Panel p visibility=maybe }"), "{:?}", codes("View v { Panel p visibility=maybe }"));
 }
@@ -102,15 +101,22 @@ fn retired_visible_bool_is_not_a_word() {
     assert!(c.contains(&"G0042".to_string()), "{c:?}");
 }
 
-/// `_visibility_tests` 11846-11847 (vis.container-fence). Godot: a
-/// keep-the-slot hidden node under a Column/Row is refused ("free
-/// parent") because a container skips hidden children in its own
-/// sorting. Rust's `hidden` compiles under a Column and keeps its slot.
+/// `_visibility_tests` 11846-11847 (vis.container-fence) — DEVIATION:
+/// Godot refuses `space_only` under a Column/Row because the ENGINE's
+/// containers skip hidden children in their own sorting (a "v1" engine
+/// limit). This layout is pure and holds the slot under any parent, so
+/// the fence would remove a capability — the node builds and keeps its
+/// seat.
 #[test]
-#[ignore = "GP39: `visibility=space_only` vs Rust-only `hidden` — the free-parent fence is part of the same open row"]
-fn slot_keeping_hidden_binds_under_free_parents_only() {
-    let src = "View v { Column c { Panel p visibility=hidden } }";
-    assert!(fails(src), "{:?}", codes(src));
+fn slot_keeping_space_only_works_under_containers_too() {
+    let src = "View v { Column c { Panel p visibility=space_only, min_size=10x10
+ Rectangle after 10x10, color=red } }";
+    let c = ok(src);
+    let rt = Runtime::new(&c.page);
+    let res = resolve(&c.page, &rt);
+    let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let after = rects[c.page.find("after").unwrap() as usize];
+    assert_eq!(after.y, 10.0, "the seat holds its 10-epx slot: {rects:?}");
 }
 
 /// `_visibility_tests` 11849-11896 (vis.build-ok, hidden-flag, of,
@@ -120,7 +126,7 @@ fn slot_keeping_hidden_binds_under_free_parents_only() {
 /// hidden never moves the hugging parent, and only `gone` shrinks it.
 #[test]
 fn hidden_keeps_its_seat_and_gone_releases_it() {
-    let src = "View vhost {\n Layers vwrap width=hug, height=hug, halign=left, valign=top {\n  Rectangle va color=#4488CCFF, width=120, height=24, halign=left, valign=top\n  Rectangle vseat color=#CC8844FF, width=200, height=48, halign=left, valign=top, visibility=hidden\n  Rectangle vgone color=#22CC44FF, width=300, height=90, halign=left, valign=top, visibility=gone\n }\n}\n";
+    let src = "View vhost {\n Layers vwrap width=hug, height=hug, halign=left, valign=top {\n  Rectangle va color=#4488CCFF, width=120, height=24, halign=left, valign=top\n  Rectangle vseat color=#CC8844FF, width=200, height=48, halign=left, valign=top, visibility=space_only\n  Rectangle vgone color=#22CC44FF, width=300, height=90, halign=left, valign=top, visibility=gone\n }\n}\n";
     let c = ok(src);
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
@@ -147,7 +153,7 @@ fn hidden_keeps_its_seat_and_gone_releases_it() {
     assert_eq!(size_of(&page, &rects, "vwrap"), (200.0, 48.0), "{rects:?}");
     assert!(quad_of(&draw(&page, &res, &rects), ORANGE).is_some());
     // vis.toggle-back
-    set_visibility(&mut page, &mut rt, "vseat", "hidden");
+    set_visibility(&mut page, &mut rt, "vseat", "space_only");
     let (res, rects) = lay(&page, &rt, 400.0, 400.0);
     assert_eq!(size_of(&page, &rects, "vwrap"), (200.0, 48.0), "{rects:?}");
     assert!(quad_of(&draw(&page, &res, &rects), ORANGE).is_none());
@@ -176,9 +182,8 @@ fn overlay_is_refused_under_a_stack() {
 /// ("nothing determines"), and `overlay=maybe`. Rust compiles all three
 /// clean (and reads `overlay=maybe` as not-overlay).
 #[test]
-#[ignore = "NEW: Godot refuses overlay+space_only, overlay fill in an undetermined hug, and overlay=maybe vs Rust compiles all three with no diagnostic"]
 fn overlay_contradictions_are_refused() {
-    let conflict = "View v { Rectangle r overlay=true, visibility=hidden, color=#FF0000FF, width=10, height=10 }";
+    let conflict = "View v { Rectangle r overlay=true, visibility=space_only, color=#FF0000FF, width=10, height=10 }";
     assert!(fails(conflict), "{:?}", codes(conflict));
     let undetermined = "View v {\n Layers hugbox width=hug, height=hug, halign=left, valign=top {\n  Rectangle r overlay=true, color=#FF0000FF, width=fill, height=10\n }\n}\n";
     assert!(fails(undetermined), "{:?}", codes(undetermined));

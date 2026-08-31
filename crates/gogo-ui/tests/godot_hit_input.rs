@@ -254,7 +254,6 @@ fn bare_interactive_as_name_is_refused() {
 /// `interactive=maybe` is a type error (the message names `true`). Rust
 /// stores the word and builds.
 #[test]
-#[ignore = "NEW: Godot refuses `interactive=maybe` (wants a bool); Rust builds it with no diagnostic and reads the value as unset"]
 fn interactive_wants_a_bool() {
     let c = compile("View v { Button b interactive=maybe }", &|_| None);
     assert!(gogo::has_errors(&c.diags), "{:#?}", c.diags);
@@ -502,7 +501,6 @@ fn safe_margin_on_a_fill_axis_is_the_fed_inset_unconverted() {
 /// per-edge inset, so `spacing=safe` fails the build ("names no screen
 /// edge"). Rust stores the word and lays out with spacing 0.
 #[test]
-#[ignore = "NEW: Godot refuses `Column c spacing=safe` (safe names no screen edge); Rust builds it with no diagnostic, spacing reads as 0"]
 fn safe_on_a_key_that_names_no_edge_is_refused() {
     let c = compile("View v { Column c spacing=safe }", &|_| None);
     assert!(gogo::has_errors(&c.diags), "{:#?}", c.diags);

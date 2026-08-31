@@ -728,7 +728,6 @@ fn epx_scalar_props_are_raw() {
 /// `_epx_tests` 3057 (epx.percent-error): `min_height=50%` is refused
 /// ("not supported").
 #[test]
-#[ignore = "GP40: not ported: the % unit is lexed and silently dropped (min_height=50% builds as 50)"]
 fn epx_percent_is_refused() {
     assert!(gogo::has_errors(&compile("View v { Button b min_height=50% }", &|_| None).diags));
 }
