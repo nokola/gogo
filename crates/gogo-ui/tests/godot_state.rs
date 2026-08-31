@@ -746,8 +746,9 @@ const D133: &str = "View v { Layers l {\n    Panel seat visibility=space_only, w
 /// Rectangle with `aspect=1.78` under a free parent should be 400 wide and
 /// 400/1.78 tall — Rust lays it out 0 tall (`image_min` has no offered
 /// width on a free axis).
+/// SHIPPED round 4 (2026-08-31, GPAR80): a numeric `aspect=` derives the
+/// unspelled axis on any box.
 #[test]
-#[ignore = "GP35: not ported: `aspect=` with a fill axis (Rust: height 0 under Layers)"]
 fn aspect_shapes_a_fill_width_box() {
     let mut fx = Fx::new(D133);
     let r = fx.rect("ratio");

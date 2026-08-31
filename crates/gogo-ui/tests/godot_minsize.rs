@@ -172,8 +172,9 @@ fn seat_measures_its_occupant_by_declared_width_intent() {
 /// the same way (a Row asking its children along its main axis) gives
 /// the fill occupant its full unwrapped line: the seat is 272.25 wide in
 /// a 100-wide column.
+/// SHIPPED round 4 (2026-08-31, GPAR78): the fill occupant probes at
+/// width 0 when no socket width is known — the wrapped minimum.
 #[test]
-#[ignore = "NEW: Godot seat with a fill occupant and no socket width reports the wrapped minimum vs Rust reports the unwrapped line (272.25 in a Row)"]
 fn a_fill_occupant_in_a_row_seat_reports_wrapped() {
     let c = ok("arrangement seated\nView v {\n Column col halign=left, valign=top, width=100 {\n  Row fillRow height=30 { seat fillSeat }\n }\n Panel fillOcc width=fill { Label fillLbl text=\"a reseated line with room to wrap\", wrap=true }\n}\nwhen seated { fillOcc.seat = fillSeat }\n");
     let page = c.page;
@@ -495,6 +496,76 @@ fn a_circle_refuses_corner_keys() {
 }
 
 // --------------------------------------------------------- min/max band
+
+/// `_aspect_fit_tests` 12209-12219 (aspect.both-spelled, aspect.hug-fence,
+/// aspect.cap-fence, aspect.container-fence, aspect.natural-non-image,
+/// aspect.bad-value): the six `aspect=` fences, all G1017 (GPAR80,
+/// round 4, 2026-08-31).
+#[test]
+fn aspect_contract_fences() {
+    let g1017 = |src: &str| codes(src).contains(&"G1017".to_string());
+    assert!(g1017("View v { Layers l { Rectangle r width=100, height=50, aspect=1 } }"), "both spelled");
+    assert!(g1017("View v { Layers l { Panel p width=hug, aspect=1 } }"), "hug axis");
+    assert!(g1017("View v { Layers l { Panel p width=fill, max_width=100, aspect=1 } }"), "cap combine");
+    assert!(g1017("View v { Column c { Rectangle r width=100, aspect=1 } }"), "container parent");
+    assert!(g1017("View v { Layers l { Rectangle r aspect=natural } }"), "natural off an Image");
+    assert!(g1017("View v { Layers l { Rectangle r aspect=-2 } }"), "negative ratio");
+    assert!(!gogo::has_errors(&compile("View v { Layers l { Rectangle r width=200, aspect=2, halign=left, valign=top } }", &|_| None).diags), "the legal one-driven-axis form builds");
+}
+
+/// `_aspect_fit_tests` 12233-12262 (aspect.derives-fixed,
+/// aspect.derives-fill, aspect.fit-solves, aspect.fit-centered): the
+/// spelled axis drives (`width=200, aspect=2` → 200×100; a fill width
+/// with 20/20 margins in 400 → 360×90), both `fill` = the largest ratio
+/// box that fits, centered (400×300 host, aspect=1 → 300×300 at x=50).
+#[test]
+fn aspect_derives_the_unspelled_axis() {
+    let c = ok("View v { Layers ahost {\n Rectangle fixed_drive width=200, aspect=2, halign=left, valign=top\n Rectangle fill_drive width=fill, aspect=4, margin_left=20, margin_right=20, valign=top\n Rectangle fitbox width=fill, height=fill, aspect=1\n} }\n");
+    let page = c.page;
+    let rt = Runtime::new(&page);
+    let (_, rects) = lay(&page, &rt, 400.0, 300.0);
+    let fd = rect(&page, &rects, "fixed_drive");
+    assert_eq!((fd.w, fd.h), (200.0, 100.0), "{fd:?}");
+    let fl = rect(&page, &rects, "fill_drive");
+    assert_eq!((fl.w, fl.h), (360.0, 90.0), "{fl:?}");
+    let fb = rect(&page, &rects, "fitbox");
+    assert_eq!((fb.w, fb.h), (300.0, 300.0), "{fb:?}");
+    assert_eq!(fb.x, 50.0, "the fit box centers: {fb:?}");
+}
+
+/// GPAR41 (round 4, 2026-08-31): `border_thickness` insets content in
+/// LAYOUT on every kind, the same value draw uses for its text inset —
+/// the two passes used to disagree by the border on ListItem/Slot.
+#[test]
+fn border_insets_content_in_layout_on_every_kind() {
+    let c = ok("View v { List l halign=left, valign=top, width=200 {\n ListItem li border_thickness=3, padding=5 { Rectangle r min_size=10x10 }\n} }\n");
+    let page = c.page;
+    let rt = Runtime::new(&page);
+    let (_, rects) = lay(&page, &rt, 400.0, 400.0);
+    let li = rect(&page, &rects, "li");
+    let r = rect(&page, &rects, "r");
+    assert_eq!(r.x - li.x, 8.0, "border 3 + padding 5: li={li:?} r={r:?}");
+    assert_eq!(r.y - li.y, 8.0, "li={li:?} r={r:?}");
+}
+
+/// GPAR38 (round 4, 2026-08-31): both margins on an ALIGNED capped axis
+/// inset the measuring frame once — `halign=left, margin_left=12,
+/// margin_right=12, max_width=fill` sits at x=12 (it used to sit at 24,
+/// the margin counted in the frame AND again by the align arm); the right
+/// twin ends 12 in from the edge; the addon's `cap.fill-margin-shift`
+/// asymmetric-center case keeps its (near-far)/2 midpoint shift.
+#[test]
+fn aligned_capped_margins_count_once() {
+    let src = "View v { Layers l {\n Panel a width=hug, max_width=fill, halign=left, valign=top, margin_left=12, margin_right=12 { Rectangle ra min_size=40x10 }\n Panel b width=hug, max_width=fill, halign=right, valign=top, margin_left=12, margin_right=12 { Rectangle rb min_size=40x10 }\n Panel c width=hug, max_width=fill, halign=center, valign=top, margin_left=30, margin_right=10 { Rectangle rc min_size=40x10 }\n} }\n";
+    let c = ok(src);
+    let page = c.page;
+    let rt = Runtime::new(&page);
+    let (_, rects) = lay(&page, &rt, 400.0, 400.0);
+    assert_eq!(rect(&page, &rects, "a").x, 12.0, "{:?}", rect(&page, &rects, "a"));
+    assert_eq!(rect(&page, &rects, "b").right(), 388.0, "{:?}", rect(&page, &rects, "b"));
+    let c = rect(&page, &rects, "c");
+    assert!(near(c.x + c.w / 2.0, 210.0), "midpoint shifts by (30-10)/2: {c:?}");
+}
 
 /// `_min_max_band_tests` 1091-1096 (band.err-crossed, band.err-fixed-min,
 /// band.err-fixed-min-size): a floor above the cap refuses at build

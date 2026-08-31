@@ -224,8 +224,11 @@ impl<'a> Lay<'a> {
                 pad[i] += self.res.safe[i];
             }
         }
-        let kind = self.node(id).kind;
-        let border = if matches!(kind, Kind::Panel | Kind::Button | Kind::View) { self.res.num(self.page, id, PropKey::BorderThickness).unwrap_or(0.0) } else { 0.0 };
+        // The border is part of the box's edge for EVERY kind — draw
+        // already insets text by it, so layout must too or the two passes
+        // disagree by the border on ListItem/Slot (GPAR41; any box draws
+        // a plate since E8).
+        let border = self.res.num(self.page, id, PropKey::BorderThickness).unwrap_or(0.0);
         [pad[0] + border, pad[1] + border, pad[2] + border, pad[3] + border]
     }
 
@@ -440,8 +443,16 @@ impl<'a> Lay<'a> {
             Kind::Seat => {
                 let (mut w, mut h) = (0.0f32, 0.0f32);
                 for c in self.sizing_children(id) {
-                    let binds = matches!(self.placement(c).width, Len::Fill(_) | Len::Exact(_));
-                    let (cw, ch) = self.size_at(c, if binds { inner_w } else { None });
+                    let probe = match self.placement(c).width {
+                        // fill asks the socket for its width — with none
+                        // known it reports its WRAPPED minimum, never the
+                        // one-line extent past the screen edge (D263,
+                        // GPAR78).
+                        Len::Fill(_) => inner_w.or(Some(0.0)),
+                        Len::Exact(_) => inner_w,
+                        _ => None,
+                    };
+                    let (cw, ch) = self.size_at(c, probe);
                     w = w.max(cw);
                     h = h.max(ch);
                 }
@@ -509,6 +520,16 @@ impl<'a> Lay<'a> {
             Kind::Input => (0.0, INPUT_HEIGHT),
         };
         (cw + inset[0] + inset[2], ch + inset[1] + inset[3])
+    }
+
+    /// A numeric `aspect=` on any box (`natural` is not one — that is the
+    /// Image's own bitmap path). Read by `place` to derive the unspelled
+    /// axis (GPAR80).
+    fn aspect_number(&self, id: NodeId) -> Option<f32> {
+        match self.res.prop(self.page, id, PropKey::Aspect) {
+            Some(Value::VNum(r)) if r > 0.0 => Some(r),
+            _ => None,
+        }
     }
 
     /// `aspect=natural` (the bitmap's ratio) or `aspect=<w/h>`: the axis
@@ -614,6 +635,30 @@ impl<'a> Lay<'a> {
         // text, Flow rows).
         let (_, min_h) = self.size_final(id, w);
         let (y, h) = free_axis(frame.y, frame.h, p.height, p.valign, m[1], m[3], min_h, p.min_height, p.max_height, p.max_height_fill, written[1]);
+        // A numeric `aspect=` derives the unspelled axis from the driven
+        // one; both axes `fill` (or both bare) = the largest ratio box
+        // that fits, centered (GPAR80, the addon's _aspect_fit rules).
+        // `natural` stays the Image's own path (`image_min`).
+        let (x, y, w, h) = match self.aspect_number(id) {
+            Some(ratio) => {
+                let both_free = matches!(p.width, Len::Fill(_)) && matches!(p.height, Len::Fill(_)) || p.width == Len::Unset && p.height == Len::Unset;
+                let h_drives = matches!(p.height, Len::Exact(_)) || (matches!(p.height, Len::Fill(_)) && !matches!(p.width, Len::Exact(_) | Len::Fill(_)));
+                if both_free {
+                    let fw = h * ratio;
+                    let (w2, h2) = if fw <= w { (fw, h) } else { (w, w / ratio) };
+                    (x + (w - w2) / 2.0, y + (h - h2) / 2.0, w2, h2)
+                } else if h_drives {
+                    let w2 = h * ratio;
+                    let (x2, _) = free_axis(frame.x, frame.w, Len::Exact(w2), p.halign, m[0], m[2], w2, 0.0, None, false, written[0]);
+                    (x2, y, w2, h)
+                } else {
+                    let h2 = w / ratio;
+                    let (y2, _) = free_axis(frame.y, frame.h, Len::Exact(h2), p.valign, m[1], m[3], h2, 0.0, None, false, written[1]);
+                    (x, y2, w, h2)
+                }
+            }
+            None => (x, y, w, h),
+        };
         let rect = Rect::new(x, y, w, h);
         self.rects[id as usize] = rect;
         // What this box hands its own children: a written size or cap is
@@ -743,28 +788,43 @@ impl<'a> Lay<'a> {
         let cols = self.res.num(self.page, id, PropKey::Cols).unwrap_or(1.0).max(1.0) as usize;
         let unit = (inner_w / cols as f32).max(0.0);
         let mut out: Vec<(NodeId, Rect)> = Vec::new();
-        let mut col = 0usize;
+        let mut x = 0.0f32;
+        let mut in_row = 0usize;
         let mut y = 0.0f32;
         let mut row_h = 0.0f32;
         let mut row_first = 0usize;
+        // Godot's `_pack` shape: x advances by each cell's own width and
+        // a row wraps when the next cell would poke past the edge — span
+        // cells step by `unit × span` (the lattice), an EXACT-width cell
+        // packs at its own pitch (the shipped icon-size flip; GPAR75/115.
+        // Godot takes the fixed width from a code `set_cell` only; here
+        // any exact width on the cell means it — one rule, no code-only
+        // channel).
         for c in self.visible_children(id) {
             let full = self.res.bool(self.page, c, PropKey::FullRow).unwrap_or(false);
             let span = if full { cols } else { (self.res.num(self.page, c, PropKey::Span).unwrap_or(1.0).max(1.0) as usize).min(cols) };
-            if col + span > cols && col > 0 {
+            let w = if full {
+                inner_w
+            } else if let Len::Exact(fw) = self.res.placement[c as usize].width {
+                fw
+            } else {
+                unit * span as f32 + spacing * (span as f32 - 1.0)
+            };
+            if in_row > 0 && x + w > inner_w + 0.01 {
                 y += row_h + spacing;
                 for (_, r) in &mut out[row_first..] {
                     r.h = row_h;
                 }
                 row_first = out.len();
-                col = 0;
+                x = 0.0;
+                in_row = 0;
                 row_h = 0.0;
             }
-            let w = unit * span as f32 + spacing * (span as f32 - 1.0);
             let (_, h) = self.size_final(c, w);
-            let x = (unit + spacing) * col as f32;
             out.push((c, Rect::new(x, y, w, h)));
             row_h = row_h.max(h);
-            col += span;
+            x += w + spacing;
+            in_row += 1;
         }
         for (_, r) in &mut out[row_first..] {
             r.h = row_h;
@@ -853,7 +913,9 @@ impl<'a> Lay<'a> {
         self.page
             .list(cols)
             .iter()
-            .map(|v| match *v {
+            // A `$ref` entry (`cols=[80, $w]`) is a theme number: deref
+            // here or the track silently lays out as `fill` (GPAR114).
+            .map(|v| match crate::runtime::deref(self.page, self.res.variant, *v) {
                 Value::VNum(n) => Len::Exact(n),
                 Value::VIdent(w) if self.page.str(w) == "hug" => Len::Hug(1.0),
                 Value::VIdent(_) => Len::Fill(1.0),
@@ -1119,7 +1181,12 @@ fn free_axis(start: f32, extent: f32, len: Len, align: Align, m_near: Option<f32
     if m_near.is_some() && m_far.is_some() && matches!(len, Len::Unset | Len::Fill(_)) && align == Align::AlignUnset {
         return (start + near, if frame_written { filled.max(floor) } else { filled.max(floor).max(content) });
     }
-    let (start, extent) = if align != Align::AlignUnset && m_near.is_some() && m_far.is_some() { (start + near, filled) } else { (start, extent) };
+    // Both margins on an aligned axis inset the measuring frame ONCE —
+    // the align arms below must then see them as spent, or a left-aligned
+    // capped box sits at 2× its margin (GPAR38; the centered case was
+    // already right, the inset frame's midpoint carries the (near-far)/2
+    // shift the addon's cap.fill-margin-shift pins).
+    let (start, extent, near, far) = if align != Align::AlignUnset && m_near.is_some() && m_far.is_some() { (start + near, filled, 0.0, 0.0) } else { (start, extent, near, far) };
     // An unwritten size (stretch, fill) takes the room it is given. When
     // that room comes from nowhere the author wrote (the viewport, a chain
     // of unwritten boxes) it is never smaller than its content — the same

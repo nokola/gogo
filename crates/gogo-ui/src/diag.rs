@@ -137,6 +137,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G1013", "`min_width` above `max_width`"),
     ("G1014", "margins under a Column/Row/Flow/Grid"),
     ("G1015", "a seat declaration's shape — a named, empty socket in a container"),
+    ("G1017", "`aspect=` contract — one driven axis, a free parent, a positive ratio"),
     ("G1016", "a seat move's rules — a declared seat, a container home, one writer, no cycles"),
     ("G2001", "unknown property"),
     ("G2002", "a property spelled in another dialect / another kind's word"),

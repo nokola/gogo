@@ -92,6 +92,11 @@ fn grid_track_list_parses_every_value_kind() {
     assert!(matches!(items[1], Value::VIdent(w) if c.page.str(w) == "hug"), "{items:?}");
     assert!(matches!(items[2], Value::VCall { name, .. } if c.page.str(name) == "fill"), "{items:?}");
     assert!(matches!(items[3], Value::VRef { .. }), "{items:?}");
+    // GPAR114 (round 4): the `$w` track LAYS OUT at its theme number —
+    // it used to fall through grid_tracks' catch-all and fill.
+    let (page, rects) = lay("theme { $w = 50 }\nView v { Grid g cols=[$w, fill], width=200, height=100, halign=left, valign=top {\n  row { Rectangle a min_size=5x5; Rectangle b min_size=5x5 }\n } }\n", 400.0, 400.0);
+    assert_eq!(rect(&page, &rects, "a").w, 50.0, "{:?}", rect(&page, &rects, "a"));
+    assert_eq!(rect(&page, &rects, "b").w, 150.0, "{:?}", rect(&page, &rects, "b"));
     ok("View v { Grid g cols=[80,\n        hug,\n] { } }\n");
     assert!(fails("View v { Grid g cols=[80, hug { } }\n"), "an unclosed list must not build");
 }
@@ -490,8 +495,10 @@ fn full_row_cells_build() {
 /// at its OWN pitch: four 66×66 squares sit at x 0, 66, 132, 198 in a
 /// 3-column lattice; clearing the fixed size returns the cell to its
 /// full-row 300×20.
+/// GPAR75/115 (round 4, 2026-08-31): any exact width on the cell is its
+/// pitch — Godot reads a code `set_cell fixed_w` only; Rust has no
+/// code-only channel, so a declared or written exact width means the same.
 #[test]
-#[ignore = "NEW: Godot fixed-size cells pack at their own pitch (b.x 66) vs Rust cells always take unit×span (a width write shrinks the box, b.x stays 100)"]
 fn fixed_size_cells_pack_at_their_own_pitch() {
     let c = ok(FIXED);
     let page = c.page;

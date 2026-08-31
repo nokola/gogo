@@ -2751,6 +2751,41 @@ impl<'a> Compiler<'a> {
         self.stops_ctx = None;
         tmp.props.extend(subtree_defaults);
         tmp.node.placement = self.placement(&placement_props, n.line, parent_kind, kind);
+        // `aspect=` is a relation: ONE spelled axis drives, the other is
+        // derived; both `fill` = the largest ratio box that fits (GPAR80,
+        // the addon's _aspect_fit rules). Fenced here — the checks need
+        // the compiled placement AND the prop value, and `aspect` is not a
+        // placement key (layout reads it from the props).
+        if let Some(av) = tmp.props.iter().rev().find(|pr| pr.key == PropKey::Aspect).map(|pr| pr.value) {
+            let pl = tmp.node.placement;
+            let natural = matches!(av, Value::VIdent(w) if self.page.str(w) == "natural");
+            match av {
+                Value::VNum(x) if x <= 0.0 => {
+                    self.error("G1017", n.line, "`aspect=` wants a positive ratio (width/height)");
+                }
+                Value::VNum(_) | Value::VRef { .. } => {}
+                Value::VIdent(_) if natural && kind == Kind::Image => {}
+                Value::VIdent(_) if natural => {
+                    self.error("G1017", n.line, "`aspect=natural` reads a bitmap's own ratio — only an Image has one");
+                }
+                _ => {
+                    self.error("G1017", n.line, "`aspect=` wants a positive ratio (width/height) or, on an Image, `natural`");
+                }
+            }
+            if !natural && !matches!(av, Value::VRef { .. }) {
+                if matches!(pl.width, Len::Hug(_)) || matches!(pl.height, Len::Hug(_)) {
+                    self.error("G1017", n.line, "`aspect=` with a hug axis: hug is content-sized, nothing is left to derive");
+                } else if matches!(pl.width, Len::Exact(_)) && matches!(pl.height, Len::Exact(_)) {
+                    self.error("G1017", n.line, "`aspect=` with both sizes spelled: the ratio IS the second size — drop one");
+                }
+                if pl.max_width.is_some() || pl.max_height.is_some() || pl.max_width_fill || pl.max_height_fill {
+                    self.error("G1017", n.line, "a `max_*` cap cannot combine with `aspect=` — the clamp would break the ratio");
+                }
+                if parent_kind.map(|k| k.is_stack() || matches!(k, Kind::Flow | Kind::Grid | Kind::GridRow | Kind::Tiles)).unwrap_or(false) {
+                    self.error("G1017", n.line, "`aspect=` needs a free parent (Layers, View, Panel) — a container seats its children and owns both axes");
+                }
+            }
+        }
         // Start states the file declares; the Runtime seeds from them.
         for prop in &tmp.props {
             match (prop.key, prop.value) {
