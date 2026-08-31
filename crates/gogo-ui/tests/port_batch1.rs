@@ -2,7 +2,8 @@
 //! GP20): composed `when` pairs, the closed screen vocabulary, the CSS
 //! gradient compass with every stop drawn, WPF bounce numbers, anim
 //! headers (`repeat=forever`, `speed=`, `autoreverse=`), `key` timing,
-//! `rotate` in the draw list, `stop`, entrances under a gone ancestor.
+//! `rotate` in the draw list, `stop` and `take_finished`, entrances
+//! under a gone ancestor.
 use gogo::anim::Finish;
 use gogo::draw::{Draw, draw};
 use gogo::layout::{FixedAdvance, Rect, layout};
@@ -188,4 +189,27 @@ fn screen_classes_grade_view_sizes() {
     assert_eq!(ScreenClass::from_view(1100.0, 800.0), ScreenClass::LotsOfSpace);
     assert_eq!(Orientation::from_view(680.0, 320.0), Orientation::Landscape);
     assert_eq!(Orientation::from_view(320.0, 320.0), Orientation::Portrait, "a square screen is portrait");
+}
+
+/// GP20: an anim that runs out lands in `take_finished` exactly once, so
+/// a host can sequence on its end; `stop()` never reports (WPF
+/// Storyboard.Stop skips Completed).
+#[test]
+fn finished_anims_reach_the_host_once() {
+    let c = ok("View v {\n Rectangle a 10x10\n}\nanim fade { a.opacity to=0, duration=0.2 }\nanim blink { a.scale to=0.5, duration=0.2 }\n");
+    let mut page = c.page;
+    let fade = page.intern_lookup("fade");
+    let blink = page.intern_lookup("blink");
+    let mut rt = Runtime::new(&page);
+    rt.play(&page, fade, Finish::Nothing);
+    rt.tick(&mut page, 0.1);
+    assert!(rt.take_finished().is_empty(), "mid-flight is not finished");
+    rt.tick(&mut page, 0.2);
+    let done = rt.take_finished();
+    assert_eq!(done.iter().map(|a| page.str(*a)).collect::<Vec<_>>(), ["fade"]);
+    assert!(rt.take_finished().is_empty(), "drained");
+    rt.play(&page, blink, Finish::Nothing);
+    rt.stop(blink, true);
+    rt.tick(&mut page, 1.0);
+    assert!(rt.take_finished().is_empty(), "a stopped anim never reports");
 }

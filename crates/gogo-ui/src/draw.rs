@@ -114,6 +114,43 @@ fn authored_disabled_opacity(page: &Page, id: NodeId) -> bool {
         .any(|w| w.state == State::StateDisabled && page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize].iter().any(|p| p.key == PropKey::Opacity))
 }
 
+/// Does this box cut its subtree at its own rectangle? Scroll viewports
+/// and slot regions clip; so does `clip_contents=true`, and a Label with
+/// `clip_text=true` cuts its own text. A WRITTEN size is hard too: a box
+/// with an exact `width=`/`height=` or a `max_*` cap cuts whatever pokes
+/// past it on that axis — the human wrote the number, so the box is
+/// neither enlarged nor spilled. Two children are left alone: one hanging
+/// out through a NEGATIVE margin (a badge, the app-bar labels — "stick
+/// out on purpose") and an `overlay=true` one (outside the box's
+/// accounting by declaration). A Label with a written size always cuts —
+/// only the renderer can measure its text.
+///
+/// One answer for two consumers, so the picture and the finger never
+/// disagree (GPAR37): draw pushes the clip and `hit` rejects a point a
+/// clipping ancestor cut — a button's clipped half takes no taps.
+pub(crate) fn clips(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId) -> bool {
+    let node = &page.nodes[id as usize];
+    let pl = &res.placement[id as usize];
+    let written_x = pl.max_width.is_some() || pl.max_width_fill || matches!(pl.width, Len::Exact(_));
+    let written_y = pl.max_height.is_some() || pl.max_height_fill || matches!(pl.height, Len::Exact(_));
+    let written_overflow = (written_x || written_y)
+        && (node.kind == Kind::Label || {
+            let own = rects[id as usize];
+            let neg = |m: Option<f32>| m.map_or(false, |v| v < 0.0);
+            page.children(id).any(|c| {
+                let r = rects[c];
+                let pc = &res.placement[c];
+                if res.gone(page, c as NodeId) || res.bool(page, c as NodeId, PropKey::Overlay).unwrap_or(false) {
+                    return false;
+                }
+                let px = written_x && ((r.x < own.x - 0.01 && !neg(pc.margin[0])) || (r.x + r.w > own.x + own.w + 0.01 && !neg(pc.margin[2])));
+                let py = written_y && ((r.y < own.y - 0.01 && !neg(pc.margin[1])) || (r.y + r.h > own.y + own.h + 0.01 && !neg(pc.margin[3])));
+                px || py
+            })
+        });
+    matches!(node.kind, Kind::Scroll | Kind::Slot) || res.bool(page, id, PropKey::ClipContents).unwrap_or(false) || (node.kind == Kind::Label && res.bool(page, id, PropKey::ClipText).unwrap_or(false)) || written_overflow
+}
+
 fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, out: &mut Vec<Draw>) {
     if res.gone(page, id) || res.hidden(page, id) {
         return;
@@ -155,34 +192,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     // A templated Check/Radio/Toggle (a body of its own) is a blank toggle
     // surface: no chrome unless the file paints it.
     let templated = node.kind.is_press_surface() && node.kind != Kind::Button && node.children.1 > 0;
-    // Scroll viewports and slot regions clip; so does `clip_contents=true`,
-    // and a Label with `clip_text=true` cuts its own text. A WRITTEN size
-    // is hard too: a box with an exact `width=`/`height=` or a `max_*` cap
-    // cuts whatever pokes past it on that axis — the human wrote the
-    // number, so the box is neither enlarged nor spilled. Two children are
-    // left alone: one hanging out through a NEGATIVE margin (a badge, the
-    // app-bar labels — "stick out on purpose") and an `overlay=true` one
-    // (outside the box's accounting by declaration). A Label with a written
-    // size always cuts — only the renderer can measure its text.
-    let pl = &res.placement[id as usize];
-    let written_x = pl.max_width.is_some() || pl.max_width_fill || matches!(pl.width, Len::Exact(_));
-    let written_y = pl.max_height.is_some() || pl.max_height_fill || matches!(pl.height, Len::Exact(_));
-    let written_overflow = (written_x || written_y)
-        && (node.kind == Kind::Label || {
-            let own = rects[id as usize];
-            let neg = |m: Option<f32>| m.map_or(false, |v| v < 0.0);
-            page.children(id).any(|c| {
-                let r = rects[c];
-                let pc = &res.placement[c];
-                if res.gone(page, c as NodeId) || res.bool(page, c as NodeId, PropKey::Overlay).unwrap_or(false) {
-                    return false;
-                }
-                let px = written_x && ((r.x < own.x - 0.01 && !neg(pc.margin[0])) || (r.x + r.w > own.x + own.w + 0.01 && !neg(pc.margin[2])));
-                let py = written_y && ((r.y < own.y - 0.01 && !neg(pc.margin[1])) || (r.y + r.h > own.y + own.h + 0.01 && !neg(pc.margin[3])));
-                px || py
-            })
-        });
-    let clip = matches!(node.kind, Kind::Scroll | Kind::Slot) || res.bool(page, id, PropKey::ClipContents).unwrap_or(false) || (node.kind == Kind::Label && res.bool(page, id, PropKey::ClipText).unwrap_or(false)) || written_overflow;
+    let clip = clips(page, res, rects, id);
     if clip {
         out.push(Draw::ClipPush(rect));
     }
@@ -506,7 +516,10 @@ pub fn hit(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: boo
             if parent == NO_NODE {
                 break;
             }
-            if page.nodes[parent as usize].kind == Kind::Scroll && !rects[parent as usize].contains(x, y) {
+            // A clipping ancestor cuts input at its own rectangle the
+            // same way it cuts pixels (GPAR37) — Scroll viewports,
+            // `clip_contents=true` and written-size overflow alike.
+            if clips(page, res, rects, parent) && !rects[parent as usize].contains(x, y) {
                 ok = false;
                 break;
             }

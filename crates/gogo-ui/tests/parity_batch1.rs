@@ -5,7 +5,7 @@
 //! player whose channels a newer one took keeps its clock and hands over
 //! the true base.
 use gogo::anim::Finish;
-use gogo::draw::{Draw, draw};
+use gogo::draw::{Draw, draw, hit};
 use gogo::layout::{FixedAdvance, Rect, layout};
 use gogo::page::DISABLED_OPACITY;
 use gogo::runtime::{HELD, Runtime, resolve};
@@ -309,4 +309,24 @@ fn scale_shrinks_glyphs_corners_and_borders_with_the_box() {
         })
         .expect("caption");
     assert_eq!(size, 10.0, "{list:#?}");
+}
+
+/// GPAR37 (the hit half): what a written cap clips is not tappable — the
+/// picture and the finger agree. The Button pokes past its capped parent;
+/// a tap on the visible half hits, a tap on the clipped half misses. An
+/// uncapped hug parent grows instead, so the same Button stays tappable
+/// end to end.
+#[test]
+fn clipped_overflow_is_not_hit_testable() {
+    let c = ok("View v {\n Layers z halign=left, valign=top {\n  Layers cap width=100, height=40, halign=left, valign=top { Button b text=\"wide\", width=300, height=40 }\n  Layers free halign=left, valign=top, margin_top=100 { Button b2 text=\"wide\", width=300, height=40 }\n }\n}\n");
+    let page = &c.page;
+    let rt = Runtime::new(page);
+    let res = resolve(page, &rt);
+    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let b = page.find("b").unwrap();
+    let b2 = page.find("b2").unwrap();
+    assert_eq!(rects[b as usize].w, 300.0, "the Button keeps its written width");
+    assert_eq!(hit(page, &res, &rects, 50.0, 20.0, false), Some(b), "the visible half taps");
+    assert_eq!(hit(page, &res, &rects, 250.0, 20.0, false), None, "the clipped half takes no taps");
+    assert_eq!(hit(page, &res, &rects, 250.0, 120.0, false), Some(b2), "under a hug parent the same spot still taps");
 }

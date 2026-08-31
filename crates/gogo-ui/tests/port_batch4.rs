@@ -6,7 +6,7 @@
 use gogo::anim::Finish;
 use gogo::input::{EventKind, Input, Phase, Touch};
 use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::{Action, Value};
+use gogo::page::{Action, PropKey, Value};
 use gogo::runtime::{Runtime, resolve};
 use gogo::{Compiled, compile};
 
@@ -151,4 +151,98 @@ fn raise_reorders_paint_and_hit() {
     assert_eq!(order(&page, &rt), vec![a, b]);
     rt.set_raise(b, -1);
     assert_eq!(order(&page, &rt), vec![b, a], "a negative raise paints first (under)");
+}
+
+fn dcodes(src: &str) -> Vec<String> {
+    compile(src, &|_| None).diags.iter().map(|d| d.code.clone()).collect()
+}
+
+/// GP32 (scoped styles): a widget's own `style` block dresses its body's
+/// nodes and SHADOWS a page style of the same name — and stays invisible
+/// outside: the label at the page level wears the page `tone`.
+#[test]
+fn widget_scoped_styles_shadow_and_stay_inside() {
+    let src = "style tone font_size=20\nwidget Card {\n style tone font_size=10\n Layers body { Label t .tone text=\"x\" }\n}\nView v {\n Card c\n Label out .tone text=\"y\"\n}\n";
+    let c = ok(src);
+    let page = &c.page;
+    let rt = Runtime::new(page);
+    let res = resolve(page, &rt);
+    let t_id = page.find("c/t").expect("c/t");
+    let out_id = page.find("out").expect("out");
+    assert_eq!(res.num(page, t_id, PropKey::FontSize), Some(10.0), "inside the body the scoped style wins");
+    assert_eq!(res.num(page, out_id, PropKey::FontSize), Some(20.0), "outside, the page style");
+}
+
+/// GP32: a scoped-only style is unknown outside its widget (the scope is
+/// popped with the body), and a scoped style carrying `for=` refuses —
+/// `for=` styles are top-level declarations.
+#[test]
+fn scoped_styles_stay_scoped_and_take_no_for() {
+    let outside = dcodes("widget Card {\n style tone font_size=10\n Layers body { Label t .tone text=\"x\" }\n}\nView v {\n Card c\n Label out .tone text=\"y\"\n}\n");
+    assert_eq!(outside.iter().filter(|c| *c == "G4001").count(), 1, "only the OUTSIDE wearer errors: {outside:?}");
+    let for_style = dcodes("widget Card {\n style s for=Button, background=red\n Layers body { Rectangle r 4x4 }\n}\nView v { Card c }\n");
+    assert!(for_style.contains(&"G3004".to_string()), "{for_style:?}");
+}
+
+/// GP32 (widget-scope transition): a `for=` widget's `transition` rule
+/// times the HOSTING Button's flips — the rule lands on the Button node,
+/// where the state actually changes.
+#[test]
+fn a_host_widgets_transition_times_the_hosts_flip() {
+    let src = "widget Face for=Button {\n Layers skin { Rectangle dot 4x4 }\n transition base -> held duration=0.5\n}\nView v {\n Button b { Face f }\n}\n";
+    let c = ok(src);
+    let b = c.page.find("b").expect("b");
+    assert!(
+        c.page.transitions.iter().any(|t| t.node == b && (t.duration - 0.5).abs() < 1e-6),
+        "the rule watches the host: {:?}",
+        c.page.transitions
+    );
+}
+
+/// GP32 (control transition): a `control` declaration's `transition` is
+/// its default feel — endpoint-less, the weakest rule on each instance's
+/// root; endpoints there refuse.
+#[test]
+fn a_controls_transition_is_its_default_feel() {
+    let src = "control Pad {\n Layers body { Rectangle r 4x4 }\n transition duration=0.15\n}\nView v {\n Pad p\n}\n";
+    let c = ok(src);
+    let p = c.page.find("p").expect("p");
+    assert!(
+        c.page.transitions.iter().any(|t| t.node == p && t.from.is_none() && t.to.is_none() && (t.duration - 0.15).abs() < 1e-6),
+        "{:?}",
+        c.page.transitions
+    );
+    let endpoints = dcodes("control Pad {\n Layers body { Rectangle r 4x4 }\n transition base -> held duration=0.1\n}\nView v { Pad p }\n");
+    assert!(endpoints.contains(&"G0034".to_string()), "{endpoints:?}");
+}
+
+/// GP32 (slot lanes): a control's own anim drives its slot region's
+/// motion channel — `slot.thumb.translate.y` moves the region.
+#[test]
+fn slot_lanes_move_the_region_in_a_controls_own_anim() {
+    let src = "control Fader {\n Layers body { slot thumb { Rectangle tt 4x4 } }\n anim pop { slot.thumb.translate.y from=-3, to=0, duration=1 }\n}\nView v {\n Fader f\n}\n";
+    let c = ok(src);
+    let mut page = c.page;
+    let thumb = page.find("f/thumb").expect("f/thumb") as usize;
+    let pop = page.intern_lookup("f/pop");
+    assert!(pop != gogo::page::NO_STR, "the instance's own anim");
+    let mut rt = Runtime::new(&page);
+    rt.play(&page, pop, Finish::Nothing);
+    rt.tick(&mut page, 0.25);
+    assert!(rt.motion[thumb].translate[1] < -1.0, "the slot region rides the lane: {:?}", rt.motion[thumb]);
+}
+
+/// GP32 (slot-lane fences): outside a control's own anims the lane
+/// refuses (a widget's too — internals stay invisible); a non-motion word
+/// refuses; a missing slot names the control's slots.
+#[test]
+fn slot_lanes_refuse_outside_and_non_motion() {
+    let page_scope = dcodes("View v {\n Rectangle a 4x4\n}\nanim pop { slot.a.translate.y to=0, duration=1 }\n");
+    assert!(page_scope.contains(&"G0063".to_string()), "{page_scope:?}");
+    let widget_scope = dcodes("widget W {\n Layers body { slot s { Rectangle r 4x4 } }\n anim pop { slot.s.opacity to=0, duration=1 }\n}\nView v { W w }\n");
+    assert!(widget_scope.contains(&"G0063".to_string()), "{widget_scope:?}");
+    let non_motion = dcodes("control Fader {\n Layers body { slot thumb { Rectangle tt 4x4 } }\n anim pop { slot.thumb.width to=0, duration=1 }\n}\nView v { Fader f }\n");
+    assert!(non_motion.contains(&"G0063".to_string()), "{non_motion:?}");
+    let missing = dcodes("control Fader {\n Layers body { slot thumb { Rectangle tt 4x4 } }\n anim pop { slot.nope.opacity to=0, duration=1 }\n}\nView v { Fader f }\n");
+    assert!(missing.contains(&"G0060".to_string()), "{missing:?}");
 }

@@ -2,7 +2,7 @@
 //! here (the runtime never sees them); `$theme` refs and translation keys
 //! stay live. Diagnostic codes are stable G-numbers (`G0041`, `G7011` …).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::anim::{Channel, EASING_PARAM_KEYS, Easing, PARAMS_FOR_CURVE};
 use crate::ast::{AstItem, AstNode, AstProp, AstValue, Document};
@@ -77,6 +77,18 @@ struct WidgetDef {
     /// onto the body root, under its own (`for=` excluded).
     props: Vec<AstProp>,
     whens: Vec<AstNode>,
+    /// `transition` lines beside the body (GP32): on a `for=` widget they
+    /// time the HOSTING control's flips (attached to it at lay time); on
+    /// a `control` they are its default feel — endpoint-less, the weakest
+    /// rule on the instance root.
+    transitions: Vec<AstNode>,
+    /// `style` blocks beside the body (GP32), visible only while that
+    /// body builds: they shadow page styles, innermost widget first (the
+    /// shipped scoping). An instance-site `style=` never sees them.
+    styles: HashMap<String, StyleDef>,
+    /// A `control` declaration (vs a `widget`): its own scoped anims may
+    /// drive `slot.<name>.<motion word>` lanes.
+    control: bool,
     line: u32,
 }
 
@@ -270,6 +282,14 @@ pub struct Compiler<'a> {
     palette: HashMap<String, Rgba>,
     /// Widget param scopes, innermost last.
     scopes: Vec<HashMap<String, AstValue>>,
+    /// Widget-scoped styles, alive while that widget's body builds
+    /// (innermost last). Lookups walk this before the page styles, so a
+    /// scoped `Row` shadows a page `Row` and vanishes when the body is
+    /// done (GP32, the shipped scoping).
+    style_scopes: Vec<HashMap<String, StyleDef>>,
+    /// Instance prefixes that are CONTROL instances: only their own
+    /// scoped anims may target `slot.<name>.<motion word>` lanes.
+    control_scopes: HashSet<String>,
     node_whens: Vec<Vec<WhenTmp>>,
     /// The key table when `options.keys` is `None` (see `CompileOptions`).
     local_keys: Keys,
@@ -352,6 +372,8 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         widgets: HashMap::new(),
         palette: default_palette(),
         scopes: Vec::new(),
+        style_scopes: Vec::new(),
+        control_scopes: HashSet::new(),
         node_whens: Vec::new(),
         local_keys: Keys::default(),
         deferred_whens: Vec::new(),
@@ -594,6 +616,14 @@ impl<'a> Compiler<'a> {
             self.error("G0025", n.line, "`style` needs a name");
             return;
         };
+        let def = self.style_def(&name, n);
+        self.styles.insert(name, def);
+    }
+
+    /// One style block's definition (`for=`/`extends=` pulled, `when`/
+    /// `transition` children collected) — shared by page-level `style`
+    /// lines and a widget's scoped ones (GP32).
+    fn style_def(&mut self, name: &str, n: &AstNode) -> StyleDef {
         // `for=Button` names the ONE control type the style may dress —
         // wearing it elsewhere is refused where the style is applied.
         let mut props: Vec<AstProp> = n.props.clone();
@@ -636,7 +666,13 @@ impl<'a> Compiler<'a> {
                 AstItem::Assign { key, line, .. } => self.error("G0026", *line, format!("a style block holds `when` and `transition` lines, not `{key} =`")),
             }
         }
-        self.styles.insert(name, def);
+        def
+    }
+
+    /// The style `name` resolves to here: the innermost widget scope
+    /// first, then the page's (GP32, the shipped shadowing order).
+    fn find_style(&self, name: &str) -> Option<&StyleDef> {
+        self.style_scopes.iter().rev().find_map(|s| s.get(name)).or_else(|| self.styles.get(name))
     }
 
     /// A style with its `extends=` chain folded in: the parent's props
@@ -644,7 +680,7 @@ impl<'a> Compiler<'a> {
     /// chain is judged here, where the style is worn — an unknown parent,
     /// a cycle, and a `for=` mismatch across the chain all refuse.
     fn resolve_style(&mut self, name: &str, line: u32) -> Option<StyleDef> {
-        let Some(mut def) = self.styles.get(name).cloned() else {
+        let Some(mut def) = self.find_style(name).cloned() else {
             self.error("G4001", line, format!("unknown style `.{name}`"));
             return None;
         };
@@ -655,7 +691,7 @@ impl<'a> Compiler<'a> {
                 self.error("G4001", def.line, format!("style `{name}` extends itself — the chain: {} → {parent_name}", chain.join(" → ")));
                 return None;
             }
-            let Some(parent) = self.styles.get(&parent_name).cloned() else {
+            let Some(parent) = self.find_style(&parent_name).cloned() else {
                 self.error("G4001", def.line, format!("`extends={parent_name}` names no style"));
                 return None;
             };
@@ -1201,6 +1237,23 @@ impl<'a> Compiler<'a> {
         }
         let whens: Vec<AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "when").cloned().collect();
         let anims: Vec<AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "anim").cloned().collect();
+        let transitions: Vec<AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "transition").cloned().collect();
+        // Scoped styles (GP32): built once here, pushed as a lookup scope
+        // for every instance's body build. `for=` stays a top-level
+        // affair — a scoped style dresses its own body's nodes.
+        let mut styles: HashMap<String, StyleDef> = HashMap::new();
+        for s in n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "style") {
+            let Some(sname) = s.name.clone() else {
+                self.error("G0025", s.line, "`style` needs a name");
+                continue;
+            };
+            if s.props.iter().any(|p| p.key == "for") {
+                self.error("G3004", s.line, "`for=` styles are top-level declarations — a widget's scoped styles style its own body's nodes");
+                continue;
+            }
+            let def = self.style_def(&sname, s);
+            styles.insert(sname, def);
+        }
         // `widget X for=Radio`: the body fills a stateful host, so the
         // widget-scope `when` lines answer the HOST's states (D276).
         let mut props: Vec<AstProp> = n.props.clone();
@@ -1222,7 +1275,7 @@ impl<'a> Compiler<'a> {
                 self.error("G5001", w.line, format!("a widget-scope `{}` responds to the HOST's states — this widget declares no host; announce it: `widget {name} for=Radio, …` (hosts: Button, Radio, Check)", w.type_word));
             }
         }
-        self.widgets.insert(name, WidgetDef { params: n.params.clone(), body: bodies[0].clone(), anims, host, props, whens, line: n.line });
+        self.widgets.insert(name, WidgetDef { params: n.params.clone(), body: bodies[0].clone(), anims, host, props, whens, transitions, styles, control: n.type_word == "control", line: n.line });
     }
 
     /// `easing=name` plus its parameter words on the same line
@@ -1334,8 +1387,43 @@ impl<'a> Compiler<'a> {
                     cluster_start
                 }
                 path => {
-                    // `node.channel[.axis]` — the last one or two words are the channel.
-                    let (node_name, channel) = match path.split_once('.') {
+                    // `slot.<name>.<motion word>` (GP32): a control's own
+                    // anims may drive a slot region's MOTION channel
+                    // (visual offsets; layout, and anything the value
+                    // drives, has ONE writer — the driver). From outside
+                    // a control its internals stay invisible (the widget
+                    // rule), so the lane is refused there.
+                    let slot_lane: Option<(String, String)> = if let Some(rest) = path.strip_prefix("slot.") {
+                        if !self.control_scopes.contains(scope) {
+                            self.error("G0063", step.line, "`slot.` anim targets work only in a control's OWN scoped anims — from outside, a control's internals stay invisible (the widget rule)");
+                            continue;
+                        }
+                        match rest.split_once('.') {
+                            None => {
+                                self.error("G0063", step.line, "a slot lane names its slot: `slot.<name>.<motion word>`");
+                                continue;
+                            }
+                            Some((_sname, ch)) if Channel::parse(ch).is_none() => {
+                                self.error("G0063", step.line, format!("slot lanes use the MOTION channel — `{ch}` isn't a motion word; animate translate.x|translate.y|scale|rotate|opacity"));
+                                continue;
+                            }
+                            Some((sname, ch)) => {
+                                let full = format!("{scope}/{sname}");
+                                if self.page.find(&full).map(|id| self.page.nodes[id as usize].kind) != Some(Kind::Slot) {
+                                    let slots: Vec<String> = self.page.nodes.iter().filter(|nd| nd.kind == Kind::Slot && nd.name != NO_STR).map(|nd| self.page.str(nd.name).to_string()).filter(|nm| nm.starts_with(&format!("{scope}/"))).map(|nm| nm.rsplit('/').next().unwrap_or_default().to_string()).collect();
+                                    self.error("G0060", step.line, format!("`{path}`: no slot named `{sname}` in this control{}", if slots.is_empty() { String::new() } else { format!(" — its slots: {}", slots.join(", ")) }));
+                                    continue;
+                                }
+                                Some((full, ch.to_string()))
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    let (node_name, channel) = if let Some(sl) = slot_lane {
+                        sl
+                    } else {
+                        match path.split_once('.') {
                         Some((n, rest)) if Channel::parse(rest).is_some() => (n.to_string(), rest.to_string()),
                         _ => {
                             if path.ends_with(".modulate.a") || path == "modulate.a" {
@@ -1346,6 +1434,7 @@ impl<'a> Compiler<'a> {
                                 self.error("G0063", step.line, format!("`{path}`: want `<node>.translate.x|translate.y|scale|scale.x|scale.y|rotate|opacity`"));
                             }
                             continue;
+                        }
                         }
                     };
                     let found = if node_name == "self" {
@@ -1982,6 +2071,10 @@ impl<'a> Compiler<'a> {
                 }
             };
             self.prefix.push(prefix);
+            self.style_scopes.push(def.styles.clone());
+            if def.control {
+                self.control_scopes.insert(self.prefix.join("/"));
+            }
             // The widget's own anims, one copy per instance.
             for a in &def.anims {
                 self.anim(a);
@@ -2006,11 +2099,30 @@ impl<'a> Compiler<'a> {
             };
             let mut t = self.node(body, parent_kind, Some(n));
             self.instance_on.pop();
+            self.style_scopes.pop();
             // A `for=` widget's scope responses answer the hosting control.
             for w in &def.whens {
                 if let Some(mut tw) = self.when(w, t.node.kind) {
                     tw.host = def.host.is_some();
                     t.whens.push(tw);
+                }
+            }
+            // A `for=` widget's `transition` rules time the HOSTING
+            // control's flips (resolved at lay time, like its `when`
+            // lines); a `control`'s is its default feel — endpoint-less,
+            // the weakest rule on the instance root (the shipped
+            // contract). A hostless widget's were refused at declaration.
+            for tr in &def.transitions {
+                if def.control {
+                    if !tr.args.is_empty() || !tr.arrows.is_empty() {
+                        self.error("G0034", tr.line, "a control declaration's transition is its default feel — no endpoints (`transition duration=0.15, easing=cubic_out`); state pairs go on styles or instances");
+                        continue;
+                    }
+                    let t2 = self.transition(tr, PENDING_NODE);
+                    t.transitions.push(t2);
+                } else if def.host.is_some() {
+                    let t2 = self.transition(tr, HOST_PENDING);
+                    t.transitions.push(t2);
                 }
             }
             self.prefix.pop();
@@ -2136,9 +2248,22 @@ impl<'a> Compiler<'a> {
         let mut style_whens: Vec<AstNode> = Vec::new();
         let mut style_transitions: Vec<AstNode> = Vec::new();
         let mut subtree_defaults: Vec<Prop> = Vec::new();
-        let styles: Vec<String> = n.styles.iter().chain(instance.iter().flat_map(|i| i.styles.iter())).cloned().collect();
-        for s in &styles {
-            match self.resolve_style(s, n.line) {
+        // The body's own `style=` sees the widget's scoped styles; the
+        // instance line's does NOT — the scope belongs to the body (GP32,
+        // the shipped rule).
+        let styles: Vec<(String, bool)> = n.styles.iter().map(|s| (s.clone(), false)).chain(instance.iter().flat_map(|i| i.styles.iter().map(|s| (s.clone(), true)))).collect();
+        for (s, from_instance) in &styles {
+            let resolved = if *from_instance {
+                let top = self.style_scopes.pop();
+                let r = self.resolve_style(s, n.line);
+                if let Some(top) = top {
+                    self.style_scopes.push(top);
+                }
+                r
+            } else {
+                self.resolve_style(s, n.line)
+            };
+            match resolved {
                 Some(def) => {
                     if let Some(target) = &def.for_target {
                         if *target != n.type_word {
@@ -2475,6 +2600,7 @@ impl<'a> Compiler<'a> {
         let scope = self.scopes.pop();
         let prefix = self.prefix.pop();
         let fills = self.fills.pop();
+        let styles = self.style_scopes.pop();
         let r = f(self);
         if let Some(s) = scope {
             self.scopes.push(s);
@@ -2484,6 +2610,9 @@ impl<'a> Compiler<'a> {
         }
         if let Some(f) = fills {
             self.fills.push(f);
+        }
+        if let Some(s) = styles {
+            self.style_scopes.push(s);
         }
         r
     }
@@ -2556,7 +2685,17 @@ impl<'a> Compiler<'a> {
         self.page.nodes.push(node);
         self.node_whens.push(whens);
         for mut t in transitions {
-            t.node = id;
+            // A `for=` widget's rule watches the hosting control (the
+            // nearest press surface above), exactly like its `when` lines.
+            t.node = if t.node == HOST_PENDING {
+                let mut a = parent;
+                while a != NO_NODE && !self.page.nodes[a as usize].kind.is_press_surface() {
+                    a = self.page.nodes[a as usize].parent;
+                }
+                if a == NO_NODE { id } else { a }
+            } else {
+                id
+            };
             self.page.transitions.push(t);
         }
         id

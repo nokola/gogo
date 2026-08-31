@@ -54,6 +54,13 @@ pub struct Runtime {
     /// next writer of that property — a `when` flip that writes it, a code
     /// write, another anim — or `stop(restore)`.
     pub held: Vec<(NodeId, Channel, f32)>,
+    /// Anims that ended on their own since the last `take_finished`
+    /// (one entry per player that ran out). Needed because a host
+    /// sequencing on an anim's end (Godot's `finished`) otherwise polls
+    /// `is_playing` every frame and misses a finish that re-plays the
+    /// same frame. `stop()` never reports (WPF Storyboard.Stop skips
+    /// Completed).
+    finished: Vec<StrId>,
     /// Per node, what SHOWED after the last `resolve_animated`: the
     /// composed motion, the node's own opacity and the fill's alpha — the
     /// live value a new play starts from.
@@ -100,6 +107,7 @@ impl Runtime {
             held: Vec::new(),
             shown: vec![Motion::IDENTITY; page.nodes.len()],
             players: Vec::new(),
+            finished: Vec::new(),
             motion: vec![Motion::IDENTITY; page.nodes.len()],
             owned_text: vec![NO_STR; page.nodes.len()],
             last: Vec::new(),
@@ -255,6 +263,12 @@ impl Runtime {
         self.players.iter().any(|p| p.anim == anim && !p.stopped)
     }
 
+    /// The anims that ended on their own since the last call, drained
+    /// (GP20's `finished`). `stop()` never lands here.
+    pub fn take_finished(&mut self) -> Vec<StrId> {
+        std::mem::take(&mut self.finished)
+    }
+
     /// Stops `anim` (WPF Storyboard.Stop): `restore` puts every channel it
     /// owns back to its pre-play value; the player's finish action does
     /// not run. Nothing happens when it is not playing.
@@ -297,18 +311,19 @@ impl Runtime {
         let before = self.tweens.len();
         self.tweens.retain(|t| t.elapsed < t.duration);
         moving |= before > 0;
-        let mut finished: Vec<(Finish, Vec<(NodeId, Channel)>)> = Vec::new();
+        let mut finished: Vec<(Finish, Vec<(NodeId, Channel)>, StrId)> = Vec::new();
         let mut players = std::mem::take(&mut self.players);
         players.retain_mut(|p| {
             let alive = p.tick(dt, &mut self.motion);
             if !alive {
-                finished.push((p.finish, p.owns.clone()));
+                finished.push((p.finish, p.owns.clone(), p.anim));
             }
             alive
         });
         moving |= !players.is_empty() || !finished.is_empty();
         self.players = players;
-        for (f, owns) in finished {
+        for (f, owns, anim) in finished {
+            self.finished.push(anim);
             if let Finish::Hide(node) = f {
                 self.set_visible(page, node, false);
                 self.motion[node as usize] = Motion::IDENTITY;
