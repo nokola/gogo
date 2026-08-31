@@ -982,10 +982,15 @@ fn free_axis(start: f32, extent: f32, len: Len, align: Align, m_near: Option<f32
     let filled = extent - near - far;
     // An aligned axis with no size key hugs: alignment carves the default fill.
     let len = if len == Len::Unset && align != Align::AlignUnset { Len::Hug(1.0) } else { len };
-    // Both edges named on an unaligned axis: the box spans them. Aligned
-    // (the toast: `width=hug, max_width=fill, halign=center, margins`),
-    // the margins only inset the measuring frame.
-    if m_near.is_some() && m_far.is_some() && !matches!(len, Len::Exact(_)) && align == Align::AlignUnset {
+    // Both edges named on an unaligned axis with NO size word: the box
+    // spans them. A written size is never stretched by margins — an exact
+    // number IS the box, and a hug box is as wide as its content; margins
+    // are gaps around it (decided 2026-08-31,
+    // docs/todo-gogo-parity.md/GPAR39: `width=hug, margin=8` pins 8 in
+    // from the near edge, Godot's reading). Aligned (the toast:
+    // `width=hug, max_width=fill, halign=center, margins`), the margins
+    // only inset the measuring frame.
+    if m_near.is_some() && m_far.is_some() && matches!(len, Len::Unset | Len::Fill(_)) && align == Align::AlignUnset {
         return (start + near, if frame_written { filled.max(floor) } else { filled.max(floor).max(content) });
     }
     let (start, extent) = if align != Align::AlignUnset && m_near.is_some() && m_far.is_some() { (start + near, filled) } else { (start, extent) };

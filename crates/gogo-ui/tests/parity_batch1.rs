@@ -256,3 +256,26 @@ fn offscreen_names_shoved_nodes_not_parked_ones() {
     let names: Vec<&str> = gogo::layout::offscreen(page, &res, &rects, Rect::new(0.0, 0.0, 400.0, 400.0)).iter().map(|id| page.str(page.nodes[*id as usize].name)).collect();
     assert_eq!(names, vec!["low"], "{rects:?}");
 }
+
+/// GPAR39 (docs/todo-gogo-parity.md): margins never stretch a written
+/// `hug` — `width=hug, margin=8` is a content-wide box pinned 8 in from
+/// the near edge (Godot's reading), not a parent−16 span. Needed because
+/// the both-edges span rule used to swallow `hug`: the written word was
+/// silently ignored and a content-sized card drew as a near-full-width
+/// plate. Two named edges still span a box with NO size word.
+#[test]
+fn margins_never_stretch_a_hug_box() {
+    let c = ok("View v {\n Panel card width=hug, height=hug, margin=8, valign=top { Rectangle r 50x20 }\n Panel span margin=8, margin_top=100, height=40 { }\n}\n");
+    let page = &c.page;
+    let rt = Runtime::new(page);
+    let res = resolve(page, &rt);
+    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let rect = |n: &str| rects[page.find(n).unwrap() as usize];
+    let card = rect("card");
+    assert_eq!(card.w, 50.0, "hug keeps its content width: {card:?}");
+    assert_eq!(card.x, 8.0, "pinned 8 in from the near edge: {card:?}");
+    assert_eq!(card.h, 20.0, "the aligned axis hugs too: {card:?}");
+    let span = rect("span");
+    assert_eq!(span.w, 384.0, "no size word: two named edges still span (400 - 8 - 8): {span:?}");
+    assert_eq!(span.x, 8.0);
+}
