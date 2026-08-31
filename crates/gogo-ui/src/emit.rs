@@ -117,6 +117,8 @@ pub fn emit_rust(page: &Page, module: &str) -> String {
     out.push_str(&format!("        anims: {},\n", slice(&page.anims)));
     out.push_str(&format!("        anim_heads: {},\n", slice(&page.anim_heads)));
     out.push_str(&format!("        choices: {},\n", slice(&page.choices)));
+    out.push_str(&format!("        repeats: {},\n", slice(&page.repeats)));
+    out.push_str(&format!("        bind_sites: {},\n", slice(&page.bind_sites)));
     out.push_str("    };\n\n");
 
     // Handler enum.

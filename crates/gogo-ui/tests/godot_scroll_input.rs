@@ -143,7 +143,7 @@ fn scroll_content_takes_the_viewport_width_and_keeps_a_declared_one() {
 /// `units-native-px`, `units-reset` (gogo-design.md §7 "Units: epx only;
 /// device px never appear in a `.gogo`"): there is no density to push into
 /// the crate — the shell converts device px before gogo sees a touch — and
-/// the raw `scroll_deadzone` px escape hatch is not a word (G0042).
+/// the raw `scroll_deadzone` px escape hatch is not a word (G2001).
 #[test]
 fn deadzone_is_sixteen_epx_and_the_release_glide_is_boosted_twice() {
     assert_eq!(SCROLL_DEADZONE, 16.0);
@@ -166,7 +166,7 @@ fn deadzone_is_sixteen_epx_and_the_release_glide_is_boosted_twice() {
     let speed = (fx.scroll("sv")[1] - before) / 0.01;
     assert!(speed > 1900.0 && speed <= 2000.0, "boosted release speed: {speed}");
     // The px escape hatch is gone with the raw register.
-    assert!(codes("View v { Scroll s scroll_deadzone=24 { Column c { Rectangle r 40x600 } } }").contains(&"G0042".to_string()));
+    assert!(codes("View v { Scroll s scroll_deadzone=24 { Column c { Rectangle r 40x600 } } }").contains(&"G2001".to_string()));
 }
 
 // ---------------------------------------------------------------- _scroll_hug_tests
@@ -199,14 +199,14 @@ fn a_both_hug_scroll_warns_that_nothing_scrolls() {
 /// `_scroll_hug_tests` 9091-9097 `scroll.raw-mode-wins` — FLIP
 /// (gogo-design.md §7: the raw register is gone, one vocabulary): Godot
 /// let a raw `horizontal_scroll_mode=` own its axis over the hug; here
-/// the raw word is not a property — the build is refused (G0042, E8)
+/// the raw word is not a property — the build is refused (G2001, E8)
 /// naming `allow=`, and the same page without the word lets the hug
 /// decide.
 #[test]
 fn a_raw_scroll_mode_word_is_refused_and_the_hug_decides() {
     let raw = "View v { Scroll s width=hug, height=100, horizontal_scroll_mode=1 { Column c { Rectangle r 40x40, color=red } } }";
     let c = compile(raw, &|_| None);
-    assert!(gogo::has_errors(&c.diags) && c.diags.iter().any(|d| d.code == "G0042" && d.message.contains("allow=")), "{:#?}", c.diags);
+    assert!(gogo::has_errors(&c.diags) && c.diags.iter().any(|d| d.code == "G2001" && d.message.contains("allow=")), "{:#?}", c.diags);
     let fx = Fx::new("View v { Scroll s width=hug, height=100 { Column c { Rectangle r 40x40, color=red } } }");
     assert_eq!(fx.axes("s"), (false, true));
 }
@@ -260,11 +260,11 @@ fn bars_reserve_holds_the_lane_on_both_inferred_axes() {
 /// (gogo-design.md §7: the raw register is gone): Godot refused the gogo
 /// word and the raw `vertical_scroll_mode=` on one node ("one spelling per
 /// Scroll"); here there is only one spelling and the raw word is not a
-/// property (G0042).
+/// property (G2001).
 #[test]
 fn allow_beside_a_raw_scroll_mode_word_flags_the_raw_word() {
     let src = "View v { Scroll s allow=vertical, vertical_scroll_mode=1 { Column c { Rectangle r 40x40, color=red } } }";
-    assert!(codes(src).contains(&"G0042".to_string()), "{:?}", codes(src));
+    assert!(codes(src).contains(&"G2001".to_string()), "{:?}", codes(src));
 }
 
 /// `_scroll_allow_bars_tests` 9152-9155 `scroll.allow-bare-hug-refuses`,
@@ -444,7 +444,6 @@ const OCCLUDED: &str = "View v { Layers root width=100, height=100, halign=left,
 /// mid-glide tap on chrome drawn over the Scroll but outside its subtree is
 /// never claimed — the glide continues underneath and the chrome presses.
 #[test]
-#[ignore = "GPAR4: any touch kills a fling — Godot leaves the glide alone when the tap lands on chrome drawn over the Scroll (D130) and presses that chrome"]
 fn a_tap_on_overlay_chrome_never_claims_the_glide() {
     let mut fx = Fx::new(OCCLUDED);
     let back = fx.id("back");
@@ -554,7 +553,7 @@ fn accessibility_name_translates_by_its_key() {
 /// a button no keyboard can reach warns naming the keyboard; the touch-only
 /// acceptance `keyboard_target=off` silences it.
 #[test]
-#[ignore = "GP26: not ported: keyboard focus — no keyboard-reachability lint (the raw `focus_mode` word is only G0042 here)"]
+#[ignore = "GP26: not ported: keyboard focus — no keyboard-reachability lint (the raw `focus_mode` word is only G2001 here)"]
 fn a_focusless_button_warns_unless_accepted_as_touch_only() {
     let kb = compile("View v { Button kbtn text=\"x\", min_size=44x44, focus_mode=none }", &|_| None);
     let w = warnings(&kb);

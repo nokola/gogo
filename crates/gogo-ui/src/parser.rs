@@ -60,7 +60,7 @@ impl<'a> Parser<'a> {
             match self.peek() {
                 Tok::Eof => {
                     if in_block {
-                        self.error("G0010", "missing `}`".to_string());
+                        self.error("G0002", "missing `}`".to_string());
                     }
                     return items;
                 }
@@ -214,7 +214,7 @@ impl<'a> Parser<'a> {
                         } else if word == "as" && has("by") {
                             self.error("G9002", format!("'as' comes before 'by' — introduce the binding, then key it (`repeat {} as $x by $x.<field>`)", node.name.as_deref().unwrap_or("x")));
                         } else if word == "by" && has("in") {
-                            self.error("G5104", "'by' comes before 'in' — name the driver, then its range (`automatic=length by $value in $min..$max`)".to_string());
+                            self.error("G5107", "'by' comes before 'in' — name the driver, then its range (`automatic=length by $value in $min..$max`)".to_string());
                         }
                         let Some(v) = self.value() else { break };
                         node.clauses.push((word, v));

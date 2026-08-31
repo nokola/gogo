@@ -1,6 +1,6 @@
 //! Pins for the instance batch (docs/todo-gogo.md GP27, GP29, GP32): a
 //! widget's own `anim` plays per instance (with `self.` and a scoped
-//! `play()`), `repeat x max=N` builds N addressable items that code shows
+//! `play()`), `repeat x capacity=N` builds N addressable items that code shows
 //! by count and that lay out as their parent's children, and `on:pointer=`
 //! hands the raw finger to the host in the node's own space.
 use gogo::anim::Finish;
@@ -44,12 +44,12 @@ fn widget_anims_play_per_instance() {
     assert!(handlers.iter().any(|h| h.action == Action::Play(a_delete)), "{handlers:?}");
 }
 
-/// GP27: `repeat marks max=3 { Mark }` builds three hidden items; the
+/// GP27: `repeat marks capacity=3 { Mark }` builds three hidden items; the
 /// count shows them and hides `empty`; shown items take the Column's
 /// slots with its spacing.
 #[test]
 fn repeat_items_show_by_count_and_lay_out_in_the_stack() {
-    let src = "widget Mark {\n Layers mark height=10, width=fill { Rectangle box height=10, width=fill }\n}\nView v {\n Column col spacing=4, halign=left, valign=top, width=100 {\n  Rectangle head height=10\n  repeat marks max=3 {\n   empty { Label none text=\"no marks\", font_size=10 }\n   Mark\n  }\n  Rectangle tail height=10\n }\n}\n";
+    let src = "widget Mark {\n Layers mark height=10, width=fill { Rectangle box height=10, width=fill }\n}\nView v {\n Column col spacing=4, halign=left, valign=top, width=100 {\n  Rectangle head height=10\n  repeat marks capacity=3 {\n   empty { Label none text=\"no marks\", font_size=10 }\n   Mark\n  }\n  Rectangle tail height=10\n }\n}\n";
     let c = ok(src);
     let mut page = c.page;
     let marks = page.find("marks").expect("the repeat node");
@@ -179,9 +179,9 @@ fn widget_scoped_styles_shadow_and_stay_inside() {
 #[test]
 fn scoped_styles_stay_scoped_and_take_no_for() {
     let outside = dcodes("widget Card {\n style tone font_size=10\n Layers body { Label t .tone text=\"x\" }\n}\nView v {\n Card c\n Label out .tone text=\"y\"\n}\n");
-    assert_eq!(outside.iter().filter(|c| *c == "G4001").count(), 1, "only the OUTSIDE wearer errors: {outside:?}");
+    assert_eq!(outside.iter().filter(|c| *c == "G5002").count(), 1, "only the OUTSIDE wearer errors: {outside:?}");
     let for_style = dcodes("widget Card {\n style s for=Button, background=red\n Layers body { Rectangle r 4x4 }\n}\nView v { Card c }\n");
-    assert!(for_style.contains(&"G3004".to_string()), "{for_style:?}");
+    assert!(for_style.contains(&"G3006".to_string()), "{for_style:?}");
 }
 
 /// GP32 (widget-scope transition): a `for=` widget's `transition` rule

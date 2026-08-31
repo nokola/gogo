@@ -359,7 +359,7 @@ fn retired_container_spellings_are_unknown_types() {
 
 /// `_placement_tests` 1715-1740, the guard errors Rust refuses the same
 /// way: `halign=stretch` (G0057), `width=auto` (G0056, names `hug`),
-/// `width=center` (G0056), `halign=center, width=fill` (G1001),
+/// `width=center` (G0056), `halign=center, width=fill` (G1011),
 /// `width=grow(2)` (G0056), `anchors=` / `offset_left=` /
 /// `size_flags_horizontal=` (G0041, gone). Godot's hint text names the
 /// door (`width=fill`, `halign`, "signed pins"); Rust's messages differ.
@@ -369,7 +369,7 @@ fn placement_guard_errors_refuse() {
     let auto = messages("View v { Button b width=auto }");
     assert!(auto.contains("G0056") && auto.contains("hug"), "{auto}");
     assert!(codes("View v { Button b width=center }").contains(&"G0056".to_string()));
-    assert!(codes("View v { Button b halign=center, width=fill }").contains(&"G1001".to_string()));
+    assert!(codes("View v { Button b halign=center, width=fill }").contains(&"G1011".to_string()));
     assert!(codes("View v { Button b width=grow(2) }").contains(&"G0056".to_string()));
     assert!(codes("View v { Layers c { Button b anchors=center, halign=center } }").contains(&"G0041".to_string()));
     assert!(codes("View v { Button b halign=center, offset_left=4 }").contains(&"G0041".to_string()));
@@ -424,7 +424,7 @@ fn removed_props_are_errors() {
 #[test]
 fn margin_in_a_stack_is_refused_and_names_the_doors() {
     let text = messages("View v { Column c { Button b margin=4 } }");
-    assert!(text.contains("G1005"), "{text}");
+    assert!(text.contains("G1014"), "{text}");
     assert!(text.contains("spacing="), "{text}");
     assert!(text.contains("gap"), "{text}");
 }

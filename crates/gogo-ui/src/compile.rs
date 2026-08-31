@@ -310,6 +310,13 @@ pub struct Compiler<'a> {
     /// per instance (`inst/name`), so a widget used twice never collides.
     prefix: Vec<String>,
     unnamed_instances: u32,
+    /// Widget declarations being expanded, outermost first. Needed
+    /// because a widget that instances itself — directly or through
+    /// another widget — would expand forever: the guard turns the cycle
+    /// into a named build error instead of a compiler stack overflow
+    /// (GPAR69). Slot-fill content is written one scope out (`outer`),
+    /// so a widget CAN fill its own slot from an instance site.
+    widget_stack: Vec<String>,
     fills: Vec<Fills>,
     /// Per widget instance being expanded: the instance's `on:` props still
     /// waiting for the body's `signals` node (`None` = the root took them).
@@ -318,6 +325,14 @@ pub struct Compiler<'a> {
     /// gradient-only words it carries, so G2003's Rectangle rewrite can be
     /// spelled out (`check_stops`).
     stops_ctx: Option<(String, Vec<String>)>,
+    /// The item binding while a repeat template compiles (`item`, or
+    /// `as $brush`): `$<binding>.<field>` values become `Value::VItem`
+    /// for `set_items` to fill per clone (GPAR108).
+    repeat_binding: Option<String>,
+    /// Repeats found while building: (the repeat's name, the binding,
+    /// the key field — `NO_STR` = the item is its own key, `capacity=`,
+    /// keyed?). `finish` resolves them to `Page::repeats` once ids exist.
+    pending_repeats: Vec<(StrId, StrId, StrId, u32, bool)>,
 }
 
 /// A value as the file spells it, for a message.
@@ -383,10 +398,13 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         used: std::collections::HashSet::new(),
         prefix: Vec::new(),
         unnamed_instances: 0,
+        widget_stack: Vec::new(),
         choice_depth: 0,
         fills: Vec::new(),
         instance_on: Vec::new(),
         stops_ctx: None,
+        repeat_binding: None,
+        pending_repeats: Vec::new(),
     };
     c.page.intern("");
     c.document(&doc, true);
@@ -461,10 +479,14 @@ impl<'a> Compiler<'a> {
         for item in &doc.items {
             match item {
                 AstItem::Assign { key, dollar: true, value, line } => {
-                    let v = self.value(value, *line, None);
+                    // Color context (GPAR30, the shipped rule): `$dim =
+                    // gray` must be the COLOR gray at its use site, and
+                    // `$scrim = black/0.5` carries its alpha. Numbers and
+                    // strings pass through unchanged.
+                    let v = self.value(value, *line, Some(PropKey::Background));
                     let name = self.intern(key);
                     if self.page.theme.iter().any(|t| t.name == name && t.variant == NO_STR) {
-                        self.error("G3001", *line, format!("`${key}` is defined twice"));
+                        self.error("G6002", *line, format!("`${key}` is defined twice"));
                     }
                     self.page.theme.push(ThemeEntry { name, variant: NO_STR, value: v });
                 }
@@ -546,10 +568,11 @@ impl<'a> Compiler<'a> {
         for item in &n.children {
             match item {
                 AstItem::Assign { key, dollar: true, value, line } => {
-                    let v = self.value(value, *line, None);
+                    // Color context — see the top-level `$` arm (GPAR30).
+                    let v = self.value(value, *line, Some(PropKey::Background));
                     let name = self.intern(key);
                     if self.page.theme.iter().any(|t| t.name == name && t.variant == variant) {
-                        self.error("G3001", *line, format!("`${key}` is defined twice in this theme block"));
+                        self.error("G6002", *line, format!("`${key}` is defined twice in this theme block"));
                     }
                     self.page.theme.push(ThemeEntry { name, variant, value: v });
                 }
@@ -578,7 +601,7 @@ impl<'a> Compiler<'a> {
                     }
                     // Palette override: `red = #E51400` (§7: bare names only here).
                     if !self.palette.contains_key(key) {
-                        self.error("G3002", *line, format!("`{key}` is not a palette color (new names are `$values`)"));
+                        self.error("G6003", *line, format!("`{key}` is not a palette color (new names are `$values`)"));
                         continue;
                     }
                     if matches!(value, AstValue::Color { pos: Some(_), .. } | AstValue::Ident { pos: Some(_), .. }) {
@@ -589,13 +612,13 @@ impl<'a> Compiler<'a> {
                         Some(c) => {
                             self.palette.insert(key.clone(), c);
                         }
-                        None => self.error("G3003", *line, format!("`{key} = …` needs a color")),
+                        None => self.error("G6004", *line, format!("`{key} = …` needs a color")),
                     }
                 }
                 AstItem::Node(kn) => {
                     // Kind defaults: `Button background=..., font_size=...`.
                     let Some(kind) = Kind::from_word(&kn.type_word) else {
-                        self.error("G3004", kn.line, format!("`{}` is not a control kind", kn.type_word));
+                        self.error("G3006", kn.line, format!("`{}` is not a control kind", kn.type_word));
                         continue;
                     };
                     let first = self.page.props.len() as u32;
@@ -630,16 +653,16 @@ impl<'a> Compiler<'a> {
         let mut for_target: Option<String> = None;
         if let Some(i) = props.iter().position(|p| p.key == "for") {
             if i != 0 {
-                self.error("G3004", props[i].line, format!("`for=` comes first — the reader knows the target before any other word; reorder: `style {name} for=…, …`"));
+                self.error("G3006", props[i].line, format!("`for=` comes first — the reader knows the target before any other word; reorder: `style {name} for=…, …`"));
             }
             let fp = props.remove(i);
             match fp.value.as_ident() {
                 Some(word) if Kind::from_word(word).is_some() => for_target = Some(word.to_string()),
                 Some(word) if self.widgets.contains_key(word) => {
-                    self.error("G3004", fp.line, format!("`{word}` is a widget — widgets are styled through their own body's nodes, not `for=`"));
+                    self.error("G3006", fp.line, format!("`{word}` is a widget — widgets are styled through their own body's nodes, not `for=`"));
                 }
-                Some(word) => self.error("G3004", fp.line, format!("unknown control `{word}` — `for=` names a control kind (`for=Button`)")),
-                None => self.error("G3004", fp.line, format!("`for=` names a control kind (`for=Button`), not `{}`", spell(&fp.value))),
+                Some(word) => self.error("G3006", fp.line, format!("unknown control `{word}` — `for=` names a control kind (`for=Button`)")),
+                None => self.error("G3006", fp.line, format!("`for=` names a control kind (`for=Button`), not `{}`", spell(&fp.value))),
             }
         }
         // `extends=Base`: the parent's props and whens come first, this
@@ -649,12 +672,12 @@ impl<'a> Compiler<'a> {
             let ep = props.remove(i);
             match ep.value.as_ident() {
                 Some(word) => extends = Some(word.to_string()),
-                None => self.error("G3004", ep.line, format!("`extends=` takes a style name (`style Warning extends=Base, …`), not `{}`", spell(&ep.value))),
+                None => self.error("G3006", ep.line, format!("`extends=` takes a style name (`style Warning extends=Base, …`), not `{}`", spell(&ep.value))),
             }
         }
         for p in &props {
             if matches!(p.key.as_str(), "cols" | "areas" | "row_height") {
-                self.error("G1007", p.line, format!("`{}=` is grid structure and can't come from a style — write it on the Grid line", p.key));
+                self.error("G1002", p.line, format!("`{}=` is grid structure and can't come from a style — write it on the Grid line", p.key));
             }
         }
         let mut def = StyleDef { props, for_target, extends, line: n.line, ..Default::default() };
@@ -681,27 +704,27 @@ impl<'a> Compiler<'a> {
     /// a cycle, and a `for=` mismatch across the chain all refuse.
     fn resolve_style(&mut self, name: &str, line: u32) -> Option<StyleDef> {
         let Some(mut def) = self.find_style(name).cloned() else {
-            self.error("G4001", line, format!("unknown style `.{name}`"));
+            self.error("G5002", line, format!("unknown style `.{name}`"));
             return None;
         };
         let mut chain: Vec<String> = vec![name.to_string()];
         let mut merged = def.clone();
         while let Some(parent_name) = def.extends.clone() {
             if chain.contains(&parent_name) {
-                self.error("G4001", def.line, format!("style `{name}` extends itself — the chain: {} → {parent_name}", chain.join(" → ")));
+                self.error("G3006", def.line, format!("style `{name}` extends itself — the chain: {} → {parent_name}", chain.join(" → ")));
                 return None;
             }
             let Some(parent) = self.find_style(&parent_name).cloned() else {
-                self.error("G4001", def.line, format!("`extends={parent_name}` names no style"));
+                self.error("G5002", def.line, format!("`extends={parent_name}` names no style"));
                 return None;
             };
             match (&merged.for_target, &parent.for_target) {
                 (None, Some(t)) => {
-                    self.error("G3004", def.line, format!("plain style `{name}` extends `{parent_name}`, which is `for={t}` — it inherits words it can't check; give `{name}` the same `for=`"));
+                    self.error("G3006", def.line, format!("plain style `{name}` extends `{parent_name}`, which is `for={t}` — it inherits words it can't check; give `{name}` the same `for=`"));
                     return None;
                 }
                 (Some(a), Some(b)) if a != b => {
-                    self.error("G3004", def.line, format!("`{name}` is for {a} but extends `{parent_name}`, which is for {b} — another control's words"));
+                    self.error("G3006", def.line, format!("`{name}` is for {a} but extends `{parent_name}`, which is for {b} — another control's words"));
                     return None;
                 }
                 _ => {}
@@ -731,35 +754,35 @@ impl<'a> Compiler<'a> {
             AstValue::Ident { word, .. } if word == "hug" => Some(Len::Hug(1.0)),
             AstValue::Ident { word, .. } if word == "fill" => Some(Len::Fill(1.0)),
             AstValue::Ident { word, .. } if word == "auto" => {
-                self.error("G1007", line, format!("`auto` is WPF's word — gogo tracks say `hug` (content-sized); {key} takes epx numbers, `hug`, or `fill(n)`"));
+                self.error("G1002", line, format!("`auto` is WPF's word — gogo tracks say `hug` (content-sized); {key} takes epx numbers, `hug`, or `fill(n)`"));
                 None
             }
             AstValue::Ident { word, .. } => {
-                self.error("G1007", line, format!("`{word}` is not a track size — {key} entries are epx numbers, `hug` (content) or `fill(n)` (weighted leftover)"));
+                self.error("G1002", line, format!("`{word}` is not a track size — {key} entries are epx numbers, `hug` (content) or `fill(n)` (weighted leftover)"));
                 None
             }
             AstValue::Call { name, .. } if name == "hug" => {
-                self.error("G1007", line, "`hug` takes no arguments — shared size groups (`hug(name)`) are a future extension; plain `hug` for now");
+                self.error("G1002", line, "`hug` takes no arguments — shared size groups (`hug(name)`) are a future extension; plain `hug` for now");
                 None
             }
             AstValue::Call { name, args } if name == "fill" => match args.as_slice() {
                 [AstValue::Num { value, .. }] if *value > 0.0 => Some(Len::Fill(*value)),
                 [AstValue::Num { .. }] => {
-                    self.error("G1007", line, "a `fill(…)` weight must be > 0 — use `hug` to opt out of the leftover space");
+                    self.error("G1002", line, "a `fill(…)` weight must be > 0 — use `hug` to opt out of the leftover space");
                     None
                 }
                 _ => {
-                    self.error("G1007", line, "`fill(…)` takes one bare number — the weight; fill tracks split the leftover space by weight (`fill(2)`)");
+                    self.error("G1002", line, "`fill(…)` takes one bare number — the weight; fill tracks split the leftover space by weight (`fill(2)`)");
                     None
                 }
             },
             AstValue::Call { name, .. } => {
-                self.error("G1007", line, format!("`{name}(…)` is not a track size — {key} entries are epx numbers, `hug` or `fill(n)`"));
+                self.error("G1002", line, format!("`{name}(…)` is not a track size — {key} entries are epx numbers, `hug` or `fill(n)`"));
                 None
             }
             AstValue::Ref { .. } => Some(Len::Unset),
             _ => {
-                self.error("G1007", line, format!("{key} can't take `{}` — track sizes are epx numbers, `hug`, or `fill(n)`", spell(v)));
+                self.error("G1002", line, format!("{key} can't take `{}` — track sizes are epx numbers, `hug`, or `fill(n)`", spell(v)));
                 None
             }
         }
@@ -774,15 +797,15 @@ impl<'a> Compiler<'a> {
     /// Returns the replacement node when `areas=` expanded into rows.
     fn grid_structure(&mut self, n: &AstNode) -> Option<AstNode> {
         let Some(cols_prop) = n.props.iter().find(|p| p.key == "cols").cloned() else {
-            self.error("G1007", n.line, "Grid needs `cols=` — the track signature every row is checked against (`Grid cols=[hug, fill] { row { … } }`)");
+            self.error("G1002", n.line, "Grid needs `cols=` — the track signature every row is checked against (`Grid cols=[hug, fill] { row { … } }`)");
             return None;
         };
         let AstValue::List(entries) = &cols_prop.value else {
-            self.error("G1007", cols_prop.line, "`cols=` takes a track list — epx numbers, `hug` (content) or `fill(n)` (weighted leftover): `cols=[80, hug, fill(2)]`");
+            self.error("G1002", cols_prop.line, "`cols=` takes a track list — epx numbers, `hug` (content) or `fill(n)` (weighted leftover): `cols=[80, hug, fill(2)]`");
             return None;
         };
         if entries.is_empty() {
-            self.error("G1007", cols_prop.line, "`cols=` declares no tracks — at least one: `cols=[fill]`");
+            self.error("G1002", cols_prop.line, "`cols=` declares no tracks — at least one: `cols=[fill]`");
             return None;
         }
         let mut col_specs: Vec<Len> = Vec::new();
@@ -793,7 +816,7 @@ impl<'a> Compiler<'a> {
         let mut row_specs: Vec<Len> = Vec::new();
         let replaced = if n.props.iter().any(|p| p.key == "areas") {
             if let Some(rh) = n.props.iter().find(|p| p.key == "row_height") {
-                self.error("G1008", rh.line, "areas rows carry their own heights — `row_height=` sizes nothing here; put the height on each row: `areas=[\"header : 56\", \"main : fill\"]`");
+                self.error("G1003", rh.line, "areas rows carry their own heights — `row_height=` sizes nothing here; put the height on each row: `areas=[\"header : 56\", \"main : fill\"]`");
                 return None;
             }
             self.grid_areas(n, cols, &mut row_specs)
@@ -832,28 +855,28 @@ impl<'a> Compiler<'a> {
                 // `skip`/`gap` here get their own fences on the child walk.
                 "when" | "transition" | "theme" | "skip" | "gap" => continue,
                 "slot" => {
-                    self.error("G1007", c.line, "a slot can't sit directly in a Grid — put the slot inside a container cell");
+                    self.error("G1002", c.line, "a slot can't sit directly in a Grid — put the slot inside a container cell");
                     continue;
                 }
                 "row" => {}
                 _ => {
                     let hint = if c.type_word == "Row" { " (`Row` — the stack — can be a CELL inside one; a Grid's direct children are lowercase `row { }` blocks)" } else { "" };
-                    self.error("G1007", c.line, format!("a Grid places by structure — `{}` isn't in a row; wrap this cell in a `row {{ }}` block{hint}", c.type_word));
+                    self.error("G1002", c.line, format!("a Grid places by structure — `{}` isn't in a row; wrap this cell in a `row {{ }}` block{hint}", c.type_word));
                     continue;
                 }
             }
             if let Some(name) = &c.name {
-                self.error("G1007", c.line, format!("rows aren't nodes — no names (got `{name}`); name the cells instead"));
+                self.error("G1002", c.line, format!("rows aren't nodes — no names (got `{name}`); name the cells instead"));
             }
             if !c.styles.is_empty() || !c.args.is_empty() || !c.flags.is_empty() {
-                self.error("G1007", c.line, "rows carry only `height=` — they aren't drawable nodes");
+                self.error("G1002", c.line, "rows carry only `height=` — they aren't drawable nodes");
             }
             let mut row_h: Option<Len> = None;
             for p in c.props.clone() {
                 if p.key == "height" {
                     row_h = self.track_spec(&p.value, p.line, "row height=");
                 } else {
-                    self.error("G1007", p.line, format!("rows carry only `height=` — they aren't drawable nodes (got `{}=`)", p.key));
+                    self.error("G1002", p.line, format!("rows carry only `height=` — they aren't drawable nodes (got `{}=`)", p.key));
                 }
             }
             row_specs.push(row_h.or(default_h).unwrap_or(Len::Unset));
@@ -862,17 +885,17 @@ impl<'a> Compiler<'a> {
                 let AstItem::Node(cell) = cc else { continue };
                 match cell.type_word.as_str() {
                     "when" | "transition" => {
-                        self.error("G1007", cell.line, "a `when` sits on a cell, not between cells");
+                        self.error("G1002", cell.line, "a `when` sits on a cell, not between cells");
                         continue;
                     }
                     "theme" => continue,
                     "row" => {
-                        self.error("G1007", cell.line, "rows don't nest — a row holds cells");
+                        self.error("G1002", cell.line, "rows don't nest — a row holds cells");
                         continue;
                     }
                     "skip" => {
                         if cell.name.is_some() || !cell.args.is_empty() || !cell.props.is_empty() || !cell.children.is_empty() {
-                            self.error("G1007", cell.line, "`skip` takes nothing — one bare `skip` per empty track");
+                            self.error("G1002", cell.line, "`skip` takes nothing — one bare `skip` per empty track");
                         }
                         at += 1;
                         continue;
@@ -884,7 +907,7 @@ impl<'a> Compiler<'a> {
                 self.cell_weight_check(cell);
                 for k in at..at + cspan {
                     if shadows.contains(&(r, k)) {
-                        self.error("G1007", cell.line, format!("track {} is covered by a `row_span` from the row above — write `skip` here", k + 1));
+                        self.error("G1002", cell.line, format!("track {} is covered by a `row_span` from the row above — write `skip` here", k + 1));
                     }
                 }
                 if rspan > 1 {
@@ -898,14 +921,14 @@ impl<'a> Compiler<'a> {
                 at += cspan;
             }
             if at > cols {
-                self.error("G1007", c.line, format!("row {} covers {at} tracks; cols= declares {cols}", r + 1));
+                self.error("G1002", c.line, format!("row {} covers {at} tracks; cols= declares {cols}", r + 1));
             }
             r += 1;
         }
         // A row_span must land inside the grid — WPF silently clamps these.
         for (line, row, rs) in pending {
             if row + rs > r {
-                self.error("G1007", line, format!("row_span={rs} reaches past the last row ({r} declared)"));
+                self.error("G1002", line, format!("row_span={rs} reaches past the last row ({r} declared)"));
             }
         }
     }
@@ -917,7 +940,7 @@ impl<'a> Compiler<'a> {
             if p.key == "width" || p.key == "height" {
                 if let AstValue::Call { name, args } = &p.value {
                     if name == "fill" && !matches!(args.as_slice(), [AstValue::Num { value, .. }] if *value == 1.0) {
-                        self.error("G1007", p.line, "a `fill(n)` weight is inert on a grid cell — a cell fills its cell; weights belong on `cols=` tracks and row heights");
+                        self.error("G1002", p.line, "a `fill(n)` weight is inert on a grid cell — a cell fills its cell; weights belong on `cols=` tracks and row heights");
                     }
                 }
             }
@@ -956,11 +979,11 @@ impl<'a> Compiler<'a> {
                     match it {
                         AstValue::Str { text, key: None } => push_text(&mut raw_rows, text),
                         AstValue::Str { key: Some(k), .. } => {
-                            self.error("G1008", ap.line, format!("areas rows don't translate — no /{k} here"));
+                            self.error("G1003", ap.line, format!("areas rows don't translate — no /{k} here"));
                             return None;
                         }
                         other => {
-                            self.error("G1008", ap.line, format!("`areas=` rows are strings — got `{}`; `areas=[\"header header : 60\", \"nav body : fill\"]`", spell(other)));
+                            self.error("G1003", ap.line, format!("`areas=` rows are strings — got `{}`; `areas=[\"header header : 60\", \"nav body : fill\"]`", spell(other)));
                             return None;
                         }
                     }
@@ -968,7 +991,7 @@ impl<'a> Compiler<'a> {
             }
             AstValue::Str { text, key: None } => push_text(&mut raw_rows, text),
             _ => {
-                self.error("G1008", ap.line, "`areas=` takes the row strings, one per grid row: `areas=[\"header header : 60\", \"nav body : fill\"]`");
+                self.error("G1003", ap.line, "`areas=` takes the row strings, one per grid row: `areas=[\"header header : 60\", \"nav body : fill\"]`");
                 return None;
             }
         }
@@ -979,22 +1002,22 @@ impl<'a> Compiler<'a> {
             // D89 (user call): every areas row states its height — a
             // silent `hug` default made dead space hard to diagnose.
             let Some(colon) = line.find(':') else {
-                self.error("G1008", ap.line, format!("areas row {} has no height — end the row with `: <height>` (epx, `hug` or `fill`): `\"sidebar main : fill\"`", r + 1));
+                self.error("G1003", ap.line, format!("areas row {} has no height — end the row with `: <height>` (epx, `hug` or `fill`): `\"sidebar main : fill\"`", r + 1));
                 return None;
             };
             if line[colon + 1..].contains(':') {
-                self.error("G1008", ap.line, "one `:` per areas line — the names, then the row height");
+                self.error("G1003", ap.line, "one `:` per areas line — the names, then the row height");
                 return None;
             }
             let htok = line[colon + 1..].trim();
             if htok.is_empty() {
-                self.error("G1008", ap.line, "missing row height after `:` in areas");
+                self.error("G1003", ap.line, "missing row height after `:` in areas");
                 return None;
             }
             let h = self.area_height(htok, ap.line)?;
             let toks: Vec<&str> = line[..colon].split_whitespace().collect();
             if toks.len() != cols {
-                self.error("G1008", ap.line, format!("areas line {} names {} tracks; cols= declares {cols} — every line spells one name (or `.` for a hole) per column", r + 1, toks.len()));
+                self.error("G1003", ap.line, format!("areas line {} names {} tracks; cols= declares {cols} — every line spells one name (or `.` for a hole) per column", r + 1, toks.len()));
                 return None;
             }
             for (c, t) in toks.iter().enumerate() {
@@ -1002,7 +1025,7 @@ impl<'a> Compiler<'a> {
                     continue;
                 }
                 if !is_area_name(t) {
-                    self.error("G1008", ap.line, format!("`{t}` is not an area name — area names are plain idents; `.` marks an empty region"));
+                    self.error("G1003", ap.line, format!("`{t}` is not an area name — area names are plain idents; `.` marks an empty region"));
                     return None;
                 }
                 match rects.iter_mut().find(|a| a.name == *t) {
@@ -1019,12 +1042,12 @@ impl<'a> Compiler<'a> {
             nrows += 1;
         }
         if nrows == 0 {
-            self.error("G1008", ap.line, "`areas=` declares no rows");
+            self.error("G1003", ap.line, "`areas=` declares no rows");
             return None;
         }
         for a in &rects {
             if (a.r1 - a.r0 + 1) * (a.c1 - a.c0 + 1) != a.count {
-                self.error("G1008", ap.line, format!("area `{}` isn't a rectangle — an area is one contiguous rectangle of its name; a split shape needs two names", a.name));
+                self.error("G1003", ap.line, format!("area `{}` isn't a rectangle — an area is one contiguous rectangle of its name; a split shape needs two names", a.name));
                 return None;
             }
         }
@@ -1041,29 +1064,29 @@ impl<'a> Compiler<'a> {
                     continue;
                 }
                 "row" => {
-                    self.error("G1008", c.line, "this Grid places by areas= — row blocks are the other form (one Grid uses one placement form)");
+                    self.error("G1003", c.line, "this Grid places by areas= — row blocks are the other form (one Grid uses one placement form)");
                     return None;
                 }
                 "skip" => {
-                    self.error("G1008", c.line, "`skip` belongs to row blocks — areas mark holes with `.`");
+                    self.error("G1003", c.line, "`skip` belongs to row blocks — areas mark holes with `.`");
                     return None;
                 }
                 "slot" => {
-                    self.error("G1008", c.line, "a slot can't sit directly in a Grid — put the slot inside a container cell");
+                    self.error("G1003", c.line, "a slot can't sit directly in a Grid — put the slot inside a container cell");
                     return None;
                 }
                 _ => {}
             }
             let Some(name) = c.name.clone() else {
-                self.error("G1008", c.line, format!("children of an areas Grid bind by name — this one has none; areas here: {}", rects.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")));
+                self.error("G1003", c.line, format!("children of an areas Grid bind by name — this one has none; areas here: {}", rects.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")));
                 return None;
             };
             if !rects.iter().any(|a| a.name == name) {
-                self.error("G1008", c.line, format!("no area named `{name}`"));
+                self.error("G1003", c.line, format!("no area named `{name}`"));
                 return None;
             }
             if cells.iter().any(|(nm, _)| *nm == name) {
-                self.error("G1008", c.line, format!("area `{name}` is already bound"));
+                self.error("G1003", c.line, format!("area `{name}` is already bound"));
                 return None;
             }
             self.cell_weight_check(c);
@@ -1071,7 +1094,7 @@ impl<'a> Compiler<'a> {
         }
         for a in &rects {
             if !cells.iter().any(|(nm, _)| *nm == a.name) {
-                self.warning("G1008", n.line, format!("area `{}` has no child bound to it — a child named `{}` fills the area", a.name, a.name));
+                self.warning("G1003", n.line, format!("area `{}` has no child bound to it — a child named `{}` fills the area", a.name, a.name));
             }
         }
         let mut new_children = kept;
@@ -1128,7 +1151,7 @@ impl<'a> Compiler<'a> {
         }
         if let Some(inner) = tok.strip_prefix("fill(").and_then(|s| s.strip_suffix(')')) {
             let Ok(w) = inner.trim().parse::<f32>() else {
-                self.error("G1008", line, format!("`fill(…)` in areas takes one bare number, got `{inner}`"));
+                self.error("G1003", line, format!("`fill(…)` in areas takes one bare number, got `{inner}`"));
                 return None;
             };
             return self.track_spec(&AstValue::Call { name: "fill".to_string(), args: vec![AstValue::Num { value: w, unit: String::new() }] }, line, "areas");
@@ -1137,11 +1160,11 @@ impl<'a> Compiler<'a> {
             "hug" => Some(Len::Hug(1.0)),
             "fill" => Some(Len::Fill(1.0)),
             "auto" => {
-                self.error("G1008", line, "`auto` is WPF's word — areas heights say `hug` (content-sized)");
+                self.error("G1003", line, "`auto` is WPF's word — areas heights say `hug` (content-sized)");
                 None
             }
             _ => {
-                self.error("G1008", line, format!("`{tok}` is not a row height — areas heights are epx numbers, `hug`, or `fill(n)`; $refs need the row form"));
+                self.error("G1003", line, format!("`{tok}` is not a row height — areas heights are epx numbers, `hug`, or `fill(n)`; $refs need the row form"));
                 None
             }
         }
@@ -1154,18 +1177,18 @@ impl<'a> Compiler<'a> {
     fn tiles_structure(&mut self, n: &AstNode) {
         let cols: Option<usize> = match n.props.iter().find(|p| p.key == "cols") {
             None => {
-                self.error("G1007", n.line, "Tiles needs `cols=` — the column count every `span=` is checked against (`Tiles cols=3 { … }`)");
+                self.error("G1002", n.line, "Tiles needs `cols=` — the column count every `span=` is checked against (`Tiles cols=3 { … }`)");
                 None
             }
             Some(p) => match &p.value {
                 AstValue::Num { value, .. } if *value >= 1.0 && value.fract() == 0.0 => Some(*value as usize),
                 AstValue::Ref { .. } => None,
                 AstValue::List(_) => {
-                    self.error("G1007", p.line, "Tiles `cols=` is one whole number of columns — track lists belong to Grid");
+                    self.error("G1002", p.line, "Tiles `cols=` is one whole number of columns — track lists belong to Grid");
                     None
                 }
                 other => {
-                    self.error("G1007", p.line, format!("Tiles `cols=` is a whole number of columns, at least 1 — got `{}`", spell(other)));
+                    self.error("G1002", p.line, format!("Tiles `cols=` is a whole number of columns, at least 1 — got `{}`", spell(other)));
                     None
                 }
             },
@@ -1178,19 +1201,19 @@ impl<'a> Compiler<'a> {
             let span = c.props.iter().find(|p| p.key == "span").cloned();
             if let Some(fp) = c.props.iter().find(|p| p.key == "full_row").cloned() {
                 if !matches!(fp.value, AstValue::Bool(_) | AstValue::Ref { .. }) {
-                    self.error("G1007", fp.line, format!("`full_row=` is true or false — got `{}`", spell(&fp.value)));
+                    self.error("G1002", fp.line, format!("`full_row=` is true or false — got `{}`", spell(&fp.value)));
                 }
                 if span.is_some() && matches!(fp.value, AstValue::Bool(true)) {
-                    self.error("G1007", fp.line, "`full_row=true` takes the whole row — `span=` says nothing beside it");
+                    self.error("G1002", fp.line, "`full_row=true` takes the whole row — `span=` says nothing beside it");
                 }
             }
             if let Some(sp) = span {
                 if let Some(s) = sp.value.as_num() {
                     if s < 1.0 || s.fract() != 0.0 {
-                        self.error("G1007", sp.line, format!("`span=` is a whole number of columns, at least 1 — got `{}`", spell(&sp.value)));
+                        self.error("G1002", sp.line, format!("`span=` is a whole number of columns, at least 1 — got `{}`", spell(&sp.value)));
                     } else if let Some(cols) = cols {
                         if s as usize > cols {
-                            self.error("G1007", sp.line, format!("`span={}` exceeds the lattice — this Tiles has cols={cols}", s as usize));
+                            self.error("G1002", sp.line, format!("`span={}` exceeds the lattice — this Tiles has cols={cols}", s as usize));
                         }
                     }
                 }
@@ -1248,7 +1271,7 @@ impl<'a> Compiler<'a> {
                 continue;
             };
             if s.props.iter().any(|p| p.key == "for") {
-                self.error("G3004", s.line, "`for=` styles are top-level declarations — a widget's scoped styles style its own body's nodes");
+                self.error("G3006", s.line, "`for=` styles are top-level declarations — a widget's scoped styles style its own body's nodes");
                 continue;
             }
             let def = self.style_def(&sname, s);
@@ -1669,8 +1692,11 @@ impl<'a> Compiler<'a> {
         PropKey::from_word(key).unwrap_or_else(|| PropKey::Other(self.intern(key)))
     }
 
+    /// A key whose bare words are palette lookups. `font_color=` counts
+    /// (GPAR30 — `font_color=accent` used to fall through to the white
+    /// default with a clean build).
     fn is_color_key(key: PropKey) -> bool {
-        matches!(key, PropKey::Background | PropKey::Color | PropKey::BorderColor | PropKey::Stops)
+        matches!(key, PropKey::Background | PropKey::Color | PropKey::BorderColor | PropKey::Stops | PropKey::FontColor)
     }
 
     /// A color from a hex, palette word or `$ref` (the ref stays live).
@@ -1743,6 +1769,17 @@ impl<'a> Compiler<'a> {
                 Value::VText { text: text_id, key: key_id }
             }
             AstValue::Ref { name, opacity } => {
+                // `$item` / `$item.<field>` under a keyed repeat's
+                // binding: a per-item value `set_items` fills at clone
+                // time (GPAR108) — compiled here so the undefined-$ref
+                // check never meets it.
+                if let Some(b) = &self.repeat_binding {
+                    if name == b || (name.starts_with(b.as_str()) && name.as_bytes().get(b.len()) == Some(&b'.')) {
+                        let field = if name.len() > b.len() { name[b.len() + 1..].to_string() } else { String::new() };
+                        let id = self.intern(&field);
+                        return Value::VItem(id);
+                    }
+                }
                 // A widget param in scope substitutes; else a theme ref.
                 let param = self.scopes.iter().rev().find_map(|s| s.get(name).cloned());
                 if let Some(p) = param {
@@ -1768,7 +1805,7 @@ impl<'a> Compiler<'a> {
                         let c = opacity.map_or(c, |o| c.with_opacity(o));
                         return self.stop_value(c, *pos, key, line);
                     }
-                    self.error("G2001", line, format!("`{word}` is not a color"));
+                    self.error("G2007", line, format!("`{word}` is not a color"));
                 }
                 if opacity.is_some() || pos.is_some() {
                     self.error("G0039", line, format!("`/` and `@` suffixes are for colors and strings, not `{word}`"));
@@ -1826,7 +1863,7 @@ impl<'a> Compiler<'a> {
         }
         match key {
             PropKey::Other(_) => {
-                self.error("G0042", line, unknown_property(word, kind));
+                self.error("G2001", line, unknown_property(word, kind));
                 false
             }
             _ if legal(kind, key) => true,
@@ -2035,6 +2072,15 @@ impl<'a> Compiler<'a> {
     fn node(&mut self, n: &AstNode, parent_kind: Option<Kind>, instance: Option<&AstNode>) -> TmpNode {
         // Widget instance: expand the body with the instance's args in scope.
         if let Some(def) = self.widgets.get(&n.type_word).cloned() {
+            // Refused before any expansion: `A -> B -> A` would recurse
+            // forever (the addon errors the cycle at bake too; Rust used
+            // to abort the whole build with a stack overflow and no
+            // message).
+            if self.widget_stack.iter().any(|w| w == &n.type_word) {
+                let path = self.widget_stack.join(" -> ");
+                self.error("G5003", n.line, format!("widget cycle: {path} -> {} — a widget cannot contain itself", n.type_word));
+                return TmpNode { node: Node { kind: Kind::Layers, line: n.line, ..Node::EMPTY }, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new() };
+            }
             // A `for=` widget fills its host's body and nothing else —
             // anywhere else its `when` lines would answer the wrong node.
             if let Some(host) = def.host {
@@ -2072,6 +2118,7 @@ impl<'a> Compiler<'a> {
             };
             self.prefix.push(prefix);
             self.style_scopes.push(def.styles.clone());
+            self.widget_stack.push(n.type_word.clone());
             if def.control {
                 self.control_scopes.insert(self.prefix.join("/"));
             }
@@ -2100,6 +2147,7 @@ impl<'a> Compiler<'a> {
             let mut t = self.node(body, parent_kind, Some(n));
             self.instance_on.pop();
             self.style_scopes.pop();
+            self.widget_stack.pop();
             // A `for=` widget's scope responses answer the hosting control.
             for w in &def.whens {
                 if let Some(mut tw) = self.when(w, t.node.kind) {
@@ -2177,10 +2225,10 @@ impl<'a> Compiler<'a> {
             self.tiles_structure(n);
         }
         if kind == Kind::GridRow && parent_kind != Some(Kind::Grid) {
-            self.error("G1007", n.line, "a `row { }` is grid structure — it lives inside a Grid");
+            self.error("G1002", n.line, "a `row { }` is grid structure — it lives inside a Grid");
         }
         if kind == Kind::Skip && parent_kind != Some(Kind::GridRow) {
-            self.error("G1007", n.line, "`skip` is grid structure — one per empty track inside a `row { }` block");
+            self.error("G1002", n.line, "`skip` is grid structure — one per empty track inside a `row { }` block");
         }
         if kind == Kind::Check && self.choice_depth > 0 {
             self.error("G0068", n.line, "independent toggles don't join exclusive groups — inside `choice`, use Radio (`Check` is standalone on/off)");
@@ -2267,7 +2315,7 @@ impl<'a> Compiler<'a> {
                 Some(def) => {
                     if let Some(target) = &def.for_target {
                         if *target != n.type_word {
-                            self.error("G3004", n.line, format!("style `{s}` is for {target} — applied here to {}", n.type_word));
+                            self.error("G3006", n.line, format!("style `{s}` is for {target} — applied here to {}", n.type_word));
                         }
                     }
                     all_props.extend(def.props.iter().cloned());
@@ -2285,7 +2333,7 @@ impl<'a> Compiler<'a> {
                     // (font inherits down the draw walk). A variant block
                     // here (`theme dark { }`) would be a silent no-op.
                     if t.name.is_some() || !t.children.is_empty() || !t.args.is_empty() {
-                        self.error("G3004", t.line, "a theme override inside a node is props on one line: `theme font=$x` — theme variants (`theme dark { $name = value }`) go at the top of the file");
+                        self.error("G3006", t.line, "a theme override inside a node is props on one line: `theme font=$x` — theme variants (`theme dark { $name = value }`) go at the top of the file");
                         continue;
                     }
                     // A subtree's text defaults: the words flow down to
@@ -2295,7 +2343,7 @@ impl<'a> Compiler<'a> {
                     for p in &t.props {
                         let key = PropKey::from_word(&p.key);
                         if !matches!(key, Some(PropKey::Font | PropKey::FontSize | PropKey::FontColor)) {
-                            self.error("G3004", p.line, format!("`theme {}=` inside a block sets a text default for everything under it — the words are `font`, `font_size`, `font_color`", p.key));
+                            self.error("G3006", p.line, format!("`theme {}=` inside a block sets a text default for everything under it — the words are `font`, `font_size`, `font_color`", p.key));
                             continue;
                         }
                         if let Some(prop) = self.prop(p, Kind::Label) {
@@ -2345,7 +2393,14 @@ impl<'a> Compiler<'a> {
 
         let mut placement_props: Vec<Prop> = Vec::new();
         for p in &all_props {
+            if kind == Kind::Repeat && p.key == "capacity" {
+                continue;
+            }
             if kind == Kind::Repeat && p.key == "max" {
+                // A max that grows would lie and a max that refused would
+                // truncate rows on screen — the reservation word says
+                // what it is (user design 2026-08-31).
+                self.error("G0035", p.line, "`max=` is spelled `capacity=` — a reservation the rows grow past, never a ceiling");
                 continue;
             }
             if let Some(action) = p.key.strip_prefix("on:") {
@@ -2470,30 +2525,41 @@ impl<'a> Compiler<'a> {
                         self.error("G0069", c.line, format!("`choice value={}`: no Radio of that name in the group", start.unwrap_or_default()));
                     }
                 }
-                // `repeat x max=N { … }`: the template is built N times at
-                // compile (`x/0`, `x/1`, …), every copy `gone` until code
-                // sets the count (`Runtime::set_count`); with no `max=` the
-                // template needs items from code and only `empty { }` shows.
+                // `repeat x [capacity=N] { … }` (counted — `set_count` +
+                // `set_text`) and `repeat x by $item.key` (keyed —
+                // `set_items`, GPAR108) both build ONE hidden template;
+                // the Runtime clones it into row slots on demand.
+                // `capacity=` is the reservation the first growth jumps
+                // to, never a ceiling — nothing truncates (user design
+                // 2026-08-31). Only `empty { }` shows until data arrives.
                 AstItem::Node(c) if kind == Kind::Repeat && c.type_word != "empty" => {
-                    let Some(max) = n.props.iter().find(|p| p.key == "max").and_then(|p| p.value.as_num()) else { continue };
                     let repeat_name = n.name.clone().unwrap_or_else(|| "repeat".to_string());
-                    let gone = self.intern("gone");
-                    for i in 0..(max.max(0.0) as usize) {
-                        self.prefix.push(format!("{repeat_name}/{i}"));
-                        // A widget item with no instance name is `item`, so its
-                        // parts are addressable (`x/0/item/knob`).
-                        let named: AstNode;
-                        let template: &AstNode = if c.name.is_none() && self.widgets.contains_key(&c.type_word) {
-                            named = AstNode { name: Some("item".to_string()), ..c.clone() };
-                            &named
-                        } else {
-                            c
-                        };
-                        let mut child = self.node(template, Some(kind), None);
-                        self.prefix.pop();
-                        child.props.push(Prop { key: PropKey::Visibility, value: Value::VIdent(gone) });
-                        tmp.children.push(child);
+                    let binding = n.clauses.iter().find(|(k, _)| k == "as").and_then(|(_, v)| if let AstValue::Ref { name, .. } = v { Some(name.clone()) } else { None }).unwrap_or_else(|| "item".to_string());
+                    // A widget item with no instance name is `item`, so its
+                    // parts are addressable (`x/0/item/knob` once cloned).
+                    let named: AstNode;
+                    let template: &AstNode = if c.name.is_none() && self.widgets.contains_key(&c.type_word) {
+                        named = AstNode { name: Some("item".to_string()), ..c.clone() };
+                        &named
+                    } else {
+                        c
+                    };
+                    if self.pending_repeats.iter().any(|(n2, ..)| *n2 != NO_STR && *n2 == tmp.node.name) {
+                        self.error("G9007", c.line, "a repeat's template is one root — wrap the rows in a Column or Layers");
+                        continue;
                     }
+                    let capacity = n.props.iter().find(|p| p.key == "capacity").and_then(|p| p.value.as_num()).unwrap_or(0.0).max(0.0) as u32;
+                    let by = n.clauses.iter().find(|(k, _)| k == "by").and_then(|(_, v)| if let AstValue::Ref { name, .. } = v { Some(name.clone()) } else { None });
+                    let keyed = by.is_some();
+                    let by_id = by.and_then(|b| b.strip_prefix(binding.as_str()).and_then(|r| r.strip_prefix('.')).map(str::to_string)).map_or(NO_STR, |f| self.intern(&f));
+                    self.prefix.push(format!("{repeat_name}/item"));
+                    self.repeat_binding = Some(binding.clone());
+                    let child = self.node(template, Some(kind), None);
+                    self.repeat_binding = None;
+                    self.prefix.pop();
+                    let binding_id = self.intern(&binding);
+                    self.pending_repeats.push((tmp.node.name, binding_id, by_id, capacity, keyed));
+                    tmp.children.push(child);
                 }
                 AstItem::Node(c) => {
                     let child = self.node(c, Some(kind), None);
@@ -2532,7 +2598,7 @@ impl<'a> Compiler<'a> {
         let range = n.clauses.iter().find(|(k, _)| k == "in").map(|(_, v)| v.clone());
         let Some(kind_prop) = n.props.iter().find(|p| p.key == "automatic") else {
             if by.is_some() || range.is_some() {
-                self.error("G5104", n.line, "`by`/`in` couple a slot to an `automatic=` driver — this slot declares none");
+                self.error("G5107", n.line, "`by`/`in` couple a slot to an `automatic=` driver — this slot declares none");
             }
             return Auto::NoAuto;
         };
@@ -2548,25 +2614,25 @@ impl<'a> Compiler<'a> {
         match kind.as_str() {
             "length" | "position" => {
                 let Some(by) = by else {
-                    self.error("G5104", n.line, format!("`automatic={kind}` wants `by $value in $min..$max`"));
+                    self.error("G5107", n.line, format!("`automatic={kind}` wants `by $value in $min..$max`"));
                     return Auto::NoAuto;
                 };
                 if !matches!(&by, AstValue::Ref { name, .. } if name == "value") {
-                    self.error("G5104", n.line, format!("`automatic={kind}` v1 drives from `$value` — `by $value` (got `{}`)", spell(&by)));
+                    self.error("G5107", n.line, format!("`automatic={kind}` v1 drives from `$value` — `by $value` (got `{}`)", spell(&by)));
                     return Auto::NoAuto;
                 }
                 let Some(AstValue::Range(lo, hi)) = range else {
-                    self.error("G5104", n.line, format!("`automatic={kind}` needs its range — `in $min..$max`"));
+                    self.error("G5107", n.line, format!("`automatic={kind}` needs its range — `in $min..$max`"));
                     return Auto::NoAuto;
                 };
                 match (&*lo, &*hi) {
                     (AstValue::Ref { name: l, .. }, AstValue::Ref { name: h, .. }) if l == "min" && h == "max" => {}
                     (AstValue::Ref { .. }, AstValue::Ref { .. }) => {
-                        self.error("G5104", n.line, format!("`automatic={kind}` normalizes over `$min..$max` — `in $min..$max` (got `in {}..{}`)", spell(&lo), spell(&hi)));
+                        self.error("G5107", n.line, format!("`automatic={kind}` normalizes over `$min..$max` — `in $min..$max` (got `in {}..{}`)", spell(&lo), spell(&hi)));
                         return Auto::NoAuto;
                     }
                     _ => {
-                        self.error("G5104", n.line, format!("`in` spells the driver's range as two `$params` — `in $min..$max` (got `in {}..{}`)", spell(&lo), spell(&hi)));
+                        self.error("G5107", n.line, format!("`in` spells the driver's range as two `$params` — `in $min..$max` (got `in {}..{}`)", spell(&lo), spell(&hi)));
                         return Auto::NoAuto;
                     }
                 }
@@ -2578,17 +2644,17 @@ impl<'a> Compiler<'a> {
             }
             "presence" => {
                 if range.is_some() {
-                    self.error("G5104", n.line, "`automatic=presence`: a bool has no range — drop the `in` clause");
+                    self.error("G5107", n.line, "`automatic=presence`: a bool has no range — drop the `in` clause");
                 }
                 match &by {
                     Some(AstValue::Ident { .. }) => {}
-                    Some(other) => self.error("G5104", n.line, format!("a presence driver is a state word — `by` names one (no `$`): `by selected` (got `{}`)", spell(other))),
-                    None => self.error("G5104", n.line, "`automatic=presence` wants `by <state>` (`by selected`)"),
+                    Some(other) => self.error("G5107", n.line, format!("a presence driver is a state word — `by` names one (no `$`): `by selected` (got `{}`)", spell(other))),
+                    None => self.error("G5107", n.line, "`automatic=presence` wants `by <state>` (`by selected`)"),
                 }
                 Auto::Presence(false)
             }
             other => {
-                self.error("G5104", n.line, format!("`automatic={other}`: want length, position or presence"));
+                self.error("G5107", n.line, format!("`automatic={other}`: want length, position or presence"));
                 Auto::NoAuto
             }
         }
@@ -2601,6 +2667,7 @@ impl<'a> Compiler<'a> {
         let prefix = self.prefix.pop();
         let fills = self.fills.pop();
         let styles = self.style_scopes.pop();
+        let widget = self.widget_stack.pop();
         let r = f(self);
         if let Some(s) = scope {
             self.scopes.push(s);
@@ -2613,6 +2680,9 @@ impl<'a> Compiler<'a> {
         }
         if let Some(s) = styles {
             self.style_scopes.push(s);
+        }
+        if let Some(w) = widget {
+            self.widget_stack.push(w);
         }
         r
     }
@@ -3032,21 +3102,21 @@ impl<'a> Compiler<'a> {
         }
         // Contradictions the spec refuses at load.
         if p.halign == Align::Center && matches!(p.width, Len::Fill(_)) && p.max_width.is_none() {
-            self.error("G1001", line, "`halign=center` with `width=fill`: fill leaves nothing to position (use `hug`, or a `max_width` cap)");
+            self.error("G1011", line, "`halign=center` with `width=fill`: fill leaves nothing to position (use `hug`, or a `max_width` cap)");
         }
         if p.valign == Align::Center && matches!(p.height, Len::Fill(_)) && p.max_height.is_none() {
-            self.error("G1001", line, "`valign=center` with `height=fill`: fill leaves nothing to position (use `hug`, or a `max_height` cap)");
+            self.error("G1011", line, "`valign=center` with `height=fill`: fill leaves nothing to position (use `hug`, or a `max_height` cap)");
         }
         if let (Len::Exact(_), true) = (p.width, p.min_width > 0.0) {
-            self.error("G1002", line, "`min_width` next to an exact `width` is dead (an exact size is its own floor)");
+            self.error("G1012", line, "`min_width` next to an exact `width` is dead (an exact size is its own floor)");
         }
         if let (Some(max), true) = (p.max_width, p.min_width > 0.0) {
             if p.min_width > max {
-                self.error("G1003", line, "`min_width` above `max_width`");
+                self.error("G1013", line, "`min_width` above `max_width`");
             }
         }
         if p.margin.iter().any(Option::is_some) && parent.map(|k| k.is_stack() || matches!(k, Kind::Flow | Kind::Grid | Kind::GridRow | Kind::Tiles)).unwrap_or(false) {
-            self.error("G1005", line, "margins under a Column/Row/Flow/Grid are an error — space children with `spacing=` / `gap` (or `padding` on the parent)");
+            self.error("G1014", line, "margins under a Column/Row/Flow/Grid are an error — space children with `spacing=` / `gap` (or `padding` on the parent)");
         }
         if p.margin[0].is_some() && p.margin[2].is_some() && matches!(p.width, Len::Exact(_)) {
             self.error("G1006", line, "both horizontal margins and an exact `width` over-constrain the axis");
@@ -3058,6 +3128,32 @@ impl<'a> Compiler<'a> {
     // ----- finish ---------------------------------------------------------
 
     fn finish(&mut self) {
+        // Repeats: name -> node id; the non-`empty` child is the hidden
+        // template the Runtime clones into row slots (GPAR108/capacity).
+        // The template's `$item.<field>` sites are recorded here, once —
+        // a reused slot re-binds through them with no marker left on it.
+        for (name, binding, by, capacity, keyed) in std::mem::take(&mut self.pending_repeats) {
+            if name == NO_STR {
+                continue;
+            }
+            let Some(node) = self.page.nodes.iter().position(|n| n.name == name && n.kind == Kind::Repeat) else { continue };
+            let node = node as NodeId;
+            let template = self.page.children(node).map(|i| i as NodeId).find(|c| self.page.nodes[*c as usize].kind != Kind::Empty);
+            if let Some(template) = template {
+                let first = self.page.bind_sites.len() as u32;
+                let t_end = self.page.nodes[template as usize].subtree_end;
+                for ni in template..t_end {
+                    let (p0, pc) = self.page.nodes[ni as usize].props;
+                    for k in 0..pc {
+                        if let Value::VItem(f) = self.page.props[(p0 + k) as usize].value {
+                            self.page.bind_sites.push(BindSite { node_off: ni - template, prop_off: k, field: f });
+                        }
+                    }
+                }
+                let count = self.page.bind_sites.len() as u32 - first;
+                self.page.repeats.push(RepeatInfo { node, binding, by, template, capacity, keyed, sites: (first, count) });
+            }
+        }
         // The D103 input model: everything passive is transparent, always —
         // only `interactive=true` declares a surface, a wired handler alone
         // never does. So `on:pointer` on a node that never declared itself
@@ -3269,7 +3365,7 @@ impl<'a> Compiler<'a> {
         for (name, line) in refs {
             if !self.page.theme.iter().any(|t| t.name == name) {
                 let word = self.page.str(name).to_string();
-                self.error("G9001", line, format!("`${word}` is not a theme value or widget parameter"));
+                self.error("G6001", line, format!("`${word}` is not a theme value or widget parameter"));
             }
         }
         self.one_writer_guard();
@@ -3450,8 +3546,8 @@ mod tests {
         assert!(!crate::diag::has_errors(&compile("View v { Layers l interactive=true, on:pointer=x }", &|_| None).diags));
         assert!(codes("Column c { Label a }").contains(&"G7003".to_string()));
         assert!(codes("View v { Label a text=\"x\"/k; Label b text=\"y\"/k }").contains(&"G8001".to_string()));
-        assert!(codes("View v { Label a font_color=$nothing }").contains(&"G9001".to_string()));
-        assert!(codes("View v { Column c { Label a margin_top=3 } }").contains(&"G1005".to_string()));
+        assert!(codes("View v { Label a font_color=$nothing }").contains(&"G6001".to_string()));
+        assert!(codes("View v { Column c { Label a margin_top=3 } }").contains(&"G1014".to_string()));
         assert!(codes("View v { Label a when held color=red }").is_empty() == false);
     }
 

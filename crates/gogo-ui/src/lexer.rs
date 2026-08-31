@@ -281,7 +281,7 @@ impl<'a> Lexer<'a> {
                 unit = w;
             } else {
                 self.pos = save;
-                self.error("G0002", format!("unknown unit `{w}` on a number (epx, px or % only)"));
+                self.error("G0079", format!("unknown unit `{w}` on a number (epx, px or % only)"));
             }
         }
         self.push(Tok::Num { value, unit });

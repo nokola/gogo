@@ -227,7 +227,7 @@ View orientView {
 // ------------------------------------------------- _arrangement_tests: build
 
 /// `arr.err-when-line-timing` (6684): `duration=` on a `when` line is
-/// refused and pointed at `transition`. Rust only warns (G0042 unknown
+/// refused and pointed at `transition`. Rust only warns (G2001 unknown
 /// property) — the file builds with the timing silently dropped.
 #[test]
 fn when_line_timing_is_refused_and_points_to_transition() {
@@ -703,7 +703,7 @@ fn two_blocks_of_one_condition_may_not_both_set_a_prop() {
 
 /// `screen.err-container-seat` (6985): a pose may not re-pin a stack
 /// child with a margin — the Column seats its children. Rust builds it
-/// (the static-margin lint G1005 does not look into `when` blocks).
+/// (the static-margin lint G1014 does not look into `when` blocks).
 #[test]
 #[ignore = "NEW: Godot refuses a posed margin on a Column child (seats its children) vs Rust builds it"]
 fn posed_margin_on_a_stack_child_is_refused() {

@@ -20,6 +20,122 @@ pub const DISABLED: u8 = 32;
 /// `base` — no arrangement active.
 pub const BASE: u32 = u32::MAX;
 
+/// One field value a repeat item carries — the leaf types the shipped
+/// addon binds (gogo_repeat.gd: String, number, bool, Color; structures
+/// don't bind whole).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ItemValue {
+    Str(String),
+    Int(i64),
+    Num(f32),
+    Bool(bool),
+    Color(Rgba),
+}
+
+/// One row of a keyed repeat's data: a record (field → value), or a
+/// plain value where `by $item` makes the item its own key.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Item {
+    Value(ItemValue),
+    Record(Vec<(String, ItemValue)>),
+}
+
+/// A row's identity across `set_items` calls — a string or a whole
+/// number, never a float (float equality is no identity; the shipped
+/// path refuses float keys too).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ItemKey {
+    Str(String),
+    Int(i64),
+}
+
+/// One repeat's live rows: slots cloned from the template (slot index
+/// = stable identity; a slot's nodes are named `<repeat>/<index>/…`),
+/// the display order, and — keyed form — each slot's key with a frozen
+/// copy of its data (same key + same data next time = the slot is kept
+/// untouched, the shipped `_data_equal` diff). Freed slots are REUSED,
+/// never abandoned, so memory and per-frame cost stay at the high-water
+/// row count (`capacity=`, user design 2026-08-31).
+#[derive(Clone, Debug)]
+struct Pool {
+    repeat: NodeId,
+    /// Every slot ever cloned, in slot order.
+    slots: Vec<NodeId>,
+    /// Slot indices shown right now, in display order.
+    live: Vec<u32>,
+    /// Per slot: the keyed row it holds (`None` = counted form, or free).
+    keyed: Vec<Option<(ItemKey, Item)>>,
+    /// The next `live` is built here and swapped in — the buffer keeps
+    /// its capacity, so a steady `set_items` allocates nothing.
+    scratch: Vec<u32>,
+    /// The repeat's `empty { }` children (found once — the per-call scan
+    /// would allocate).
+    empties: Vec<NodeId>,
+}
+
+/// A repeat's pool, created on first touch.
+fn new_pool(page: &Page, repeat: NodeId) -> Pool {
+    Pool { repeat, slots: Vec::new(), live: Vec::new(), keyed: Vec::new(), scratch: Vec::new(), empties: page.children(repeat).map(|i| i as NodeId).filter(|c| page.nodes[*c as usize].kind == Kind::Empty).collect() }
+}
+
+/// The key leaf of `item` (validated by `set_items` before use).
+fn key_leaf<'a>(page: &'a Page, by: StrId, item: &'a Item) -> &'a ItemValue {
+    match item {
+        Item::Value(v) => v,
+        Item::Record(r) => r.iter().find(|(k, _)| *k == page.str(by)).map(|(_, v)| v).expect("validated by set_items"),
+    }
+}
+
+/// Does a stored key name the same row as this item's key leaf?
+fn key_matches(k: &ItemKey, leaf: &ItemValue) -> bool {
+    match (k, leaf) {
+        (ItemKey::Str(a), ItemValue::Str(b)) => a == b,
+        (ItemKey::Int(a), ItemValue::Int(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Writes `src` over `dst` reusing `dst`'s buffers — a rebind must not
+/// allocate for data of the same shape (the zero-alloc churn contract).
+fn assign_item(dst: &mut Item, src: &Item) {
+    match (dst, src) {
+        (Item::Record(d), Item::Record(s)) if d.len() == s.len() => {
+            for ((dk, dv), (sk, sv)) in d.iter_mut().zip(s) {
+                if dk != sk {
+                    dk.clear();
+                    dk.push_str(sk);
+                }
+                assign_value(dv, sv);
+            }
+        }
+        (d, s) => *d = s.clone(),
+    }
+}
+
+fn assign_value(d: &mut ItemValue, s: &ItemValue) {
+    match (d, s) {
+        (ItemValue::Str(d), ItemValue::Str(s)) => {
+            d.clear();
+            d.push_str(s);
+        }
+        (d, s) => *d = s.clone(),
+    }
+}
+
+/// `assign_item`'s twin for the stored key.
+fn assign_key(k: &mut ItemKey, leaf: &ItemValue) {
+    match (k, leaf) {
+        (ItemKey::Str(d), ItemValue::Str(s)) => {
+            d.clear();
+            d.push_str(s);
+        }
+        (ItemKey::Int(d), ItemValue::Int(s)) => *d = *s,
+        (k, ItemValue::Str(s)) => *k = ItemKey::Str(s.clone()),
+        (k, ItemValue::Int(s)) => *k = ItemKey::Int(*s),
+        _ => unreachable!("set_items validated the key type"),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Runtime {
     pub arrangement: u32,
@@ -54,6 +170,9 @@ pub struct Runtime {
     /// next writer of that property — a `when` flip that writes it, a code
     /// write, another anim — or `stop(restore)`.
     pub held: Vec<(NodeId, Channel, f32)>,
+    /// Live repeat rows, one pool per touched repeat (`set_count` /
+    /// `set_items`).
+    pools: Vec<Pool>,
     /// Anims that ended on their own since the last `take_finished`
     /// (one entry per player that ran out). Needed because a host
     /// sequencing on an anim's end (Godot's `finished`) otherwise polls
@@ -108,6 +227,7 @@ impl Runtime {
             shown: vec![Motion::IDENTITY; page.nodes.len()],
             players: Vec::new(),
             finished: Vec::new(),
+            pools: Vec::new(),
             motion: vec![Motion::IDENTITY; page.nodes.len()],
             owned_text: vec![NO_STR; page.nodes.len()],
             last: Vec::new(),
@@ -238,24 +358,264 @@ impl Runtime {
         }
     }
 
-    /// A `repeat x max=N` node's built items, in order (its `empty { }`
-    /// child is not one).
+    /// A repeat's live rows, in display order (its `empty { }` child is
+    /// not one). Rows exist once `set_count`/`set_items`/`reserve` built
+    /// them — slots cloned from the hidden template, reused ever after.
     pub fn items(&self, page: &Page, repeat: NodeId) -> Vec<NodeId> {
-        page.children(repeat).map(|i| i as NodeId).filter(|c| page.nodes[*c as usize].kind != Kind::Empty).collect()
+        let _ = page;
+        self.pools.iter().find(|p| p.repeat == repeat).map(|p| p.live.iter().map(|s| p.slots[*s as usize]).collect()).unwrap_or_default()
     }
 
-    /// Shows the first `n` items of a `repeat x max=N` node (the rest are
-    /// `gone`); its `empty { }` content shows only at zero. More than N
-    /// clamps to N.
-    pub fn set_count(&mut self, page: &mut Page, repeat: NodeId, n: usize) {
-        let items = self.items(page, repeat);
+    /// The keyed-repeat row `node` sits in, if any — the key the shipped
+    /// addon binds as a handler's trailing argument; a Rust host reads
+    /// it off an event's node instead (`rt.item_key(&page, ev.node)`).
+    pub fn item_key(&self, page: &Page, node: NodeId) -> Option<&ItemKey> {
+        for p in &self.pools {
+            for s in &p.live {
+                let root = p.slots[*s as usize];
+                if node >= root && node < page.nodes[root as usize].subtree_end {
+                    return p.keyed[*s as usize].as_ref().map(|(k, _)| k);
+                }
+            }
+        }
+        None
+    }
+
+    /// Sizes every per-node table to the arena — the arena grows when
+    /// `set_items` clones a template; ids never re-mean, so existing
+    /// entries stay put.
+    fn grow(&mut self, page: &Page) {
+        let n = page.nodes.len();
+        while self.states.len() < n {
+            self.states.push(page.nodes[self.states.len()].initial_states);
+        }
+        self.scroll.resize(n, [0.0; 2]);
+        self.motion.resize(n, Motion::IDENTITY);
+        self.shown.resize(n, Motion::IDENTITY);
+        self.owned_text.resize(n, NO_STR);
+    }
+
+    /// Hands a keyed repeat (`repeat x by $item.<field>`) its rows,
+    /// reconciled by key like the shipped addon (gogo_repeat.gd
+    /// `assign`): a kept key with the same data keeps its slot
+    /// untouched, changed data re-binds a slot in place, absent keys
+    /// free their slot for reuse, order follows `items`. Bad data
+    /// refuses the WHOLE assignment (`Err` carrying the G-code) and the
+    /// shown rows do not change. The `empty { }` content shows exactly
+    /// at zero rows. A steady call allocates nothing; the pool grows
+    /// past `capacity=` only when the data does.
+    pub fn set_items(&mut self, page: &mut Page, repeat: NodeId, items: &[Item]) -> Result<(), String> {
+        let Some(info) = page.repeats.iter().find(|r| r.node == repeat).copied() else {
+            return Err(format!("G9101: `{}` is not a repeat with a template", page.str(page.nodes[repeat as usize].name)));
+        };
+        if !info.keyed {
+            return Err(format!("G9101: `{}` is not a keyed repeat — a counted repeat takes `set_count`", page.str(page.nodes[repeat as usize].name)));
+        }
+        // Keys first; every refusal returns before anything mutates, so
+        // the last good rows stand.
+        let leaf = |i: usize| -> Result<&ItemValue, String> {
+            match (&items[i], info.by) {
+                (Item::Value(v), by) if by == NO_STR => Ok(v),
+                (Item::Record(_), by) if by == NO_STR => Err(format!("G9102: repeat `{}` refused items — `by $item` keys the item itself; a record keys by field (`by $item.<field>`)", page.str(page.nodes[repeat as usize].name))),
+                (Item::Record(r), by) => match r.iter().find(|(k, _)| *k == page.str(by)) {
+                    Some((_, v)) => Ok(v),
+                    None => Err(format!("G9102: repeat `{}` refused items — item {i} has no `{}` field", page.str(page.nodes[repeat as usize].name), page.str(by))),
+                },
+                (Item::Value(_), by) => Err(format!("G9102: repeat `{}` refused items — `by` walks `{}` into a plain value; field access needs a record", page.str(page.nodes[repeat as usize].name), page.str(by))),
+            }
+        };
+        for i in 0..items.len() {
+            let v = leaf(i)?;
+            match v {
+                ItemValue::Str(_) | ItemValue::Int(_) => {}
+                ItemValue::Num(_) => return Err(format!("G9102: repeat `{}` refused items — item {i}'s key is a float; keys are strings or whole numbers", page.str(page.nodes[repeat as usize].name))),
+                _ => return Err(format!("G9102: repeat `{}` refused items — item {i}'s key must be a string or a whole number", page.str(page.nodes[repeat as usize].name))),
+            }
+            if i > 0 && std::mem::discriminant(leaf(0)?) != std::mem::discriminant(v) {
+                return Err(format!("G9102: repeat `{}` refused items — mixed key types (strings and whole numbers)", page.str(page.nodes[repeat as usize].name)));
+            }
+            for j in 0..i {
+                if leaf(j)? == v {
+                    return Err(format!("G9103: repeat `{}` refused items — duplicate key {v:?} (items {j} and {i}); every row keys uniquely", page.str(page.nodes[repeat as usize].name)));
+                }
+            }
+        }
+        // Every bound field must resolve on every item — the shipped
+        // detached build: one failed item refuses the assignment whole.
+        let (s0, sc) = info.sites;
         for (i, item) in items.iter().enumerate() {
-            self.set_visible(page, *item, i < n);
+            for si in s0..s0 + sc {
+                let fname = page.str(page.bind_sites[si as usize].field);
+                let ok = match item {
+                    Item::Record(r) => !fname.is_empty() && r.iter().any(|(k, _)| *k == fname),
+                    Item::Value(_) => fname.is_empty(),
+                };
+                if !ok {
+                    let why = if fname.is_empty() { "structures don't bind whole — bind a field (`$item.<field>`)".to_string() } else { format!("no field `{fname}`") };
+                    return Err(format!("G9101: repeat `{}` refused items — the item template failed for item {i}: {why}", page.str(page.nodes[repeat as usize].name)));
+                }
+            }
         }
-        let empties: Vec<NodeId> = page.children(repeat).map(|i| i as NodeId).filter(|c| page.nodes[*c as usize].kind == Kind::Empty).collect();
-        for e in empties {
-            self.set_visible(page, e, n == 0);
+        // Commit — cannot fail. Kept keys with kept data keep their slot.
+        let pi = self.pool_of(page, repeat);
+        let mut next = std::mem::take(&mut self.pools[pi].scratch);
+        next.clear();
+        for item in items {
+            let lv = key_leaf(page, info.by, item);
+            let kept = (0..self.pools[pi].slots.len() as u32).find(|s| !next.contains(s) && self.pools[pi].keyed[*s as usize].as_ref().is_some_and(|(k, d)| key_matches(k, lv) && d == item));
+            next.push(kept.unwrap_or(u32::MAX));
         }
+        for i in 0..items.len() {
+            if next[i] != u32::MAX {
+                continue;
+            }
+            let free = (0..self.pools[pi].slots.len() as u32).find(|s| !next.contains(s));
+            let s = match free {
+                Some(s) => s,
+                None => self.grow_pool(page, pi, &info),
+            };
+            next[i] = s;
+            self.bind_slot(page, pi, s, &info, &items[i]);
+        }
+        let zero = next.is_empty();
+        let prev = std::mem::replace(&mut self.pools[pi].live, next);
+        self.pools[pi].scratch = prev;
+        self.show_empties(page, pi, zero);
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Writes one item's `$item.<field>` values onto a slot through the
+    /// write layer (`set_text` for text — the owned string mutates in
+    /// place, so equal-shape churn allocates nothing) and freezes the
+    /// item for the next diff.
+    fn bind_slot(&mut self, page: &mut Page, pi: usize, slot: u32, info: &RepeatInfo, item: &Item) {
+        let root = self.pools[pi].slots[slot as usize];
+        let (s0, sc) = info.sites;
+        for si in s0..s0 + sc {
+            let site = page.bind_sites[si as usize];
+            let node = root + site.node_off;
+            let key = page.props[(page.nodes[node as usize].props.0 + site.prop_off) as usize].key;
+            let lv_idx = match item {
+                Item::Record(r) => {
+                    let fname = page.str(site.field);
+                    r.iter().position(|(k, _)| *k == fname)
+                }
+                Item::Value(_) => None,
+            };
+            let lv: &ItemValue = match item {
+                Item::Record(r) => &r[lv_idx.expect("validated by set_items")].1,
+                Item::Value(v) => v,
+            };
+            match lv {
+                ItemValue::Str(s) => {
+                    if key == PropKey::Text {
+                        self.set_text(page, node, s);
+                    } else {
+                        let id = page.intern(s);
+                        self.set_prop(node, key, Value::VText { text: id, key: NO_KEY });
+                    }
+                }
+                ItemValue::Int(v) => self.set_prop(node, key, Value::VNum(*v as f32)),
+                ItemValue::Num(v) => self.set_prop(node, key, Value::VNum(*v)),
+                ItemValue::Bool(b) => self.set_prop(node, key, Value::VBool(*b)),
+                ItemValue::Color(c) => self.set_prop(node, key, Value::VColor(*c)),
+            }
+        }
+        let lv = key_leaf(page, info.by, item);
+        match &mut self.pools[pi].keyed[slot as usize] {
+            Some((k, d)) => {
+                assign_key(k, lv);
+                assign_item(d, item);
+            }
+            e => {
+                let k = match lv {
+                    ItemValue::Str(s) => ItemKey::Str(s.clone()),
+                    ItemValue::Int(v) => ItemKey::Int(*v),
+                    _ => unreachable!("set_items validated the key type"),
+                };
+                *e = Some((k, item.clone()));
+            }
+        }
+    }
+
+    /// Shows the first `n` rows of a counted repeat (`set_text` fills
+    /// them); its `empty { }` content shows exactly at zero. The first
+    /// call clones slots out to `capacity=` (or `n`, whichever is more)
+    /// — never a ceiling: a bigger `n` grows the pool.
+    pub fn set_count(&mut self, page: &mut Page, repeat: NodeId, n: usize) {
+        let Some(info) = page.repeats.iter().find(|r| r.node == repeat).copied() else { return };
+        let pi = self.pool_of(page, repeat);
+        let target = n.max(info.capacity as usize);
+        while self.pools[pi].slots.len() < target {
+            self.grow_pool(page, pi, &info);
+        }
+        self.pools[pi].live.clear();
+        self.pools[pi].live.extend(0..n as u32);
+        self.show_empties(page, pi, n == 0);
+        self.dirty = true;
+    }
+
+    /// Builds a counted repeat out to its `capacity=` and shows every
+    /// slot — for a host that drives the rows itself (GradientEdit hides
+    /// and places marks per stop). Returns the slot count.
+    pub fn reserve(&mut self, page: &mut Page, repeat: NodeId) -> usize {
+        let cap = page.repeats.iter().find(|r| r.node == repeat).map(|r| r.capacity as usize).unwrap_or(0);
+        self.set_count(page, repeat, cap);
+        cap
+    }
+
+    /// The pool for `repeat`, created on first touch.
+    fn pool_of(&mut self, page: &Page, repeat: NodeId) -> usize {
+        match self.pools.iter().position(|p| p.repeat == repeat) {
+            Some(i) => i,
+            None => {
+                self.pools.push(new_pool(page, repeat));
+                self.pools.len() - 1
+            }
+        }
+    }
+
+    /// The `empty { }` content shows exactly at zero rows.
+    fn show_empties(&mut self, page: &mut Page, pi: usize, zero: bool) {
+        for k in 0..self.pools[pi].empties.len() {
+            let e = self.pools[pi].empties[k];
+            self.set_visible(page, e, zero);
+        }
+    }
+
+    /// Clones one more slot from the template — the pool's only
+    /// allocation event. The clone lands at the arena's end (contiguous
+    /// buffers, amortized `Vec` growth — never per-control heap
+    /// objects), and its nodes take the slot's name (`<repeat>/<i>/…`)
+    /// so per-slot parts stay addressable (GradientEdit's marks).
+    fn grow_pool(&mut self, page: &mut Page, pi: usize, info: &RepeatInfo) -> u32 {
+        let idx = self.pools[pi].slots.len() as u32;
+        let root = page.clone_subtree(info.template);
+        let rep = page.str(page.nodes[info.node as usize].name).to_string();
+        let from = format!("{rep}/item");
+        let to = format!("{rep}/{idx}");
+        let end = page.nodes[root as usize].subtree_end;
+        for ni in root..end {
+            let nm = page.nodes[ni as usize].name;
+            if nm == NO_STR {
+                continue;
+            }
+            let s = page.str(nm);
+            let renamed = if s == from {
+                to.clone()
+            } else if s.len() > from.len() && s.starts_with(&from) && s.as_bytes()[from.len()] == b'/' {
+                format!("{to}{}", &s[from.len()..])
+            } else {
+                continue;
+            };
+            let id = page.intern(&renamed);
+            page.nodes[ni as usize].name = id;
+        }
+        self.grow(page);
+        self.pools[pi].slots.push(root);
+        self.pools[pi].keyed.push(None);
+        idx
     }
 
     /// Is `anim` mid-play?
@@ -544,6 +904,9 @@ pub struct Resolved {
     pub states: Vec<u8>,
     /// Paint-order bumps (`Runtime::set_raise`), copied for draw and hit.
     pub raised: Vec<(NodeId, i32)>,
+    /// Keyed repeats' live row roots, in shown order (copied from the
+    /// Runtime) — `children` hands them to layout, draw and hit.
+    pub repeat_rows: Vec<(NodeId, Vec<NodeId>)>,
     /// The language keyed text shows (copied from the Runtime; one Arc
     /// bump per pass, no allocation).
     pub locale: Option<Arc<Locale>>,
@@ -670,6 +1033,10 @@ impl Resolved {
     /// `visibility=gone` — out of layout. An `automatic=presence` slot
     /// whose state is off is gone too.
     pub fn gone(&self, page: &Page, node: NodeId) -> bool {
+        // A keyed repeat's template never shows — only its clones do.
+        if page.repeats.iter().any(|r| r.template == node) {
+            return true;
+        }
         if page.nodes[node as usize].auto == Auto::Presence(false) {
             return true;
         }
@@ -682,6 +1049,11 @@ impl Resolved {
         let mut out: Vec<NodeId> = page.children(id).map(|i| i as NodeId).filter(|c| self.seat.get(*c as usize).copied().unwrap_or(NO_NODE) == NO_NODE).collect();
         if page.nodes[id as usize].kind == Kind::Seat {
             out.extend(self.seat.iter().enumerate().filter(|(_, s)| **s == id).map(|(i, _)| i as NodeId));
+        }
+        if page.nodes[id as usize].kind == Kind::Repeat {
+            if let Some((_, rows)) = self.repeat_rows.iter().find(|(r, _)| *r == id) {
+                out.extend(rows.iter().copied());
+            }
         }
         out
     }
@@ -774,7 +1146,7 @@ impl Resolved {
 }
 
 fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
-    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone() };
+    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect() };
     for (i, node) in page.nodes.iter().enumerate() {
         let id = i as NodeId;
         let mut placement = node.placement;

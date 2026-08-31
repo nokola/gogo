@@ -510,7 +510,7 @@ fn widget_instances_are_named_and_body_names_scoped() {
 /// widget's OWN `style` (with a `transition … anim=` naming the widget's
 /// own anim) builds and lands per instance on the `signals` Button.
 #[test]
-#[ignore = "GP32: not ported: widget-scoped `style`/`transition` (unknown style `.Root`, G4001)"]
+#[ignore = "GP32: not ported: widget-scoped `style`/`transition` (unknown style `.Root`, G5002)"]
 fn widget_scoped_style_and_transition_anim_land_per_instance() {
     let c = ok("widget FxButton $text=\"\" {\n    anim pressFx {\n        caption.translate.x { key t=0, v=0; key t=0.1, v=3; key t=0.2, v=0 }\n    }\n    style Root background=#1F1F1FFF {\n        transition any -> held duration=0.05, anim=pressFx\n        when held background=#E51400FF\n    }\n    Button signals .Root {\n        Label caption text=$text\n    }\n}\nView v { Row r {\n    FxButton one text=\"Paint\"\n    FxButton two text=\"Undo\"\n} }");
     let one = c.page.find("one").unwrap();
@@ -595,7 +595,7 @@ fn empty_source_and_polish_props() {
 /// Button prop (the icon's max width).
 #[test]
 fn icon_size_is_a_known_button_prop() {
-    assert!(!codes("View v { Button b text=\"t\", icon_size=30 }").contains(&"G0042".to_string()));
+    assert!(!codes("View v { Button b text=\"t\", icon_size=30 }").contains(&"G2001".to_string()));
 }
 
 // ------------------------------------------------------- _touch_lint_tests

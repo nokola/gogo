@@ -480,10 +480,10 @@ fn an_uncapped_hug_box_follows_hides_and_text_both_ways() {
 fn per_corner_radius_keys_are_known() {
     let src = "View v {\n Column {\n  Panel sheet background=#223344FF, corner_radius=8, corner_radius_top_left=2 { Label a text=\"x\" }\n  Panel stomp corner_radius_top_left=2, corner_radius=8 { Label b text=\"y\" }\n }\n}\n";
     let c = compile(src, &|_| None);
-    assert!(!c.diags.iter().any(|d| d.code == "G0042"), "{:#?}", c.diags);
+    assert!(!c.diags.iter().any(|d| d.code == "G2001"), "{:#?}", c.diags);
     let slot = "widget Fader {\n Layers {\n  slot track width=fill, height=24 { Rectangle color=#4488FFFF }\n }\n}\nView v { Fader f 200x24, slot.track.corner_radius_top_left=3 }\n";
     let c = compile(slot, &|_| None);
-    assert!(!gogo::has_errors(&c.diags) && !c.diags.iter().any(|d| d.code == "G0042"), "{:#?}", c.diags);
+    assert!(!gogo::has_errors(&c.diags) && !c.diags.iter().any(|d| d.code == "G2001"), "{:#?}", c.diags);
 }
 
 /// `_corner_radius_tests` 1082-1083 (corner.circle-refused): a Circle
@@ -499,18 +499,18 @@ fn a_circle_refuses_corner_keys() {
 
 /// `_min_max_band_tests` 1091-1094 (band.err-crossed, band.err-fixed-min):
 /// a floor above the cap and a floor next to an exact width refuse at
-/// build (Rust G1003 / G1002).
+/// build (Rust G1013 / G1012).
 #[test]
 fn crossed_band_and_floor_next_to_exact_width_refuse() {
-    assert!(codes("View v { Layers { Panel p width=hug, min_width=300, max_width=100 } }").contains(&"G1003".to_string()));
-    assert!(codes("View v { Panel p width=100, min_width=50 }").contains(&"G1002".to_string()));
+    assert!(codes("View v { Layers { Panel p width=hug, min_width=300, max_width=100 } }").contains(&"G1013".to_string()));
+    assert!(codes("View v { Panel p width=100, min_width=50 }").contains(&"G1012".to_string()));
 }
 
 /// `_min_max_band_tests` 1095-1096 (band.err-fixed-min-size): `size=
-/// 100x40, min_height=50` "fixes the axis" in Godot. Rust's G1002 checks
+/// 100x40, min_height=50` "fixes the axis" in Godot. Rust's G1012 checks
 /// the WIDTH pair only, so the height twin builds clean.
 #[test]
-#[ignore = "NEW: Godot refuses min_height next to an exact height (size=100x40, min_height=50) vs Rust builds clean (G1002 checks width only)"]
+#[ignore = "NEW: Godot refuses min_height next to an exact height (size=100x40, min_height=50) vs Rust builds clean (G1012 checks width only)"]
 fn a_floor_next_to_an_exact_height_refuses() {
     assert!(errs("View v { Panel p size=100x40, min_height=50 }"));
     assert!(errs("View v { Panel p height=40, min_height=50 }"));
@@ -621,10 +621,10 @@ fn a_lone_margin_on_a_centered_axis_refuses() {
 // ---------------------------------------------------------- capped fill
 
 /// `_capped_fill_tests` 1215-1216 (fcap.cap-fill-pointless): `width=fill,
-/// max_width=fill, halign=center` changes nothing — refused (Rust G1001).
+/// max_width=fill, halign=center` changes nothing — refused (Rust G1011).
 #[test]
 fn a_fill_capped_at_fill_refuses() {
-    assert!(codes("View v { Layers { Rectangle p width=fill, max_width=fill, halign=center, color=red } }").contains(&"G1001".to_string()));
+    assert!(codes("View v { Layers { Rectangle p width=fill, max_width=fill, halign=center, color=red } }").contains(&"G1011".to_string()));
 }
 
 /// `_capped_fill_tests` 1212-1214, 1221-1223 (fcap.needs-side,
@@ -772,7 +772,7 @@ fn a_seated_glyph_stays_put_when_its_minimum_changes() {
 /// `_container_seat_tests` 1422-1430 (seat.flip-refused): a `when` block
 /// re-pinning a container child with a margin is refused at load ("seats
 /// its children"). Rust refuses margins on a container child on the node
-/// line (G1005) but a posed margin builds.
+/// line (G1014) but a posed margin builds.
 #[test]
 #[ignore = "GP34: not ported: margins on a container child refused (resolver 7570) — the posed form builds in Rust"]
 fn a_when_block_cannot_re_pin_a_container_child() {

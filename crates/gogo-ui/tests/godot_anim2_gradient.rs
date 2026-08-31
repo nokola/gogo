@@ -648,7 +648,7 @@ fn a_stop_entry_takes_an_opacity_suffix() {
 /// that mirrors the ramp; with mirror the positions stop at 0.5; an
 /// unknown repeat word is refused naming `mirror`.
 #[test]
-#[ignore = "GP40: not ported: Gradient repeat= (Rust warns G0042 unknown property and draws nothing of it)"]
+#[ignore = "GP40: not ported: Gradient repeat= (Rust warns G2001 unknown property and draws nothing of it)"]
 fn repeat_mirror_is_a_gradient_word_with_its_fences() {
     let src = "View v { Gradient g repeat=mirror, stops=[white@0, black@0.5] }";
     assert!(diags(src).is_empty(), "{:#?}", diags(src));
@@ -673,7 +673,7 @@ fn angle_is_the_compass() {
 /// `from=`/`to=` are 0..1 box points that survive a later `fill=`; `angle=`
 /// next to them is refused ("spell one"); a part outside 0..1 is refused.
 #[test]
-#[ignore = "GP40: not ported: Gradient from=/to= (Rust warns G0042 unknown property; the draw list carries no end points)"]
+#[ignore = "GP40: not ported: Gradient from=/to= (Rust warns G2001 unknown property; the draw list carries no end points)"]
 fn from_and_to_are_box_points_with_their_fences() {
     let src = "View v { Gradient g from=0.25x0.25, fill=radial, to=0.75x0.75, stops=[white, black] }";
     assert!(diags(src).is_empty(), "{:#?}", diags(src));

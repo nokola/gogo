@@ -372,7 +372,7 @@ fn render_is_one_renderer_so_the_render_word_builds_everywhere() {
 /// `_render_tests` 4232-4237 (`render.button-for-applies-natively`): a
 /// `style AppBtn for=Button { when held opacity=0.8 }` builds and its
 /// held response dims the Button's text while pressed. (`for=` itself is
-/// unchecked here — GP40 — it only earns a G0042 warning.)
+/// unchecked here — GP40 — it only earns a G2001 warning.)
 #[test]
 fn render_button_for_style_applies() {
     let src = "style AppBtn for=Button { when held opacity=0.8 }\nView v { Button b .AppBtn text=\"x\", min_size=44x44, halign=left, valign=top }";
@@ -385,9 +385,9 @@ fn render_button_for_style_applies() {
 /// `_render_tests` 4238-4245 (`render.err-button-for-slot-path`,
 /// `render.err-button-inline-path`): a `slot.leading.…` path on a Button
 /// (in a `for=Button` style or inline) is an error — a Button has no
-/// slots. Rust only warns G0042 and builds.
+/// slots. Rust only warns G2001 and builds.
 #[test]
-#[ignore = "GP40: not ported: `slot.<name>.<prop>` paths (Godot: `has no slots` error; Rust: G0042 warning, builds)"]
+#[ignore = "GP40: not ported: `slot.<name>.<prop>` paths (Godot: `has no slots` error; Rust: G2001 warning, builds)"]
 fn render_button_slot_paths_are_refused() {
     assert!(gogo::has_errors(&diags("style Bad for=Button, slot.leading.size=20\nView v { Button b .Bad text=\"x\" }")));
     assert!(gogo::has_errors(&diags("View v { Button b text=\"x\", slot.leading.size=20 }")));
@@ -475,9 +475,9 @@ fn render_theme_variant_entry_look() {
 /// `_render_tests` 4383-4391 (`render.entry-user-control`): a user
 /// control takes theme entries too — `theme { Fader .Chunky }` rounds its
 /// track to 5. Rust refuses a theme entry on any non-built-in kind with
-/// G3004 ("not a control kind").
+/// G3006 ("not a control kind").
 #[test]
-#[ignore = "NEW: Godot lets `theme { <UserControl> … }` default a user control vs Rust refuses it with G3004 `not a control kind`"]
+#[ignore = "NEW: Godot lets `theme { <UserControl> … }` default a user control vs Rust refuses it with G3006 `not a control kind`"]
 fn render_theme_entry_defaults_a_user_control() {
     let src = format!("{FADER_SRC}style Chunky for=Fader, slot.track.corner_radius=5\ntheme {{ Fader .Chunky }}\nView v {{ Fader f 100x24 }}");
     let c = build(&src);
@@ -487,13 +487,13 @@ fn render_theme_entry_defaults_a_user_control() {
 /// `_render_tests` 4398-4405, 4432-4435 (`render.err-entry-unknown-type`,
 /// `render.err-entry-widget`, `render.err-entry-user-native`): a theme
 /// entry names a control kind — `Fancy`, a `widget Card`, and (here) a
-/// user control are all refused with G3004. Godot refuses the first two
+/// user control are all refused with G3006. Godot refuses the first two
 /// for the same reason and the third for its `render=native`; see
 /// `render_theme_entry_defaults_a_user_control` for the difference.
 #[test]
 fn render_theme_entry_needs_a_control_kind() {
-    assert!(has_code(&diags("theme { Fancy .X }\nView v { Label l text=\"x\" }"), "G3004"));
-    assert!(has_code(&diags("widget Card { Column { slot } }\ntheme { Card .X }\nView v { Label l text=\"x\" }"), "G3004"));
+    assert!(has_code(&diags("theme { Fancy .X }\nView v { Label l text=\"x\" }"), "G3006"));
+    assert!(has_code(&diags("widget Card { Column { slot } }\ntheme { Card .X }\nView v { Label l text=\"x\" }"), "G3006"));
     assert!(gogo::has_errors(&diags(&format!("{FADER_SRC}theme {{ Fader render=native }}\nView v {{ Fader f 100x24 }}"))));
 }
 
@@ -854,9 +854,9 @@ fn signals_flag_before_a_key_member_needs_no_comma() {
 /// refused WITH a suggestion ("did you mean 'Button'", runners-up in
 /// "(or: …)", a hopeless typo lists "options:"). gogo-design.md §7
 /// promises the same ("Unknown word = build error with a suggestion");
-/// Rust's G7011 / G4001 / G9001 carry none.
+/// Rust's G7011 / G5002 / G6001 carry none.
 #[test]
-#[ignore = "NEW: Godot errors carry did-you-mean suggestions (+ runners-up / options list) vs Rust G7011/G4001/G9001 name the word only (gogo-design §7 promises a suggestion)"]
+#[ignore = "NEW: Godot errors carry did-you-mean suggestions (+ runners-up / options list) vs Rust G7011/G5002/G6001 name the word only (gogo-design §7 promises a suggestion)"]
 fn errors_suggest_the_nearest_word() {
     let d = diags("View v { Buttn optionsButton text=\"Brush\" }");
     assert!(d.iter().any(|x| x.message.contains("Button")), "did you mean 'Button': {d:#?}");
@@ -873,7 +873,7 @@ fn errors_suggest_the_nearest_word() {
 /// `err.signpost-foreground`, `err.signpost-text-color`): an unknown
 /// property is an ERROR with a suggestion (`textt` → `text`), and a word
 /// from another dialect (`foreground=`, `text_color=`) is routed to the
-/// gogo word (`font_color=`). Rust warns G0042 and builds.
+/// gogo word (`font_color=`). Rust warns G2001 and builds.
 #[test]
 fn errors_unknown_property_is_refused_with_a_signpost() {
     let d = diags("View v { Button b textt=\"x\" }");
@@ -923,11 +923,11 @@ fn errors_dup_name_reserved_word_and_line_number() {
 /// `_diagnostic_tests` 4849-4850, 4905-4906 (`diag.g3001-fires`,
 /// `diag.g3001-solo-fires`): `anim=` on a `when` line is an error — a
 /// `when` declares a look, the anim belongs on a `transition` (Godot
-/// G3001; Rust's G3001 is a different rule, GPAR61). Rust warns G0042
+/// G3001; Rust's old G3001 — `$` defined twice — is G6002 now (GPAR61)). Rust warns G2001
 /// and drops the word. (The Godot fixture's `self.scale` target is `b.scale`
 /// here: `self` outside a widget is G0060.)
 #[test]
-#[ignore = "GP41: not ported: `anim=` on a `when` line is a load-time error (Godot G3001; Rust: G0042 warning, the word is dropped)"]
+#[ignore = "GP41: not ported: `anim=` on a `when` line is a load-time error (Godot G3001; Rust: G2001 warning, the word is dropped)"]
 fn diag_anim_on_a_when_line_is_refused() {
     let d = diags("style MenuButton width=220, height=48 {\n    when held background=#FFFFFFff, anim=test\n}\nanim test {\n    b.scale to=5, duration=0.8\n}\nView v { Button b .MenuButton text=\"X\" }");
     assert!(gogo::has_errors(&d) && d.iter().any(|x| x.message.contains("anim")), "{d:#?}");
@@ -990,27 +990,26 @@ fn diag_unknown_type_is_uncoded() {
 }
 
 /// `_diagnostic_tests` 4989-4992 (`diag.g0002`): an unclosed `{` is an
-/// error (Godot G0002 pointing at the opener; Rust G0010 "missing `}`" —
-/// Rust's G0002 is the unknown-unit lexer error, GPAR61).
+/// error — G0002 in both engines (GPAR61 aligned the code; the
+/// unknown-unit lexer error moved to G0079).
 #[test]
 fn diag_unclosed_brace_is_refused() {
     let d = diags("View menu {\n    Button a\n");
-    assert!(has_code(&d, "G0010"), "{d:#?}");
+    assert!(has_code(&d, "G0002"), "{d:#?}");
 }
 
 /// `_diagnostic_tests` 5008-5037 (`diag.registry-doc.*`, `diag.docs-dir`,
 /// `diag.doc-registered.*`, `diag.code-registered.*`): the addon pins its
-/// G-code registry both ways — every registered code has
-/// `docs/errors/<code>.md`, every doc is registered, every code used in
-/// source is registered. Rust has no registry and no docs folder; this is
-/// the consistency pin GPAR61 asks for, written against the crate's own
-/// `docs/errors` folder.
+/// G-code registry three ways (registry↔docs↔source). The Rust half
+/// (GPAR61): every code the source emits is in `diag::REGISTRY`, every
+/// registered code is emitted somewhere, a vacated number never comes
+/// back, and a code shared with the addon's PUBLISHED registry is shared
+/// ON PURPOSE (`diag::SHARED_WITH_ADDON`) — a new Rust code can never
+/// silently land on a published number with a different meaning. Owed:
+/// the per-code teaching pages (docs/errors/) the addon serves.
 #[test]
-#[ignore = "GPAR61: no G-code registry or docs/errors folder in the Rust crate (~60 unregistered codes, 12 collisions)"]
-fn diag_every_code_in_source_has_a_doc() {
+fn diag_source_and_registry_match_both_ways() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let docs = root.join("docs").join("errors");
-    assert!(docs.is_dir(), "no {} — the addon keeps one .md per code", docs.display());
     let mut codes: Vec<String> = Vec::new();
     for file in ["compile.rs", "parser.rs", "lexer.rs"] {
         let text = std::fs::read_to_string(root.join("src").join(file)).unwrap();
@@ -1028,6 +1027,30 @@ fn diag_every_code_in_source_has_a_doc() {
         }
     }
     assert!(!codes.is_empty());
-    let missing: Vec<&String> = codes.iter().filter(|c| !docs.join(format!("{c}.md")).is_file()).collect();
-    assert!(missing.is_empty(), "codes with no doc: {missing:?}");
+    let registered: Vec<&str> = gogo::diag::REGISTRY.iter().map(|(c, _)| *c).collect();
+    let unregistered: Vec<&String> = codes.iter().filter(|c| !registered.contains(&c.as_str())).collect();
+    assert!(unregistered.is_empty(), "codes emitted but not in diag::REGISTRY: {unregistered:?}");
+    let unemitted: Vec<&&str> = registered.iter().filter(|c| !codes.contains(&c.to_string())).collect();
+    assert!(unemitted.is_empty(), "codes in diag::REGISTRY that nothing emits: {unemitted:?}");
+    let revived: Vec<&String> = codes.iter().filter(|c| gogo::diag::RETIRED.contains(&c.as_str())).collect();
+    assert!(revived.is_empty(), "retired code numbers came back: {revived:?}");
+    // The addon's published registry, when this checkout has it beside
+    // the crate: the shared set is exactly the deliberate one.
+    let addon = root.join("../../../FantasiaGodot/addons/gogo/gogo_diagnostics.gd");
+    let Ok(text) = std::fs::read_to_string(&addon) else { return };
+    let mut published: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let t = line.trim_start();
+        if let Some(rest) = t.strip_prefix("\"G") {
+            if rest.len() >= 5 && rest.as_bytes()[..4].iter().all(u8::is_ascii_digit) && rest.as_bytes()[4] == b'"' {
+                published.push(format!("G{}", &rest[..4]));
+            }
+        }
+    }
+    assert!(published.len() >= 50, "the addon registry parse broke: {} codes", published.len());
+    let mut shared: Vec<&str> = registered.iter().copied().filter(|c| published.iter().any(|p| p == c)).collect();
+    shared.sort_unstable();
+    let mut declared: Vec<&str> = gogo::diag::SHARED_WITH_ADDON.to_vec();
+    declared.sort_unstable();
+    assert_eq!(shared, declared, "a code shared with the published registry is shared on purpose only — same meaning, listed in diag::SHARED_WITH_ADDON");
 }

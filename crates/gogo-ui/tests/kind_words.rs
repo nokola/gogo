@@ -71,7 +71,7 @@ fn table_answers_per_kind() {
 #[test]
 fn unknown_word_names_the_nearest_legal_word() {
     let (code, msg) = error("View v { Label a textt=\"x\" }");
-    assert_eq!(code, "G0042");
+    assert_eq!(code, "G2001");
     assert!(msg.contains("did you mean `text=`"), "{msg}");
     let (_, msg) = error("View v { Button b foreground=red }");
     assert!(msg.contains("font_color="), "{msg}");
@@ -119,11 +119,11 @@ fn a_child_aimed_when_response_is_checked_against_the_childs_kind() {
     assert_eq!(code, "G2002");
     assert!(msg.contains("Rectangle") && msg.contains("shows none"), "{msg}");
     let (code, msg) = error("View v { Button b text=\"x\" {\n when held flash.opacityy=0.5\n Rectangle flash 8x8\n} }");
-    assert_eq!(code, "G0042");
+    assert_eq!(code, "G2001");
     assert!(msg.contains("did you mean `opacity=`"), "{msg}");
     // The style spelling walks the same path.
     let (code, _) = error("style S { when held flash.z_as_relative=maybe }\nView v { Button b .S {\n Rectangle flash 8x8\n} }");
-    assert_eq!(code, "G0042");
+    assert_eq!(code, "G2001");
 }
 
 /// A code control takes the shared row (box, plate, padding) and refuses
@@ -137,7 +137,7 @@ fn a_code_control_takes_the_shared_row() {
     assert!(gogo::has_errors(&c.diags), "{:#?}", c.diags);
     assert!(c.diags.iter().any(|d| d.code == "G2002" && d.message.contains("code control")), "{:#?}", c.diags);
     let c = compile_with("View v { GradientEdit g width=100, foo=1 }", &|_| None, options);
-    assert!(c.diags.iter().any(|d| d.code == "G0042"), "{:#?}", c.diags);
+    assert!(c.diags.iter().any(|d| d.code == "G2001"), "{:#?}", c.diags);
 }
 
 /// `for=` on a style names a kind (checked) and is not a property of the
@@ -146,7 +146,7 @@ fn a_code_control_takes_the_shared_row() {
 fn style_for_names_a_kind() {
     ok("style S for=Button { when held opacity=0.8 }\nView v { Button b .S text=\"x\" }");
     let (code, _) = error("style S for=Buttn { when held opacity=0.8 }\nView v { Button b .S text=\"x\" }");
-    assert_eq!(code, "G3004");
+    assert_eq!(code, "G3006");
 }
 
 // ---------------------------------------------------------- the plate
@@ -202,6 +202,6 @@ fn theme_text_defaults_inside_a_block_reach_the_text_under_it() {
     assert_eq!(texts, vec![(22.0, Rgba([0x12, 0x34, 0x56, 0xFF])), (9.0, Rgba([0x12, 0x34, 0x56, 0xFF]))], "{texts:?}");
     // The words are the text defaults only.
     let (code, msg) = error("View v {\n theme background=red\n Label a text=\"a\"\n}");
-    assert_eq!(code, "G3004");
+    assert_eq!(code, "G3006");
     assert!(msg.contains("font_size"), "{msg}");
 }

@@ -169,11 +169,11 @@ fn parser_theme_values() {
 fn parser_errors() {
     assert!(parse_codes("Label text=\"oops").contains(&"G0003".to_string()));
     assert!(parse_codes("Button text=\"a\", text=\"b\"").contains(&"G0018".to_string()));
-    assert!(parse_codes("Button width=4pt").contains(&"G0002".to_string()));
+    assert!(parse_codes("Button width=4pt").contains(&"G0079".to_string()));
     assert!(parse_codes("}").contains(&"G0011".to_string()));
     let mut diags = Vec::new();
     parse("Column {\n  Button ok\n", &mut diags);
-    assert!(diags.iter().any(|d| d.code == "G0010" && d.message.contains('}')), "{diags:#?}");
+    assert!(diags.iter().any(|d| d.code == "G0002" && d.message.contains('}')), "{diags:#?}");
 }
 
 // ---------------------------------------------------------- _resolver_basics
@@ -651,7 +651,7 @@ fn cookbook_hidden_holds_space() {
 /// that `extends=` another inherits its props and overrides the ones it
 /// re-states.
 #[test]
-#[ignore = "GP40: not ported: style extends= (the key is a G0042 warning, the parent's props are not inherited)"]
+#[ignore = "GP40: not ported: style extends= (the key is a G2001 warning, the parent's props are not inherited)"]
 fn extends_inherits_and_overrides() {
     let c = ok("style BaseLook min_height=36, background=#112233FF\nstyle Warn extends=BaseLook, background=#AA0000FF\nView v { Button b .Warn }\n");
     let b = c.page.find("b").unwrap();
@@ -766,7 +766,7 @@ fn vocab_new_names_build_to_their_kinds() {
 /// `_vocab_tests` 12355-12358 (vocab.flow-orientation): `Flow` keeps
 /// WrapPanel's `orientation=vertical` — items run down, not across.
 #[test]
-#[ignore = "NEW: Godot Flow orientation=vertical runs items down; Rust warns G0042 (unknown prop) and lays them across (b at x=10,y=0)"]
+#[ignore = "NEW: Godot Flow orientation=vertical runs items down; Rust warns G2001 (unknown prop) and lays them across (b at x=10,y=0)"]
 fn vocab_flow_orientation_vertical() {
     let l = lay("View v { Flow f orientation=vertical { Rectangle a 10x10; Rectangle b 10x10 } }");
     let a = l.rect("a");

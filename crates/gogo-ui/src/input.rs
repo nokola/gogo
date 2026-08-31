@@ -199,6 +199,20 @@ fn scroll_ancestor(page: &Page, node: NodeId) -> Option<NodeId> {
     None
 }
 
+/// Is `node` inside `root`'s subtree (`root` itself counts)? The
+/// fling-catch uses it: only a touch that lands ON the gliding Scroll
+/// stops the glide — chrome drawn over it keeps its own press (D130).
+fn within(page: &Page, node: NodeId, root: NodeId) -> bool {
+    let mut n = node;
+    while n != NO_NODE {
+        if n == root {
+            return true;
+        }
+        n = page.nodes[n as usize].parent;
+    }
+    false
+}
+
 /// The innermost Scroll around `node` (`node` itself counts) that scrolls
 /// the way the finger committed to; `None` = nothing here scrolls that way.
 fn scroll_taker(page: &Page, res: &Resolved, node: NodeId, vertical: bool) -> Option<NodeId> {
@@ -374,10 +388,14 @@ impl Input {
                     // A second finger mid-gesture is swallowed.
                     return events;
                 }
-                // Any touch stops a glide; a FAST one is "caught" — the
+                // A glide is stopped only by a touch that lands ON the
+                // gliding Scroll or its content — chrome drawn over it
+                // keeps its own press and the list keeps rolling
+                // underneath (D130, GPAR4). A FAST catch is "caught": the
                 // child under the finger is not pressed by accident.
+                let hit_node = hit(page, res, rects, t.x, t.y, false);
                 let caught = match self.fling.take() {
-                    Some(f) => {
+                    Some(f) if hit_node.is_some_and(|n| within(page, n, f.scroll)) => {
                         let range = scroll_range(page, rects, f.scroll);
                         let raw = [f.accum[0] - f.accum[0].clamp(0.0, range[0]), f.accum[1] - f.accum[1].clamp(0.0, range[1])];
                         let mut accum = [f.accum[0].clamp(0.0, range[0]), f.accum[1].clamp(0.0, range[1])];
@@ -386,9 +404,12 @@ impl Input {
                         self.expected = Some((f.scroll, rt.scroll[f.scroll as usize]));
                         (f.v[0].powi(2) + f.v[1].powi(2)).sqrt() >= CATCH_SPEED || raw != [0.0, 0.0]
                     }
-                    None => false,
+                    fling => {
+                        self.fling = fling;
+                        false
+                    }
                 };
-                let Some(node) = hit(page, res, rects, t.x, t.y, false) else { return events };
+                let Some(node) = hit_node else { return events };
                 let kind = page.nodes[node as usize].kind;
                 if rt.disabled(page, node) {
                     return events;

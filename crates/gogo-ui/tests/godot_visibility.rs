@@ -94,11 +94,11 @@ fn visibility_refuses_a_word_outside_the_triad() {
 /// `_visibility_tests` 11844-11845 (vis.retired). The retired bool
 /// `visible=` is not a word: gogo-design.md §7 dropped every retired-
 /// spelling redirect (no alias table). Rust reports it as an unknown
-/// property, G0042.
+/// property, G2001.
 #[test]
 fn retired_visible_bool_is_not_a_word() {
     let c = codes("View v { Panel p visible=false }");
-    assert!(c.contains(&"G0042".to_string()), "{c:?}");
+    assert!(c.contains(&"G2001".to_string()), "{c:?}");
 }
 
 /// `_visibility_tests` 11846-11847 (vis.container-fence) — DEVIATION:
@@ -270,7 +270,7 @@ fn oversized_overlay_in_a_fixed_box_builds_quiet() {
 /// on both: 1.0 once the panel re-enables.
 #[test]
 fn disabled_cascades_down_and_own_flags_survive() {
-    let src = "View dhost {\n Panel grp disabled=true, halign=left, valign=top {\n  Column dcol {\n   Button db1 text=\"one\"\n   Button db2 text=\"two\", disabled=true\n   Label dlbl text=\"grey me\" { when disabled { opacity = 0.5 } }\n   repeat late max=1 { Button nb text=\"late\" }\n  }\n }\n}\n";
+    let src = "View dhost {\n Panel grp disabled=true, halign=left, valign=top {\n  Column dcol {\n   Button db1 text=\"one\"\n   Button db2 text=\"two\", disabled=true\n   Label dlbl text=\"grey me\" { when disabled { opacity = 0.5 } }\n   repeat late capacity=1 { Button nb text=\"late\" }\n  }\n }\n}\n";
     let c = ok(src);
     let mut page = c.page;
     let mut rt = Runtime::new(&page);

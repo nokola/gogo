@@ -183,13 +183,13 @@ fn variant_blocks_override_only_while_active() {
 
 /// `_theme_and_styles` 2494-2498 (`variant.bare-entry-errors`,
 /// `variant.nested-set-errors`): a theme-block entry without `=` is refused
-/// (Rust reads `accent #FFFFFFFF` as a node line: G3004 "not a control
+/// (Rust reads `accent #FFFFFFFF` as a node line: G3006 "not a control
 /// kind"), and a `$name = value` inside a node body is refused (G0022 —
 /// theme values live at the top level).
 #[test]
 fn theme_entry_shape_errors() {
     let bare = codes("theme dark {\n    accent #FFFFFFFF\n}\nView v { Button b text=\"x\" }\n");
-    assert!(bare.contains(&"G3004".to_string()), "{bare:?}");
+    assert!(bare.contains(&"G3006".to_string()), "{bare:?}");
     let nested = codes("View v { Button b text=\"x\" {\n    $accent = #FFFFFFFF\n} }\n");
     assert!(nested.contains(&"G0022".to_string()), "{nested:?}");
 }
@@ -312,13 +312,13 @@ fn color_vars_and_palette_overrides_read_back() {
 
 /// `_theme_and_styles` 2628-2635 (`theme.doc-unknown-prop`,
 /// `theme.stray-entry-errors`, `theme.top-entry-errors`): `width = 12` in
-/// a theme block is refused (a layout prop is style territory — Rust: G3002
+/// a theme block is refused (a layout prop is style territory — Rust: G6003
 /// "not a palette color"); a bare `font = 12` inside a node body or at the
 /// top level is refused (G0022 — bare assignments belong in `when` blocks).
 #[test]
 fn theme_block_refuses_layout_props_and_stray_entries() {
     let bad_doc = codes("theme {\n    width = 12\n}\nView v { Button b text=\"x\" }\n");
-    assert!(bad_doc.contains(&"G3002".to_string()), "{bad_doc:?}");
+    assert!(bad_doc.contains(&"G6003".to_string()), "{bad_doc:?}");
     let stray = codes("View v { Button b text=\"x\" {\n    font = 12\n} }\n");
     assert!(stray.contains(&"G0022".to_string()), "{stray:?}");
     let stray_top = codes("font = 12\nView v { Button b text=\"x\" }\n");
@@ -359,7 +359,7 @@ fn palette_words_are_values_in_color_positions() {
 /// variant `dark` (#1E1F22 / #9AA3AD), stay light under any other variant
 /// name, and a `theme dark { surface = }` beats the built-in dark column.
 #[test]
-#[ignore = "GP38: mode tokens surface/panel/border/text not ported (color=surface is G2001 today)"]
+#[ignore = "GP38: mode tokens surface/panel/border/text not ported (color=surface is G2007 today)"]
 fn mode_tokens_flip_under_dark() {
     let dsrc = "View v { Row r {\n    Rectangle s color=surface\n    Rectangle m color=text_muted\n} }\n";
     assert_eq!(Fx::new(dsrc).color("s", PropKey::Color), rgb(0xFBFAF7), "light default");
@@ -417,9 +417,9 @@ fn semantic_token_remaps_to_another_word() {
 /// `_palette_tests` 2709-2725 (`palette.alias-to-ref`): a semantic token
 /// remapped to a `$token` (`info = $brand`) takes the token's color. Rust's
 /// palette override only follows widget-param refs, not theme values, so
-/// `$brand` is "not a color" there (G3003).
+/// `$brand` is "not a color" there (G6004).
 #[test]
-#[ignore = "NEW: Godot `theme { info = $brand }` follows the $token vs Rust G3003 (a palette override cannot point at a theme $value)"]
+#[ignore = "NEW: Godot `theme { info = $brand }` follows the $token vs Rust G6004 (a palette override cannot point at a theme $value)"]
 fn semantic_token_remaps_to_a_theme_ref() {
     let fx = Fx::new("$brand = #00FF00FF\ntheme {\n    info = $brand\n}\nView v { Rectangle b color=info }\n");
     assert_eq!(fx.color("b", PropKey::Color), rgb(0x00FF00));
@@ -484,9 +484,9 @@ fn palette_word_in_a_number_position_is_refused() {
 /// `palette.err-bad-alias`): a bare-word typo in a color position is
 /// refused AND names the nearest palette word (`charcol` → charcoal,
 /// `bloo` → blue; gogo-design §7 "unknown word = build error with a
-/// suggestion"). Rust refuses (G2001 / G3003) but suggests nothing.
+/// suggestion"). Rust refuses (G2007 / G6004) but suggests nothing.
 #[test]
-#[ignore = "NEW: Godot names the nearest palette word (did you mean 'charcoal') vs Rust G2001/G3003 with no suggestion"]
+#[ignore = "NEW: Godot names the nearest palette word (did you mean 'charcoal') vs Rust G2007/G6004 with no suggestion"]
 fn color_typo_names_the_nearest_palette_word() {
     let typo = errors("View v { Rectangle a color=charcol }\n");
     assert!(typo.iter().any(|d| d.message.contains("charcoal")), "{typo:#?}");
@@ -496,11 +496,11 @@ fn color_typo_names_the_nearest_palette_word() {
 
 /// `_palette_tests` 2823-2825 (`palette.err-bad-override-type`): a palette
 /// override takes a color, a name or a `$ref` — `red = 5` is refused
-/// (G3003 "needs a color").
+/// (G6004 "needs a color").
 #[test]
 fn palette_override_needs_a_color() {
     let badtype = codes("theme {\n    red = 5\n}\nView v { Button b text=\"x\" }\n");
-    assert!(badtype.contains(&"G3003".to_string()), "{badtype:?}");
+    assert!(badtype.contains(&"G6004".to_string()), "{badtype:?}");
 }
 
 /// `_palette_tests` 2827-2829 (`palette.err-circular`): `red = green`,
@@ -781,7 +781,7 @@ fn for_style_error_family() {
 /// built-in such as Slider are G5106, from a `for=Slider` style and from
 /// an inline `slot.thumb.size=`.
 #[test]
-#[ignore = "GP40: slot paths / G5106 native-built-in fence not ported (slot.thumb.size= is a G0042 warning)"]
+#[ignore = "GP40: slot paths / G5106 native-built-in fence not ported (slot.thumb.size= is a G2001 warning)"]
 fn slot_paths_on_a_native_builtin_are_refused() {
     assert!(codes("style ThinSlider for=Slider, slot.track.height=2\nView v { Slider s .ThinSlider }\n").contains(&"G5106".to_string()));
     assert!(codes("View v { Slider s slot.thumb.size=10 }\n").contains(&"G5106".to_string()));
@@ -884,7 +884,7 @@ fn arc_primitive_builds_with_its_props() {
 /// wedge yet; the body pins the precondition (an `automatic=arc` slot
 /// compiles) and the four cases wait for the helper's name.
 #[test]
-#[ignore = "GP33: automatic=arc wedge (clip + hit) not ported (arc(from=…) is G0021 named-arg parse error GPAR32 + G5104 unknown automatic kind)"]
+#[ignore = "GP33: automatic=arc wedge (clip + hit) not ported (arc(from=…) is G0021 named-arg parse error GPAR32 + G5107 unknown automatic kind)"]
 fn wedge_formula_serves_draw_and_hit() {
     let c = build(&with_knob("Knob k 48x48, value=0.5"));
     assert!(c.diags.is_empty(), "{:#?}", c.diags);
@@ -895,7 +895,7 @@ fn wedge_formula_serves_draw_and_hit() {
 /// with fraction 0 (the first driver write lands) and a point on the arc
 /// (24, 4 in a 48 box — the -90° point) hits nothing.
 #[test]
-#[ignore = "GP33: automatic=arc slots not ported (G0021 GPAR32 + G5104 today; wedge fraction and wedge hit)"]
+#[ignore = "GP33: automatic=arc slots not ported (G0021 GPAR32 + G5107 today; wedge fraction and wedge hit)"]
 fn knob_at_zero_reveals_nothing() {
     let fx = Fx::new(&with_knob("Knob z 48x48, value=0, halign=left, valign=top"));
     let progress = fx.id("progress");
@@ -909,7 +909,7 @@ fn knob_at_zero_reveals_nothing() {
 /// thumb on the host circle at -90° (center (24, 4), box at (20, 0)); the
 /// live label shows "0.5".
 #[test]
-#[ignore = "GP33: automatic=arc/angle slots not ported (G0021 GPAR32 + G5104 today; aperture, wedge, angle seat)"]
+#[ignore = "GP33: automatic=arc/angle slots not ported (G0021 GPAR32 + G5107 today; aperture, wedge, angle seat)"]
 fn knob_mid_value_geometry() {
     let fx = Fx::new(&with_knob("Knob k 48x48, value=0.5, halign=left, valign=top"));
     let thumb = fx.rect("thumb");
@@ -922,7 +922,7 @@ fn knob_mid_value_geometry() {
 /// `_radial_tests` 4073-4081 (`radial.real-input-ok`): a Knob instance
 /// line with its own size (`Knob k 96x96`) builds clean.
 #[test]
-#[ignore = "GP33: automatic=arc/angle slots not ported (the Knob body is G0021 GPAR32 + G5104)"]
+#[ignore = "GP33: automatic=arc/angle slots not ported (the Knob body is G0021 GPAR32 + G5107)"]
 fn knob_instance_line_builds() {
     let c = build(&with_knob("Knob k 96x96, value=0"));
     assert!(c.diags.is_empty(), "{:#?}", c.diags);
@@ -946,7 +946,7 @@ fn instance_line_size_arg_sizes_the_instance() {
 /// config"); a driven radial prop restyled from a `for=` style is G3002;
 /// an aperture on a widget slot teaches `control`.
 #[test]
-#[ignore = "GP33: automatic=arc/angle and their fences not ported (the Knob body is G0021 GPAR32 + G5104)"]
+#[ignore = "GP33: automatic=arc/angle and their fences not ported (the Knob body is G0021 GPAR32 + G5107)"]
 fn radial_error_family() {
     let off = errors(&with_knob("Knob k 48x48").replace("automatic=arc(from=-225, sweep=270)", "automatic=length(from=-225)"));
     assert!(off.iter().any(|d| d.message.contains("radial")), "{off:#?}");

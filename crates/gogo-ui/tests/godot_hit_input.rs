@@ -202,7 +202,7 @@ View v { Column c {\nIconBtn one {\n    Layers slotPad 10x10\n}\nDragRow rowOn\n
 /// retire.pass, retire.style-spelling, retire.instance-spelling,
 /// retire.when-self; 6 checks): every legacy `mouse_filter=` spelling
 /// FAILS the build — on a node line, in a style, on a widget instance
-/// line, in a `when`. Rust only warns (G0042 "not a known property") and
+/// line, in a `when`. Rust only warns (G2001 "not a known property") and
 /// builds the page.
 #[test]
 fn mouse_filter_spellings_are_refused() {
@@ -222,7 +222,7 @@ fn mouse_filter_spellings_are_refused() {
 /// `_mouse_filter_retirement_tests` 8607-8608 (retire.when-child): the
 /// child-target spelling `when held flash.mouse_filter=stop` fails the
 /// build naming `interactive=true`. Rust says nothing at all on this
-/// path — not even the G0042 warning the node-line spelling gets.
+/// path — not even the G2001 warning the node-line spelling gets.
 #[test]
 fn mouse_filter_in_a_child_target_when_is_refused() {
     let c = compile("View v { Button b text=\"x\" {\n    when held flash.mouse_filter=stop\n}\n Rectangle flash 8x8 }", &|_| None);
@@ -516,11 +516,11 @@ fn safe_area_wrapper_is_not_a_node_type() {
 }
 
 /// `_safe_inset_tests` 8915-8916 (safe.container-margin-still-fenced):
-/// margins under a Column stay an error, safe or not (Rust G1005).
+/// margins under a Column stay an error, safe or not (Rust G1014).
 /// Dialect: `Control` → `Layers`.
 #[test]
 fn safe_margin_under_a_column_stays_fenced() {
-    assert!(codes("View v { Column c { Layers k margin_left=safe } }").contains(&"G1005".to_string()));
+    assert!(codes("View v { Column c { Layers k margin_left=safe } }").contains(&"G1014".to_string()));
 }
 
 /// `_safe_inset_tests` 8923-8953 (safe.scroll-left-inset-ok,

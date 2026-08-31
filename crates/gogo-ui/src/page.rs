@@ -635,6 +635,11 @@ pub enum Value {
     VList(u32, u32),
     /// A gradient stop: color at a position (`None` = evenly spaced).
     VStop { color: Rgba, pos: Option<f32> },
+    /// `$item.<field>` inside a keyed repeat's template — the id is the
+    /// field path after the binding (the empty string = the item itself).
+    /// `Runtime::set_items` replaces it with the item's value on each
+    /// clone, so no later pass ever meets one on a live node (GPAR108).
+    VItem(StrId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -903,6 +908,44 @@ pub struct Node {
 
 pub const NO_CHOICE: u32 = u32::MAX;
 
+/// A keyed `repeat` (the `by`-form, no `max=`): where its rows come
+/// from and how an item's key is read. Needed because the rows exist
+/// only at runtime — `Runtime::set_items` clones `template` per item
+/// and reconciles by key (the shipped gogo_repeat.gd path).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RepeatInfo {
+    pub node: NodeId,
+    /// The item binding's name (`item`, or `as $brush`).
+    pub binding: StrId,
+    /// `by $item.<field>` — the key field; `NO_STR` = the item IS its
+    /// key (`by $item`).
+    pub by: StrId,
+    /// The hidden template subtree's root (one root; a clone per slot).
+    pub template: NodeId,
+    /// `capacity=` — the row reservation the first growth jumps to.
+    /// Never a ceiling: rows grow past it (a max that refused would
+    /// truncate a user's data on screen; user design 2026-08-31).
+    pub capacity: u32,
+    /// `by` present: rows come from `set_items` (reconciled by key);
+    /// else counted — `set_count` + `set_text` drive the slots.
+    pub keyed: bool,
+    /// The template's `$item.<field>` sites in `Page::bind_sites`
+    /// (first, count) — recorded once so a reused slot can be re-bound
+    /// in place with no `VItem` marker left on it.
+    pub sites: (u32, u32),
+}
+
+/// One `$item.<field>` site inside a repeat template, template-relative
+/// (so it addresses any slot by delta): which node (offset from the
+/// template root), which prop (offset in that node's range — clones
+/// share the range), and the field it binds.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BindSite {
+    pub node_off: u32,
+    pub prop_off: u32,
+    pub field: StrId,
+}
+
 /// A `choice { Radio … }` group: the one-of-N set every Radio inside
 /// belongs to, and what its pick reports (`on:change=`, or the choice's
 /// own name as the handler).
@@ -1009,6 +1052,8 @@ pub struct StaticPage {
     pub anims: &'static [AnimTrack],
     pub anim_heads: &'static [AnimHead],
     pub choices: &'static [ChoiceGroup],
+    pub repeats: &'static [RepeatInfo],
+    pub bind_sites: &'static [BindSite],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1026,6 +1071,8 @@ pub struct Page {
     pub anims: Vec<AnimTrack>,
     pub anim_heads: Vec<AnimHead>,
     pub choices: Vec<ChoiceGroup>,
+    pub repeats: Vec<RepeatInfo>,
+    pub bind_sites: Vec<BindSite>,
 }
 
 impl Page {
@@ -1044,7 +1091,42 @@ impl Page {
             anims: s.anims.to_vec(),
             anim_heads: s.anim_heads.to_vec(),
             choices: s.choices.to_vec(),
+            repeats: s.repeats.to_vec(),
+            bind_sites: s.bind_sites.to_vec(),
         }
+    }
+
+    /// Appends a copy of `src`'s subtree at the arena's end — a repeat
+    /// slot cloned from the template. Whens are copied per slot (a
+    /// child-aimed response must watch the SLOT's nodes, not the
+    /// template's); props and handlers are shared — a slot's bound
+    /// values live in the Runtime's write layer, never in the arena.
+    /// Node ids only ever grow: a freed slot is reused, never removed,
+    /// so no id ever re-means.
+    pub fn clone_subtree(&mut self, src: NodeId) -> NodeId {
+        let end = self.nodes[src as usize].subtree_end;
+        let base = self.nodes.len() as u32;
+        let delta = base - src;
+        for i in src..end {
+            let mut n = self.nodes[i as usize];
+            if i != src {
+                n.parent += delta;
+            }
+            n.children.0 += delta;
+            n.subtree_end += delta;
+            let (w0, wc) = n.whens;
+            let nw0 = self.whens.len() as u32;
+            for wi in w0..w0 + wc {
+                let mut w = self.whens[wi as usize];
+                if w.of != NO_NODE && w.of >= src && w.of < end {
+                    w.of += delta;
+                }
+                self.whens.push(w);
+            }
+            n.whens = (nw0, wc);
+            self.nodes.push(n);
+        }
+        base
     }
 
     pub fn str(&self, id: StrId) -> &str {

@@ -170,16 +170,16 @@ fn signals_node_change_auto_wires_under_the_instance_name() {
 }
 
 /// `widget.cycle` 3098-3102: two widgets that instance each other are a
-/// build error naming the cycle. Rust expands widget bodies recursively
-/// with no depth guard — the compiler overflows its stack
-/// (STATUS_STACK_OVERFLOW observed 2026-08-30), which would take
-/// `build.rs` down with it. WARNING: running this test aborts the whole
-/// test process instead of failing.
+/// build error naming the cycle (G5003). Before the guard the compiler
+/// overflowed its stack expanding A -> B -> A forever
+/// (STATUS_STACK_OVERFLOW observed 2026-08-30) — `build.rs` died with no
+/// message. Control: the same widget used twice, and filling its OWN
+/// slot from an instance site, are not cycles.
 #[test]
-#[ignore = "NEW: Godot refuses a widget cycle (`cycle`); Rust overflows the stack (aborts the process)"]
 fn widget_cycle_is_a_build_error() {
     let text = err_text("widget A { Column { B x } }\nwidget B { Column { A y } }\nA root\n");
-    assert!(text.contains("cycle"), "{text}");
+    assert!(text.contains("cycle") && text.contains("A -> B -> A"), "{text}");
+    ok("widget W { Column { slot } }\nView v { Column c { W a { Label p text=\"a\" }; W b { W inner { Label q text=\"b\" } } } }");
 }
 
 /// `widget.no-slot-children` 3103-3106: children on an instance of a
@@ -334,7 +334,7 @@ fn content_prop_on_a_slot_line_is_refused() {
 /// `control` body, not a plain `widget`. Rust treats `control` as a
 /// synonym of `widget` and accepts a complete coupling in either (the
 /// Godot snippet's `automatic=length` alone is refused here too, but for
-/// the missing `by … in …` — G5104 — so the fixture spells the clauses).
+/// the missing `by … in …` — G5107 — so the fixture spells the clauses).
 #[test]
 #[ignore = "GP41: not ported: `automatic=` on a widget (not a control) is accepted (Rust does not distinguish the two words)"]
 fn automatic_needs_a_control() {
@@ -402,12 +402,12 @@ fn nested_slot_source_builds() {
 
 /// `slotn.fill-instance-scope` 3324-3329: fill content is written in the
 /// INSTANCE's scope — a widget `$param` is out of reach and the error
-/// names it. Rust: G9001 "`$title` is not a theme value or widget
+/// names it. Rust: G6001 "`$title` is not a theme value or widget
 /// parameter".
 #[test]
 fn fill_content_cannot_see_the_widget_params() {
     let text = err_text("widget Card3 $title=\"t\" {\n Column { slot header { Label text=\"d\" } }\n}\nCard3 c { slot header { Label text=$title } }\n");
-    assert!(text.contains("G9001") && text.contains("title"), "{text}");
+    assert!(text.contains("G6001") && text.contains("title"), "{text}");
 }
 
 /// `slotn.err-duplicate-decl` 3341-3349: two `slot a` declarations in one
@@ -677,7 +677,7 @@ fn bare_param_ref_is_live_by_decision() {
 /// default tree. FLIP — gogo-design.md §7: `live()` is accepted as a
 /// Godot form and means nothing extra (a `$ref` is always live), so
 /// `live($theme_value)` and a `live()` outside any control both build;
-/// an UNDEFINED `$ref` inside it is the ordinary G9001.
+/// an UNDEFINED `$ref` inside it is the ordinary G6001.
 #[test]
 fn live_is_a_plain_ref_read_anywhere() {
     let c = ok(&format!("$accent = #FF0000FF\n{}Fader f 100x24\n", fader_static().replace("live($value)", "live($accent)")));
@@ -685,8 +685,8 @@ fn live_is_a_plain_ref_read_anywhere() {
     let c = ok("$x = \"five\"\nView v { Label l text=live($x) }");
     assert!(c.diags.is_empty(), "{:#?}", c.diags);
     assert_eq!(drawn_texts(&c.page), vec!["five".to_string()]);
-    assert!(codes(&format!("{}Fader f 100x24\n", fader_static().replace("live($value)", "live($accent)"))).contains(&"G9001".to_string()));
-    assert!(codes("View v { Label l text=live($x) }").contains(&"G9001".to_string()));
+    assert!(codes(&format!("{}Fader f 100x24\n", fader_static().replace("live($value)", "live($accent)"))).contains(&"G6001".to_string()));
+    assert!(codes("View v { Label l text=live($x) }").contains(&"G6001".to_string()));
 }
 
 /// `ctl.err-bind-redirect` 3616-3618: `bind($value)` is refused naming
@@ -727,16 +727,16 @@ fn default_feel_takes_no_endpoints() {
 /// `d134.in-missing` 3650: the `automatic=` set is closed and the coupling
 /// spells `by` and `in` — an unknown kind, the retired `phase`, the call
 /// form `presence(marked)`, a missing `by` and a missing `in` are all
-/// refused (Rust: G5104 for each).
+/// refused (Rust: G5107 for each).
 #[test]
 fn automatic_kind_set_is_closed_and_the_coupling_is_spelled() {
-    assert!(codes("control C3 $value=0 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n Layers { slot p automatic=wibble { } }\n}\nC3 c\n").contains(&"G5104".to_string()));
-    assert!(codes(&format!("{}Fader f 100x24\n", fader_static().replace("automatic=length by $value in $min..$max", "automatic=phase by $value in $min..$max"))).contains(&"G5104".to_string()));
-    assert!(codes("control M2 $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n state marked\n Layers { slot mark automatic=presence(marked) { Circle 6x6 } }\n}\nM2 m\n").contains(&"G5104".to_string()));
+    assert!(codes("control C3 $value=0 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n Layers { slot p automatic=wibble { } }\n}\nC3 c\n").contains(&"G5107".to_string()));
+    assert!(codes(&format!("{}Fader f 100x24\n", fader_static().replace("automatic=length by $value in $min..$max", "automatic=phase by $value in $min..$max"))).contains(&"G5107".to_string()));
+    assert!(codes("control M2 $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n state marked\n Layers { slot mark automatic=presence(marked) { Circle 6x6 } }\n}\nM2 m\n").contains(&"G5107".to_string()));
     let by_missing = err_text(&format!("{}Fader f 100x24\n", fader_static().replace(" by $value in $min..$max", "")));
-    assert!(by_missing.contains("G5104") && by_missing.contains("by $value in $min..$max"), "{by_missing}");
+    assert!(by_missing.contains("G5107") && by_missing.contains("by $value in $min..$max"), "{by_missing}");
     let in_missing = err_text(&format!("{}Fader f 100x24\n", fader_static().replace(" in $min..$max", "")));
-    assert!(in_missing.contains("G5104"), "{in_missing}");
+    assert!(in_missing.contains("G5107"), "{in_missing}");
 }
 
 /// `d134.by-order` 3651, `d134.by-non-value` 3656, `d134.in-wrong-range`
@@ -747,7 +747,7 @@ fn automatic_kind_set_is_closed_and_the_coupling_is_spelled() {
 /// `$params`, a bool has no range, a presence driver is a state word (no
 /// `$`), and a `by` on a slot with no `automatic=` is stray. PORT (E4):
 /// the parser fixes the clause order and the compiler types every
-/// clause (G5104).
+/// clause (G5107).
 #[test]
 fn coupling_clauses_are_type_checked() {
     let f = fader_static();

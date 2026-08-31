@@ -310,17 +310,16 @@ fn stacks_and_flow_touch_unless_spacing_is_written() {
 }
 
 /// `_spacing_default_tests` 10748-10754 (gap0.list-ok, gap0.list-touch):
-/// List rows touch too. Godot's `repeat t by $item` takes items from code;
-/// Rust builds `max=N` capped instances (GP27) and code shows two.
+/// List rows touch too. Godot's rows come keyed (`set_items`); Rust builds `repeat capacity=N` instances (GP27) and code shows two.
 #[test]
 fn list_rows_touch() {
-    let c = ok("View v {\n    List l {\n        repeat t max=2 {\n            empty { }\n            ListItem { Label text=\"row\" }\n        }\n    }\n}\n");
+    let c = ok("View v {\n    List l {\n        repeat t capacity=2 {\n            empty { }\n            ListItem { Label text=\"row\" }\n        }\n    }\n}\n");
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
     let t = id(&page, "t");
+    rt.set_count(&mut page, t, 2);
     let items = rt.items(&page, t);
     assert_eq!(items.len(), 2);
-    rt.set_count(&mut page, t, 2);
     let (_, r) = lay(&page, &rt, 400.0, 800.0);
     let first = r[items[0] as usize];
     let second = r[items[1] as usize];
@@ -374,7 +373,7 @@ fn button_minimum_is_max_of_declared_and_content_per_axis() {
     assert_eq!(size(&page, &r, "fixedBoth"), (50.0, 90.0), "{r:?}");
     assert_eq!(size(&page, &r, "merged"), (200.0, 30.0), "{r:?}");
     assert_eq!(size(&page, &r, "empty").0, 40.0, "{r:?}");
-    // pinnedBtn: margins are an error under a Flow (G1005), so it sits
+    // pinnedBtn: margins are an error under a Flow (G1014), so it sits
     // under Layers, where its right pin is placement in the parent.
     let c = ok("View v {\n  Layers z {\n    Button pinnedBtn halign=right, valign=top, margin_right=10 {\n        Rectangle innerE 120x30\n    }\n  }\n}\n");
     let page = c.page;

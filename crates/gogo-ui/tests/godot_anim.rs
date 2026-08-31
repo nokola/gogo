@@ -588,7 +588,7 @@ fn static_motion_word_is_refused() {
 /// raw-ot, motion.err-when-child-raw-ot, motion.err-when-translate-axis):
 /// raw offset-transform fields and an axis-less `translate=` are refused
 /// wherever they appear — static, in a `when`, on a child path. (Rust
-/// today: G0042 warning for the first, second and fourth; the child path
+/// today: G2001 warning for the first, second and fourth; the child path
 /// `flash.offset_transform_rotation` gets no diagnostic at all.)
 #[test]
 fn raw_and_axisless_motion_keys_are_refused_everywhere() {
@@ -747,7 +747,7 @@ fn flash_style_paints_on_held_and_restores_on_release() {
 /// `_apply_style_tests` 5670-5673 (applystyle.for-ok): a `for=Button`
 /// style on a Button applies without complaint.
 #[test]
-#[ignore = "GP40: not ported: `for=` checked styles (`for` reaches the node as an unknown prop, G0042)"]
+#[ignore = "GP40: not ported: `for=` checked styles (`for` reaches the node as an unknown prop, G2001)"]
 fn for_button_style_applies_to_a_button_cleanly() {
     let src = format!("{APPLY_STYLE_FIXTURE}\nView v {{ Button fb .ButtonOnly text=\"x\" }}\n");
     let c = compile(&src, &|_| None);
@@ -775,12 +775,12 @@ fn rounded_style_reaches_the_drawn_quad() {
 
 /// `_apply_style_tests` 5685-5686 (applystyle.unknown-refused) and
 /// 5689-5690 (applystyle.reach-refused): a style name the document does
-/// not define is refused (G4001), and a style whose response reaches a
+/// not define is refused (G5002), and a style whose response reaches a
 /// node the control does not bring (`mark`) is refused (G0060).
 #[test]
 fn unknown_style_and_a_response_reaching_a_missing_node_are_refused() {
     let unknown = format!("{APPLY_STYLE_FIXTURE}\nView v {{ Button nb .Nope text=\"x\" }}\n");
-    assert!(codes(&unknown).contains(&"G4001".to_string()), "{}", messages(&unknown));
+    assert!(codes(&unknown).contains(&"G5002".to_string()), "{}", messages(&unknown));
     let reaching = format!("{APPLY_STYLE_FIXTURE}\nView v {{ Button nb .Reaching text=\"x\" }}\n");
     assert!(codes(&reaching).contains(&"G0060".to_string()), "{}", messages(&reaching));
 }

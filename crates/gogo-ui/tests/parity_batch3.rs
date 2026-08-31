@@ -5,7 +5,7 @@
 //! of the per-rule pins (`godot_*.rs`, un-ignored with E4); these cover
 //! the rest and the two design calls (one hex form, one child in
 //! `empty { }`).
-use gogo::page::{Len, PropKey, Rgba, State};
+use gogo::page::{Len, PropKey, Rgba, State, Value};
 use gogo::runtime::{BASE, HELD, Runtime, resolve_animated};
 use gogo::{Compiled, compile};
 
@@ -69,12 +69,12 @@ fn base_is_the_rest_end_of_a_builtin_flip_and_home_mirrors_it() {
 /// the error names the fix. Nothing goes on the `empty` line itself.
 #[test]
 fn empty_holds_one_child_and_takes_nothing_on_its_line() {
-    let two = "View v { Column c { repeat t max=1 { empty { Label a text=\"none\"; Label b text=\"yet\" } Label i text=\"x\" } } }";
+    let two = "View v { Column c { repeat t capacity=1 { empty { Label a text=\"none\"; Label b text=\"yet\" } Label i text=\"x\" } } }";
     assert!(codes(two).contains(&"G9007".to_string()), "{:?}", codes(two));
     assert!(messages(two).contains("wrap them in a Column or Layers"), "{}", messages(two));
-    ok("View v { Column c { repeat t max=1 { empty { Column { Label a text=\"none\"; Label b text=\"yet\" } } Label i text=\"x\" } } }");
-    ok("View v { Column c { repeat t max=1 { empty { } Label i text=\"x\" } } }");
-    assert!(codes("View v { Column c { repeat t max=1 { empty width=10 { } Label i text=\"x\" } } }").contains(&"G9007".to_string()));
+    ok("View v { Column c { repeat t capacity=1 { empty { Column { Label a text=\"none\"; Label b text=\"yet\" } } Label i text=\"x\" } } }");
+    ok("View v { Column c { repeat t capacity=1 { empty { } Label i text=\"x\" } } }");
+    assert!(codes("View v { Column c { repeat t capacity=1 { empty width=10 { } Label i text=\"x\" } } }").contains(&"G9007".to_string()));
 }
 
 /// GPAR17 (decided 2026-08-31): one hex form — `#F00` is refused with
@@ -104,7 +104,7 @@ fn one_hex_form_bounded_suffixes_and_whole_numbers() {
 #[test]
 fn a_theme_variant_block_inside_a_node_is_refused() {
     let nested = "View v { Button b text=\"x\" { theme dark { $accent = #FF0000FF } } }";
-    assert!(codes(nested).contains(&"G3004".to_string()), "{:?}", codes(nested));
+    assert!(codes(nested).contains(&"G3006".to_string()), "{:?}", codes(nested));
     ok("View v { Button b text=\"x\" { theme font_size=12 } }");
 }
 
@@ -192,4 +192,23 @@ fn the_suffix_at_the_slot_sets_the_alpha() {
     assert_eq!(bg("$a = $b/0.5\n$b = #101010\nView v { Panel p background=$a/0.3 }", "p", None), Rgba([0x10, 0x10, 0x10, a(0.3)]), "the slot's suffix over a hop's (Rust drew the hop's 0.5)");
     assert_eq!(bg("$a = $b/0.3\n$b = #10101080\nView v { Panel p background=$a }", "p", None), Rgba([0x10, 0x10, 0x10, a(0.3)]), "a hop's suffix over a value defined later in the file");
     assert_eq!(bg("widget Chip $tint=red { Panel face background=$tint/0.2 }\nView v { Chip c tint=#20202080 }", "c", None), Rgba([0x20, 0x20, 0x20, a(0.2)]), "the widget's suffix over the caller's alpha");
+}
+
+/// GPAR30: a theme `$value` is written in color context — `$dim = gray`
+/// is the COLOR gray at its use site (`background=$dim` draws a plate),
+/// `$scrim = black/0.5` carries its alpha — and `font_color=` takes
+/// palette words (`font_color=accent` used to fall through to the white
+/// default with a clean build). A bare word that is no color is refused.
+#[test]
+fn theme_values_and_font_color_are_color_positions() {
+    let c = ok("$dim = gray\n$scrim = black/0.5\nView v { Rectangle r width=10, height=10, color=$dim\n Label l text=\"x\", font_color=accent }");
+    let dim = c.page.theme.iter().find(|t| c.page.str(t.name) == "dim").expect("dim entry");
+    assert!(matches!(dim.value, Value::VColor(_)), "{:?}", dim.value);
+    let scrim = c.page.theme.iter().find(|t| c.page.str(t.name) == "scrim").expect("scrim entry");
+    let Value::VColor(s) = scrim.value else { panic!("{:?}", scrim.value) };
+    assert!(s.0[3] > 0 && s.0[3] < 255, "the /0.5 alpha rides the theme value: {s:?}");
+    let l = c.page.find("l").expect("l");
+    assert!(matches!(c.page.prop(l, PropKey::FontColor), Some(Value::VColor(_))));
+    assert!(messages("View v { Label l text=\"x\", font_color=nope }").contains("is not a color"));
+    assert!(messages("$bad = nope\nView v { Label l text=\"x\" }").contains("is not a color"));
 }
