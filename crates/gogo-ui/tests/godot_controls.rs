@@ -281,12 +281,12 @@ fn render_declared_value_quantizes_at_once() {
 
 /// `_render_tests` 4188-4204 (`render.for-style-applies`,
 /// `render.look-yields-unpainted`, `render.look-yields-painted`): a
-/// `style … for=Slider, slot.track.corner_radius=3` rounds the track to
+/// `style … for=Slider` rounds the track to
 /// 3 and leaves its default color; `slot.track.background=` paints it.
 #[test]
 #[ignore = "GP40: not ported: `style X for=<Control>` + `slot.<name>.<prop>` paths"]
 fn render_for_slider_style_restyles_the_track() {
-    let fx = Fx::new("style ThinSlider for=Slider, slot.track.corner_radius=3\nView v { Slider s .ThinSlider render=gogo, value=30, width=200 }");
+    let fx = Fx::new("style ThinSlider for=Slider\nView v { Slider s .ThinSlider render=gogo, value=30, width=200 }");
     let (track, _, _) = slider_parts(&fx.draws());
     assert!((quad_corner(track) - 3.0).abs() < 1e-3, "{track:?}");
     assert_eq!(quad_color(track), SLIDER_TRACK, "a corner alone does not paint the box: {track:?}");
@@ -337,7 +337,10 @@ fn render_autowire_by_name_and_code_writes_stay_silent() {
 /// renderer (docs/DECISIONS.md D1; `page::UNREAD_BY_DESIGN` — `render`
 /// "accepted for old files that picked a renderer per node; one renderer
 /// here"), so every one of these builds with no error, and a for=Slider
-/// style or a slot fill on a Slider needs no `render=gogo` exit.
+/// style or a slot fill on a Slider needs no `render=gogo` exit. (The
+/// Godot fixtures' `slot.track.corner_radius=3` style path is dropped
+/// here: slot paths are not built (GP40) and an unbuilt word is a build
+/// error since E8, not a silent pass.)
 #[test]
 fn render_is_one_renderer_so_the_render_word_builds_everywhere() {
     let sources: Vec<String> = vec![
@@ -347,12 +350,12 @@ fn render_is_one_renderer_so_the_render_word_builds_everywhere() {
         "View v { Slider s render=fancy }".to_string(),
         "style Sneaky render=gogo\nView v { Slider s .Sneaky }".to_string(),
         format!("{FADER_SRC}View v {{ Fader f 100x24, render=native }}"),
-        "style ThinSlider for=Slider, slot.track.corner_radius=3\nView v { Slider s .ThinSlider value=30 }".to_string(),
+        "style ThinSlider for=Slider\nView v { Slider s .ThinSlider value=30 }".to_string(),
         "style Ghost for=Slider { when hovered opacity=0.5 }\nView v { Slider s .Ghost value=30 }".to_string(),
         "View v { Slider s value=30 { slot label { Label text=\"x\" } } }".to_string(),
-        "style ThinSlider for=Slider, slot.track.corner_radius=3\ntheme {\n    Slider .ThinSlider render=gogo\n}\nView v { Slider s value=30 }".to_string(),
-        "style ThinSlider for=Slider, slot.track.corner_radius=3\ntheme {\n    Slider .ThinSlider render=gogo\n}\nView v { Slider s render=native, value=30 }".to_string(),
-        "style ThinSlider for=Slider, slot.track.corner_radius=3\ntheme { Slider .ThinSlider }\nView v { Slider s value=30 }".to_string(),
+        "style ThinSlider for=Slider\ntheme {\n    Slider .ThinSlider render=gogo\n}\nView v { Slider s value=30 }".to_string(),
+        "style ThinSlider for=Slider\ntheme {\n    Slider .ThinSlider render=gogo\n}\nView v { Slider s render=native, value=30 }".to_string(),
+        "style ThinSlider for=Slider\ntheme { Slider .ThinSlider }\nView v { Slider s value=30 }".to_string(),
         "theme dark { Slider render=gogo }\nView v { Label l text=\"x\" }".to_string(),
         "View v { Toggle t render=native }".to_string(),
         "theme { Toggle render=native }\nView v { Label l text=\"x\" }".to_string(),
@@ -409,7 +412,7 @@ fn render_theme_entry_style_applies() {
     let mut fx = Fx::new("style AppBtn for=Button { when held opacity=0.8 }\ntheme { Button .AppBtn }\nView v { Button b text=\"x\", min_size=44x44, halign=left, valign=top }");
     fx.touch(Phase::Down, 10.0, 10.0, 0.0);
     assert_eq!(text_alpha(&fx.page, &fx.draws(), "x"), 204, "the entry's style dims while held");
-    let fx = Fx::new("style ThinSlider for=Slider, slot.track.corner_radius=3\ntheme {\n    Slider .ThinSlider render=gogo\n}\nView v { Slider s value=30, width=200 }");
+    let fx = Fx::new("style ThinSlider for=Slider\ntheme {\n    Slider .ThinSlider render=gogo\n}\nView v { Slider s value=30, width=200 }");
     let (track, _, _) = slider_parts(&fx.draws());
     assert!((quad_corner(track) - 3.0).abs() < 1e-3, "{track:?}");
 }
@@ -463,7 +466,7 @@ fn render_theme_entry_props_default_under_instance_overrides() {
 #[test]
 #[ignore = "GP38: not ported: theme variant activation for kind entries (and GP40 `.Style` on an entry)"]
 fn render_theme_variant_entry_look() {
-    let mut fx = Fx::new("style ThinSlider for=Slider, slot.track.corner_radius=3\nstyle FatSlider for=Slider, slot.track.corner_radius=9\ntheme {\n    Slider .ThinSlider render=gogo\n}\ntheme dark {\n    Slider .FatSlider\n}\nView v { Slider s value=30, width=200 }");
+    let mut fx = Fx::new("style ThinSlider for=Slider\nstyle FatSlider for=Slider, slot.track.corner_radius=9\ntheme {\n    Slider .ThinSlider render=gogo\n}\ntheme dark {\n    Slider .FatSlider\n}\nView v { Slider s value=30, width=200 }");
     fx.rt.variant = fx.page.intern("dark");
     let (track, _, _) = slider_parts(&fx.draws());
     assert!((quad_corner(track) - 9.0).abs() < 1e-3, "{track:?}");
@@ -872,7 +875,6 @@ fn errors_suggest_the_nearest_word() {
 /// from another dialect (`foreground=`, `text_color=`) is routed to the
 /// gogo word (`font_color=`). Rust warns G0042 and builds.
 #[test]
-#[ignore = "GPAR14: unknown property is a G0042 warning (Godot: error + did-you-mean / dialect signpost to font_color=)"]
 fn errors_unknown_property_is_refused_with_a_signpost() {
     let d = diags("View v { Button b textt=\"x\" }");
     assert!(gogo::has_errors(&d) && d.iter().any(|x| x.message.contains("text")), "{d:#?}");
@@ -887,7 +889,6 @@ fn errors_unknown_property_is_refused_with_a_signpost() {
 /// Button) is refused, statically and in a `when`, naming `font_color=`
 /// / `background=` — else the whole control tints. Rust recolors the text.
 #[test]
-#[ignore = "GPAR15: `color=` on a Button recolors text (Godot: G2002 signpost to font_color= / background=)"]
 fn errors_color_on_a_non_owner_is_refused() {
     let d = diags("View v { Button b color=#FF0000FF }");
     assert!(gogo::has_errors(&d) && d.iter().any(|x| x.message.contains("font_color=") && x.message.contains("background=")), "{d:#?}");

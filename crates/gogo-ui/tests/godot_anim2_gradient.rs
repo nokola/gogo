@@ -572,7 +572,6 @@ fn loading_takes_lazy_or_eager_only() {
 /// `_lazy_image_tests` 8262 (lazy.wrong-node): `loading=` belongs on an
 /// Image — on a Label it is refused.
 #[test]
-#[ignore = "GPAR14: no per-kind prop legality (Rust accepts `Label loading=lazy` clean)"]
 fn loading_belongs_on_an_image() {
     let src = "View v { Label a loading=lazy }";
     assert!(fails(src), "{:#?}", diags(src));
@@ -752,7 +751,6 @@ fn a_stop_position_only_goes_on_stops_entries_and_stays_in_range() {
 /// the two-equal-stops migration; `color=` is not a Gradient word (it
 /// paints its `stops=`).
 #[test]
-#[ignore = "GPAR14: unknown property is a warning and there is no per-kind legality (Rust: `solid_until=` warns G0042, `color=` on a Gradient builds clean)"]
 fn solid_until_and_color_are_not_gradient_words() {
     let retired = "View v { Gradient g solid_until=0.94, stops=[white, black] }";
     assert!(fails(retired) && mentions(retired, "stops"), "{:#?}", diags(retired));
@@ -843,7 +841,6 @@ fn circle_disc_ring_and_when_color() {
 /// circle.err-background): box words route away — a circle has no box to
 /// pad or round, and its fill is `color=`, not `background=`.
 #[test]
-#[ignore = "GPAR14: no per-kind prop legality (Rust builds corner_radius=, padding=, background= on a Circle clean)"]
 fn box_words_are_refused_on_a_circle() {
     assert!(mentions("View v { Circle c corner_radius=4 }", "box"));
     assert!(mentions("View v { Circle c padding=4 }", "box"));

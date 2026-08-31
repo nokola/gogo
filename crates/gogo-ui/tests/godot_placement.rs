@@ -398,7 +398,6 @@ fn fill_weight_lints() {
 /// `place.err-inset-retired`): the removed `anchors_margin=` and the
 /// retired `inset=` are build ERRORS naming the replacement.
 #[test]
-#[ignore = "GPAR14: unknown property is a warning (G0042), Godot a hard error"]
 fn removed_props_are_errors() {
     assert!(refused("View v { Button b anchors_margin=4 }"), "{}", messages("View v { Button b anchors_margin=4 }"));
     assert!(refused("View v { Layers c { Rectangle r inset=8 } }"), "{}", messages("View v { Layers c { Rectangle r inset=8 } }"));
@@ -607,15 +606,17 @@ fn static_background_takes_over_every_state_and_keeps_padding() {
 /// `_free_padding_tests` 2029-2035 (`fpad.err-rect`, `fpad.err-rect-
 /// margin`, `fpad.label-paint-refused`, `fpad.err-paint`): a drawing leaf
 /// has nothing inside, so `Rectangle padding=4` is refused naming
-/// "children or text" and the `margin` door; `Label background=` and
-/// `Layers background=` are refused pointing at `Panel` (pigment lives on
-/// boxes).
+/// "children or text" and the `margin` door. Godot's second half —
+/// `Label background=` and `Layers background=` refused pointing at
+/// `Panel` — is REVERSED here (E8, 2026-08-31): any box has a plate.
 #[test]
-#[ignore = "GPAR14: no per-kind property legality — Rectangle padding, Label/Layers background compile clean"]
-fn leaf_padding_and_non_box_paint_are_refused() {
+fn leaf_padding_is_refused_and_any_box_takes_a_plate() {
     let rect = messages("View v { Rectangle r 10x10, padding=4 }");
     assert!(refused("View v { Rectangle r 10x10, padding=4 }"), "{rect}");
     assert!(rect.contains("children or text") && rect.contains("margin"), "{rect}");
-    assert!(refused("View v { Label t text=\"x\", background=red }"), "{}", messages("View v { Label t text=\"x\", background=red }"));
-    assert!(refused("View v { Layers l background=red }"), "{}", messages("View v { Layers l background=red }"));
+    // E8 (2026-08-31) reverses Godot's second half: any box has a plate —
+    // a Label's or a Layers' `background=` builds and draws (pins in
+    // tests/kind_words.rs).
+    assert!(!refused("View v { Label t text=\"x\", background=red }"), "{}", messages("View v { Label t text=\"x\", background=red }"));
+    assert!(!refused("View v { Layers l background=red }"), "{}", messages("View v { Layers l background=red }"));
 }

@@ -225,7 +225,7 @@ impl<'a> Lay<'a> {
     }
 
     fn font_size(&self, id: NodeId) -> f32 {
-        self.res.num(self.page, id, PropKey::FontSize).unwrap_or(DEFAULT_FONT_SIZE)
+        self.res.font_size(self.page, id).unwrap_or(DEFAULT_FONT_SIZE)
     }
 
     /// The string the node shows — in the runtime's language, so a keyed

@@ -490,7 +490,6 @@ fn per_corner_radius_keys_are_known() {
 /// refuses the whole box family ("box"); Rust has no per-kind property
 /// legality yet.
 #[test]
-#[ignore = "GPAR14: unknown/illegal prop is a warning; no per-kind prop legality"]
 fn a_circle_refuses_corner_keys() {
     assert!(errs("View v { Circle c width=10, height=10, corner_radius=4 }"));
     assert!(errs("View v { Circle c width=10, height=10, corner_radius_top_left=4 }"));

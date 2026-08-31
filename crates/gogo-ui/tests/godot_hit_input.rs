@@ -205,7 +205,6 @@ View v { Column c {\nIconBtn one {\n    Layers slotPad 10x10\n}\nDragRow rowOn\n
 /// line, in a `when`. Rust only warns (G0042 "not a known property") and
 /// builds the page.
 #[test]
-#[ignore = "GPAR14: unknown property is a G0042 warning in Rust, a hard error in Godot — `mouse_filter=stop` builds"]
 fn mouse_filter_spellings_are_refused() {
     for src in [
         "View v { Panel p mouse_filter=stop }",
@@ -225,7 +224,6 @@ fn mouse_filter_spellings_are_refused() {
 /// build naming `interactive=true`. Rust says nothing at all on this
 /// path — not even the G0042 warning the node-line spelling gets.
 #[test]
-#[ignore = "NEW: Godot refuses `when held flash.mouse_filter=stop`; Rust compiles it with zero diagnostics (GPAR14 covers only the node-line warning)"]
 fn mouse_filter_in_a_child_target_when_is_refused() {
     let c = compile("View v { Button b text=\"x\" {\n    when held flash.mouse_filter=stop\n}\n Rectangle flash 8x8 }", &|_| None);
     assert!(!c.diags.is_empty(), "a retired word inside a when must be diagnosed");

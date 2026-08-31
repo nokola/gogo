@@ -417,7 +417,6 @@ fn held_is_for_press_surfaces_only() {
 /// `state.child-enum-rejected`): `style=Tool` is refused with the `.Tool`
 /// signpost; an unknown child prop with a bare-word value is refused.
 #[test]
-#[ignore = "GPAR14: unknown prop is a warning in Rust, no per-kind legality (`style=Tool` and `flash.z_as_relative=maybe` build)"]
 fn unknown_props_are_errors() {
     assert!(fails("style Tool min_height=36\nView v { Button b style=Tool }"));
     assert!(fails("View v { Button b {\n    when held flash.z_as_relative=maybe\n    Rectangle flash color=#FFFFFFFF\n} }"));
@@ -595,7 +594,6 @@ fn empty_source_and_polish_props() {
 /// `_state_tests` 6341 (`prop.icon_size`): `icon_size=30` is a known
 /// Button prop (the icon's max width).
 #[test]
-#[ignore = "GP40: not ported: `icon_size=` (builds with the G0042 unknown-prop warning)"]
 fn icon_size_is_a_known_button_prop() {
     assert!(!codes("View v { Button b text=\"t\", icon_size=30 }").contains(&"G0042".to_string()));
 }

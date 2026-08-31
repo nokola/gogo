@@ -312,7 +312,6 @@ fn grid_shape_fences_refuse_bad_structure() {
 /// `_grid_tests` 11436-11438: `columns=` and `rows=` are signposts — an
 /// error pointing at `cols=[...]` and at heights travelling with rows.
 #[test]
-#[ignore = "GPAR14: unknown prop is a warning in Rust (G0042), Godot a hard error with a signpost"]
 fn columns_and_rows_are_signposted_errors() {
     let columns = in_view("Grid g columns=[hug] { }");
     assert!(fails(&columns), "{:?}", codes(&columns));
@@ -443,7 +442,6 @@ fn tiles_fences_refuse_bad_cols_and_spans() {
 /// `_tiles_tests` 11570, 11575: `cols=` belongs on a Grid or Tiles and
 /// `span=` on a direct Tiles child — anywhere else is an error.
 #[test]
-#[ignore = "GPAR14: no per-kind prop legality in Rust — cols= on a Label and span= under a Column build clean"]
 fn cols_and_span_are_refused_off_their_kinds() {
     let label = in_view("Label a cols=2");
     assert!(fails(&label), "{:?}", codes(&label));

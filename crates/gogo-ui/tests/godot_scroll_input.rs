@@ -199,12 +199,15 @@ fn a_both_hug_scroll_warns_that_nothing_scrolls() {
 /// `_scroll_hug_tests` 9091-9097 `scroll.raw-mode-wins` — FLIP
 /// (gogo-design.md §7: the raw register is gone, one vocabulary): Godot
 /// let a raw `horizontal_scroll_mode=` own its axis over the hug; here
-/// the raw word is not a property (G0042) and the hug decides.
+/// the raw word is not a property — the build is refused (G0042, E8)
+/// naming `allow=`, and the same page without the word lets the hug
+/// decide.
 #[test]
-fn a_raw_scroll_mode_word_is_not_a_property_and_the_hug_decides() {
-    let src = "View v { Scroll s width=hug, height=100, horizontal_scroll_mode=1 { Column c { Rectangle r 40x40, color=red } } }";
-    assert!(codes(src).contains(&"G0042".to_string()), "{:?}", codes(src));
-    let fx = Fx::new(src);
+fn a_raw_scroll_mode_word_is_refused_and_the_hug_decides() {
+    let raw = "View v { Scroll s width=hug, height=100, horizontal_scroll_mode=1 { Column c { Rectangle r 40x40, color=red } } }";
+    let c = compile(raw, &|_| None);
+    assert!(gogo::has_errors(&c.diags) && c.diags.iter().any(|d| d.code == "G0042" && d.message.contains("allow=")), "{:#?}", c.diags);
+    let fx = Fx::new("View v { Scroll s width=hug, height=100 { Column c { Rectangle r 40x40, color=red } } }");
     assert_eq!(fx.axes("s"), (false, true));
 }
 
@@ -282,7 +285,6 @@ fn scroll_contradictions_are_refused_at_build() {
 /// `_scroll_allow_bars_tests` 9158-9161 `scroll.allow-fenced`: `allow=` is
 /// Scroll vocabulary — on a Panel Godot refuses it naming the pan axes.
 #[test]
-#[ignore = "GPAR14: no per-kind prop legality — `allow=` on a Panel builds silently (Godot: error naming the pan axes)"]
 fn allow_on_a_panel_is_refused() {
     let fence = errors("View v { Panel p allow=vertical { Rectangle r 40x40, color=red } }");
     assert!(fence.iter().any(|e| e.contains("pan axes")), "{fence:?}");

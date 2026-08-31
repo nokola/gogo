@@ -605,21 +605,27 @@ impl Resolved {
     /// The font key for `node`: its own `font=`, else the nearest ancestor's,
     /// else the kind default (`theme { font = … }`).
     pub fn font(&self, page: &Page, node: NodeId) -> Option<StrId> {
+        match self.inherited(page, node, PropKey::Font) {
+            Some(Value::VText { text, .. }) => Some(text),
+            Some(Value::VIdent(id)) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// A text default that flows down the tree: the node's own value,
+    /// else the nearest ancestor's, else the kind default (`theme {
+    /// font_size = … }`, kept on Label).
+    ///
+    /// Needed so `theme font_size=$x` inside a block reaches every Label
+    /// under it (the shipped addon's theme propagation) — without the
+    /// walk it lands on the block alone and the Labels draw at the 15
+    /// default.
+    fn inherited(&self, page: &Page, node: NodeId, key: PropKey) -> Option<Value> {
         let mut n = node;
         loop {
-            let own = self
-                .overrides
-                .iter()
-                .rev()
-                .find(|(i, p)| *i == n && p.key == PropKey::Font)
-                .map(|(_, p)| p.value)
-                .or_else(|| page.prop(n, PropKey::Font));
+            let own = self.overrides.iter().rev().find(|(i, p)| *i == n && p.key == key).map(|(_, p)| p.value).or_else(|| page.prop(n, key));
             if let Some(v) = own {
-                return match deref(page, self.variant, v) {
-                    Value::VText { text, .. } => Some(text),
-                    Value::VIdent(id) => Some(id),
-                    _ => None,
-                };
+                return Some(deref(page, self.variant, v));
             }
             let parent = page.nodes[n as usize].parent;
             if parent == NO_NODE {
@@ -627,8 +633,21 @@ impl Resolved {
             }
             n = parent;
         }
-        match page.kind_default(Kind::Label, PropKey::Font).map(|v| deref(page, self.variant, v)) {
-            Some(Value::VText { text, .. }) => Some(text),
+        page.kind_default(page.nodes[node as usize].kind, key).or_else(|| page.kind_default(Kind::Label, key)).map(|v| deref(page, self.variant, v))
+    }
+
+    /// `font_size=`: own, inherited, or the kind default.
+    pub fn font_size(&self, page: &Page, node: NodeId) -> Option<f32> {
+        match self.inherited(page, node, PropKey::FontSize)? {
+            Value::VNum(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// `font_color=`: own, inherited, or the kind default.
+    pub fn font_color(&self, page: &Page, node: NodeId) -> Option<Rgba> {
+        match self.inherited(page, node, PropKey::FontColor)? {
+            Value::VColor(c) => Some(c),
             _ => None,
         }
     }

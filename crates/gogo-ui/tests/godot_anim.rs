@@ -591,7 +591,6 @@ fn static_motion_word_is_refused() {
 /// today: G0042 warning for the first, second and fourth; the child path
 /// `flash.offset_transform_rotation` gets no diagnostic at all.)
 #[test]
-#[ignore = "GPAR14: unknown prop is a G0042 warning, not an error (Godot refuses); a child-path unknown prop is not even warned"]
 fn raw_and_axisless_motion_keys_are_refused_everywhere() {
     for src in [
         "View v { Button b offset_transform_enabled=true }",

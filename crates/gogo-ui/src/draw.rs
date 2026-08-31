@@ -137,7 +137,9 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     let corner = res.num(page, id, PropKey::CornerRadius).unwrap_or(0.0);
     let border = res.num(page, id, PropKey::BorderThickness).unwrap_or(0.0);
     let border_color = color(PropKey::BorderColor).unwrap_or(Rgba::TRANSPARENT);
-    let text_color = || color(PropKey::FontColor).or_else(|| color(PropKey::Color)).unwrap_or(mul_alpha(DEFAULT_TEXT_COLOR, opacity));
+    // Text color is `font_color=` alone — `color=` on a text box is refused
+    // at build (G2002), so no fallback reads it.
+    let text_color = || res.font_color(page, id).map(|c| mul_alpha(c, opacity)).unwrap_or(mul_alpha(DEFAULT_TEXT_COLOR, opacity));
     // Text sits inside the node's padding and border (WPF Padding).
     let pad = res.placement[id as usize].padding;
     let text_rect = rect.inset(pad[0] + border, pad[1] + border, pad[2] + border, pad[3] + border);
@@ -178,6 +180,22 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     let rotated = motion.rotate != 0.0;
     if rotated {
         out.push(Draw::RotatePush { angle: motion.rotate, cx: rect.x + rect.w / 2.0, cy: rect.y + rect.h / 2.0 });
+    }
+
+    // Any box has a plate (docs/gogo-design.md §8, E8 2026-08-31):
+    // `background=` / a border on a Label, Image, Layers, stack or code
+    // control draws behind its content exactly as on a Panel, padding
+    // included. Nothing is drawn unless the file speaks a plate word, so
+    // a plain box costs no quad. The kinds listed paint their own plate
+    // (a Button's default chrome, a Slider's track, an Input's dark box)
+    // or ARE their fill (Rectangle, Circle, Gradient).
+    let paints_own_plate = matches!(node.kind, Kind::View | Kind::Panel | Kind::ListItem | Kind::Slot | Kind::Button | Kind::Check | Kind::Toggle | Kind::Radio | Kind::Rectangle | Kind::Circle | Kind::Gradient | Kind::Slider | Kind::Input);
+    if !paints_own_plate {
+        if let Some(bg) = color(PropKey::Background) {
+            out.push(Draw::Quad { rect, color: bg, corner, border, border_color });
+        } else if border > 0.0 {
+            out.push(Draw::Quad { rect, color: Rgba::TRANSPARENT, corner, border, border_color });
+        }
     }
 
     match node.kind {
@@ -242,7 +260,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                     rect: text_rect,
                     text,
                     key,
-                    font_size: res.num(page, id, PropKey::FontSize).unwrap_or(DEFAULT_FONT_SIZE),
+                    font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE),
                     color: text_color(),
                     halign: text_align(page, res, id, PropKey::TextHalign, halign_default),
                     valign: text_align(page, res, id, PropKey::TextValign, TextAlign::Center),
@@ -255,7 +273,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             // A Rectangle with no color is white (Godot's ColorRect default;
             // the swatch squares in new_painting rely on it). A Circle with
             // none draws nothing (gogo_circle.gd).
-            let c = color(PropKey::Color).or_else(|| color(PropKey::Background)).unwrap_or(mul_alpha(DEFAULT_TEXT_COLOR, opacity));
+            let c = color(PropKey::Color).unwrap_or(mul_alpha(DEFAULT_TEXT_COLOR, opacity));
             out.push(Draw::Quad { rect, color: c, corner, border, border_color });
         }
         Kind::Circle => {
@@ -327,7 +345,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                     rect: text_rect,
                     text,
                     key,
-                    font_size: res.num(page, id, PropKey::FontSize).unwrap_or(DEFAULT_FONT_SIZE),
+                    font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE),
                     color: text_color(),
                     halign: text_align(page, res, id, PropKey::TextHalign, TextAlign::Start),
                     valign: text_align(page, res, id, PropKey::TextValign, TextAlign::Start),
@@ -355,7 +373,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             let bg = color(PropKey::Background).unwrap_or(mul_alpha(Rgba([0x1A, 0x1A, 0x1A, 0x99]), opacity));
             out.push(Draw::Quad { rect, color: bg, corner, border, border_color });
             if let Some(Value::VText { text, key }) = res.prop(page, id, PropKey::Text) {
-                out.push(Draw::Text { rect: text_rect.inset(8.0, 0.0, 8.0, 0.0), text, key, font_size: res.num(page, id, PropKey::FontSize).unwrap_or(DEFAULT_FONT_SIZE), color: text_color(), halign: TextAlign::Start, valign: TextAlign::Center, wrap: false, font: res.font(page, id).unwrap_or(NO_STR) });
+                out.push(Draw::Text { rect: text_rect.inset(8.0, 0.0, 8.0, 0.0), text, key, font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE), color: text_color(), halign: TextAlign::Start, valign: TextAlign::Center, wrap: false, font: res.font(page, id).unwrap_or(NO_STR) });
             }
         }
         _ => {}

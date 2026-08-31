@@ -86,8 +86,10 @@ struct WhenTmp {
     /// (`State::priority`): later line wins.
     line: u32,
     props: Vec<Prop>,
-    /// Descendant responses (`when held face.background=…`): (node name, prop).
-    descendants: Vec<(String, Prop)>,
+    /// Descendant responses (`when held face.background=…`): (node name,
+    /// prop, the prop word as written, its line) — the word and line feed
+    /// the kind check once the target is found.
+    descendants: Vec<(String, Prop, String, u32)>,
     /// A `for=` widget's scope response: watches the hosting control.
     host: bool,
 }
@@ -120,6 +122,125 @@ fn split_target(key: &str) -> Option<(&str, &str)> {
     }
     let (node, rest) = key.split_once('.')?;
     Some((node, rest))
+}
+
+// ----- property words per kind (E8) --------------------------------------
+
+/// A kind as an error names it: its word, or "code control" for a node
+/// the host draws.
+fn kind_name(kind: Kind) -> &'static str {
+    if kind == Kind::Custom { "code control" } else { kind.word() }
+}
+
+fn parent_name(parent: Option<Kind>) -> &'static str {
+    parent.map_or("the root", kind_name)
+}
+
+/// The legal word closest to a misspelling (`textt` → `text`): at most two
+/// edits away, or the typed word is a prefix of it. Nothing for a word
+/// that is not close to anything — a wrong guess would mislead.
+fn nearest_word<'w>(word: &str, candidates: &[&'w str]) -> Option<&'w str> {
+    let mut best: Option<(usize, &str)> = None;
+    for c in candidates {
+        let d = edit_distance(word, c);
+        let close = d <= 2 || (word.len() >= 3 && c.starts_with(word));
+        if close && best.map_or(true, |(bd, _)| d < bd) {
+            best = Some((d, c));
+        }
+    }
+    best.map(|(_, c)| c)
+}
+
+/// Levenshtein distance on chars — small words, small lists, no need for
+/// anything cleverer.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.iter().enumerate() {
+        let mut cur: Vec<usize> = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            cur.push((prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
+}
+
+/// The message for a word gogo has no key for: a known other-dialect word
+/// gets its gogo spelling, a near-miss the closest legal word, anything
+/// else the kind's own words.
+fn unknown_property(word: &str, kind: Kind) -> String {
+    let dialect: Option<&str> = match word {
+        "foreground" | "text_color" | "font_colour" | "colour" => Some("text color is `font_color=`, a plate is `background=`"),
+        "columns" => Some("a Grid's tracks are `cols=[…]`"),
+        "rows" => Some("Grid rows are `row { }` lines (`row height=40 { … }`)"),
+        "areas" => Some("the `areas=` form is not built here — write `row { }` lines"),
+        "mouse_filter" => Some("input is `interactive=true` (claims it) or `interactive=false` (hit-invisible)"),
+        "duration" | "easing" | "anim" | "delay" | "duration_each" => Some("timing belongs on a `transition` line (`transition any -> held duration=0.1`); a `when` holds standing values"),
+        "solid_until" => Some("a plateau is spelled in `stops=` (`stops=[c@0, c@0.94, c/0@1]`)"),
+        "inset" | "anchors_margin" => Some("placement is `margin=` / `halign=` / `valign=` / `width=` / `height=`"),
+        "modulate" | "tint" => Some("a whole-node fade is `opacity=`; a fill is `color=` (Rectangle, Circle) or `background=`"),
+        "translate" => Some("motion has no axisless translate — `translate.x=` / `translate.y=`"),
+        "orientation" => Some("direction is the kind: `Column` runs down, `Row` runs across"),
+        "flat" => Some("a plain button is `background=transparent`"),
+        "visible" => Some("presence is `visibility=visible|space_only|gone`"),
+        "horizontal_scroll_mode" | "vertical_scroll_mode" | "scroll_horizontal" | "scroll_vertical" => Some("a Scroll's pan axes are `allow=horizontal|vertical|both`"),
+        _ => None,
+    };
+    if let Some(hint) = dialect {
+        return format!("`{word}=` is not a gogo word — {hint}");
+    }
+    let words = kind_words(kind);
+    if let Some(near) = nearest_word(word, &words) {
+        return format!("`{word}=` is not a property — did you mean `{near}=`?");
+    }
+    let own = kind_own_words(kind);
+    let name = kind_name(kind);
+    if own.is_empty() {
+        format!("`{word}=` is not a property — a `{name}` line takes no properties")
+    } else {
+        format!("`{word}=` is not a property of a {name} — its own words: {}", own.iter().map(|w| format!("`{w}`")).collect::<Vec<_>>().join(", "))
+    }
+}
+
+/// The message for a real gogo word on a kind that does not take it: says
+/// whose word it is and, where one exists, the word this kind uses instead.
+fn wrong_kind(key: PropKey, kind: Kind) -> String {
+    let word = key.word();
+    let name = kind_name(kind);
+    let shows_text = legal(kind, PropKey::Text);
+    let leaf = matches!(kind, Kind::Rectangle | Kind::Circle | Kind::Gradient | Kind::Image);
+    match key {
+        PropKey::Color if shows_text => format!("`color=` on a {name} — text is `font_color=`, the plate is `background=`"),
+        PropKey::Color if kind == Kind::Gradient => "`color=` on a Gradient — a Gradient paints its `stops=`".to_string(),
+        PropKey::Color | PropKey::ColorA => format!("`{word}=` is the fill of a Rectangle or Circle — a {name}'s plate is `background=`, a fade is `opacity=`"),
+        PropKey::Background if kind == Kind::Gradient => "`background=` on a Gradient — a Gradient paints its `stops=`".to_string(),
+        PropKey::Background => format!("`background=` on a {name} — its fill is `color=`"),
+        PropKey::CornerRadius | PropKey::BorderThickness | PropKey::BorderColor | PropKey::ClipContents if kind == Kind::Circle => format!("`{word}=` on a Circle — a Circle is not a box; it has a `color=` and a ring (`border_thickness=`, `border_color=`)"),
+        PropKey::CornerRadius | PropKey::BorderThickness | PropKey::BorderColor | PropKey::ClipContents => format!("`{word}=` shapes a box's plate — a {name} has none; wrap it in a Panel"),
+        PropKey::Padding | PropKey::PaddingLeft | PropKey::PaddingTop | PropKey::PaddingRight | PropKey::PaddingBottom if leaf => format!("`{word}=` is air inside a box around its children or text — a {name} has neither; outer air is `margin=`"),
+        PropKey::Allow | PropKey::Bars => format!("`{word}=` picks a Scroll's pan axes — a {name} does not scroll"),
+        PropKey::Cols | PropKey::RowHeight => format!("`{word}=` lays out a Grid or Tiles — a {name} has no tracks"),
+        PropKey::Spacing => format!("`spacing=` separates a stack's children (Column, Row, Flow, Grid, Tiles, List) — a {name} stacks nothing"),
+        PropKey::Text | PropKey::FontSize | PropKey::FontColor | PropKey::Wrap | PropKey::ClipText | PropKey::TextHalign | PropKey::TextValign => format!("`{word}=` belongs to a box that shows text (Label, Button, Check, Toggle, Radio, Input) — a {name} shows none"),
+        PropKey::Source | PropKey::Fit | PropKey::Loading => format!("`{word}=` is an Image word — a {name} shows no picture"),
+        PropKey::Stops | PropKey::GradientFill | PropKey::Angle => format!("`{word}=` is a Gradient word — a {name}'s one color is `background=`"),
+        PropKey::Value | PropKey::Min | PropKey::Max | PropKey::Step => format!("`{word}=` belongs to a Slider, Input, Toggle or choice — a {name} holds no value"),
+        PropKey::SelectedProp | PropKey::ToggleMode | PropKey::TapPulse | PropKey::IconSrc => format!("`{word}=` belongs to a press surface (Button, Check, Toggle, Radio, ListItem) — a {name} is not pressed"),
+        PropKey::Select => format!("`select=` is a List word — a {name} selects nothing"),
+        PropKey::Automatic => format!("`automatic=` is a slot word — a {name} is not a slot"),
+        PropKey::DisabledOpacity => "`disabled_opacity=` is page-wide — write it in the top `theme { }` block".to_string(),
+        _ => {
+            let own = kind_own_words(kind);
+            if own.is_empty() {
+                format!("`{word}=` on a `{name}` line — it takes no properties")
+            } else {
+                format!("`{word}=` is not a {name} word — its own words: {}", own.iter().map(|w| format!("`{w}`")).collect::<Vec<_>>().join(", "))
+            }
+        }
+    }
 }
 
 pub struct Compiler<'a> {
@@ -452,7 +573,18 @@ impl<'a> Compiler<'a> {
             self.error("G0025", n.line, "`style` needs a name");
             return;
         };
-        let mut def = StyleDef { props: n.props.clone(), ..Default::default() };
+        // `for=Button` names the kind a style is meant for: a kind word
+        // or an error, and not a property of the nodes wearing the style
+        // (the kind-match check itself is docs/todo-gogo.md GP40, not
+        // built).
+        let mut props: Vec<AstProp> = n.props.clone();
+        if let Some(i) = props.iter().position(|p| p.key == "for") {
+            let for_kind = props.remove(i);
+            if for_kind.value.as_ident().and_then(Kind::from_word).is_none() {
+                self.error("G3004", for_kind.line, format!("`for=` names a control kind (`for=Button`), not `{}`", spell(&for_kind.value)));
+            }
+        }
+        let mut def = StyleDef { props, ..Default::default() };
         for item in &n.children {
             match item {
                 AstItem::Node(c) if c.type_word == "when" => def.whens.push(c.clone()),
@@ -987,6 +1119,41 @@ impl<'a> Compiler<'a> {
     }
 
     fn prop(&mut self, p: &AstProp, kind: Kind) -> Option<Prop> {
+        self.prop_checked(p, Some(kind))
+    }
+
+    /// A `when` response aimed at a child (`when held flash.opacity=0`):
+    /// the child's kind is known only once the tree is built, so the word
+    /// check waits for `check_prop_kind` where the response moves to it.
+    fn prop_unchecked(&mut self, p: &AstProp) -> Option<Prop> {
+        self.prop_checked(p, None)
+    }
+
+    /// Is `word` a property `kind` takes? Else an error naming the gogo
+    /// word.
+    ///
+    /// Needed so every spelling passes ONE check — node lines, styles,
+    /// theme kind defaults, `when` responses (own and child-aimed), code
+    /// controls; a path that skips it is a silent drop. `on:` handlers
+    /// are `check_event_kind`'s.
+    fn check_prop_kind(&mut self, word: &str, key: PropKey, kind: Kind, line: u32) -> bool {
+        if word.starts_with("on:") {
+            return true;
+        }
+        match key {
+            PropKey::Other(_) => {
+                self.error("G0042", line, unknown_property(word, kind));
+                false
+            }
+            _ if legal(kind, key) => true,
+            _ => {
+                self.error("G2002", line, wrong_kind(key, kind));
+                false
+            }
+        }
+    }
+
+    fn prop_checked(&mut self, p: &AstProp, kind: Option<Kind>) -> Option<Prop> {
         match p.key.as_str() {
             "anchors" | "offset_left" | "offset_top" | "offset_right" | "offset_bottom" | "size_flags_horizontal" | "size_flags_vertical" => {
                 self.error("G0041", p.line, format!("`{}` is gone — placement says it all (halign/valign, width/height, margins)", p.key));
@@ -1011,9 +1178,9 @@ impl<'a> Compiler<'a> {
             _ => {}
         }
         let key = self.prop_key(&p.key);
-        if let PropKey::Other(_) = key {
-            if kind != Kind::Custom && !p.key.starts_with("on:") {
-                self.warning("G0042", p.line, format!("`{}` is not a known property of `{kind:?}`", p.key));
+        if let Some(kind) = kind {
+            if !self.check_prop_kind(&p.key, key, kind, p.line) {
+                return None;
             }
         }
         // The list kind ships with Grid's `cols=`/`areas=` and Gradient's
@@ -1281,6 +1448,7 @@ impl<'a> Compiler<'a> {
         let mut all_props: Vec<AstProp> = Vec::new();
         let mut style_whens: Vec<AstNode> = Vec::new();
         let mut style_transitions: Vec<AstNode> = Vec::new();
+        let mut subtree_defaults: Vec<Prop> = Vec::new();
         let styles: Vec<String> = n.styles.iter().chain(instance.iter().flat_map(|i| i.styles.iter())).cloned().collect();
         for s in &styles {
             match self.styles.get(s).cloned() {
@@ -1303,7 +1471,20 @@ impl<'a> Compiler<'a> {
                         self.error("G3004", t.line, "a theme override inside a node is props on one line: `theme font=$x` — theme variants (`theme dark { $name = value }`) go at the top of the file");
                         continue;
                     }
-                    all_props.extend(t.props.iter().cloned());
+                    // A subtree's text defaults: the words flow down to
+                    // the text inside (`Resolved::inherited`), so they are
+                    // legal on any box here — checked against Label's row,
+                    // the kind that shows text.
+                    for p in &t.props {
+                        let key = PropKey::from_word(&p.key);
+                        if !matches!(key, Some(PropKey::Font | PropKey::FontSize | PropKey::FontColor)) {
+                            self.error("G3004", p.line, format!("`theme {}=` inside a block sets a text default for everything under it — the words are `font`, `font_size`, `font_color`", p.key));
+                            continue;
+                        }
+                        if let Some(prop) = self.prop(p, Kind::Label) {
+                            subtree_defaults.push(prop);
+                        }
+                    }
                 }
             }
         }
@@ -1358,6 +1539,17 @@ impl<'a> Compiler<'a> {
                 continue;
             }
             let Some(prop) = self.prop(p, kind) else { continue };
+            // Cell words belong to the PARENT's lattice. Needed because a
+            // cell word off its lattice lays out nothing — refused, naming
+            // the parent it sits in.
+            if GRID_CELL.contains(&prop.key) && !matches!(parent_kind, Some(Kind::Grid | Kind::GridRow)) {
+                self.error("G2002", p.line, format!("`{}=` is a Grid cell word — this box sits in a {}", p.key, parent_name(parent_kind)));
+                continue;
+            }
+            if TILES_CELL.contains(&prop.key) && parent_kind != Some(Kind::Tiles) {
+                self.error("G2002", p.line, format!("`{}=` is a Tiles cell word — this box sits in a {}", p.key, parent_name(parent_kind)));
+                continue;
+            }
             if prop.key.is_placement() {
                 placement_props.push(prop);
             } else {
@@ -1365,6 +1557,7 @@ impl<'a> Compiler<'a> {
             }
         }
         self.stops_ctx = None;
+        tmp.props.extend(subtree_defaults);
         tmp.node.placement = self.placement(&placement_props, n.line, parent_kind, kind);
         // Start states the file declares; the Runtime seeds from them.
         for prop in &tmp.props {
@@ -1822,8 +2015,8 @@ impl<'a> Compiler<'a> {
         for p in &lines {
             if let Some((node_name, prop_name)) = split_target(&p.key) {
                 let ap = AstProp { key: prop_name.to_string(), value: p.value.clone(), line: p.line };
-                if let Some(prop) = self.prop(&ap, Kind::Custom) {
-                    descendants.push((node_name.to_string(), prop));
+                if let Some(prop) = self.prop_unchecked(&ap) {
+                    descendants.push((node_name.to_string(), prop, prop_name.to_string(), p.line));
                 }
             } else if let Some(prop) = self.prop(p, kind) {
                 props.push(prop);
@@ -2116,7 +2309,7 @@ impl<'a> Compiler<'a> {
         let mut moved: Vec<(usize, WhenTmp)> = Vec::new();
         for (owner, list) in whens.iter_mut().enumerate() {
             for w in list.iter_mut() {
-                for (name, prop) in std::mem::take(&mut w.descendants) {
+                for (name, prop, word, line) in std::mem::take(&mut w.descendants) {
                     let end = self.page.nodes[owner].subtree_end as usize;
                     // Widget-body names carry their instance prefix (`inst/name`).
                     let target = (owner + 1..end).find(|i| {
@@ -2124,6 +2317,11 @@ impl<'a> Compiler<'a> {
                         full == name || full.rsplit('/').next() == Some(name.as_str())
                     });
                     match target {
+                        // The word check a node line gets, now that the
+                        // target's kind is known. Needed so a misspelled
+                        // response is a build error, not a silently dead
+                        // line (docs/todo-gogo-parity.md GPAR82).
+                        Some(t) if !self.check_prop_kind(&word, prop.key, self.page.nodes[t].kind, line) => {}
                         Some(t) => moved.push((t, WhenTmp { state: w.state, line: w.line, props: vec![prop], descendants: Vec::new(), host: w.host })),
                         None => {
                             let line = self.page.nodes[owner].line;
@@ -2362,7 +2560,7 @@ mod tests {
         assert!(!crate::diag::has_errors(&compile("View v { Layers l interactive=true, on:pointer=x }", &|_| None).diags));
         assert!(codes("Column c { Label a }").contains(&"G7003".to_string()));
         assert!(codes("View v { Label a text=\"x\"/k; Label b text=\"y\"/k }").contains(&"G8001".to_string()));
-        assert!(codes("View v { Label a color=$nothing }").contains(&"G9001".to_string()));
+        assert!(codes("View v { Label a font_color=$nothing }").contains(&"G9001".to_string()));
         assert!(codes("View v { Column c { Label a margin_top=3 } }").contains(&"G1005".to_string()));
         assert!(codes("View v { Label a when held color=red }").is_empty() == false);
     }

@@ -78,41 +78,50 @@ pub enum Auto {
     Presence(bool),
 }
 
+/// Every node-type word and its kind, in the order the docs list them.
+/// `Custom` has no word (a code control or an unknown type).
+pub const KIND_WORDS: &[(&str, Kind)] = &[
+    ("View", Kind::View),
+    ("Panel", Kind::Panel),
+    ("Column", Kind::Column),
+    ("Row", Kind::Row),
+    ("Flow", Kind::Flow),
+    ("Layers", Kind::Layers),
+    ("Scroll", Kind::Scroll),
+    ("Grid", Kind::Grid),
+    ("Tiles", Kind::Tiles),
+    ("Label", Kind::Label),
+    ("Button", Kind::Button),
+    ("Image", Kind::Image),
+    ("Rectangle", Kind::Rectangle),
+    ("Circle", Kind::Circle),
+    ("Gradient", Kind::Gradient),
+    ("Slider", Kind::Slider),
+    ("Input", Kind::Input),
+    ("Check", Kind::Check),
+    ("Toggle", Kind::Toggle),
+    ("Radio", Kind::Radio),
+    ("choice", Kind::Choice),
+    ("List", Kind::List),
+    ("ListItem", Kind::ListItem),
+    ("repeat", Kind::Repeat),
+    ("gap", Kind::Gap),
+    ("row", Kind::GridRow),
+    ("skip", Kind::Skip),
+    ("slot", Kind::Slot),
+    ("seat", Kind::Seat),
+    ("empty", Kind::Empty),
+];
+
 impl Kind {
     pub fn from_word(word: &str) -> Option<Kind> {
-        Some(match word {
-            "View" => Kind::View,
-            "Panel" => Kind::Panel,
-            "Column" => Kind::Column,
-            "Row" => Kind::Row,
-            "Flow" => Kind::Flow,
-            "Layers" => Kind::Layers,
-            "Scroll" => Kind::Scroll,
-            "Grid" => Kind::Grid,
-            "Tiles" => Kind::Tiles,
-            "Label" => Kind::Label,
-            "Button" => Kind::Button,
-            "Image" => Kind::Image,
-            "Rectangle" => Kind::Rectangle,
-            "Circle" => Kind::Circle,
-            "Gradient" => Kind::Gradient,
-            "Slider" => Kind::Slider,
-            "Input" => Kind::Input,
-            "Check" => Kind::Check,
-            "Toggle" => Kind::Toggle,
-            "Radio" => Kind::Radio,
-            "choice" => Kind::Choice,
-            "List" => Kind::List,
-            "ListItem" => Kind::ListItem,
-            "repeat" => Kind::Repeat,
-            "gap" => Kind::Gap,
-            "row" => Kind::GridRow,
-            "skip" => Kind::Skip,
-            "slot" => Kind::Slot,
-            "seat" => Kind::Seat,
-            "empty" => Kind::Empty,
-            _ => return None,
-        })
+        KIND_WORDS.iter().find(|(w, _)| *w == word).map(|(_, k)| *k)
+    }
+
+    /// The word a kind is written as (`Kind::GridRow` → `row`); `Custom`
+    /// gives "" — the compiler names the type word from the file instead.
+    pub fn word(self) -> &'static str {
+        KIND_WORDS.iter().find(|(_, k)| *k == self).map_or("", |(w, _)| *w)
     }
 
     /// Children stack on one axis (Column/Row) — `gap` is legal here.
@@ -264,6 +273,8 @@ pub enum PropKey {
     Render,
     Step,
     IconSrc,
+    /// `icon_size=` on a Button: the icon's box (accepted-unread beside `icon=`).
+    IconSize,
     Automatic,
     /// `x.seat = <name>` in a `when`: the socket the node moves into (apart from `Kind::Seat`).
     SeatOf,
@@ -302,89 +313,100 @@ pub enum PropKey {
     Other(StrId),
 }
 
+/// Every property word and its key — the one spelling table: `from_word`
+/// reads it, `word` spells a key back for a did-you-mean, and the per-kind
+/// table below says where each is legal.
+pub const WORDS: &[(&str, PropKey)] = &[
+    ("text", PropKey::Text),
+    ("background", PropKey::Background),
+    ("color", PropKey::Color),
+    ("font_size", PropKey::FontSize),
+    ("spacing", PropKey::Spacing),
+    ("corner_radius", PropKey::CornerRadius),
+    ("border_thickness", PropKey::BorderThickness),
+    ("border_color", PropKey::BorderColor),
+    ("opacity", PropKey::Opacity),
+    ("visibility", PropKey::Visibility),
+    ("disabled", PropKey::Disabled),
+    ("source", PropKey::Source),
+    ("value", PropKey::Value),
+    ("min", PropKey::Min),
+    ("max", PropKey::Max),
+    ("cols", PropKey::Cols),
+    ("row_height", PropKey::RowHeight),
+    ("col_span", PropKey::ColSpan),
+    ("row_span", PropKey::RowSpan),
+    ("fit", PropKey::Fit),
+    ("horizontal_alignment", PropKey::TextHalign),
+    ("vertical_alignment", PropKey::TextValign),
+    ("wrap", PropKey::Wrap),
+    ("allow", PropKey::Allow),
+    ("bars", PropKey::Bars),
+    ("toggle", PropKey::ToggleMode),
+    ("selected", PropKey::SelectedProp),
+    ("fill", PropKey::GradientFill),
+    ("stops", PropKey::Stops),
+    ("angle", PropKey::Angle),
+    ("aspect", PropKey::Aspect),
+    ("font", PropKey::Font),
+    ("font_color", PropKey::FontColor),
+    ("color.a", PropKey::ColorA),
+    ("disabled_opacity", PropKey::DisabledOpacity),
+    ("clip_text", PropKey::ClipText),
+    ("clip_contents", PropKey::ClipContents),
+    ("span", PropKey::Span),
+    ("full_row", PropKey::FullRow),
+    ("loading", PropKey::Loading),
+    ("touch_target", PropKey::TouchTarget),
+    ("tap_pulse", PropKey::TapPulse),
+    ("accessibility_name", PropKey::AccessibilityName),
+    ("keyboard_target", PropKey::KeyboardTarget),
+    ("select", PropKey::Select),
+    ("render", PropKey::Render),
+    ("step", PropKey::Step),
+    ("icon", PropKey::IconSrc),
+    ("icon_size", PropKey::IconSize),
+    ("automatic", PropKey::Automatic),
+    ("seat", PropKey::SeatOf),
+    ("overlay", PropKey::Overlay),
+    ("interactive", PropKey::Interactive),
+    ("scale", PropKey::Scale),
+    ("scale.x", PropKey::ScaleX),
+    ("scale.y", PropKey::ScaleY),
+    ("translate.x", PropKey::TranslateX),
+    ("translate.y", PropKey::TranslateY),
+    ("rotate", PropKey::Rotate),
+    ("width", PropKey::Width),
+    ("height", PropKey::Height),
+    ("min_width", PropKey::MinWidth),
+    ("min_height", PropKey::MinHeight),
+    ("max_width", PropKey::MaxWidth),
+    ("max_height", PropKey::MaxHeight),
+    ("halign", PropKey::Halign),
+    ("valign", PropKey::Valign),
+    ("margin_left", PropKey::MarginLeft),
+    ("margin_top", PropKey::MarginTop),
+    ("margin_right", PropKey::MarginRight),
+    ("margin_bottom", PropKey::MarginBottom),
+    ("margin", PropKey::Margin),
+    ("padding_left", PropKey::PaddingLeft),
+    ("padding_top", PropKey::PaddingTop),
+    ("padding_right", PropKey::PaddingRight),
+    ("padding_bottom", PropKey::PaddingBottom),
+    ("padding", PropKey::Padding),
+    ("size", PropKey::Size),
+    ("min_size", PropKey::MinSize),
+];
+
 impl PropKey {
     pub fn from_word(word: &str) -> Option<PropKey> {
-        Some(match word {
-            "text" => PropKey::Text,
-            "background" => PropKey::Background,
-            "color" => PropKey::Color,
-            "font_size" => PropKey::FontSize,
-            "spacing" => PropKey::Spacing,
-            "corner_radius" => PropKey::CornerRadius,
-            "border_thickness" => PropKey::BorderThickness,
-            "border_color" => PropKey::BorderColor,
-            "opacity" => PropKey::Opacity,
-            "visibility" => PropKey::Visibility,
-            "disabled" => PropKey::Disabled,
-            "source" => PropKey::Source,
-            "value" => PropKey::Value,
-            "min" => PropKey::Min,
-            "max" => PropKey::Max,
-            "cols" => PropKey::Cols,
-            "row_height" => PropKey::RowHeight,
-            "col_span" => PropKey::ColSpan,
-            "row_span" => PropKey::RowSpan,
-            "fit" => PropKey::Fit,
-            "horizontal_alignment" => PropKey::TextHalign,
-            "vertical_alignment" => PropKey::TextValign,
-            "wrap" => PropKey::Wrap,
-            "allow" => PropKey::Allow,
-            "bars" => PropKey::Bars,
-            "toggle" => PropKey::ToggleMode,
-            "selected" => PropKey::SelectedProp,
-            "fill" => PropKey::GradientFill,
-            "stops" => PropKey::Stops,
-            "angle" => PropKey::Angle,
-            "aspect" => PropKey::Aspect,
-            "font" => PropKey::Font,
-            "font_color" => PropKey::FontColor,
-            "color.a" => PropKey::ColorA,
-            "disabled_opacity" => PropKey::DisabledOpacity,
-            "clip_text" => PropKey::ClipText,
-            "clip_contents" => PropKey::ClipContents,
-            "span" => PropKey::Span,
-            "full_row" => PropKey::FullRow,
-            "loading" => PropKey::Loading,
-            "touch_target" => PropKey::TouchTarget,
-            "tap_pulse" => PropKey::TapPulse,
-            "accessibility_name" => PropKey::AccessibilityName,
-            "keyboard_target" => PropKey::KeyboardTarget,
-            "select" => PropKey::Select,
-            "render" => PropKey::Render,
-            "step" => PropKey::Step,
-            "icon" => PropKey::IconSrc,
-            "automatic" => PropKey::Automatic,
-            "seat" => PropKey::SeatOf,
-            "overlay" => PropKey::Overlay,
-            "interactive" => PropKey::Interactive,
-            "scale" => PropKey::Scale,
-            "scale.x" => PropKey::ScaleX,
-            "scale.y" => PropKey::ScaleY,
-            "translate.x" => PropKey::TranslateX,
-            "translate.y" => PropKey::TranslateY,
-            "rotate" => PropKey::Rotate,
-            "width" => PropKey::Width,
-            "height" => PropKey::Height,
-            "min_width" => PropKey::MinWidth,
-            "min_height" => PropKey::MinHeight,
-            "max_width" => PropKey::MaxWidth,
-            "max_height" => PropKey::MaxHeight,
-            "halign" => PropKey::Halign,
-            "valign" => PropKey::Valign,
-            "margin_left" => PropKey::MarginLeft,
-            "margin_top" => PropKey::MarginTop,
-            "margin_right" => PropKey::MarginRight,
-            "margin_bottom" => PropKey::MarginBottom,
-            "margin" => PropKey::Margin,
-            "padding_left" => PropKey::PaddingLeft,
-            "padding_top" => PropKey::PaddingTop,
-            "padding_right" => PropKey::PaddingRight,
-            "padding_bottom" => PropKey::PaddingBottom,
-            "padding" => PropKey::Padding,
-            "size" => PropKey::Size,
-            "min_size" => PropKey::MinSize,
-            _ => return None,
-        })
+        WORDS.iter().find(|(w, _)| *w == word).map(|(_, k)| *k)
+    }
+
+    /// The word a key is written as (`PropKey::FontColor` → `font_color`);
+    /// `Other` has no fixed spelling and gives "".
+    pub fn word(self) -> &'static str {
+        WORDS.iter().find(|(_, k)| *k == self).map_or("", |(w, _)| *w)
     }
 
     /// Keys that take a number: `opacity=red` or `scale=big` is refused
@@ -443,6 +465,128 @@ impl PropKey {
                 | PropKey::MinSize
         )
     }
+}
+
+// ----- which words each kind takes (E8, 2026-08-31) ------------------------
+//
+// One table, read three ways: the compiler refuses a word that is not in
+// its kind's row (an error naming the nearest legal word), the docs list
+// each kind's words from it (`kind_words`), and `every_prop_key_is_read`
+// checks every key has a row somewhere.
+//
+// Needed because a word the file spells and no pass reads is a silent
+// drop (`Column value=3` lays out nothing, `Label cols=2` too) — with the
+// table every such word is a build error instead (docs/gogo-design.md §8,
+// E8 2026-08-31).
+
+/// Placement, presence and motion — every box carries these.
+const BOX: &[PropKey] = &[
+    PropKey::Width,
+    PropKey::Height,
+    PropKey::MinWidth,
+    PropKey::MinHeight,
+    PropKey::MaxWidth,
+    PropKey::MaxHeight,
+    PropKey::Size,
+    PropKey::MinSize,
+    PropKey::Halign,
+    PropKey::Valign,
+    PropKey::Margin,
+    PropKey::MarginLeft,
+    PropKey::MarginTop,
+    PropKey::MarginRight,
+    PropKey::MarginBottom,
+    PropKey::Aspect,
+    PropKey::Opacity,
+    PropKey::Visibility,
+    PropKey::Overlay,
+    PropKey::Interactive,
+    PropKey::Font,
+    PropKey::Scale,
+    PropKey::ScaleX,
+    PropKey::ScaleY,
+    PropKey::TranslateX,
+    PropKey::TranslateY,
+    PropKey::Rotate,
+    PropKey::SeatOf,
+    PropKey::Disabled,
+    PropKey::TouchTarget,
+    PropKey::AccessibilityName,
+    PropKey::KeyboardTarget,
+    PropKey::Render,
+];
+/// The plate behind a box's content. Any box has one (E8): a Label with
+/// `background=` gets a plate under its text, padding included, the same
+/// as a Panel — no wrapping Panel needed.
+const PLATE: &[PropKey] = &[PropKey::Background, PropKey::CornerRadius, PropKey::BorderThickness, PropKey::BorderColor, PropKey::ClipContents];
+/// Air inside the box around its children or text.
+const PADDING: &[PropKey] = &[PropKey::Padding, PropKey::PaddingLeft, PropKey::PaddingTop, PropKey::PaddingRight, PropKey::PaddingBottom];
+/// The words of a box that shows text of its own.
+const TEXT: &[PropKey] = &[PropKey::Text, PropKey::FontSize, PropKey::FontColor, PropKey::Wrap, PropKey::ClipText, PropKey::TextHalign, PropKey::TextValign];
+/// A press surface's words (`disabled=` is every box's: it cascades down
+/// a subtree, so a Panel can switch off everything in it).
+const PRESS: &[PropKey] = &[PropKey::TapPulse];
+/// The shared row: a code control (drawn by the host) takes the box, its
+/// plate and padding, nothing of its own — declaring host-read words per
+/// control is docs/todo-gogo.md G13 (LATER).
+const SHARED: &[&[PropKey]] = &[BOX, PLATE, PADDING];
+
+/// A Grid cell's words — legal on any box whose parent is a Grid row.
+pub const GRID_CELL: &[PropKey] = &[PropKey::ColSpan, PropKey::RowSpan];
+/// A Tiles cell's words — legal on any box whose parent is a Tiles.
+pub const TILES_CELL: &[PropKey] = &[PropKey::Span, PropKey::FullRow];
+
+/// The rows: which groups (and own words) each kind takes.
+fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
+    match kind {
+        Kind::View => &[BOX, PLATE, PADDING, &[PropKey::DisabledOpacity]],
+        Kind::Panel | Kind::Layers | Kind::Custom => SHARED,
+        Kind::Column | Kind::Row | Kind::Flow => &[BOX, PLATE, PADDING, &[PropKey::Spacing]],
+        Kind::Scroll => &[BOX, PLATE, PADDING, &[PropKey::Allow, PropKey::Bars]],
+        Kind::Grid => &[BOX, PLATE, PADDING, &[PropKey::Cols, PropKey::RowHeight, PropKey::Spacing]],
+        Kind::Tiles => &[BOX, PLATE, PADDING, &[PropKey::Cols, PropKey::Spacing]],
+        Kind::Label => &[BOX, PLATE, PADDING, TEXT],
+        Kind::Button => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::ToggleMode, PropKey::SelectedProp, PropKey::IconSrc, PropKey::IconSize]],
+        Kind::Image => &[BOX, PLATE, &[PropKey::Source, PropKey::Fit, PropKey::Loading]],
+        Kind::Rectangle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::CornerRadius, PropKey::BorderThickness, PropKey::BorderColor]],
+        Kind::Circle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::BorderThickness, PropKey::BorderColor]],
+        Kind::Gradient => &[BOX, &[PropKey::Stops, PropKey::GradientFill, PropKey::Angle]],
+        // A Slider's `background=` is its track, `color=` the filled part.
+        Kind::Slider => &[BOX, &[PropKey::Background, PropKey::Color, PropKey::Value, PropKey::Min, PropKey::Max, PropKey::Step]],
+        Kind::Input => &[BOX, PLATE, PADDING, TEXT, &[PropKey::Value]],
+        Kind::Check | Kind::Radio => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::SelectedProp]],
+        Kind::Toggle => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::SelectedProp, PropKey::Value]],
+        Kind::Choice => &[BOX, &[PropKey::Value, PropKey::Spacing]],
+        Kind::List => &[BOX, PLATE, PADDING, &[PropKey::Select, PropKey::Spacing]],
+        Kind::ListItem => &[BOX, PLATE, PADDING, PRESS, &[PropKey::SelectedProp]],
+        Kind::Slot => &[BOX, PLATE, PADDING, &[PropKey::Automatic]],
+        Kind::Seat | Kind::GridRow => &[BOX],
+        // Structure words: their line takes clauses or one size word, no
+        // properties (`gap 8`, `repeat … as $item`, `skip`, `empty { }`).
+        Kind::Repeat | Kind::Gap | Kind::Skip | Kind::Empty => &[],
+    }
+}
+
+/// Is `key` a word `kind` takes? Cell words (`span=`, `col_span=`) count as
+/// legal on every box here — the compiler checks the PARENT for those.
+pub fn legal(kind: Kind, key: PropKey) -> bool {
+    let row = kind_row(kind);
+    if row.iter().any(|g| g.contains(&key)) {
+        return true;
+    }
+    !row.is_empty() && (GRID_CELL.contains(&key) || TILES_CELL.contains(&key))
+}
+
+/// The words `kind` takes, in table order — the docs list and the
+/// did-you-mean pool.
+pub fn kind_words(kind: Kind) -> Vec<&'static str> {
+    kind_row(kind).iter().flat_map(|g| g.iter()).map(|k| k.word()).collect()
+}
+
+/// The words `kind` takes that not every box takes: the short list an
+/// error shows ("a Scroll's own words: allow, bars").
+pub fn kind_own_words(kind: Kind) -> Vec<&'static str> {
+    kind_row(kind).iter().flat_map(|g| g.iter()).filter(|k| !BOX.contains(k)).map(|k| k.word()).collect()
 }
 
 /// sRGB bytes, alpha last — the file's `#RRGGBBAA`.
@@ -841,6 +985,7 @@ pub const UNREAD_BY_DESIGN: &[(PropKey, &str)] = &[
     (PropKey::Render, "accepted for old files that picked a renderer per node; one renderer here"),
     (PropKey::Step, "Slider steps are not built yet (the drag is not wired)"),
     (PropKey::IconSrc, "accepted for old files; an icon file hint nothing reads"),
+    (PropKey::IconSize, "accepted for old files beside `icon=`; icons are not drawn here"),
     (PropKey::Automatic, "read at compile into `Node.auto`, not as a prop"),
     (PropKey::SeatOf, "read at resolve through `Resolved.seat`, not as a prop"),
     (PropKey::ToggleMode, "`toggle=true` on a Button; the selected flip is not built yet"),
@@ -972,34 +1117,60 @@ impl Page {
 
 #[cfg(test)]
 mod tests {
-    /// Every word `PropKey::from_word` accepts is read somewhere, or says
-    /// why not in `UNREAD_BY_DESIGN`.
+    use super::*;
+
+    /// Every property word is read somewhere (or says why not in
+    /// `UNREAD_BY_DESIGN`) AND has a row in the per-kind table — a word
+    /// with no row can never be written, a word with no reader is a silent
+    /// drop.
     #[test]
     fn every_prop_key_is_read() {
-        let page_src = include_str!("page.rs");
         let readers = [include_str!("layout.rs"), include_str!("draw.rs"), include_str!("runtime.rs"), include_str!("input.rs"), include_str!("anim.rs"), include_str!("compile.rs")];
-        let from_word_start = page_src.find("pub fn from_word").expect("from_word");
-        let from_word = &page_src[from_word_start..];
-        let mut unread: Vec<String> = Vec::new();
-        for line in from_word.lines() {
-            if line.contains("split_once") {
-                continue;
-            }
-            let Some((_, rest)) = line.split_once("=> PropKey::") else { continue };
-            let variant: &str = rest.trim_end_matches(',').trim();
-            if variant.contains('(') {
-                continue;
-            }
-            let needle = format!("PropKey::{variant}");
+        let mut unread: Vec<&str> = Vec::new();
+        let mut homeless: Vec<&str> = Vec::new();
+        for (word, key) in WORDS {
+            let needle = format!("PropKey::{key:?}");
             // `compile.rs` reads a key when it matches on it outside `prop_key`
-            // (the placement keys, Text, Wrap …); the enum and from_word lines
-            // in page.rs do not count.
+            // (the placement keys, Text, Wrap …); page.rs lines do not count.
             let read = readers.iter().any(|src| src.contains(&needle));
-            let excused = page_src.contains(&format!("(PropKey::{variant}, \""));
+            let excused = UNREAD_BY_DESIGN.iter().any(|(k, _)| k == key);
             if !read && !excused {
-                unread.push(variant.to_string());
+                unread.push(word);
+            }
+            if !KIND_WORDS.iter().any(|(_, k)| legal(*k, *key)) && !legal(Kind::Custom, *key) {
+                homeless.push(word);
             }
         }
         assert!(unread.is_empty(), "prop keys nobody reads — read them or list them in UNREAD_BY_DESIGN: {unread:?}");
+        assert!(homeless.is_empty(), "prop keys no kind takes — give them a row in `kind_row`: {homeless:?}");
+    }
+
+    /// The per-kind word lists in docs/gogo-design.md are generated from
+    /// the table; on a mismatch the test prints the block to paste.
+    #[test]
+    fn kind_words_doc_is_current() {
+        let doc = include_str!("../../../docs/gogo-design.md");
+        let start = "<!-- kind-words:start -->";
+        let end = "<!-- kind-words:end -->";
+        let generated = kind_words_markdown();
+        let (a, b) = (doc.find(start).expect("start marker"), doc.find(end).expect("end marker"));
+        let current = doc[a + start.len()..b].trim();
+        assert!(current == generated.trim(), "docs/gogo-design.md kind-words block is stale — replace it with:\n\n{generated}");
+    }
+
+    /// `kind_words` per kind as a markdown table, one row per kind: the
+    /// words every box takes once at the top, then each kind's own.
+    fn kind_words_markdown() -> String {
+        let mut out = String::new();
+        out.push_str("Every box takes: ");
+        out.push_str(&BOX.iter().map(|k| format!("`{}`", k.word())).collect::<Vec<_>>().join(", "));
+        out.push_str(".\nA Grid cell adds `col_span`, `row_span`; a Tiles cell adds `span`, `full_row`.\n\n| kind | own words |\n|---|---|\n");
+        let kinds = KIND_WORDS.iter().map(|(w, k)| (*w, *k)).chain(std::iter::once(("<code control>", Kind::Custom)));
+        for (word, kind) in kinds {
+            let own = kind_own_words(kind);
+            let cell = if own.is_empty() { "(none — the line takes clauses, not properties)".to_string() } else { own.iter().map(|w| format!("`{w}`")).collect::<Vec<_>>().join(", ") };
+            out.push_str(&format!("| `{word}` | {cell} |\n"));
+        }
+        out
     }
 }

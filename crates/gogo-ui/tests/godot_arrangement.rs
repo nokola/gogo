@@ -230,7 +230,6 @@ View orientView {
 /// refused and pointed at `transition`. Rust only warns (G0042 unknown
 /// property) — the file builds with the timing silently dropped.
 #[test]
-#[ignore = "GPAR14: unknown prop is a warning; Godot refuses `duration=` on a when line and names `transition`"]
 fn when_line_timing_is_refused_and_points_to_transition() {
     let src = "style S {\n    when selected background=#E51400FF, duration=0.1\n}\nView v { Button b .S toggle=true }";
     assert!(refused(src), "{:#?}", diags(src));
