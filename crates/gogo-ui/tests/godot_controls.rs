@@ -261,10 +261,9 @@ fn render_param_defaults_min_zero_max_hundred() {
 
 /// `_render_tests` 4178 (`render.native-default-parity`): a fresh Godot
 /// HSlider has `step` 1, so a Slider with no `step=` shows whole numbers
-/// (`value=33.3` shows 33). Rust's default step is 0 (no quantizing):
-/// 33.3 shows as 33.3.
+/// (`value=33.3` shows 33); `step=0` written in the file turns snapping
+/// off (GPAR92, decided: Godot).
 #[test]
-#[ignore = "NEW: Godot Range default step=1 (value=33.3 shows 33) vs Rust default step 0 (shows 33.3)"]
 fn render_default_step_is_one_like_range() {
     let fx = Fx::new("View v { Slider d width=200, value=33.3 }");
     assert_eq!(fx.value("d"), 33.0, "Godot: a fresh HSlider steps by 1");
@@ -507,7 +506,6 @@ fn render_theme_entry_needs_a_control_kind() {
 /// `theme { Slider width=200 }` lays out 0 wide), and the FIRST of two
 /// entries wins.
 #[test]
-#[ignore = "NEW: Godot refuses a named/wired/placed/sized/duplicate theme entry vs Rust accepts all five silently (name+size dropped, width= unread, first dup wins)"]
 fn render_theme_entry_name_wiring_placement_size_and_dup_are_refused() {
     assert!(gogo::has_errors(&diags("theme { Slider vol value=1 }\nView v { Label l text=\"x\" }")), "has no name");
     assert!(gogo::has_errors(&diags("theme { Slider on:change=OnX }\nView v { Label l text=\"x\" }")), "no name to wire");
@@ -713,12 +711,10 @@ fn toggle_disabled_is_mute() {
 }
 
 /// `_toggle_tests` 4705-4709 (`tgl.initial-on`): `Toggle mute value=1`
-/// starts ON — selected, the pill in accent — with no phantom change.
-/// Rust draws the knob at the value's end but leaves `selected` off (gray
-/// pill, knob at the right); the first tap then turns the pill accent
-/// without moving the knob.
+/// starts ON — selected, the pill in accent — with no phantom change
+/// (GPAR92, decided: Godot; was: the knob drew at the right end of a
+/// GRAY pill, and the first tap recolored it without moving the knob).
 #[test]
-#[ignore = "NEW: Godot `Toggle value=1` starts selected (accent pill) vs Rust starts unselected (gray pill) with the knob drawn at the right end"]
 fn toggle_declared_value_one_starts_on() {
     let fx = Fx::new("View v { Toggle mute value=1, halign=left, valign=top }");
     let mute = fx.node("mute");
@@ -856,7 +852,6 @@ fn signals_flag_before_a_key_member_needs_no_comma() {
 /// promises the same ("Unknown word = build error with a suggestion");
 /// Rust's G7011 / G5002 / G6001 carry none.
 #[test]
-#[ignore = "NEW: Godot errors carry did-you-mean suggestions (+ runners-up / options list) vs Rust G7011/G5002/G6001 name the word only (gogo-design §7 promises a suggestion)"]
 fn errors_suggest_the_nearest_word() {
     let d = diags("View v { Buttn optionsButton text=\"Brush\" }");
     assert!(d.iter().any(|x| x.message.contains("Button")), "did you mean 'Button': {d:#?}");

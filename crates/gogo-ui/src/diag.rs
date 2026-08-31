@@ -137,22 +137,30 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G1012", "`min_width` beside an exact `width` is dead"),
     ("G1013", "`min_width` above `max_width`"),
     ("G1014", "margins under a Column/Row/Flow/Grid"),
+    ("G1015", "a seat declaration's shape — a named, empty socket in a container"),
+    ("G1016", "a seat move's rules — a declared seat, a container home, one writer, no cycles"),
     ("G2001", "unknown property"),
     ("G2002", "a property spelled in another dialect / another kind's word"),
     ("G2003", "a one-stop gradient renders as a solid"),
+    ("G2004", "invisible pigment — alpha 00 under color channels (the XAML #AARRGGBB copy trap)"),
     ("G2005", "`stops=` takes the gradient's color list"),
     ("G2006", "`transparent` in `stops=` hides the fade's color"),
     ("G2007", "the word is not a color"),
-    ("G3006", "style targeting — `for=`/`extends=` misuse, `theme` in a node"),
+    ("G3002", "an automatic (value-driven) slot property assigned — the control drives it"),
+    ("G3005", "one target posed from both screen vocabularies — a class and an orientation can hold at once; compose or pick one"),
+    ("G3006", "style targeting / theme-entry shape — `for=`/`extends=` misuse, `theme` in a node, a named/wired/placed/duplicate entry"),
     ("G4003", "two writers on one property"),
+    ("G4004", "unknown anim"),
     ("G5001", "widget naming / `for=` host contract"),
     ("G5002", "unknown style"),
     ("G5003", "widget cycle"),
+    ("G5105", "an automatic slot in a host that measures children — driven layout must stay relayout-local"),
     ("G5107", "`automatic=` driver coupling"),
     ("G6001", "undefined `$ref`"),
     ("G6002", "`$value` defined twice"),
     ("G6003", "not a palette color"),
     ("G6004", "a palette override needs a color"),
+    ("G6005", "a circular palette override chain"),
     ("G7003", "a file has one root — `View` or `Panel`"),
     ("G7011", "unknown node type"),
     ("G7012", "`View` is the screen root only"),
@@ -170,7 +178,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
 /// refuses any OTHER overlap: a new Rust code can never land on a
 /// published number by accident.
 pub const SHARED_WITH_ADDON: &[&str] = &[
-    "G0002", "G1002", "G1003", "G1004", "G2001", "G2002", "G2003", "G4003", "G5002", "G6001", "G7003", "G8001", "G9002", "G9003", "G9004", "G9007", "G9008",
+    "G0002", "G1002", "G1003", "G1004", "G2001", "G2002", "G2003", "G2004", "G3002", "G3005", "G4003", "G5002", "G5105", "G6001", "G7003", "G8001", "G9002", "G9003", "G9004", "G9007", "G9008",
 ];
 
 /// Numbers this crate once used and vacated (or skipped) in the GPAR61

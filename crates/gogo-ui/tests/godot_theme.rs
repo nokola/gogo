@@ -264,7 +264,6 @@ fn missing_font_file_fails_the_build() {
 /// `theme` word itself, no block): "inside a node". Rust reads the line,
 /// ignores its props and builds clean — the font is dropped without a word.
 #[test]
-#[ignore = "NEW: Godot errors on a top-level `theme font=` line vs Rust silently drops the props on a theme line (builds clean, font unset)"]
 fn top_level_theme_line_with_props_is_refused() {
     let errs = errors("theme font=\"res://fonts/a.ttf\"\nView v { Button b text=\"x\" }\n");
     assert!(!errs.is_empty(), "a top-level theme LINE must not build");
@@ -486,7 +485,6 @@ fn palette_word_in_a_number_position_is_refused() {
 /// `bloo` → blue; gogo-design §7 "unknown word = build error with a
 /// suggestion"). Rust refuses (G2007 / G6004) but suggests nothing.
 #[test]
-#[ignore = "NEW: Godot names the nearest palette word (did you mean 'charcoal') vs Rust G2007/G6004 with no suggestion"]
 fn color_typo_names_the_nearest_palette_word() {
     let typo = errors("View v { Rectangle a color=charcol }\n");
     assert!(typo.iter().any(|d| d.message.contains("charcoal")), "{typo:#?}");
@@ -508,7 +506,6 @@ fn palette_override_needs_a_color() {
 /// override to bytes at its own line, so the pair builds and `red` paints
 /// the OLD green — no cycle, no diagnostic.
 #[test]
-#[ignore = "NEW: Godot refuses a circular palette override chain vs Rust builds it (red = green; green = red → red paints #3CB371, green paints #3CB371)"]
 fn circular_palette_override_is_refused() {
     let errs = errors("theme {\n    red = green\n    green = red\n}\nView v { Rectangle a color=red }\n");
     assert!(errs.iter().any(|d| d.message.contains("circular")), "{errs:#?}");
@@ -649,7 +646,6 @@ fn color_opacity_suffix_is_intact_beside_the_key_suffix() {
 /// `border_color=` whose alpha is 00 but whose channels carry color is the
 /// XAML `#AARRGGBB` copy trap (alpha first there, last here) — G2004.
 #[test]
-#[ignore = "GPAR62: G2004 invisible-pigment fence not ported (alpha-00 pigment with color channels builds clean)"]
 fn invisible_pigment_is_refused() {
     assert!(codes("View v { Panel p background=#77000000 }\n").contains(&"G2004".to_string()));
     assert!(codes("View v { Panel p border_color=#4400FF00, border_thickness=2 }\n").contains(&"G2004".to_string()));

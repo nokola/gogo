@@ -485,7 +485,41 @@ fn paint_order(page: &Page, res: &Resolved, id: NodeId, out: &mut Vec<NodeId>) {
 /// a surface, `false` hides one, and a wired handler alone never claims
 /// input (a full-screen Panel with just `on:show=` must not eat taps).
 /// `any`: return the top-most visible node of any kind instead.
+/// The rects as DRAWN: every node's motion (translate/scale, the same
+/// channels the draw walk applies) moved onto its own rect and its
+/// subtree's. `None` = nothing moves — the caller keeps the borrowed
+/// slice and pays nothing.
+fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option<Vec<Rect>> {
+    if res.motion.iter().all(|m| m.translate == [0.0, 0.0] && m.scale == [1.0, 1.0]) {
+        return None;
+    }
+    let mut out = rects.to_vec();
+    for i in 0..page.nodes.len().min(out.len()) {
+        let m = &res.motion[i];
+        if m.translate == [0.0, 0.0] && m.scale == [1.0, 1.0] {
+            continue;
+        }
+        // Ancestors sit at lower indices, so nested motions compose in
+        // walk order like the draw pass.
+        let (cx, cy) = (out[i].x + out[i].w / 2.0, out[i].y + out[i].h / 2.0);
+        for j in i..page.nodes[i].subtree_end as usize {
+            let r = out[j];
+            out[j] = Rect::new(cx + (r.x - cx) * m.scale[0] + m.translate[0], cy + (r.y - cy) * m.scale[1] + m.translate[1], r.w * m.scale[0], r.h * m.scale[1]);
+        }
+    }
+    Some(out)
+}
+
 pub fn hit(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: bool) -> Option<NodeId> {
+    // The finger lands on the DRAWN picture: while an anim moves a box,
+    // the un-moved layout rects would take taps where controls WILL be,
+    // not where they are (GPAR50) — so hit reads the moved rects.
+    let moved = moved_rects(page, res, rects);
+    let rects = moved.as_deref().unwrap_or(rects);
+    hit_laid(page, res, rects, x, y, any)
+}
+
+fn hit_laid(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: bool) -> Option<NodeId> {
     if page.nodes.is_empty() {
         return None;
     }

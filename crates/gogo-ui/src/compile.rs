@@ -166,6 +166,35 @@ fn parent_name(parent: Option<Kind>) -> &'static str {
     parent.map_or("the root", kind_name)
 }
 
+/// "did you mean 'X'? (or: …)" over ranked candidates, or an
+/// "options:" list when nothing is close — gogo-design §7 promises
+/// every unknown word a suggestion (GPAR87, the shipped ranking).
+fn suggest(word: &str, candidates: &[String]) -> String {
+    let mut ranked: Vec<(usize, &String)> = Vec::new();
+    for c in candidates {
+        if c.is_empty() || ranked.iter().any(|(_, r)| *r == c) {
+            continue;
+        }
+        ranked.push((edit_distance(word, c), c));
+    }
+    if ranked.is_empty() {
+        return String::new();
+    }
+    ranked.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(b.1)));
+    let confident = ranked[0].0 <= 2 || (word.len() >= 3 && ranked[0].1.starts_with(word));
+    if confident {
+        let others: Vec<&str> = ranked.iter().skip(1).take(4).map(|(_, c)| c.as_str()).collect();
+        if others.is_empty() {
+            format!("did you mean '{}'?", ranked[0].1)
+        } else {
+            format!("did you mean '{}'? (or: {})", ranked[0].1, others.join(", "))
+        }
+    } else {
+        let options: Vec<&str> = ranked.iter().take(5).map(|(_, c)| c.as_str()).collect();
+        format!("options: {}", options.join(", "))
+    }
+}
+
 /// The legal word closest to a misspelling (`textt` → `text`): at most two
 /// edits away, or the typed word is a prefix of it. Nothing for a word
 /// that is not close to anything — a wrong guess would mislead.
@@ -329,6 +358,16 @@ pub struct Compiler<'a> {
     /// `as $brush`): `$<binding>.<field>` values become `Value::VItem`
     /// for `set_items` to fill per clone (GPAR108).
     repeat_binding: Option<String>,
+    /// Above 0 while a `when` response compiles: G2004 (invisible
+    /// pigment) guards STATIC pigment only — a `when` endpoint keeps its
+    /// alpha-0 value (fading a color out is the point).
+    in_when: u32,
+    /// Theme entry kinds seen per variant — a second `theme { Slider … }`
+    /// prototype for one kind is a silent first-wins without this.
+    theme_entry_kinds: Vec<(Kind, StrId)>,
+    /// Palette overrides whose value was a bare palette word (`red =
+    /// green`): the chain the circular-override fence walks (G6005).
+    palette_links: std::collections::HashMap<String, String>,
     /// Repeats found while building: (the repeat's name, the binding,
     /// the key field — `NO_STR` = the item is its own key, `capacity=`,
     /// keyed?). `finish` resolves them to `Page::repeats` once ids exist.
@@ -404,6 +443,9 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         instance_on: Vec::new(),
         stops_ctx: None,
         repeat_binding: None,
+        in_when: 0,
+        theme_entry_kinds: Vec::new(),
+        palette_links: std::collections::HashMap::new(),
         pending_repeats: Vec::new(),
     };
     c.page.intern("");
@@ -506,7 +548,13 @@ impl<'a> Compiler<'a> {
                     }
                     "when" => {
                         if let Some(state) = self.state_word(n, true) {
-                            self.deferred_whens.push((state, n.children.clone(), n.line));
+                            // The one-line form (`when s a.b=1, c.d=2`)
+                            // carries its responses as PROPS — read them
+                            // like block lines (GPAR70; the shipped
+                            // fixtures pose through it).
+                            let mut items: Vec<AstItem> = n.props.iter().map(|p| AstItem::Assign { key: p.key.clone(), dollar: false, value: p.value.clone(), line: p.line }).collect();
+                            items.extend(n.children.iter().cloned());
+                            self.deferred_whens.push((state, items, n.line));
                         }
                     }
                     _ => {}
@@ -565,6 +613,12 @@ impl<'a> Compiler<'a> {
             Some(v) => self.intern(v),
             None => NO_STR,
         };
+        // `theme font=…` written as a top-level LINE: the node-body
+        // override form, misplaced — dropped silently before (GPAR88).
+        if n.name.is_none() && !n.props.is_empty() && n.children.is_empty() {
+            self.error("G3006", n.line, format!("subtree theme overrides go inside a node's body, not at top level — for a default use a block: `theme {{ {} = … }}`", n.props[0].key));
+            return;
+        }
         for item in &n.children {
             match item {
                 AstItem::Assign { key, dollar: true, value, line } => {
@@ -608,11 +662,34 @@ impl<'a> Compiler<'a> {
                         self.error("G0040", *line, "`@` positions a gradient stop — it only goes on entries of a Gradient's `stops=` list");
                         continue;
                     }
+                    // A bare-word override links palette names; a chain
+                    // that returns to its start can never resolve
+                    // (G6005) — eager resolution here would silently
+                    // paint the OLD color instead.
+                    if let AstValue::Ident { word, .. } = value {
+                        self.palette_links.insert(key.clone(), word.clone());
+                        let mut cur = word.clone();
+                        for _ in 0..12 {
+                            if cur == *key {
+                                self.error("G6005", *line, format!("circular color override chain at '{key}'"));
+                                break;
+                            }
+                            match self.palette_links.get(&cur) {
+                                Some(nxt) => cur = nxt.clone(),
+                                None => break,
+                            }
+                        }
+                    }
                     match self.color_value(value, *line) {
                         Some(c) => {
                             self.palette.insert(key.clone(), c);
                         }
-                        None => self.error("G6004", *line, format!("`{key} = …` needs a color")),
+                        None => {
+                            let pool: Vec<String> = self.palette.keys().cloned().collect();
+                            let hint = suggest(key, &pool);
+                            let tail = if hint.is_empty() { String::new() } else { format!(" — {hint}") };
+                            self.error("G6004", *line, format!("`{key} = …` needs a color{tail}"));
+                        }
                     }
                 }
                 AstItem::Node(kn) => {
@@ -621,6 +698,31 @@ impl<'a> Compiler<'a> {
                         self.error("G3006", kn.line, format!("`{}` is not a control kind", kn.type_word));
                         continue;
                     };
+                    // A theme entry is the prototype for EVERY node of
+                    // its kind (GPAR88, the shipped fences): no name, no
+                    // wiring, no placement, one entry per kind per block.
+                    if let Some(nm) = &kn.name {
+                        self.error("G3006", kn.line, format!("a theme entry has no name — it is the prototype for EVERY {}; names (and wiring) belong to instances (`{nm}`)", kn.type_word));
+                        continue;
+                    }
+                    if let Some(wp) = kn.props.iter().find(|p| p.key.starts_with("on:")) {
+                        self.error("G3006", wp.line, format!("wiring belongs to instances — a theme entry has no name to wire; drop `{}`", wp.key));
+                        continue;
+                    }
+                    const ENTRY_PLACEMENT_KEYS: &[&str] = &["width", "height", "min_width", "min_height", "max_width", "max_height", "size", "min_size", "x", "y", "position", "halign", "valign", "margin", "margin_left", "margin_top", "margin_right", "margin_bottom", "overlay"];
+                    if let Some(pp) = kn.props.iter().find(|p| ENTRY_PLACEMENT_KEYS.contains(&p.key.as_str())) {
+                        self.error("G3006", pp.line, format!("`{}=` is placement — it belongs where the instance sits, not on a type default", pp.key));
+                        continue;
+                    }
+                    if kn.args.iter().any(|a| matches!(a, AstValue::Size { .. })) {
+                        self.error("G3006", kn.line, "a WxH size is placement — it belongs where the instance sits, not on a type default");
+                        continue;
+                    }
+                    if self.theme_entry_kinds.contains(&(kind, variant)) {
+                        self.error("G3006", kn.line, format!("duplicate theme entry for {} — one prototype per type per block; fold the props into it", kn.type_word));
+                        continue;
+                    }
+                    self.theme_entry_kinds.push((kind, variant));
                     let first = self.page.props.len() as u32;
                     for p in &kn.props {
                         if let Some(prop) = self.prop(p, kind) {
@@ -704,7 +806,13 @@ impl<'a> Compiler<'a> {
     /// a cycle, and a `for=` mismatch across the chain all refuse.
     fn resolve_style(&mut self, name: &str, line: u32) -> Option<StyleDef> {
         let Some(mut def) = self.find_style(name).cloned() else {
-            self.error("G5002", line, format!("unknown style `.{name}`"));
+            let mut pool: Vec<String> = self.styles.keys().cloned().collect();
+            for s in &self.style_scopes {
+                pool.extend(s.keys().cloned());
+            }
+            let hint = suggest(name, &pool);
+            let tail = if hint.is_empty() { String::new() } else { format!(" — {hint}") };
+            self.error("G5002", line, format!("unknown style `.{name}`{tail}"));
             return None;
         };
         let mut chain: Vec<String> = vec![name.to_string()];
@@ -1342,12 +1450,18 @@ impl<'a> Compiler<'a> {
 
     /// The anim a `play(x)` names from here: the enclosing instance's own
     /// `x` when its widget declared one, else the page's `x`.
-    fn anim_ref(&mut self, name: &str) -> StrId {
+    fn anim_ref(&mut self, name: &str, line: u32) -> StrId {
         for depth in (1..=self.prefix.len()).rev() {
             let scope = self.prefix[..depth].join("/");
             if self.anim_decls.iter().any(|(s, a)| *s == scope && a.name.as_deref() == Some(name)) {
                 return self.intern(&format!("{scope}/{name}"));
             }
+        }
+        // A play naming no declared anim is a build error (the shipped
+        // bake refuses it; GPAR84) — a silent no-op loses the tap.
+        // Slash-qualified names address another scope's copy and pass.
+        if !name.contains('/') && !self.anim_decls.iter().any(|(_, a)| a.name.as_deref() == Some(name)) {
+            self.error("G4004", line, format!("unknown anim `{name}` — `play`/`stop` name a declared `anim`"));
         }
         self.intern(name)
     }
@@ -1650,7 +1764,13 @@ impl<'a> Compiler<'a> {
                 match id.and_then(|id| self.page.arrangements.iter().position(|a| *a == id)) {
                     Some(i) => State::Arrangement(i as u32),
                     None => {
-                        let hint = if top_level { "declare it with `arrangement <name>` first" } else { "built-ins are held, hovered, focused, focus_within, selected, disabled, screen.<class>" };
+                        let hint = if top_level {
+                            let pool: Vec<String> = self.page.arrangements.iter().map(|a| self.page.str(*a).to_string()).collect();
+                            let s = suggest(word, &pool);
+                            if s.is_empty() { "declare it with `arrangement <name>` first".to_string() } else { s }
+                        } else {
+                            "built-ins are held, hovered, focused, focus_within, selected, disabled, screen.<class>".to_string()
+                        };
                         self.error("G0036", line, format!("unknown state `{word}` — {hint}"));
                         return None;
                     }
@@ -1805,7 +1925,10 @@ impl<'a> Compiler<'a> {
                         let c = opacity.map_or(c, |o| c.with_opacity(o));
                         return self.stop_value(c, *pos, key, line);
                     }
-                    self.error("G2007", line, format!("`{word}` is not a color"));
+                    let pool: Vec<String> = self.palette.keys().cloned().collect();
+                    let hint = suggest(word, &pool);
+                    let tail = if hint.is_empty() { String::new() } else { format!(" — {hint}") };
+                    self.error("G2007", line, format!("`{word}` is not a color{tail}"));
                 }
                 if opacity.is_some() || pos.is_some() {
                     self.error("G0039", line, format!("`/` and `@` suffixes are for colors and strings, not `{word}`"));
@@ -1923,6 +2046,20 @@ impl<'a> Compiler<'a> {
         if key.is_number() && !matches!(value, Value::VNum(_) | Value::VRef { .. } | Value::VCall { .. }) {
             self.error("G0058", p.line, format!("`{}=` wants a number, not `{}`", p.key, spell(&p.value)));
             return None;
+        }
+        // Alpha 00 under non-zero color channels is a pigment that can
+        // never paint, spelled as if it were a color — the classic
+        // source is a WPF/XAML #AARRGGBB literal copied verbatim (gogo
+        // hex is #RRGGBBAA, alpha LAST). STATIC pigment only: `when` and
+        // anim endpoints keep alpha-0 values (G2004, GPAR62).
+        if self.in_when == 0 && matches!(key, PropKey::Background | PropKey::BorderColor) {
+            if let AstValue::Color { rgba, opacity: None, pos: None } = &p.value {
+                if rgba[3] == 0 && (rgba[0] != 0 || rgba[1] != 0 || rgba[2] != 0) {
+                    let from_xaml = format!("#{:02X}{:02X}{:02X}{:02X}", rgba[1], rgba[2], rgba[3], rgba[0]);
+                    self.error("G2004", p.line, format!("`{}=#{:02X}{:02X}{:02X}00` is an invisible pigment — alpha 00 with color in the channels; gogo hex is #RRGGBBAA, alpha LAST (a XAML #AARRGGBB literal reads this way — if this color came from XAML it spells `{from_xaml}` here; deliberate invisibility is `#00000000` or `opacity=0`)", p.key, rgba[0], rgba[1], rgba[2]));
+                    return None;
+                }
+            }
         }
         // Word-valued keys are CLOSED sets — without this fence a typo
         // (`when held halign=top`, `visibility=maybe`) compiles clean and
@@ -2099,12 +2236,13 @@ impl<'a> Compiler<'a> {
             }
             self.scopes.push(scope);
             let mut fills = Fills::default();
+            let mut inst_states: Vec<AstNode> = Vec::new();
             for c in &n.children {
                 match c {
                     AstItem::Node(k) if k.type_word == "slot" && k.name.is_some() => {
                         fills.named.insert(k.name.clone().unwrap_or_default(), k.children.clone());
                     }
-                    AstItem::Node(k) if matches!(k.type_word.as_str(), "when" | "transition") => {}
+                    AstItem::Node(k) if matches!(k.type_word.as_str(), "when" | "transition") => inst_states.push(k.clone()),
                     other => fills.default.push(other.clone()),
                 }
             }
@@ -2148,6 +2286,27 @@ impl<'a> Compiler<'a> {
             self.instance_on.pop();
             self.style_scopes.pop();
             self.widget_stack.pop();
+            // `when`/`transition` blocks written under the INSTANCE line
+            // land on the instance root (the shipped _collect_states on
+            // the root; GPAR68) — they were dropped without a word.
+            for k in &inst_states {
+                if k.type_word == "when" {
+                    let before = self.diags.len();
+                    if let Some(tw) = self.when(k, t.node.kind) {
+                        t.whens.push(tw);
+                    } else {
+                        // A control's OWN `state` word (`when dragging`)
+                        // has nothing to bind until contract states land
+                        // (GP37) — parked as a warning, never a silent
+                        // drop, so copied files keep building.
+                        self.diags.truncate(before);
+                        self.warning("G0036", k.line, "an instance `when` naming a control's own state waits for contract states (GP37) — the block is parked");
+                    }
+                } else {
+                    let tr = self.transition(k, PENDING_NODE);
+                    t.transitions.push(tr);
+                }
+            }
             // A `for=` widget's scope responses answer the hosting control.
             for w in &def.whens {
                 if let Some(mut tw) = self.when(w, t.node.kind) {
@@ -2199,7 +2358,12 @@ impl<'a> Compiler<'a> {
                 Kind::Custom
             }
             None => {
-                self.error("G7011", n.line, format!("unknown node type `{}`", n.type_word));
+                let mut pool: Vec<String> = KIND_WORDS.iter().map(|(w, _)| w.to_string()).collect();
+                pool.extend(self.widgets.keys().cloned());
+                pool.extend(self.options.code_controls.iter().map(|s| s.to_string()));
+                let hint = suggest(&n.type_word, &pool);
+                let tail = if hint.is_empty() { String::new() } else { format!(" — {hint}") };
+                self.error("G7011", n.line, format!("unknown node type `{}`{tail}", n.type_word));
                 Kind::Custom
             }
         };
@@ -2223,6 +2387,24 @@ impl<'a> Compiler<'a> {
         };
         if kind == Kind::Tiles {
             self.tiles_structure(n);
+        }
+        if kind == Kind::Seat {
+            // A seat is an EMPTY, NAMED socket in a container (the
+            // shipped fences, GPAR73): it holds only what a `when` moves
+            // into it, and it sizes from its occupant.
+            if n.name.is_none() {
+                self.error("G1015", n.line, "seat needs a name: `seat sideSeat` — `when <state> { x.seat = sideSeat }` targets it by name");
+            } else if n.name.as_deref() == Some("home") {
+                self.error("G1015", n.line, "'home' is reserved — in a seat move it names the occupant's declared home; pick another seat name");
+            }
+            if n.children.iter().any(|c| matches!(c, AstItem::Node(k) if !matches!(k.type_word.as_str(), "when" | "transition" | "theme"))) {
+                self.error("G1015", n.line, "a seat is an empty socket — it holds only what a `when` moves into it; declare the occupant in its resting home");
+            }
+            // FLIPs from the shipped fences (GP18's fixed sockets are
+            // standing Rust design): placement words on a seat size the
+            // SOCKET itself (`seat socket width=200` under a Layers), so
+            // props and free parents stay legal — the kind table still
+            // refuses non-box words on a seat.
         }
         if kind == Kind::GridRow && parent_kind != Some(Kind::Grid) {
             self.error("G1002", n.line, "a `row { }` is grid structure — it lives inside a Grid");
@@ -2383,7 +2565,7 @@ impl<'a> Compiler<'a> {
             }
         }
         if kind == Kind::Slot {
-            tmp.node.auto = self.automatic(n);
+            tmp.node.auto = self.automatic(n, parent_kind);
         }
         if kind == Kind::Gradient {
             self.gradient_line(n, &all_props);
@@ -2393,6 +2575,26 @@ impl<'a> Compiler<'a> {
 
         let mut placement_props: Vec<Prop> = Vec::new();
         for p in &all_props {
+            // `live()` drives this prop from code; a `when` on the
+            // same node holding the same key is a second writer — they
+            // would fight on every flip (the shipped G4003).
+            if let AstValue::Call { name: cname, .. } = &p.value {
+                if cname == "live" {
+                    let fights = n.children.iter().any(|c| match c {
+                        AstItem::Node(k) if k.type_word == "when" => k.props.iter().any(|wp| wp.key == p.key) || k.children.iter().any(|ci| matches!(ci, AstItem::Assign { key, dollar: false, .. } if *key == p.key)),
+                        _ => false,
+                    });
+                    if fights {
+                        self.error("G4003", p.line, format!("'{}' is driven by `live(...)` AND held by a `when` on this node — two writers would fight on every flip", p.key));
+                    }
+                }
+            }
+            if p.key == "seat" {
+                // Re-parenting is view geometry, not a node's own look
+                // (GPAR73, the shipped rule).
+                self.error("G1016", p.line, "a seat move is a view-level `when` response — `when <state> { node.seat = seatName }`; the declared home is where the node rests");
+                continue;
+            }
             if kind == Kind::Repeat && p.key == "capacity" {
                 continue;
             }
@@ -2435,6 +2637,9 @@ impl<'a> Compiler<'a> {
         for prop in &tmp.props {
             match (prop.key, prop.value) {
                 (PropKey::SelectedProp, Value::VBool(true)) => tmp.node.initial_states |= SELECTED,
+                // `Toggle value=1` starts ON (shipped D113): the declared
+                // fraction is birth truth — no phantom change event.
+                (PropKey::Value, Value::VNum(v)) if tmp.node.kind == Kind::Toggle && v >= 0.5 => tmp.node.initial_states |= SELECTED,
                 (PropKey::Disabled, Value::VBool(true)) => tmp.node.initial_states |= DISABLED,
                 _ => {}
             }
@@ -2593,7 +2798,7 @@ impl<'a> Compiler<'a> {
 
     /// `automatic=<kind> by $value in $min..$max` on a slot line, solved
     /// to a fraction now: nothing writes `$value` at runtime here.
-    fn automatic(&mut self, n: &AstNode) -> Auto {
+    fn automatic(&mut self, n: &AstNode, parent_kind: Option<Kind>) -> Auto {
         let by = n.clauses.iter().find(|(k, _)| k == "by").map(|(_, v)| v.clone());
         let range = n.clauses.iter().find(|(k, _)| k == "in").map(|(_, v)| v.clone());
         let Some(kind_prop) = n.props.iter().find(|p| p.key == "automatic") else {
@@ -2613,6 +2818,20 @@ impl<'a> Compiler<'a> {
         // from `$value` over `$min..$max`, a presence driver is a state word.
         match kind.as_str() {
             "length" | "position" => {
+                // Driven geometry must stay relayout-local: a measuring
+                // host would re-lay out the whole page every frame
+                // (G5105, the shipped fence).
+                if matches!(parent_kind, Some(Kind::Column | Kind::Row | Kind::Flow | Kind::Grid | Kind::Tiles | Kind::Scroll)) {
+                    self.error("G5105", n.line, format!("'{}' geometry is automatic — it can't live in a {:?}, which measures children on that axis; seat the slot in a free host (a named slot region, Layers, Circle)", n.name.clone().unwrap_or_default(), parent_kind.unwrap_or(Kind::Column)));
+                }
+                // The driven aspect has ONE writer — the driver (§4.5,
+                // the shipped G3002): the slot line must not place it.
+                let fenced: &[&str] = if kind == "length" { &["width", "height"] } else { &["margin_left", "margin_top", "margin_right", "margin_bottom", "x", "y"] };
+                for fp in &n.props {
+                    if fenced.contains(&fp.key.as_str()) {
+                        self.error("G3002", fp.line, format!("slot '{}' moves by itself — `{}=` is the driver's to write", n.name.clone().unwrap_or_default(), fp.key));
+                    }
+                }
                 let Some(by) = by else {
                     self.error("G5107", n.line, format!("`automatic={kind}` wants `by $value in $min..$max`"));
                     return Auto::NoAuto;
@@ -2873,7 +3092,7 @@ impl<'a> Compiler<'a> {
                         };
                         if name == "go" { Action::Go(target) } else { Action::ToggleArrangement(target) }
                     }
-                    "play" => Action::Play(self.anim_ref(arg)),
+                    "play" => Action::Play(self.anim_ref(arg, p.line)),
                     "emit" => Action::Emit(self.intern(arg)),
                     other => {
                         self.error("G0052", p.line, format!("`{other}(…)` is not an action (play, go, toggle, emit, or a handler name)"));
@@ -2888,6 +3107,48 @@ impl<'a> Compiler<'a> {
         };
         let event_id = self.intern(event);
         Some(OnHandler { event: event_id, action })
+    }
+
+    /// The shipped seat-move fences (GPAR73): the value names a declared
+    /// seat (or `home`), the occupant is a plain node whose resting home
+    /// is a container, and a move never enters its own subtree. `Some` =
+    /// the seat's name id (`home` included); `None` = refused, error out.
+    fn seat_move_ok(&mut self, occupant: NodeId, prop: &Prop, line: u32) -> Option<StrId> {
+        let oname = self.page.str(self.page.nodes[occupant as usize].name).to_string();
+        let Value::VIdent(vid) = prop.value else {
+            self.error("G1016", line, format!("`{oname}.seat` names a declared seat — `{oname}.seat = sideSeat`"));
+            return None;
+        };
+        if self.page.nodes[occupant as usize].kind == Kind::Seat {
+            self.error("G1016", line, "a seat can't be reseated — move the occupant node");
+            return None;
+        }
+        // FLIP from the shipped home-must-be-container fence: the Rust
+        // dialect PARKS occupants under free parents (D263; caption_page
+        // parks panelMain under the View) and the runtime seats them.
+        let vname = self.page.str(vid).to_string();
+        if vname == "home" {
+            return Some(vid);
+        }
+        let target = self.page.find(&vname).filter(|s| self.page.nodes[*s as usize].kind == Kind::Seat);
+        let Some(sid) = target else {
+            let seats: Vec<String> = self.page.nodes.iter().filter(|nn| nn.kind == Kind::Seat && nn.name != NO_STR).map(|nn| self.page.str(nn.name).to_string()).collect();
+            let hint = if seats.is_empty() { "declare one inside a container: `seat sideSeat`".to_string() } else { format!("the declared seats: {}", seats.join(", ")) };
+            self.error("G1016", line, format!("'{vname}' is not a declared seat — {hint}"));
+            return None;
+        };
+        // Cycle: walk the seat's parents — `subtree_end` over-reaches
+        // into later siblings (the flatten order), a range test would
+        // refuse legal sibling seats.
+        let mut p = sid;
+        while p != NO_NODE {
+            if p == occupant {
+                self.error("G1016", line, format!("seat '{vname}' sits inside '{oname}' — a node can't move into its own subtree"));
+                return None;
+            }
+            p = self.page.nodes[p as usize].parent;
+        }
+        Some(vid)
     }
 
     /// Every Radio in a choice's subtree joins its group (however deep
@@ -2919,12 +3180,28 @@ impl<'a> Compiler<'a> {
             }
         }
         for p in &lines {
+            if p.key == "seat" || p.key.ends_with(".seat") {
+                // Same rule as the node line: re-parenting is view
+                // geometry (GPAR73).
+                self.error("G1016", p.line, "a seat move is a view-level `when` response — top level: `when <state> { node.seat = seatName }`");
+                continue;
+            }
             if let Some((node_name, prop_name)) = split_target(&p.key) {
                 let ap = AstProp { key: prop_name.to_string(), value: p.value.clone(), line: p.line };
-                if let Some(prop) = self.prop_unchecked(&ap) {
+                if let Some(prop) = {
+                    self.in_when += 1;
+                    let r = self.prop_unchecked(&ap);
+                    self.in_when -= 1;
+                    r
+                } {
                     descendants.push((node_name.to_string(), prop, prop_name.to_string(), p.line));
                 }
-            } else if let Some(prop) = self.prop(p, kind) {
+            } else if let Some(prop) = {
+                self.in_when += 1;
+                let r = self.prop(p, kind);
+                self.in_when -= 1;
+                r
+            } {
                 props.push(prop);
             }
         }
@@ -3216,6 +3493,8 @@ impl<'a> Compiler<'a> {
         }
         // Top-level `when <arrangement> { node.prop = value }`.
         let deferred = std::mem::take(&mut self.deferred_whens);
+        let mut seat_claims: Vec<(NodeId, StrId, State, u32)> = Vec::new();
+        let mut screen_writes: Vec<(NodeId, PropKey, State, u32)> = Vec::new();
         for (state, items, line) in deferred {
             for item in &items {
                 let AstItem::Assign { key, dollar: false, value, line: l } = item else {
@@ -3232,7 +3511,19 @@ impl<'a> Compiler<'a> {
                 };
                 let kind = self.page.nodes[id as usize].kind;
                 let ap = AstProp { key: prop_name.to_string(), value: value.clone(), line: *l };
-                if let Some(prop) = self.prop(&ap, kind) {
+                if let Some(prop) = {
+                    self.in_when += 1;
+                    let r = self.prop(&ap, kind);
+                    self.in_when -= 1;
+                    r
+                } {
+                    screen_writes.push((id, prop.key, state, *l));
+                    if prop.key == PropKey::SeatOf {
+                        match self.seat_move_ok(id, &prop, *l) {
+                            Some(vid) => seat_claims.push((id, vid, state, *l)),
+                            None => continue,
+                        }
+                    }
                     // One entry per BLOCK (state + line), not per state: two
                     // `when open` blocks straddling a competing block must
                     // each keep their own line for the later-line tie-break.
@@ -3243,43 +3534,147 @@ impl<'a> Compiler<'a> {
                 }
             }
         }
+        // A `width=fill` wrap label under a content-sized chain wraps
+        // at a sliver — the row's leftover for it is the label's own raw
+        // minimum, about one word (G1004's leftover flavor, GPAR77):
+        // bind the chain or cap it. USER SEES (before): a one-word-wide
+        // caption column, silently.
+        for i in 0..self.page.nodes.len() {
+            let nd = self.page.nodes[i];
+            if nd.kind != Kind::Label || !matches!(nd.placement.width, Len::Fill(_)) {
+                continue;
+            }
+            if self.page.prop(i as NodeId, PropKey::Wrap) != Some(Value::VBool(true)) {
+                continue;
+            }
+            let mut a = nd.parent;
+            let mut sliver = false;
+            while a != NO_NODE {
+                let ap = self.page.nodes[a as usize].placement;
+                match ap.width {
+                    Len::Exact(_) | Len::Fill(_) => break,
+                    Len::Hug(_) => {
+                        sliver = true;
+                        break;
+                    }
+                    Len::Unset => {
+                        if ap.max_width.is_some() || ap.max_width_fill {
+                            break;
+                        }
+                        if ap.halign != Align::AlignUnset {
+                            sliver = true;
+                            break;
+                        }
+                        a = self.page.nodes[a as usize].parent;
+                    }
+                }
+            }
+            if sliver {
+                let name = if nd.name == NO_STR { "the label".to_string() } else { format!("`{}`", self.page.str(nd.name)) };
+                self.warning("G1004", nd.line, format!("`wrap=true` on {name} wraps at a sliver — it fills the leftover of its row, but the chain above sizes to content, so that leftover is the label's own raw minimum (about one word); bind the chain (`width=fill` down to the label) or cap it (`max_width=fill`)"));
+            }
+        }
+        // One screen vocabulary per posed target (G3005, the shipped
+        // fence): a class and an orientation hold at the SAME time on
+        // every screen, so of two single-vocabulary writers the earlier
+        // line NEVER wins — dead code, not a ranking; the composed pair
+        // (`when screen.<orientation> screen.<class>`) says the
+        // intersection.
+        fn vocab(s: State) -> Option<bool> {
+            match s {
+                State::ScreenOrientation(_) => Some(true),
+                State::ScreenClass(_) => Some(false),
+                _ => None,
+            }
+        }
+        let mut vocab_done: Vec<NodeId> = Vec::new();
+        for i in 0..screen_writes.len() {
+            for j in 0..i {
+                let (na, ka, sa, la) = screen_writes[i];
+                let (nb, kb, sb, _) = screen_writes[j];
+                if na != nb || vocab_done.contains(&na) {
+                    continue;
+                }
+                let (Some(va), Some(vb)) = (vocab(sa), vocab(sb)) else { continue };
+                if va == vb {
+                    continue;
+                }
+                let clash = ka == kb || (ka.is_placement() && kb.is_placement()) || (ka == PropKey::SeatOf && kb == PropKey::SeatOf);
+                if clash {
+                    vocab_done.push(na);
+                    let nname = self.page.str(self.page.nodes[na as usize].name).to_string();
+                    self.error("G3005", la, format!("'{nname}' is posed from BOTH screen vocabularies — an orientation and a class can hold at the same time, so the earlier line would never win; pick one vocabulary, or say the intersection: `when screen.<orientation> screen.<class> {{ … }}`"));
+                }
+            }
+        }
+        // One occupant per seat and one writer per occupant, per
+        // CONDITION (GPAR73). FLIP from the shipped cross-vocabulary
+        // fence: an arrangement claim and a screen claim on one seat are
+        // legal here — the flattened placement rule (E2: equal rank →
+        // later line wins) settles them, and brush_options' previewAbove
+        // seat depends on exactly that ranking.
+        let home_id = self.page.intern_lookup("home");
+        for i in 0..seat_claims.len() {
+            for j in 0..i {
+                let (oa, sa, ka, la) = seat_claims[i];
+                let (ob, sb, kb, _) = seat_claims[j];
+                if ka != kb {
+                    continue;
+                }
+                if oa == ob {
+                    let oname = self.page.str(self.page.nodes[oa as usize].name).to_string();
+                    self.error("G1016", la, format!("two `when` blocks both set '{oname}.seat' under conditions that can hold together"));
+                } else if sa == sb && sa != home_id {
+                    let sname = self.page.str(sa).to_string();
+                    let bname = self.page.str(self.page.nodes[ob as usize].name).to_string();
+                    self.error("G1016", la, format!("seat '{sname}' already receives '{bname}' — one occupant per seat"));
+                }
+            }
+        }
         // Descendant responses move to the named node, watching their owner.
         let mut whens = std::mem::take(&mut self.node_whens);
-        let mut moved: Vec<(usize, WhenTmp)> = Vec::new();
+        let mut moved: Vec<(usize, usize, WhenTmp)> = Vec::new();
         for (owner, list) in whens.iter_mut().enumerate() {
             for w in list.iter_mut() {
                 for (name, prop, word, line) in std::mem::take(&mut w.descendants) {
                     let end = self.page.nodes[owner].subtree_end as usize;
                     // Widget-body names carry their instance prefix (`inst/name`).
-                    let target = (owner + 1..end).find(|i| {
+                    let named = |i: &usize| {
                         let full = if self.page.nodes[*i].name != NO_STR { self.page.str(self.page.nodes[*i].name) } else { "" };
                         full == name || full.rsplit('/').next() == Some(name.as_str())
-                    });
+                    };
+                    // Own subtree first; then anywhere — the shipped
+                    // scope resolves targets through the named map, so a
+                    // SIBLING shield is a legal target (GPAR83).
+                    let target = (owner + 1..end).find(named).or_else(|| (0..self.page.nodes.len()).find(|i| *i != owner && named(i)));
                     match target {
                         // The word check a node line gets, now that the
                         // target's kind is known. Needed so a misspelled
                         // response is a build error, not a silently dead
                         // line (docs/todo-gogo-parity.md GPAR82).
                         Some(t) if !self.check_prop_kind(&word, prop.key, self.page.nodes[t].kind, line) => {}
-                        Some(t) => moved.push((t, WhenTmp { state: w.state, line: w.line, props: vec![prop], descendants: Vec::new(), host: w.host })),
+                        Some(t) => moved.push((t, owner, WhenTmp { state: w.state, line: w.line, props: vec![prop], descendants: Vec::new(), host: w.host })),
                         None => {
                             let line = self.page.nodes[owner].line;
-                            self.error("G0060", line, format!("`when … {name}.…`: no node named `{name}` under this one"));
+                            self.error("G0060", line, format!("`when … {name}.…`: no node named `{name}`"));
                         }
                     }
                 }
             }
         }
         let mut of: Vec<Vec<NodeId>> = whens.iter().map(|l| l.iter().map(|w| if w.host { HOST_PENDING } else { NO_NODE }).collect()).collect();
-        for (target, w) in moved {
-            // The owner is the node whose subtree held the response: found by walking up until the state is theirs.
-            let mut owner = self.page.nodes[target].parent;
-            while owner != NO_NODE && !self.page.nodes[owner as usize].kind.is_press_surface() && self.page.nodes[owner as usize].parent != NO_NODE {
-                owner = self.page.nodes[owner as usize].parent;
+        for (target, owner, w) in moved {
+            // The DECLARING node owns the response wherever the target
+            // lives (GPAR83, the shipped scope rule): climb from IT to
+            // the press surface whose state the `when` watches — a
+            // sibling target no longer parks the response on the View.
+            let mut of_node = owner as NodeId;
+            while of_node != NO_NODE && !self.page.nodes[of_node as usize].kind.is_press_surface() && self.page.nodes[of_node as usize].parent != NO_NODE {
+                of_node = self.page.nodes[of_node as usize].parent;
             }
             let host = w.host;
             whens[target].push(w);
-            of[target].push(if host { HOST_PENDING } else { owner });
+            of[target].push(if host { HOST_PENDING } else { of_node });
         }
         // `for=` widget responses watch the hosting control (the nearest
         // press surface above).
@@ -3365,7 +3760,21 @@ impl<'a> Compiler<'a> {
         for (name, line) in refs {
             if !self.page.theme.iter().any(|t| t.name == name) {
                 let word = self.page.str(name).to_string();
-                self.error("G6001", line, format!("`${word}` is not a theme value or widget parameter"));
+                let mut pool: Vec<String> = self.page.theme.iter().map(|t| self.page.str(t.name).to_string()).collect();
+                for s in &self.scopes {
+                    pool.extend(s.keys().cloned());
+                }
+                let hint = {
+                    let h = suggest(word.as_str(), &pool);
+                    if !h.is_empty() {
+                        h
+                    } else if pool.is_empty() {
+                        "in scope: (nothing)".to_string()
+                    } else {
+                        format!("in scope: {}", pool.join(", "))
+                    }
+                };
+                self.error("G6001", line, format!("`${word}` is not a theme value or widget parameter — {hint}"));
             }
         }
         self.one_writer_guard();

@@ -400,7 +400,6 @@ fn on_visible_is_refused() {
 /// `_anim_tests` 5369-5370 (anim.err-unknown-play): `play(nope)` naming
 /// no anim is a build error.
 #[test]
-#[ignore = "NEW: Godot refuses `on:show=play(nope)` (unknown anim) vs Rust builds it clean and the play is a silent no-op"]
 fn play_of_an_unknown_anim_is_refused() {
     let src = "View v { Panel p on:show=play(nope) }";
     assert!(fails(src), "{}", messages(src));

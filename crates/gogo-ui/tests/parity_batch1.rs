@@ -8,7 +8,7 @@ use gogo::anim::Finish;
 use gogo::draw::{Draw, draw, hit};
 use gogo::layout::{FixedAdvance, Rect, layout};
 use gogo::page::DISABLED_OPACITY;
-use gogo::runtime::{HELD, Runtime, resolve};
+use gogo::runtime::{HELD, Runtime, resolve, resolve_animated};
 use gogo::{Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
@@ -329,4 +329,23 @@ fn clipped_overflow_is_not_hit_testable() {
     assert_eq!(hit(page, &res, &rects, 50.0, 20.0, false), Some(b), "the visible half taps");
     assert_eq!(hit(page, &res, &rects, 250.0, 20.0, false), None, "the clipped half takes no taps");
     assert_eq!(hit(page, &res, &rects, 250.0, 120.0, false), Some(b2), "under a hug parent the same spot still taps");
+}
+
+/// GPAR50: the finger lands on the DRAWN picture — while an anim
+/// translates a button, taps follow the moved rect, not the layout slot
+/// it left (Godot writes motion onto the engine control, so its picking
+/// moves with it).
+#[test]
+fn hit_follows_the_drawn_rect_during_motion() {
+    let c = ok("anim slide { b.translate.x to=100, duration=1, easing=linear }\nView v { Button b width=80, height=40, halign=left, valign=top, text=\"x\" }");
+    let mut page = c.page;
+    let b = page.find("b").unwrap();
+    let mut rt = Runtime::new(&page);
+    let slide = page.intern("slide");
+    rt.play(&page, slide, Finish::Nothing);
+    rt.tick(&mut page, 0.5);
+    let res = resolve_animated(&page, &mut rt);
+    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    assert_eq!(hit(&page, &res, &rects, 90.0, 20.0, false), Some(b), "the tap lands where the button is drawn");
+    assert_ne!(hit(&page, &res, &rects, 20.0, 20.0, false), Some(b), "the slot it left takes no taps");
 }

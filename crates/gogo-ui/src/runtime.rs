@@ -188,6 +188,11 @@ pub struct Runtime {
     /// rectangle changes glides there over (duration, easing) — alignment,
     /// fill, hug, cap and seat moves all tween through their final rects.
     pub glide_start: Option<(f32, Easing)>,
+    /// Per-node pose-pair timing for the CURRENT flip: a node-scope
+    /// `transition <pose> -> <pose>` rule times that node's share of the
+    /// rect glide, duration 0 = snap; everyone else takes the view rule
+    /// (GPAR72, the shipped _node_pose_timing).
+    pub glide_node_rules: Vec<(NodeId, f32, Easing)>,
     /// Rect tweens in flight: (node, from, to, elapsed, duration, easing).
     pub rect_tweens: Vec<(NodeId, Rect, Rect, f32, f32, Easing)>,
     /// The rects shown last frame (the `from` of the next glide).
@@ -232,6 +237,7 @@ impl Runtime {
             owned_text: vec![NO_STR; page.nodes.len()],
             last: Vec::new(),
             glide_start: None,
+            glide_node_rules: Vec::new(),
             rect_tweens: Vec::new(),
             last_rects: Vec::new(),
             raised: Vec::new(),
@@ -250,11 +256,16 @@ impl Runtime {
     pub fn glide(&mut self, rects: Vec<Rect>) -> Vec<Rect> {
         let mut shown = rects.clone();
         if let Some((duration, easing)) = self.glide_start.take() {
-            if duration > 0.0 && self.last_rects.len() == rects.len() {
+            if self.last_rects.len() == rects.len() {
                 for i in 0..rects.len() {
                     if self.last_rects[i] != rects[i] {
+                        // The node's own pose-pair rule times its share;
+                        // duration 0 snaps (GPAR72).
+                        let (d, e) = self.glide_node_rules.iter().find(|(n, _, _)| *n == i as NodeId).map(|(_, d, e)| (*d, *e)).unwrap_or((duration, easing));
                         self.rect_tweens.retain(|t| t.0 != i as NodeId);
-                        self.rect_tweens.push((i as NodeId, self.last_rects[i], rects[i], 0.0, duration, easing));
+                        if d > 0.0 {
+                            self.rect_tweens.push((i as NodeId, self.last_rects[i], rects[i], 0.0, d, e));
+                        }
                     }
                 }
             }
@@ -321,12 +332,35 @@ impl Runtime {
     /// plays first and hides on finish (deferred hide); showing during a
     /// hide cancels it.
     pub fn show(&mut self, page: &mut Page, node: NodeId, visible: bool) {
+        // Entrances play on a REAL flip only (the shipped
+        // visibility_changed gate, GPAR53): an overlay calling
+        // `show(x, true)` every frame settles instead of restarting. A
+        // show mid-hide still cancels the hide below.
+        let hiding = self.players.iter().any(|p| p.finish == Finish::Hide(node) && !p.stopped);
+        if !hiding && self.visible_now(page, node) == visible {
+            return;
+        }
         if visible {
             self.players.retain(|p| p.finish != Finish::Hide(node));
             self.set_visible(page, node, true);
             self.play_action(page, node, "show", Finish::Nothing);
         } else if !self.play_action(page, node, "hide", Finish::Hide(node)) {
             self.set_visible(page, node, false);
+        }
+    }
+
+    /// What the node's visibility says right now: the last code write,
+    /// else the file's word. Needed so `show` can tell a real flip from a
+    /// repeat call; `when`-driven visibility is not consulted — `show` is
+    /// the code-side door and gates only its own writes.
+    fn visible_now(&self, page: &Page, node: NodeId) -> bool {
+        let word = self.writes.iter().rev().find(|(n, p)| *n == node && p.key == PropKey::Visibility).map(|(_, p)| p.value).or_else(|| page.prop(node, PropKey::Visibility));
+        match word {
+            Some(Value::VIdent(w)) => {
+                let s = page.str(w);
+                s != "gone" && s != "hidden"
+            }
+            _ => true,
         }
     }
 
@@ -611,6 +645,30 @@ impl Runtime {
             };
             let id = page.intern(&renamed);
             page.nodes[ni as usize].name = id;
+        }
+        // The template's own anims (a mark's delete/appear) exist once,
+        // aimed at template nodes — each slot takes its copy, aimed at
+        // its own nodes under the slot's name. Needed because a host
+        // plays them per row (`play("<rep>/2/item/delete")`); without
+        // the copy the play finds nothing and "finishes" the same frame.
+        let t_end = page.nodes[info.template as usize].subtree_end;
+        let delta = root - info.template;
+        let heads: Vec<AnimHead> = page.anim_heads.iter().filter(|h| {
+            let s = page.str(h.anim);
+            s.starts_with(&from) && s.as_bytes().get(from.len()).is_none_or(|b| *b == b'/')
+        }).copied().collect();
+        for h in heads {
+            let renamed = format!("{to}{}", &page.str(h.anim)[from.len()..]);
+            let id = page.intern(&renamed);
+            let tracks: Vec<AnimTrack> = page.anims.iter().filter(|t| t.anim == h.anim).copied().collect();
+            for mut t in tracks {
+                t.anim = id;
+                if t.node >= info.template && t.node < t_end {
+                    t.node += delta;
+                }
+                page.anims.push(t);
+            }
+            page.anim_heads.push(AnimHead { anim: id, ..h });
         }
         self.grow(page);
         self.pools[pi].slots.push(root);
@@ -948,7 +1006,9 @@ impl Resolved {
     pub fn snap_slider(&self, page: &Page, node: NodeId, v: f32) -> f32 {
         let min = self.num(page, node, PropKey::Min).unwrap_or(0.0);
         let max = self.num(page, node, PropKey::Max).unwrap_or(100.0);
-        let step = self.num(page, node, PropKey::Step).unwrap_or(0.0);
+        // Default 1: a fresh Godot Range steps by whole numbers
+        // (GPAR92); `step=0` written in the file turns snapping off.
+        let step = self.num(page, node, PropKey::Step).unwrap_or(1.0);
         let v = if step > 0.0 { min + ((v - min) / step).round() * step } else { v };
         v.clamp(min.min(max), max.max(min))
     }
@@ -1217,6 +1277,19 @@ fn fold_seats_and_motion(page: &Page, r: &mut Resolved) {
 }
 
 /// A motion key's value when no response holds it: the identity.
+/// The value a key SHOWS before anything writes it — the renderer's
+/// resting look. Needed so a `when held background=` on an undecorated
+/// Button TWEENS from its theme gray instead of popping (the shipped
+/// capture reads the theme's resting stylebox; GPAR71); opacity rests
+/// at 1.
+fn kind_visual_default(page: &Page, node: NodeId, key: PropKey) -> Option<Value> {
+    match key {
+        PropKey::Opacity => Some(Value::VNum(1.0)),
+        PropKey::Background if page.nodes[node as usize].kind == Kind::Button => Some(Value::VColor(crate::draw::DEFAULT_BUTTON_BACKGROUND)),
+        _ => None,
+    }
+}
+
 fn motion_default(key: PropKey) -> Option<Value> {
     match key {
         PropKey::Scale | PropKey::ScaleX | PropKey::ScaleY => Some(Value::VNum(1.0)),
@@ -1412,11 +1485,19 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
     // glide to their new rects (`Runtime::glide`).
     for (who, from, to) in &changes {
         if *who == NO_NODE {
-            if let Some(rule) = find_rule(page, NO_NODE, *from, *to) {
-                if rule.duration > 0.0 {
-                    let easing = if rule.easing == NO_STR { Easing::LINEAR } else { Easing::parse(page.str(rule.easing)).unwrap_or(Easing::LINEAR) };
-                    rt.glide_start = Some((rule.duration, easing));
+            let ease_of = |t: &Transition| if t.easing == NO_STR { Easing::LINEAR } else { Easing::parse(page.str(t.easing)).unwrap_or(Easing::LINEAR) };
+            // A node's own EXACT pose-pair rule times that node's share
+            // of the flip (GPAR72) — collected here, read by `glide`.
+            rt.glide_node_rules.clear();
+            for i in 0..page.nodes.len() {
+                if let Some(nr) = find_rule(page, i as NodeId, *from, *to).filter(|t| t.from.is_some() && t.to.is_some()) {
+                    rt.glide_node_rules.push((i as NodeId, nr.duration, ease_of(&nr)));
                 }
+            }
+            let view = find_rule(page, NO_NODE, *from, *to);
+            let (vd, ve) = view.map(|r| (r.duration, ease_of(&r))).unwrap_or((0.0, Easing::LINEAR));
+            if vd > 0.0 || !rt.glide_node_rules.is_empty() {
+                rt.glide_start = Some((vd, ve));
             }
         }
     }
@@ -1425,9 +1506,9 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
             let id = i as NodeId;
             let _ = node;
             for key in ANIMATABLE {
-                let target = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)) };
+                let target = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key)) };
                 let Some(target) = target else { continue };
-                let current = rt.tweens.iter().find(|t| t.node == id && t.key == *key).map(|t| t.value()).or_else(|| rt.last.iter().find(|(n, p)| *n == id && p.key == *key).map(|(_, p)| p.value)).or_else(|| motion_default(*key));
+                let current = rt.tweens.iter().find(|t| t.node == id && t.key == *key).map(|t| t.value()).or_else(|| rt.last.iter().find(|(n, p)| *n == id && p.key == *key).map(|(_, p)| p.value)).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key));
                 let Some(current) = current else { continue };
                 if current == target {
                     continue;
@@ -1443,7 +1524,10 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
                         continue;
                     }
                     // A node-level exact pose pair overrides the view rule for this node.
-                    let node_rule = if scope == NO_NODE { find_rule(page, id, *from, *to).filter(|t| t.from.is_some() && t.to.is_some()) } else { find_rule(page, id, *from, *to) };
+                    // A watched owner's flip is timed by the DECLARING
+                    // scope's rules (GPAR10, the shipped one-timing-per-
+                    // flip); the target's own rules are the fallback.
+                    let node_rule = if scope == NO_NODE { find_rule(page, id, *from, *to).filter(|t| t.from.is_some() && t.to.is_some()) } else { find_rule(page, scope, *from, *to).or_else(|| find_rule(page, id, *from, *to)) };
                     rule = node_rule.or_else(|| if scope == NO_NODE { find_rule(page, NO_NODE, *from, *to) } else { None });
                     if rule.is_some() {
                         break;

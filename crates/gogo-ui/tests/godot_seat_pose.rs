@@ -126,7 +126,6 @@ View seatView {
 /// `_seat_tests` 7284-7285 `seat.err-children`: a seat is an empty socket —
 /// a child inside one is a load error in Godot.
 #[test]
-#[ignore = "NEW: Godot refuses a child inside a seat (\"empty socket\") vs Rust builds clean"]
 fn seat_refuses_children() {
     assert!(refuses("View v { Row r { seat s { Rectangle x 10x10 } } }"));
 }
@@ -134,17 +133,18 @@ fn seat_refuses_children() {
 /// `_seat_tests` 7286-7287 `seat.err-unnamed`: a seat needs a name (a
 /// `when` has to address it).
 #[test]
-#[ignore = "NEW: Godot refuses an unnamed seat (\"needs a name\") vs Rust builds clean"]
 fn seat_needs_a_name() {
     assert!(refuses("View v { Row r { seat } }"));
 }
 
-/// `_seat_tests` 7288-7289 `seat.err-props`: a seat takes a name and
-/// nothing else.
+/// `_seat_tests` 7288-7289 `seat.err-props`, FLIPPED: in the Rust
+/// dialect placement words on a seat size the SOCKET itself (GP18's
+/// fixed socket — `seat socket width=200` under a Layers); a non-box
+/// word is still refused by the kind table.
 #[test]
-#[ignore = "NEW: Godot refuses props on a seat (\"nothing else\") vs Rust builds clean"]
 fn seat_takes_nothing_but_a_name() {
-    assert!(refuses("View v { Row r { seat s width=20 } }"));
+    assert!(!refuses("View v { Row r { seat s width=20 } }"), "a sized socket is GP18's fixed-socket pattern");
+    assert!(refuses("View v { Row r { seat s background=#FF0000FF } }"), "looks belong to the occupant");
 }
 
 /// `_seat_tests` 7292-7293 `seat.err-top-level`: a seat at the top of the
@@ -156,27 +156,23 @@ fn seat_at_top_level_is_refused() {
     assert!(d.iter().any(|d| d.code == "G7003"), "{d:#?}");
 }
 
-/// `_seat_tests` 7290-7291 `seat.err-free-parent`: a seat lives inside a
-/// container (Row/Column…), never under a free parent like Layers.
+/// `_seat_tests` 7290-7291 `seat.err-free-parent`, FLIPPED: the Rust
+/// dialect hosts seats anywhere — a free parent gives the socket its
+/// declared (or occupant's) box; GP18's fixed socket sits under a
+/// Layers, caption_page's seats under Panels.
 #[test]
-#[ignore = "NEW: Godot refuses a seat under Layers (\"container parent\") vs Rust builds clean"]
 fn seat_needs_a_container_parent() {
-    assert!(refuses("View v { Layers l { seat s } }"));
+    assert!(!refuses("View v { Layers l { seat s } }"), "free hosts are legal Rust sockets");
 }
 
 /// `_seat_tests` 7294-7297 `seat.err-unknown-seat` + `seat.err-not-a-seat`:
 /// `x.seat = name` must name a declared seat — an unknown name and a
 /// Column are both refused.
 #[test]
-#[ignore = "NEW: Godot refuses `m.seat = <unknown>` / `= <a Column>` vs Rust builds clean (the Column case makes `m` vanish from layout)"]
 fn seat_move_targets_a_declared_seat() {
     let not_a_seat = "when screen.landscapeSmall { m.seat = h }\nView v { Row r { Column h { Rectangle m 10x10 }; seat s } }";
-    // What Rust does with the Column target once the class is live.
-    let mut probe = Fx::new(not_a_seat);
-    probe.class(Some(ScreenClass::LandscapeSmall));
-    let laid_out = (probe.children_of("r"), probe.children_of("h"), probe.rect("m"));
     let a = accepted(&[("unknown seat", "when screen.landscapeSmall { m.seat = s }\nView v { Row r { Column h { Rectangle m 10x10 } } }"), ("not a seat", not_a_seat)]);
-    assert!(a.is_empty(), "Rust builds: {a:?}; not-a-seat laid out as (r's children, h's children, m's rect) = {laid_out:?}");
+    assert!(a.is_empty(), "Rust builds: {a:?}");
 }
 
 /// `_seat_tests` 7302-7306 `seat.arrangement-untimed-builds`: an
@@ -206,24 +202,23 @@ fn timed_arrangement_seat_move_builds_and_applies() {
     }
 }
 
-/// `_seat_tests` 7320-7322 `seat.err-cross-axis-occupants` + 7343-7344
-/// `seat.err-two-occupants`: one occupant per seat under conditions that
-/// can hold together — an arrangement claim and a class claim can co-hold,
-/// two class claims too. 7345-7346 `seat.err-dup`: the same block twice
-/// sets the seat twice.
+/// `_seat_tests` 7343-7346 `seat.err-two-occupants` + `seat.err-dup`:
+/// one occupant per seat and one writer per occupant, PER CONDITION.
+/// FLIP on `seat.err-cross-axis-occupants` (7320-7322): an arrangement
+/// claim and a class claim on one seat are LEGAL here — the flattened
+/// placement rule (E2: equal rank → later line in the file wins)
+/// settles them, and brush_options.gogo's `previewAbove` seat depends
+/// on exactly that ranking over its screen-class seats.
 #[test]
-#[ignore = "NEW: Godot refuses two occupants / two writers of one seat vs Rust builds clean (both occupants get the socket rect, overlapping)"]
 fn one_occupant_per_seat() {
     let two = "when screen.landscapeSmall { m.seat = s }\nwhen screen.landscapeSmall { m2.seat = s }\nView v { Row r halign=left, valign=top, height=20 { Column h { Rectangle m 10x10; Rectangle m2 10x10 }; seat s } }";
-    let mut probe = Fx::new(two);
-    probe.class(Some(ScreenClass::LandscapeSmall));
-    let laid_out = (probe.children_of("s"), probe.rect("m"), probe.rect("m2"));
     let a = accepted(&[
-        ("cross-axis", "arrangement o\nwhen o { m.seat = s }\nwhen screen.landscapeSmall { m2.seat = s }\nView v { Row r { Column h { Rectangle m 10x10; Rectangle m2 10x10 }; seat s } }"),
         ("two occupants", two),
         ("dup", "when screen.landscapeSmall { m.seat = s }\nwhen screen.landscapeSmall { m.seat = s }\nView v { Row r { Column h { Rectangle m 10x10 }; seat s } }"),
     ]);
-    assert!(a.is_empty(), "Rust builds: {a:?}; two occupants laid out as (s's children, m, m2) = {laid_out:?}");
+    assert!(a.is_empty(), "Rust builds: {a:?}");
+    let cross = "arrangement o\nwhen o { m.seat = s }\nwhen screen.landscapeSmall { m2.seat = s }\nView v { Row r { Column h { Rectangle m 10x10; Rectangle m2 10x10 }; seat s } }";
+    assert!(!refuses(cross), "cross-vocabulary claims rank by the E2 later-line rule instead of refusing");
 }
 
 /// `_seat_tests` 7326-7331 `seat.two-arrangements-share`: two different
@@ -240,7 +235,6 @@ fn two_arrangements_may_share_a_seat() {
 /// `_seat_tests` 7332-7333 `seat.err-node-scope`: a seat move is a
 /// view-level response — `when hovered seat=s` inside a node is refused.
 #[test]
-#[ignore = "NEW: Godot refuses a node-scoped `when hovered seat=s` (\"view-level\") vs Rust builds clean"]
 fn seat_move_is_view_level_only() {
     assert!(refuses("View v { Row r { Column h { Rectangle m 10x10 { when hovered seat=s } }; seat s } }"));
 }
@@ -248,24 +242,21 @@ fn seat_move_is_view_level_only() {
 /// `_seat_tests` 7337-7338 `seat.err-cycle`: no move into the node's own
 /// subtree.
 #[test]
-#[ignore = "NEW: Godot refuses a move into the node's own subtree vs Rust builds clean (m and inner both vanish from layout)"]
 fn seat_move_refuses_a_cycle() {
     let src = "when screen.landscapeSmall { m.seat = inner }\nView v { Row r halign=left, valign=top, height=20 { Column m { seat inner } } }";
-    let mut probe = Fx::new(src);
-    probe.class(Some(ScreenClass::LandscapeSmall));
-    let laid_out = (probe.children_of("r"), probe.children_of("inner"), probe.rect("m"));
-    assert!(refuses(src), "Rust builds; laid out as (r's children, inner's children, m's rect) = {laid_out:?}");
+    assert!(refuses(src));
 }
 
-/// `_seat_tests` 7339-7346 `seat.err-home-reserved`, `seat.err-home-free-home`,
-/// `seat.err-home-dup` (D238): `home` is reserved — no seat may take the
-/// name; a move home needs a container home; two writers refuse.
+/// `_seat_tests` 7339-7346 `seat.err-home-reserved`, `seat.err-home-dup`
+/// (D238): `home` is reserved — no seat may take the name; two writers
+/// of one node's seat refuse. FLIP on `seat.err-home-free-home`: the
+/// Rust dialect PARKS occupants under free parents (D263,
+/// caption_page's panelMain under the View), so a free home is legal.
 #[test]
-#[ignore = "NEW: Godot refuses `seat home` / `= home` under Layers / a dup home move vs Rust builds clean"]
 fn home_is_reserved_and_validated() {
+    assert!(!refuses("when screen.landscapeSmall { m.seat = home }\nView v { Layers l { Rectangle m 10x10 } }"), "a free home is the Rust parking pattern (D263)");
     let a = accepted(&[
         ("reserved", "View v { Row r { seat home } }"),
-        ("free home", "when screen.landscapeSmall { m.seat = home }\nView v { Layers l { Rectangle m 10x10 } }"),
         ("dup", "when screen.landscapeSmall { m.seat = home }\nwhen screen.landscapeSmall { m.seat = home }\nView v { Row r { Column h { Rectangle m 10x10 } } }"),
     ]);
     assert!(a.is_empty(), "Rust builds: {a:?}");

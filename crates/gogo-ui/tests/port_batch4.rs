@@ -44,9 +44,9 @@ fn widget_anims_play_per_instance() {
     assert!(handlers.iter().any(|h| h.action == Action::Play(a_delete)), "{handlers:?}");
 }
 
-/// GP27: `repeat marks capacity=3 { Mark }` builds three hidden items; the
-/// count shows them and hides `empty`; shown items take the Column's
-/// slots with its spacing.
+/// GP27: `repeat marks capacity=3 { Mark }` reserves three slots at the
+/// first count; the count shows them and hides `empty`; shown rows take
+/// the Column's slots with its spacing.
 #[test]
 fn repeat_items_show_by_count_and_lay_out_in_the_stack() {
     let src = "widget Mark {\n Layers mark height=10, width=fill { Rectangle box height=10, width=fill }\n}\nView v {\n Column col spacing=4, halign=left, valign=top, width=100 {\n  Rectangle head height=10\n  repeat marks capacity=3 {\n   empty { Label none text=\"no marks\", font_size=10 }\n   Mark\n  }\n  Rectangle tail height=10\n }\n}\n";
@@ -54,10 +54,6 @@ fn repeat_items_show_by_count_and_lay_out_in_the_stack() {
     let mut page = c.page;
     let marks = page.find("marks").expect("the repeat node");
     let mut rt = Runtime::new(&page);
-    let items = rt.items(&page, marks);
-    assert_eq!(items.len(), 3);
-    assert_eq!(page.str(page.nodes[items[1] as usize].name), "marks/1/item");
-    assert!(page.find("marks/1/item/box").is_some(), "parts are addressable");
     let lay = |page: &gogo::Page, rt: &Runtime| {
         let res = resolve(page, rt);
         layout(page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance)
@@ -68,12 +64,15 @@ fn repeat_items_show_by_count_and_lay_out_in_the_stack() {
     assert_eq!(r[tail].y, 10.0 + 4.0 + 12.5 + 4.0, "at zero the `empty` label holds the slot");
     assert!(r[none].h > 0.0);
     rt.set_count(&mut page, marks, 2);
+    let items = rt.items(&page, marks);
+    assert_eq!(items.len(), 2, "the third slot stays parked until the count wants it");
+    assert_eq!(page.str(page.nodes[items[1] as usize].name), "marks/1/item");
+    assert!(page.find("marks/1/item/box").is_some(), "parts are addressable");
     let r = lay(&page, &rt);
     assert_eq!(r[tail].y, 10.0 + 4.0 + 10.0 + 4.0 + 10.0 + 4.0, "two items, spaced like siblings");
     assert_eq!(r[items[0] as usize].y, 14.0);
     assert_eq!(r[items[1] as usize].y, 28.0);
     let res = resolve(&page, &rt);
-    assert!(res.gone(&page, items[2]));
     let empty = page.nodes[none].parent;
     assert!(res.gone(&page, empty), "`empty` hides once there are items");
     rt.set_count(&mut page, marks, 0);

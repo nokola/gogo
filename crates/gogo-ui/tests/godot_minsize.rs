@@ -267,7 +267,6 @@ fn a_floored_button_gives_its_fill_wrap_label_the_floor() {
 /// and lays the label out ZERO wide (a fill wrap label claims no width;
 /// the hug Row over it measures 0).
 #[test]
-#[ignore = "NEW: Godot warns G1004 leftover (fill wrap label under a hug Row/Panel chain) vs Rust silent and the label rect is 0 wide"]
 fn a_fill_wrap_label_under_a_hug_chain_is_warned_about() {
     let src = "View v {\n Column host {\n  Panel plate halign=left {\n   Row {\n    Label cap text=\"a long caption that should wrap somewhere\", wrap=true, width=fill\n   }\n  }\n }\n}\n";
     let c = compile(src, &|_| None);
@@ -593,7 +592,6 @@ fn a_fill_cap_hugs_under_and_margins_shift_the_midpoint() {
 /// is re-measured in that wider frame and stays 314.4 — wider than
 /// frame − margins — and the root View pokes past the viewport.
 #[test]
-#[ignore = "NEW: Godot hug plate under max_width=fill binds at frame-24 (336 / 276) vs Rust 314.4 at both frames (widest wrapped line + padding; at 300 the root grows past the viewport)"]
 fn a_fill_cap_binds_at_the_live_frame_when_the_text_is_long() {
     let c = ok(FILL_CAP_SRC);
     let mut page = c.page;

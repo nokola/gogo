@@ -213,3 +213,27 @@ fn finished_anims_reach_the_host_once() {
     rt.tick(&mut page, 1.0);
     assert!(rt.take_finished().is_empty(), "a stopped anim never reports");
 }
+
+/// GPAR53: `show(x, true)` replays the entrance only on a REAL flip (the
+/// shipped visibility_changed gate) — an overlay calling it per frame
+/// settles instead of restarting; a fresh flip after a hide plays again.
+#[test]
+fn show_replays_the_entrance_only_on_a_real_flip() {
+    let c = ok("anim pop { p.opacity from=0, to=1, duration=1, easing=linear }\nView v { Layers p width=10, height=10, visibility=gone, on:show=play(pop) }");
+    let mut page = c.page;
+    let p = page.find("p").unwrap();
+    let mut rt = Runtime::new(&page);
+    rt.show(&mut page, p, true);
+    rt.tick(&mut page, 0.5);
+    rt.show(&mut page, p, true);
+    rt.tick(&mut page, 0.25);
+    let r = resolve_animated(&page, &mut rt);
+    let shown = r.num(&page, p, PropKey::Opacity).unwrap_or(1.0);
+    assert!((shown - 0.75).abs() < 1e-3, "the second show did not restart the entrance: {shown}");
+    rt.show(&mut page, p, false);
+    rt.show(&mut page, p, true);
+    rt.tick(&mut page, 0.1);
+    let r = resolve_animated(&page, &mut rt);
+    let replay = r.num(&page, p, PropKey::Opacity).unwrap_or(1.0);
+    assert!((replay - 0.1).abs() < 1e-3, "a real flip replays from the start: {replay}");
+}

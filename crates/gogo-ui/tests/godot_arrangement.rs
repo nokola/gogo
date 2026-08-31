@@ -282,7 +282,6 @@ fn arrangement_build_errors_match() {
 /// only, so the line's props vanish, and with them the target checks
 /// (`when s foo.width=2` raises no G0060 either).
 #[test]
-#[ignore = "NEW: Godot one-line top-level `when s bar.width=2` poses vs Rust builds it and drops the responses (bar has 0 whens, no G0060 for `foo.width`)"]
 fn one_line_top_level_when_poses() {
     let c = ok("arrangement s\nwhen s bar.width=2\nView v { Rectangle bar }");
     let bar = c.page.find("bar").unwrap();
@@ -295,7 +294,6 @@ fn one_line_top_level_when_poses() {
 /// refuses (G0036) but offers no suggestion, although gogo-design.md §7
 /// promises "build error with a suggestion".
 #[test]
-#[ignore = "NEW: Godot hints the nearest arrangement name (`settings`) vs Rust G0036 with no suggestion"]
 fn misspelled_arrangement_hint_names_the_nearest() {
     let src = "arrangement settings\nwhen setings bar.opacity=1\nView v { Rectangle bar }";
     assert!(refused(src));
@@ -584,7 +582,6 @@ fn control_scope_transitions_land_on_both_sides() {
 /// so the tween has no base value to start from (writing `opacity=1` on
 /// the Button makes the same ladder read 0.75).
 #[test]
-#[ignore = "NEW: Godot tweens `when held opacity=0.5` from the default 1 (0.75 mid) vs Rust snaps to 0.5 when the node writes no `opacity=` (no base value to tween from)"]
 fn control_scope_transitions_tween_from_the_default_value() {
     let [enter_mid, _, exit_mid, _] = dir_readings();
     assert!(near(enter_mid, 0.75), "enter mid: {enter_mid}");
@@ -640,7 +637,6 @@ fn view_rule_times_the_flip_and_retargets_mid_flight() {
 /// and still short of 99 at 0.55 s. Rust glides all three by the view
 /// rule: tag 0 at the flip, plate 87.5 at 0.25 s, plate 100 at 0.55 s.
 #[test]
-#[ignore = "NEW: Godot node-scope exact pose-pair rules time that node (tag snaps, plate 57.8125 @0.25 s) vs Rust glides every box by the view rule (tag 0, plate 87.5)"]
 fn node_pose_pair_rules_time_their_own_share() {
     let c = ok(POSE_TIMING);
     let mut page = c.page;
@@ -930,7 +926,6 @@ fn screen_words_are_enums_a_wrong_word_is_unrepresentable() {
 /// axes is refused (G3005) — the composed spelling says the intersection.
 /// Rust builds all three.
 #[test]
-#[ignore = "GPAR62: G3005 (one screen vocabulary per target) not ported; Rust builds a node posed by both an orientation and a class"]
 fn one_target_posed_by_orientation_and_class_is_refused() {
     assert!(refused("when screen.landscape { bar.opacity=0.5 }\nwhen screen.lotsOfSpace { bar.opacity=1.0 }\nView v { Rectangle bar }"), "prop");
     assert!(refused("when screen.landscape { bar.width=30 }\nwhen screen.portraitSmall { bar.height=9 }\nView v { Layers l width=100, height=100 { Rectangle bar halign=left, valign=top, width=20, height=20 } }"), "placement");

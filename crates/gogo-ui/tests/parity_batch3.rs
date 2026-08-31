@@ -212,3 +212,22 @@ fn theme_values_and_font_color_are_color_positions() {
     assert!(messages("View v { Label l text=\"x\", font_color=nope }").contains("is not a color"));
     assert!(messages("$bad = nope\nView v { Label l text=\"x\" }").contains("is not a color"));
 }
+
+/// GPAR10: a `when held sibling.color=` response is TIMED by the
+/// DECLARING node's rules — one timing per flip, resolved where the
+/// `when` lives; the target's own rules are only a fallback. (Also
+/// exercises GPAR83: the target is a SIBLING outside b's subtree.)
+#[test]
+fn a_child_response_times_by_the_declaring_scope() {
+    let c = ok("View v { Button b text=\"x\" { transition base -> held duration=1, easing=linear\n when held flash.color=#FFFFFFFF }\n Rectangle flash width=10, height=10, color=#000000FF }");
+    let mut page = c.page;
+    let b = page.find("b").unwrap();
+    let flash = page.find("flash").unwrap();
+    let mut rt = Runtime::new(&page);
+    resolve_animated(&page, &mut rt);
+    rt.set_state(b, HELD, true);
+    resolve_animated(&page, &mut rt);
+    rt.tick(&mut page, 0.5);
+    let r = resolve_animated(&page, &mut rt);
+    assert_eq!(r.color(&page, flash, PropKey::Color), Some(Rgba([128, 128, 128, 255])), "half way, timed by b's own rule");
+}

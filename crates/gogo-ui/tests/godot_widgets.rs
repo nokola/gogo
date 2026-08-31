@@ -541,7 +541,6 @@ fn custom_state_when_applies_while_dragging() {
 /// instance's `when`/`transition` items) — `page.whens` is empty and the
 /// disabled opacity stays the default dim.
 #[test]
-#[ignore = "NEW: Godot applies `when …` blocks written under a widget instance; Rust drops them silently (page.whens empty, `when disabled opacity=0.1` has no effect)"]
 fn instance_line_when_disabled_applies() {
     let c = ok("widget W { Panel p width=10, height=10, opacity=1 }\nView v { W w { when disabled opacity=0.1 } }\n");
     let p = &c.page;
@@ -705,7 +704,6 @@ fn unknown_call_in_text_is_refused() {
 /// (G4003: `live()` and a `when` on one prop). Both fences are listed as
 /// untracked in GPAR62; Rust builds both silently.
 #[test]
-#[ignore = "GPAR62: untracked Godot fences G5105 (position slot under a stack) and G4003 (two writers on one prop) not ported"]
 fn relayout_and_two_writer_fences() {
     assert!(codes("control Bad $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n Column {\n  slot p automatic=position by $value in $min..$max { Circle 6x6 }\n }\n}\nBad b\n").contains(&"G5105".to_string()));
     let text = err_text(&format!("{}Fader f 100x24\n", fader_static().replace("Label text=live($value)", "Label text=\"x\", opacity=live($value) { when hovered opacity=0.5 }")));

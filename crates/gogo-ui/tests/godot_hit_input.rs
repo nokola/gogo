@@ -269,7 +269,6 @@ fn interactive_wants_a_bool() {
 /// compiles the line clean but attaches the response to the View as its
 /// owner (`When.of` = 0), so `held` on `b` never reaches it.
 #[test]
-#[ignore = "NEW: Godot's `when held shield.interactive=true` on a sibling makes it a catcher while held; Rust compiles clean, watches the View instead (When.of=0), the shield never claims"]
 fn when_held_turns_a_sibling_shield_into_a_catcher() {
     let mut fx = Fx::new(
         "View v {\nButton b text=\"x\", touch_target=off, width=100, height=40, halign=left, valign=top {\n    when held shield.interactive=true\n}\nRectangle shield 50x50, halign=right, valign=bottom\n}",

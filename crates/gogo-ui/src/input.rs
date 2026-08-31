@@ -394,13 +394,19 @@ impl Input {
                 // underneath (D130, GPAR4). A FAST catch is "caught": the
                 // child under the finger is not pressed by accident.
                 let hit_node = hit(page, res, rects, t.x, t.y, false);
+                let mut caught_accum: Option<(NodeId, [f32; 2])> = None;
                 let caught = match self.fling.take() {
                     Some(f) if hit_node.is_some_and(|n| within(page, n, f.scroll)) => {
                         let range = scroll_range(page, rects, f.scroll);
                         let raw = [f.accum[0] - f.accum[0].clamp(0.0, range[0]), f.accum[1] - f.accum[1].clamp(0.0, range[1])];
-                        let mut accum = [f.accum[0].clamp(0.0, range[0]), f.accum[1].clamp(0.0, range[1])];
+                        // The pull stays under the finger (GPAR5, the
+                        // shipped catch): freezing a mid-spring bounce
+                        // keeps the softened offset — snapping it to the
+                        // edge would jump the content on touch.
+                        let mut accum = f.accum;
                         let axes = scroll_axes(page, res, f.scroll);
                         apply_accum(rt, rects, f.scroll, range, axes, &mut accum);
+                        caught_accum = Some((f.scroll, accum));
                         self.expected = Some((f.scroll, rt.scroll[f.scroll as usize]));
                         (f.v[0].powi(2) + f.v[1].powi(2)).sqrt() >= CATCH_SPEED || raw != [0.0, 0.0]
                     }
@@ -436,10 +442,21 @@ impl Input {
                 if kind == Kind::Slider && !caught {
                     value_from = value_of(rt, res, page, node);
                     let v = slider_value(page, res, rects, node, t.x);
-                    rt.set_prop(node, PropKey::Value, Value::VNum(v));
-                    self.push_event(rt, &mut events, node, EventKind::Edit(Value::VNum(v)), event_action(page, node, "edit"));
+                    // `edit` streams CHANGED values only (the shipped
+                    // set_param no-change guard, GPAR6): a press on the
+                    // current value says nothing.
+                    if v != value_from {
+                        rt.set_prop(node, PropKey::Value, Value::VNum(v));
+                        self.push_event(rt, &mut events, node, EventKind::Edit(Value::VNum(v)), event_action(page, node, "edit"));
+                    }
                 }
-                let accum = scroll.map(|s| rt.scroll[s as usize]).unwrap_or([0.0; 2]);
+                // A caught overscroll hands its RAW accum to the press, so
+                // the pan continues from the pull, not from the edge.
+                let accum = match (scroll, caught_accum) {
+                    (Some(s), Some((cs, a))) if s == cs => a,
+                    (Some(s), _) => rt.scroll[s as usize],
+                    (None, _) => [0.0; 2],
+                };
                 self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum, value_from, toggle_moved: false, release_owed: pressed, raw: None });
             }
             Phase::Move => {
@@ -507,8 +524,12 @@ impl Input {
                 }
                 if p.kind == Kind::Slider && !p.panning {
                     let v = slider_value(page, res, rects, p.node, t.x);
-                    rt.set_prop(p.node, PropKey::Value, Value::VNum(v));
-                    self.push_event(rt, &mut events, p.node, EventKind::Edit(Value::VNum(v)), event_action(page, p.node, "edit"));
+                    // One `edit` per crossed step, none for a same-value
+                    // sample (GPAR6).
+                    if v != value_of(rt, res, page, p.node) {
+                        rt.set_prop(p.node, PropKey::Value, Value::VNum(v));
+                        self.push_event(rt, &mut events, p.node, EventKind::Edit(Value::VNum(v)), event_action(page, p.node, "edit"));
+                    }
                 } else if p.kind == Kind::Toggle && !p.panning && (p.toggle_moved || (t.x - p.start.0).abs() >= TOGGLE_DRAG_THRESHOLD) {
                     // Past the wobble the knob follows the finger; `selected`
                     // flips live as it crosses the middle.
@@ -617,7 +638,11 @@ impl Input {
                         self.push_event(rt, &mut events, p.node, EventKind::Change(Value::VBool(on)), event_action(page, p.node, "change"));
                         self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                     }
-                    Kind::Toggle if inside || p.toggle_moved => {
+                    // A release ALWAYS settles a Toggle (the shipped
+                    // input_ended takes no rect test, GPAR8): slide off in
+                    // any direction and lift — a drag lands by side, an
+                    // unmoved press flips like a tap.
+                    Kind::Toggle => {
                         let was = p.value_from >= 0.5;
                         let f = if p.toggle_moved { value_of(rt, res, page, p.node) } else { p.value_from };
                         // A drag settles to the side the knob is on; a tap goes
@@ -1073,9 +1098,10 @@ mod tests {
         let ev = fx.touch(Phase::Up, 10.0, 16.0, 0.2);
         assert!(matches!(ev[0].kind, EventKind::Change(Value::VNum(v)) if v == 0.0), "{ev:?}");
         assert!(matches!(ev[0].action, Some(Action::Named(_))));
-        // A tap on the value already there reports nothing.
+        // A tap on the value already there reports nothing (GPAR6): no
+        // `edit` on the down, no `change` on the lift.
         let ev = fx.touch(Phase::Down, 8.0, 16.0, 1.0);
-        assert!(matches!(ev[0].kind, EventKind::Edit(_)));
+        assert!(ev.iter().all(|e| !matches!(e.kind, EventKind::Edit(_))), "{ev:?}");
         assert!(fx.touch(Phase::Up, 8.0, 16.0, 1.1).is_empty(), "changed means changed");
         // A cancelled drag restores the pre-drag value.
         fx.touch(Phase::Down, 8.0, 16.0, 2.0);

@@ -840,3 +840,54 @@ fn a_restarted_hide_restores_the_as_built_values_on_finish() {
     let m = rt.motion[bx];
     assert!(m.translate[0].abs() < 1e-3 && (m.opacity - 1.0).abs() < 1e-3, "as built: x={} a={}", m.translate[0], m.opacity);
 }
+
+/// GPAR5: catching a mid-spring bounce keeps the pull under the finger —
+/// the shipped catch freezes the glide and nothing else. Before: the
+/// touch snapped the softened overshoot to the edge, jumping the content
+/// under the finger.
+#[test]
+fn catching_a_spring_keeps_the_pull_under_the_finger() {
+    let mut fx = Fx::new(OCCLUDED);
+    fx.touch(Phase::Down, 50.0, 20.0, 0.0);
+    fx.touch(Phase::Move, 50.0, 60.0, 0.05);
+    let pulled = fx.scroll("sv");
+    assert!(pulled[1] < -0.5, "overscrolled at the top: {pulled:?}");
+    fx.touch(Phase::Up, 50.0, 60.0, 0.1);
+    fx.touch(Phase::Down, 50.0, 30.0, 0.15);
+    let caught = fx.scroll("sv");
+    assert!((caught[1] - pulled[1]).abs() < 1.0, "the pull stayed under the finger: {caught:?} vs {pulled:?}");
+    fx.touch(Phase::Up, 50.0, 30.0, 0.2);
+}
+
+/// GPAR6: `edit` fires per CHANGED value, not per touch sample (the
+/// shipped `set_param` no-change guard) — a `step=10` drag reports each
+/// crossed step once, and a press on the current value says nothing.
+#[test]
+fn slider_edit_streams_changed_values_only() {
+    let mut fx = Fx::new("View v { Slider s render=gogo, value=0, step=10, min=0, max=100, width=200, height=40, halign=left, valign=top }");
+    let ev = fx.touch(Phase::Down, 1.0, 20.0, 0.0);
+    assert!(ev.iter().all(|e| !matches!(e.kind, EventKind::Edit(_))), "a press at the current value says nothing: {ev:?}");
+    let mut edits = 0;
+    for i in 1..=40 {
+        let x = 1.0 + i as f32 * 4.5;
+        edits += fx.touch(Phase::Move, x, 20.0, i as f64 * 0.01).iter().filter(|e| matches!(e.kind, EventKind::Edit(_))).count();
+    }
+    assert!((7..=11).contains(&edits), "one edit per crossed step across the drag, got {edits}");
+    fx.touch(Phase::Up, 181.0, 20.0, 0.5);
+}
+
+/// GPAR8: press, slide DOWN off the switch, lift — the release always
+/// settles (the shipped `input_ended` takes no rect test): an unmoved
+/// press flips like a tap wherever the finger ends. Before: the vertical
+/// slide-off did nothing while a horizontal one worked.
+#[test]
+fn toggle_slide_off_and_lift_still_settles() {
+    let mut fx = Fx::new("View v { Toggle t halign=left, valign=top }");
+    let t = fx.id("t");
+    assert!(!fx.rt.has(t, SELECTED));
+    fx.touch(Phase::Down, 20.0, 10.0, 0.0);
+    fx.touch(Phase::Move, 20.0, 90.0, 0.1);
+    let ev = fx.touch(Phase::Up, 20.0, 90.0, 0.2);
+    assert!(fx.rt.has(t, SELECTED), "the lift settles the flip");
+    assert!(ev.iter().any(|e| matches!(e.kind, EventKind::Change(_))), "{ev:?}");
+}

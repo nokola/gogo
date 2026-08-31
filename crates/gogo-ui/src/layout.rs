@@ -142,7 +142,7 @@ struct Lay<'a> {
     written: Vec<[bool; 2]>,
     /// `size_at` answers per (node, width bits; `u32::MAX` = unbounded):
     /// a parent asks for each child's measure more than once per pass.
-    memo: RefCell<HashMap<(NodeId, u32), (f32, f32)>>,
+    memo: RefCell<HashMap<(NodeId, u32, bool), (f32, f32)>>,
 }
 
 pub fn layout(page: &Page, res: &Resolved, viewport: Rect, text: &dyn TextMeasure) -> Vec<Rect> {
@@ -250,11 +250,23 @@ impl<'a> Lay<'a> {
     /// MEASURE: the box the node wants (its size under `hug`), given the
     /// width its parent can offer for wrapping (`None` = unbounded).
     fn size_at(&self, id: NodeId, avail_w: Option<f32>) -> (f32, f32) {
-        let key = (id, avail_w.map_or(u32::MAX, f32::to_bits));
+        self.size_at_flag(id, avail_w, false)
+    }
+
+    /// MEASURE at a width the node already GOT (its final rect width):
+    /// the height question. Distinct from `size_at`, whose `avail_w` is
+    /// the parent's ROOM — a capped hug re-binds against room, never
+    /// against its own resolved width (GPAR76).
+    fn size_final(&self, id: NodeId, w: f32) -> (f32, f32) {
+        self.size_at_flag(id, Some(w), true)
+    }
+
+    fn size_at_flag(&self, id: NodeId, avail_w: Option<f32>, final_w: bool) -> (f32, f32) {
+        let key = (id, avail_w.map_or(u32::MAX, f32::to_bits), final_w);
         if let Some(v) = self.memo.borrow().get(&key) {
             return *v;
         }
-        let v = self.size_at_uncached(id, avail_w);
+        let v = self.size_at_uncached(id, avail_w, final_w);
         self.memo.borrow_mut().insert(key, v);
         v
     }
@@ -298,9 +310,40 @@ impl<'a> Lay<'a> {
         }
     }
 
-    fn size_at_uncached(&self, id: NodeId, avail_w: Option<f32>) -> (f32, f32) {
+    fn size_at_uncached(&self, id: NodeId, avail_w: Option<f32>, final_w: bool) -> (f32, f32) {
         let p = self.placement(id);
-        let (cw, ch) = self.content_min(id, avail_w);
+        // A HUG width with a cap measures its content NATURALLY (a wrap
+        // label counts one unwrapped line) and the cap binds after — the
+        // shipped order (GPAR76): the toast plate is
+        // min(unwrapped + padding, frame − margins) and the text wraps
+        // inside; the height then counts the folded lines at that bound
+        // width. Without the natural-first pass the plate hugged its
+        // widest WRAPPED line and never reached the cap.
+        let hug_w = matches!(p.width, Len::Hug(_)) || (matches!(p.width, Len::Unset) && p.halign != Align::AlignUnset);
+        let (cw, ch) = if !final_w && hug_w && (p.max_width.is_some() || p.max_width_fill) {
+            let (nw, nh) = self.content_min(id, None);
+            // The fill cap = the room minus this box's own margins (the
+            // returned size adds them back, so reporting `avail` raw
+            // would grow an unwritten ancestor by the margin width per
+            // pass).
+            let m = self.margins(id);
+            let mw = m[0].unwrap_or(0.0) + m[2].unwrap_or(0.0);
+            let cap = if p.max_width_fill { avail_w.map(|a| (a - mw).max(0.0)) } else { p.max_width };
+            match cap {
+                // Only when the cap BINDS: re-measure at the capped
+                // width so the height counts the folded lines.
+                Some(c) if nw.max(p.min_width) > c => {
+                    // The bound width IS the minimum reported upward —
+                    // reporting the raw natural would grow an unwritten
+                    // ancestor to the unwrapped line and lift the cap.
+                    let (_, h2) = self.content_min(id, Some(c));
+                    (c, h2)
+                }
+                _ => (nw, nh),
+            }
+        } else {
+            self.content_min(id, avail_w)
+        };
         let w = match p.width {
             Len::Exact(n) => n,
             _ => {
@@ -370,12 +413,19 @@ impl<'a> Lay<'a> {
                     cap.map(|c| inner_w.map_or(c, |i| c.min(i)))
                 };
                 let (w, h) = self.text.measure(text, self.font_size(id), bound, self.font_key(id));
-                // A wrapping label that fills its width has no width of its
-                // own (Godot's autowrap minimum): the text bends to the box.
-                // A `clip_text=true` label demands no width either — it cuts
-                // itself to whatever it gets (the effect captions in tiles).
-                let claims_nothing = (wrap && matches!(p.width, Len::Fill(_))) || self.res.bool(self.page, id, PropKey::ClipText).unwrap_or(false);
-                let w = if claims_nothing { 0.0 } else { w };
+                // A `clip_text=true` label demands no width — it cuts
+                // itself to whatever it gets (the effect captions in
+                // tiles). A wrapping label that FILLS its width bends to
+                // the box but never below Godot's autowrap minimum, the
+                // longest word (GPAR77): a hug Row's leftover then shows
+                // a sliver, not nothing.
+                let w = if self.res.bool(self.page, id, PropKey::ClipText).unwrap_or(false) {
+                    0.0
+                } else if wrap && matches!(p.width, Len::Fill(_)) {
+                    self.text.measure(text, self.font_size(id), Some(0.0), self.font_key(id)).0
+                } else {
+                    w
+                };
                 (w, h)
             }
             // A seat's minimum is its occupant's, margins never counted (the
@@ -557,7 +607,7 @@ impl<'a> Lay<'a> {
         let (x, w) = free_axis(frame.x, frame.w, p.width, p.halign, m[0], m[2], min_w, p.min_width, p.max_width, p.max_width_fill, written[0]);
         // The height minimum at the width the node actually got (wrap
         // text, Flow rows).
-        let (_, min_h) = self.size_at(id, Some(w));
+        let (_, min_h) = self.size_final(id, w);
         let (y, h) = free_axis(frame.y, frame.h, p.height, p.valign, m[1], m[3], min_h, p.min_height, p.max_height, p.max_height_fill, written[1]);
         let rect = Rect::new(x, y, w, h);
         self.rects[id as usize] = rect;
@@ -645,7 +695,7 @@ impl<'a> Lay<'a> {
                 let (x, w) = free_axis(inner.x, inner.w, p.width, p.halign, None, None, min_w, p.min_width, p.max_width, p.max_width_fill, self.written[id as usize][0]);
                 Rect::new(x, cursor, w, size)
             } else {
-                let (_, min_h) = self.size_at(*c, Some(size));
+                let (_, min_h) = self.size_final(*c, size);
                 let (y, h) = free_axis(inner.y, inner.h, p.height, p.valign, None, None, min_h, p.min_height, p.max_height, p.max_height_fill, self.written[id as usize][1]);
                 Rect::new(cursor, y, size, h)
             };
@@ -705,7 +755,7 @@ impl<'a> Lay<'a> {
                 row_h = 0.0;
             }
             let w = unit * span as f32 + spacing * (span as f32 - 1.0);
-            let (_, h) = self.size_at(c, Some(w));
+            let (_, h) = self.size_final(c, w);
             let x = (unit + spacing) * col as f32;
             out.push((c, Rect::new(x, y, w, h)));
             row_h = row_h.max(h);
