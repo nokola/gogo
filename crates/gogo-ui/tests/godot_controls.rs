@@ -32,9 +32,7 @@
 //!   message.
 //! - `diag.listener`: runtime diagnostics channel for the error overlay.
 //!
-//! Dialect notes: the Godot `Button signals text=$label` line needs a comma
-//! after the flag here (`Button signals, text=$label`, see
-//! `signals_flag_before_a_key_member_needs_no_comma`); the Fader control
+//! Dialect notes: the Fader control
 //! fixture is inlined WITHOUT its `anim releasePop { slot.thumb.… }` block
 //! (the `slot.` anim lane is GP32-owed and fails G0063; no check in this
 //! batch reads it).
@@ -830,16 +828,16 @@ fn wiring_emit_takes_exactly_one_name() {
     assert!(gogo::has_errors(&diags("View v { Button b on:activate=emit(relayed, 2) }")));
 }
 
-/// Found while porting `wire.emit-ok` (run_tests.gd:4759): Godot parses
-/// `Button signals text=$label` — the `signals` flag followed directly by
-/// a `key=` member. Rust's parser counts the flag as a member that needs a
-/// comma after it (G0017 "missing `,` before `text`"), so the copied line
-/// needs `Button signals, text=$label`.
+/// `wire.emit-ok` (run_tests.gd:4759): `Button signals text=$label` — a
+/// reserved flag is its own delimiter, so no comma before the next member
+/// (the rule the name and repeat's `as`/`by` clauses follow; GPAR98). A
+/// comma after the flag stays legal.
 #[test]
-#[ignore = "NEW: Godot parses `Button signals text=$label` vs Rust G0017 `missing , before text` (a flag needs a comma before the next key= member)"]
 fn signals_flag_before_a_key_member_needs_no_comma() {
     let d = diags("widget RelayRow $label=\"\" {\n    Button signals text=$label\n}\nView v { RelayRow row label=\"r\" }");
     assert!(!gogo::has_errors(&d), "{d:#?}");
+    let d = diags("widget RelayRow $label=\"\" {\n    Button signals, text=$label\n}\nView v { RelayRow row label=\"r\" }");
+    assert!(!gogo::has_errors(&d), "the comma stays legal: {d:#?}");
 }
 
 // ----------------------------------------------------------------- _error_tests

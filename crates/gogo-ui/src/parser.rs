@@ -251,7 +251,13 @@ impl<'a> Parser<'a> {
                         let Some(value) = self.value() else { break };
                         node.props.push(AstProp { key: word, value, line: self.line() });
                     } else if FLAGS.contains(&word.as_str()) {
+                        // A reserved flag is its own delimiter, so no comma
+                        // before the next member (`Button signals text=$x`) —
+                        // the rule the name and repeat's `as`/`by` clauses
+                        // already follow; a comma stays legal (GPAR98).
                         node.flags.push(word);
+                        need_comma = false;
+                        continue;
                     } else if *self.peek() == Tok::LParen {
                         node.args.push(self.call(word));
                     } else if word == "interactive" {
