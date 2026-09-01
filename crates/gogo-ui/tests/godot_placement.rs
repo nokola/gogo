@@ -241,7 +241,6 @@ fn bare_slot_content_builds() {
 /// parent gives it … Exempt: … content of the bare default `slot`") — a
 /// sizeless Rectangle there stays 0 wide.
 #[test]
-#[ignore = "NEW: Godot leaves bare-slot content unplaced (0 wide) vs Rust fills the slot region (400 wide)"]
 fn bare_slot_content_gets_no_fill_default() {
     let b = build("widget Holder {\n Layers body {\n  slot\n }\n}\nView v {\n Holder h {\n  Rectangle sc color=#FFFFFFFF\n }\n}\n", 400.0, 400.0);
     assert_eq!(b.rect("sc").w, 0.0, "{:?}", b.rect("sc"));
@@ -256,7 +255,7 @@ fn bare_slot_content_gets_no_fill_default() {
 fn default_fill_survives_an_arrangement_pose() {
     let mut b = build("arrangement lifted\nwhen lifted { bar.margin_bottom = 0 }\nView screen2 {\n Layers bar valign=bottom, height=80, margin_bottom=-30\n}\n", 400.0, 400.0);
     assert_eq!(b.rect("bar"), Rect::new(0.0, 350.0, 400.0, 80.0));
-    b.rt.go(0);
+    b.rt.go_id(0);
     b.relayout();
     assert_eq!(b.rect("bar"), Rect::new(0.0, 320.0, 400.0, 80.0), "the pose moved the pin, the width stayed full");
 }
@@ -459,7 +458,6 @@ fn root_draws_its_own_plate() {
 /// a style) is refused — placement responds at view scope
 /// (arrangements), not to held/hovered.
 #[test]
-#[ignore = "NEW: Godot refuses placement in a control-scope when (`when held halign=center`) vs Rust compiles it clean and slides the 40-wide box from x=0 to x=180 while held"]
 fn placement_in_a_control_scope_when_is_refused() {
     let src = "style S { when held halign=center }\nView v { Button b .S width=40 }";
     assert!(refused(src), "{}", messages(src));

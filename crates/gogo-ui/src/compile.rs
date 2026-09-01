@@ -86,6 +86,9 @@ struct WidgetDef {
     /// body builds: they shadow page styles, innermost widget first (the
     /// shipped scoping). An instance-site `style=` never sees them.
     styles: HashMap<String, StyleDef>,
+    /// The `state a, b` lines' names — the control's own state
+    /// vocabulary; `when <name>` in the control binds to them (GPAR116).
+    states: Vec<String>,
     /// A `control` declaration (vs a `widget`): its own scoped anims may
     /// drive `slot.<name>.<motion word>` lanes.
     control: bool,
@@ -112,6 +115,9 @@ struct WhenTmp {
     descendants: Vec<(String, Prop, String, u32)>,
     /// A `for=` widget's scope response: watches the hosting control.
     host: bool,
+    /// Carried in by a style — a node's own block overriding it per
+    /// state is the normal pattern, never a duplicate (GPAR94).
+    styled: bool,
 }
 
 /// A node before it has an arena slot.
@@ -122,12 +128,55 @@ struct TmpNode {
     whens: Vec<WhenTmp>,
     transitions: Vec<Transition>,
     children: Vec<TmpNode>,
+    /// A control instance root's declared states (GPAR116) — recorded
+    /// into `Page::custom_states` once the arena id exists.
+    custom_states: Vec<StrId>,
 }
 
 /// A node-level transition's node before flattening assigns the real id.
 const PENDING_NODE: NodeId = u32::MAX - 1;
 /// A `for=` widget response whose host is found once the tree exists.
 const HOST_PENDING: NodeId = u32::MAX - 2;
+
+/// The shown form of a `live()` number in a text position: snapped to
+/// the display step (0.1 unless `round($v, step)` picked one), trailing
+/// zeros trimmed — "10.2", "11", "80" (the addon's display rounding,
+/// user-caught when a drag printed the raw float).
+fn live_text(v: f32, step: f32) -> String {
+    let snapped = if step > 0.0 { (v / step).round() * step } else { v };
+    let mut d = 0usize;
+    let mut s = step;
+    while d < 4 && (s - s.round()).abs() > 1e-4 {
+        s *= 10.0;
+        d += 1;
+    }
+    let mut out = format!("{snapped:.d$}");
+    if out.contains('.') {
+        while out.ends_with('0') {
+            out.pop();
+        }
+        if out.ends_with('.') {
+            out.pop();
+        }
+    }
+    out
+}
+
+/// Joins a `uses` path onto the including file's directory, folding
+/// `.` and `..` — the include chain's one path shape (GPAR35).
+fn join_uses(base: &str, path: &str) -> String {
+    let mut parts: Vec<&str> = if base.is_empty() { Vec::new() } else { base.split('/').collect() };
+    for seg in path.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    parts.join("/")
+}
 
 /// Does a widget body flag a `signals` node anywhere?
 fn has_signals_node(n: &AstNode) -> bool {
@@ -329,6 +378,17 @@ pub struct Compiler<'a> {
     /// Instance prefixes that are CONTROL instances: only their own
     /// scoped anims may target `slot.<name>.<motion word>` lanes.
     control_scopes: HashSet<String>,
+    /// While a control instance's body builds: its declared states, so
+    /// `when <name>`/`transition` words bind to `State::Custom` (GPAR116).
+    custom_state_stack: Vec<Vec<String>>,
+    /// Directory stack of the include chain (GPAR35): a nested `uses`
+    /// resolves against the INCLUDING file's directory, so the loader
+    /// always sees one path shape — from the top file's own directory.
+    use_dirs: Vec<String>,
+    /// `<instance>/<body-root name>` -> `<instance>` (GPAR95): the root
+    /// keeps its body name as an address after the instance name replaces
+    /// it, so `a/root.opacity` in an anim or response still binds.
+    root_aliases: HashMap<String, String>,
     node_whens: Vec<Vec<WhenTmp>>,
     /// The key table when `options.keys` is `None` (see `CompileOptions`).
     local_keys: Keys,
@@ -401,7 +461,8 @@ fn spell(v: &AstValue) -> String {
         AstValue::Num { value, unit } => format!("{value}{unit}"),
         AstValue::Color { rgba, opacity, pos } => format!("#{:02X}{:02X}{:02X}{:02X}{}", rgba[0], rgba[1], rgba[2], rgba[3], suffixes(opacity, pos)),
         AstValue::Str { text, .. } => format!("\"{text}\""),
-        AstValue::Ref { name, opacity } => format!("${name}{}", suffixes(opacity, &None)),
+        AstValue::Ref { name, opacity, pos } => format!("${name}{}", suffixes(opacity, pos)),
+        AstValue::Named { name, value } => format!("{name}={}", spell(value)),
         AstValue::Ident { word, opacity, pos } => format!("{word}{}", suffixes(opacity, pos)),
         AstValue::Size { w, h } => format!("{}x{}", w.map(|x| x.to_string()).unwrap_or_default(), h.map(|x| x.to_string()).unwrap_or_default()),
         AstValue::Call { name, args } => format!("{name}({})", args.iter().map(spell).collect::<Vec<_>>().join(", ")),
@@ -441,6 +502,9 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         scopes: Vec::new(),
         style_scopes: Vec::new(),
         control_scopes: HashSet::new(),
+        custom_state_stack: Vec::new(),
+        root_aliases: HashMap::new(),
+        use_dirs: Vec::new(),
         node_whens: Vec::new(),
         local_keys: Keys::default(),
         deferred_whens: Vec::new(),
@@ -537,6 +601,12 @@ impl<'a> Compiler<'a> {
         for item in &doc.items {
             match item {
                 AstItem::Assign { key, dollar: true, value, line } => {
+                    // Keys live on DISPLAYED text only (GPAR89, the
+                    // addon's rule): a keyed theme value would translate
+                    // in some uses and not others.
+                    if let AstValue::Str { key: Some(tk), .. } = value {
+                        self.error("G8001", *line, format!("`${key} = \"…\"/{tk}` — a theme value never carries a translation key; the key goes on the displayed text (`text=$title/{tk}` is not a form either: write the key at the `text=` use)"));
+                    }
                     // Color context (GPAR30, the shipped rule): `$dim =
                     // gray` must be the COLOR gray at its use site, and
                     // `$scrim = black/0.5` carries its alpha. Numbers and
@@ -570,6 +640,11 @@ impl<'a> Compiler<'a> {
                             // fixtures pose through it).
                             let mut items: Vec<AstItem> = n.props.iter().map(|p| AstItem::Assign { key: p.key.clone(), dollar: false, value: p.value.clone(), line: p.line }).collect();
                             items.extend(n.children.iter().cloned());
+                            if items.is_empty() {
+                                // GPAR93: it can never do anything — a
+                                // silent no-op reads as a working pose.
+                                self.error("G0054", n.line, "this `when` holds no responses — a top-level block poses nodes (`node.prop = value`)");
+                            }
                             self.deferred_whens.push((state, items, n.line));
                         }
                     }
@@ -609,19 +684,27 @@ impl<'a> Compiler<'a> {
             self.error("G0023", n.line, format!("`uses` takes one quoted path — `/{k}` is a translation key, and a path is never translated"));
             return;
         }
-        if !self.used.insert(path.to_string()) {
+        // A nested `uses` resolves against the INCLUDING file's
+        // directory (GPAR35, the addon's rule): `sub/widgets.gogo`
+        // writing `uses "inner.gogo"` loads `sub/inner.gogo`.
+        let base = self.use_dirs.last().cloned().unwrap_or_default();
+        let full = join_uses(&base, path);
+        if !self.used.insert(full.clone()) {
             return;
         }
-        let Some(text) = (self.loader)(path) else {
-            self.error("G0024", n.line, format!("`uses \"{path}\"`: file not found"));
+        let Some(text) = (self.loader)(&full) else {
+            let looked = if full == path { String::new() } else { format!(" (looked for `{full}`, from the including file's directory)") };
+            self.error("G0024", n.line, format!("`uses \"{path}\"`: file not found{looked}"));
             return;
         };
         let mut diags = Vec::new();
         let doc = parse(&text, &mut diags);
         for d in diags {
-            self.diags.push(Diagnostic { message: format!("{path}: {}", d.message), ..d });
+            self.diags.push(Diagnostic { message: format!("{full}: {}", d.message), ..d });
         }
+        self.use_dirs.push(full.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default());
         self.document(&doc, false);
+        self.use_dirs.pop();
     }
 
     fn theme(&mut self, n: &AstNode) {
@@ -638,6 +721,11 @@ impl<'a> Compiler<'a> {
         for item in &n.children {
             match item {
                 AstItem::Assign { key, dollar: true, value, line } => {
+                    // Keys live on displayed text only (GPAR89) — see
+                    // the top-level `$` arm.
+                    if let AstValue::Str { key: Some(tk), .. } = value {
+                        self.error("G8001", *line, format!("`${key} = \"…\"/{tk}` — a theme value never carries a translation key; keys live on displayed text"));
+                    }
                     // Color context — see the top-level `$` arm (GPAR30).
                     let v = self.value(value, *line, Some(PropKey::Background));
                     let name = self.intern(key);
@@ -1398,9 +1486,14 @@ impl<'a> Compiler<'a> {
         };
         // A widget wearing a built-in word's name is dead: the built-in
         // is matched first, so the widget could never be instantiated.
-        if Kind::from_word(&name).is_some() || matches!(name.as_str(), "when" | "transition" | "theme" | "style" | "anim" | "widget" | "control" | "uses" | "layout") {
+        if Kind::from_word(&name).is_some() || matches!(name.as_str(), "when" | "transition" | "theme" | "style" | "anim" | "widget" | "control" | "uses" | "layout" | "gap" | "choice" | "slot" | "empty" | "repeat") {
             self.error("G5001", n.line, format!("widget name `{name}` shadows a built-in — pick another name"));
             return;
+        }
+        // A widget body is a FRAGMENT (GPAR97): `View` is the screen
+        // root, so a body wearing it could never sit anywhere.
+        if let Some(AstItem::Node(b)) = n.children.iter().find(|i| matches!(i, AstItem::Node(b) if b.type_word == "View")) {
+            self.error("G7012", b.line, "a widget body is a fragment — `View` is the screen root; use `Layers` (free placement) or `Panel` (a styled box)");
         }
         // A `control` body holds its behavior lines (`script`, `state`,
         // `state_builtin`, `signal`, a default `transition`) beside the root;
@@ -1417,6 +1510,16 @@ impl<'a> Compiler<'a> {
                         match self.state_from_word(word, b.line, false) {
                             Some(State::Held | State::Hovered | State::Focused | State::FocusWithin | State::Selected | State::StateDisabled) | None => {}
                             Some(_) => self.error("G0077", b.line, format!("`state_builtin {word}`: the built-ins are held, hovered, focused, focus_within, selected, disabled")),
+                        }
+                    }
+                }
+                "state" => {
+                    // `state` declares the control's OWN words — a
+                    // built-in name here reads as claiming the engine's
+                    // state (the addon's d9 check).
+                    for word in b.args.iter().filter_map(|a| a.as_ident()) {
+                        if matches!(word, "held" | "hovered" | "focused" | "focus_within" | "selected" | "disabled" | "pressed" | "hover" | "focus" | "checked") {
+                            self.error("G0077", b.line, format!("`state {word}` names a built-in — declare it `state_builtin {word}`; `state` declares the control's own words"));
                         }
                     }
                 }
@@ -1468,7 +1571,8 @@ impl<'a> Compiler<'a> {
                 self.error("G5001", w.line, format!("a widget-scope `{}` responds to the HOST's states — this widget declares no host; announce it: `widget {name} for=Radio, …` (hosts: Button, Radio, Check)", w.type_word));
             }
         }
-        self.widgets.insert(name, WidgetDef { params: n.params.clone(), body: bodies[0].clone(), anims, host, props, whens, transitions, styles, control: n.type_word == "control", line: n.line });
+        let states: Vec<String> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "state").flat_map(|b| b.args.iter().filter_map(|a| a.as_ident()).map(str::to_string)).collect();
+        self.widgets.insert(name, WidgetDef { params: n.params.clone(), body: bodies[0].clone(), anims, host, props, whens, transitions, styles, states, control: n.type_word == "control", line: n.line });
     }
 
     /// `easing=name` plus its parameter words on the same line
@@ -1543,7 +1647,14 @@ impl<'a> Compiler<'a> {
         let mut cluster_end = chain_start;
         let mut first = true;
         for item in items {
-            let AstItem::Node(step) = item else { continue };
+            let AstItem::Node(step) = item else {
+                if let AstItem::Assign { key, line, .. } = item {
+                    // GPAR86: a set would snap with no track to play —
+                    // it was skipped without a word before.
+                    self.error("G0063", *line, format!("`{key} = …` in an anim — anims are journeys, not assignments; write `{key} from=…, to=…, duration=…`"));
+                }
+                continue;
+            };
             let (word, connective, target) = match step.type_word.as_str() {
                 "and" | "then" => {
                     // `then delay=0.2` has no step word: the prop names it.
@@ -1637,11 +1748,18 @@ impl<'a> Compiler<'a> {
                         }
                     };
                     let found = if node_name == "self" {
-                        if scope.is_empty() { None } else { self.page.find(scope) }
+                        if scope.is_empty() {
+                            // Page scope: `self` is the file's root
+                            // (GPAR86, the addon's reading).
+                            if self.page.nodes.is_empty() { None } else { Some(0) }
+                        } else {
+                            self.page.find(scope)
+                        }
                     } else if scope.is_empty() {
-                        self.page.find(&node_name)
+                        self.page.find(&node_name).or_else(|| self.root_aliases.get(&node_name).and_then(|t| self.page.find(t)))
                     } else {
-                        self.page.find(&format!("{scope}/{node_name}")).or_else(|| self.page.find(&node_name))
+                        let scoped = format!("{scope}/{node_name}");
+                        self.page.find(&scoped).or_else(|| self.root_aliases.get(&scoped).and_then(|t| self.page.find(t))).or_else(|| self.page.find(&node_name))
                     };
                     let Some(node) = found else {
                         self.error("G0060", step.line, format!("`{path}`: no node named `{node_name}`{}", if node_name == "self" { " (`self` is the widget's root, inside a widget's own anim)" } else { "" }));
@@ -1737,6 +1855,17 @@ impl<'a> Compiler<'a> {
             self.error("G0032", n.line, format!("`{name}` is reserved"));
             return;
         }
+        // A state word as an arrangement name would make `when held`
+        // two things (GPAR93, the addon's fence).
+        if matches!(name.as_str(), "held" | "hovered" | "focused" | "focus_within" | "selected" | "disabled" | "pressed" | "hover" | "focus" | "checked" | "dragging") {
+            self.error("G0032", n.line, format!("`{name}` is a state word — an arrangement cannot wear it (`when {name}` must mean one thing)"));
+            return;
+        }
+        // Arrangements declare NAMES, nothing else — poses go in
+        // `when <name> { }` blocks (GPAR93).
+        if !n.props.is_empty() || !n.children.is_empty() {
+            self.error("G0032", n.line, format!("`arrangement {name}` declares a name, nothing else — poses go in a `when {name} {{ … }}` block"));
+        }
         let id = self.intern(&name);
         if self.page.arrangements.contains(&id) {
             self.error("G0033", n.line, format!("arrangement `{name}` is declared twice"));
@@ -1798,6 +1927,13 @@ impl<'a> Compiler<'a> {
             "focus_within" => State::FocusWithin,
             "selected" => State::Selected,
             "disabled" => State::StateDisabled,
+            // The enclosing control's own words come before the respell
+            // aliases: a declared `state dragging` IS that control's
+            // state (GPAR116), not a misspelling of `held`.
+            _ if self.custom_state_stack.iter().any(|l| l.iter().any(|s| s == word)) => {
+                let id = self.intern(word);
+                State::Custom(id)
+            }
             "pressed" | "hover" | "focus" | "checked" | "dragging" => {
                 let want = match word {
                     "pressed" | "dragging" => "held",
@@ -1953,6 +2089,20 @@ impl<'a> Compiler<'a> {
         Value::VColor(c)
     }
 
+    /// `$edge@0.24` — a theme color as a gradient stop (GPAR86): the
+    /// ref bakes to its color here like every stop (a mode pair takes
+    /// its light half — G2008 already fences mode words in `stops=`).
+    fn ref_stop(&mut self, v: Value, pos: Option<f32>, name: &str, line: u32) -> Value {
+        let Some(p) = pos else { return v };
+        match crate::runtime::deref(&self.page, NO_STR, v) {
+            Value::VColor(c) => Value::VStop { color: c, pos: Some(p) },
+            _ => {
+                self.error("G2007", line, format!("`${name}@{p}` — `@` places a color stop, and `${name}` is not a color"));
+                v
+            }
+        }
+    }
+
     fn value(&mut self, v: &AstValue, line: u32, key: Option<PropKey>) -> Value {
         match v {
             AstValue::Bool(b) => Value::VBool(*b),
@@ -1990,7 +2140,7 @@ impl<'a> Compiler<'a> {
                 };
                 Value::VText { text: text_id, key: key_id }
             }
-            AstValue::Ref { name, opacity } => {
+            AstValue::Ref { name, opacity, pos } => {
                 // `$item` / `$item.<field>` under a keyed repeat's
                 // binding: a per-item value `set_items` fills at clone
                 // time (GPAR108) — compiled here so the undefined-$ref
@@ -2006,14 +2156,16 @@ impl<'a> Compiler<'a> {
                 let param = self.scopes.iter().rev().find_map(|s| s.get(name).cloned());
                 if let Some(p) = param {
                     let inner = self.value(&p, line, key);
-                    return match (inner, opacity) {
+                    let v = match (inner, opacity) {
                         (Value::VColor(c), Some(o)) => Value::VColor(c.with_opacity(*o)),
                         (Value::VRef { name, .. }, Some(o)) => Value::VRef { name, opacity: Some(*o) },
                         (v, _) => v,
                     };
+                    return self.ref_stop(v, *pos, name, line);
                 }
                 let id = self.intern(name);
-                Value::VRef { name: id, opacity: *opacity }
+                let v = Value::VRef { name: id, opacity: *opacity };
+                self.ref_stop(v, *pos, name, line)
             }
             AstValue::Ident { word, opacity, pos } => {
                 let color_position = key.map(Self::is_color_key).unwrap_or(false);
@@ -2054,9 +2206,37 @@ impl<'a> Compiler<'a> {
                 Value::VIdent(self.intern(word))
             }
             AstValue::Size { w, h } => Value::VSize(*w, *h),
-            AstValue::Call { name, args } if (name == "live" || name == "round") && !args.is_empty() => {
-                // `live($value)` — a control prop read; static here (no
-                // code-behind writes it), so the value itself.
+            // A named call argument: the value passes through; the name
+            // is the call site's to read (GPAR32 — none does yet, GP40).
+            AstValue::Named { value, .. } => self.value(value, line, key),
+            AstValue::Call { name, args } if name == "live" && !args.is_empty() => {
+                // `live($value)` — a control prop the host drives; the
+                // value here is its start. In a TEXT position the number
+                // SHOWS, so display rounding applies: 0.1 by default
+                // (the addon's user-caught drag that printed
+                // 10.234235), `round($value, step)` picks the step.
+                let (inner, step) = match &args[0] {
+                    AstValue::Call { name: rname, args: rargs } if rname == "round" && !rargs.is_empty() => {
+                        let step = rargs.get(1).map(|v| self.value(v, line, None)).and_then(|v| if let Value::VNum(x) = v { Some(x) } else { None }).unwrap_or(1.0);
+                        (self.value(&rargs[0], line, key), step)
+                    }
+                    a => (self.value(a, line, key), 0.1),
+                };
+                if key == Some(PropKey::Text) {
+                    if let Value::VNum(x) = crate::runtime::deref(&self.page, NO_STR, inner) {
+                        let text = live_text(x, step);
+                        let id = self.intern(&text);
+                        return Value::VText { text: id, key: NO_KEY };
+                    }
+                }
+                inner
+            }
+            AstValue::Call { name, args } if name == "round" && !args.is_empty() => {
+                self.error("G0080", line, "`round()` goes inside live() — it picks the display step (`text=live(round($value, 1))`)");
+                self.value(&args[0], line, key)
+            }
+            AstValue::Call { name, args } if name == "bind" && !args.is_empty() => {
+                self.error("G0081", line, "`bind()` is gone — write `live($value)`");
                 self.value(&args[0], line, key)
             }
             AstValue::Range(a, _) => {
@@ -2191,6 +2371,7 @@ impl<'a> Compiler<'a> {
             PropKey::Fit => Some(&["contain", "cover", "distort"]),
             PropKey::Allow => Some(&["horizontal", "vertical", "both"]),
             PropKey::Bars => Some(&["auto", "never", "always", "reserve"]),
+            PropKey::Orientation => Some(&["horizontal", "vertical"]),
             PropKey::Select => Some(&["one", "many", "off"]),
             PropKey::TouchTarget | PropKey::KeyboardTarget => Some(&["off"]),
             PropKey::GradientFill => Some(&["linear", "radial"]),
@@ -2244,8 +2425,7 @@ impl<'a> Compiler<'a> {
         let mut decreasing: Option<(f32, f32)> = None;
         for it in items {
             let pos = match it {
-                AstValue::Color { pos, .. } | AstValue::Ident { pos, .. } => *pos,
-                AstValue::Ref { .. } => None,
+                AstValue::Color { pos, .. } | AstValue::Ident { pos, .. } | AstValue::Ref { pos, .. } => *pos,
                 other => {
                     self.error("G2005", line, format!("`stops=` entries are colors — got `{}`", spell(other)));
                     return;
@@ -2300,7 +2480,7 @@ impl<'a> Compiler<'a> {
     /// is optional here: the `max=N` form has no items to key (GP27).
     fn repeat_clauses(&mut self, n: &AstNode) {
         let binding = match n.clauses.iter().find(|(k, _)| k == "as") {
-            Some((_, AstValue::Ref { name, opacity: None })) if !name.contains('.') => name.clone(),
+            Some((_, AstValue::Ref { name, opacity: None, pos: None })) if !name.contains('.') => name.clone(),
             Some((_, v)) => {
                 self.error("G9002", n.line, format!("`as` declares the item binding — `as $name`, sigil and all (got `{}`)", spell(v)));
                 return;
@@ -2334,7 +2514,7 @@ impl<'a> Compiler<'a> {
             if self.widget_stack.iter().any(|w| w == &n.type_word) {
                 let path = self.widget_stack.join(" -> ");
                 self.error("G5003", n.line, format!("widget cycle: {path} -> {} — a widget cannot contain itself", n.type_word));
-                return TmpNode { node: Node { kind: Kind::Layers, line: n.line, ..Node::EMPTY }, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new() };
+                return TmpNode { node: Node { kind: Kind::Layers, line: n.line, ..Node::EMPTY }, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new() };
             }
             // A `for=` widget fills its host's body and nothing else —
             // anywhere else its `when` lines would answer the wrong node.
@@ -2378,6 +2558,15 @@ impl<'a> Compiler<'a> {
             if def.control {
                 self.control_scopes.insert(self.prefix.join("/"));
             }
+            self.custom_state_stack.push(if def.control { def.states.clone() } else { Vec::new() });
+            // The body root's own name stays addressable (`a/root` IS the
+            // instance `a` — the addon's lookup.root-self): an alias, so
+            // the widget's anims and responses can target the root by the
+            // name its body wrote.
+            if let Some(rn) = &def.body.name {
+                let full = self.prefix.join("/");
+                self.root_aliases.insert(format!("{full}/{rn}"), full.clone());
+            }
             // The widget's own anims, one copy per instance.
             for a in &def.anims {
                 self.anim(a);
@@ -2401,6 +2590,13 @@ impl<'a> Compiler<'a> {
                 &body_baked
             };
             let mut t = self.node(body, parent_kind, Some(n));
+            // The body's own responses are the definition's DEFAULTS
+            // relative to this instance: an instance-site `when`
+            // overriding one per state is the normal pattern, not a
+            // duplicate (GPAR94's one-writer check skips them).
+            for w in &mut t.whens {
+                w.styled = true;
+            }
             self.instance_on.pop();
             self.style_scopes.pop();
             self.widget_stack.pop();
@@ -2418,7 +2614,7 @@ impl<'a> Compiler<'a> {
                         // (GP37) — parked as a warning, never a silent
                         // drop, so copied files keep building.
                         self.diags.truncate(before);
-                        self.warning("G0036", k.line, "an instance `when` naming a control's own state waits for contract states (GP37) — the block is parked");
+                        self.warning("G0036", k.line, "an instance `when` names no declared state of this control (`state a, b` in its body would declare it) — the block is parked");
                     }
                 } else {
                     let tr = self.transition(k, PENDING_NODE);
@@ -2450,6 +2646,10 @@ impl<'a> Compiler<'a> {
                     t.transitions.push(t2);
                 }
             }
+            self.custom_state_stack.pop();
+            if def.control && !def.states.is_empty() {
+                t.custom_states = def.states.iter().map(|w| self.intern(w)).collect();
+            }
             self.prefix.pop();
             self.fills.pop();
             self.scopes.pop();
@@ -2458,7 +2658,26 @@ impl<'a> Compiler<'a> {
         }
 
         // `layout Flow { … }` inside a List: the items' container, spelled
-        // by the word after `layout`.
+        // by the word after `layout`. Its rules (G9017, the addon's):
+        // inside a List only, a closed kind set, and it holds the rows —
+        // statics stay on the List body.
+        if n.type_word == "layout" {
+            if parent_kind != Some(Kind::List) {
+                self.error("G9017", n.line, "a `layout` block picks a List's rows' container — it lives inside a `List` body");
+            }
+            match n.name.as_deref() {
+                Some("Row" | "Flow" | "Tiles" | "Column") => {}
+                Some(w) => self.error("G9017", n.line, format!("`layout {w}` — the set is closed: Row, Flow, Tiles or Column")),
+                None => self.error("G9017", n.line, "`layout` names its container kind: `layout Row {{ … }}`"),
+            }
+            let inner: Vec<&AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(k) = i { Some(k) } else { None }).collect();
+            if inner.iter().any(|k| !matches!(k.type_word.as_str(), "repeat" | "when" | "transition" | "theme")) {
+                self.error("G9017", n.line, "a `layout` block holds the rows (`repeat`) — statics stay on the List body, above or below it");
+            }
+            if !inner.iter().any(|k| k.type_word == "repeat") {
+                self.error("G9017", n.line, "an empty `layout` block seats nothing — the rows' `repeat` goes inside it");
+            }
+        }
         let type_word: String = if n.type_word == "layout" { n.name.clone().unwrap_or_default() } else { n.type_word.clone() };
         let n_layout: AstNode;
         let n: &AstNode = if n.type_word == "layout" {
@@ -2567,12 +2786,17 @@ impl<'a> Compiler<'a> {
             self.names.insert(name.clone());
             node.name = self.intern(name);
         }
-        let mut tmp = TmpNode { node, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new() };
+        let mut tmp = TmpNode { node, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new() };
 
         if kind == Kind::Gap {
             self.gap(&mut tmp.node, n, parent_kind);
             if !n.props.is_empty() {
                 self.error("G0045", n.line, "`gap` takes one size word and nothing else");
+            }
+            // A gap IS the space (GPAR97): a child in it would never be
+            // laid out.
+            if !n.children.is_empty() {
+                self.error("G0045", n.line, "a `gap` IS the space — it holds nothing; put the content beside it");
             }
         }
         if kind == Kind::Empty {
@@ -2684,6 +2908,16 @@ impl<'a> Compiler<'a> {
         }
         if kind == Kind::Slot {
             tmp.node.auto = self.automatic(n, parent_kind);
+            // A position slot rides its content's size: `width=fill`
+            // content in an unsized slot has nothing to fill and would
+            // vanish silently (the addon's user-caught thumb). The slot
+            // line sizing itself keeps the form legal.
+            if matches!(tmp.node.auto, Auto::Position(_)) && !all_props.iter().any(|p| p.key == "width") {
+                let fill_child = n.children.iter().any(|c| matches!(c, AstItem::Node(k) if k.props.iter().any(|p| p.key == "width" && matches!(&p.value, AstValue::Ident { word, .. } if word == "fill"))));
+                if fill_child {
+                    self.error("G5106", n.line, "an `automatic=position` slot takes its width from its content — `width=fill` there has nothing to fill; size the slot line (`slot thumb width=20`) or the content");
+                }
+            }
         }
         if kind == Kind::Gradient {
             self.gradient_line(n, &all_props);
@@ -2750,7 +2984,52 @@ impl<'a> Compiler<'a> {
         }
         self.stops_ctx = None;
         tmp.props.extend(subtree_defaults);
+        if signals {
+            // Auto-wiring (the addon's On<Instance><Event> contract): with
+            // no `on:` written, the surface's events report under the
+            // INSTANCE name — the name the file gave the widget IS the
+            // handler; an explicit `on:` on the instance line wins.
+            let inst = self.prefix.join("/");
+            if !inst.is_empty() {
+                let action = Action::Named(self.intern(&inst));
+                for ev in ["activate", "press", "release", "change", "edit"] {
+                    let id = self.intern(ev);
+                    if !tmp.handlers.iter().any(|h| h.event == id) {
+                        tmp.handlers.push(OnHandler { event: id, action });
+                    }
+                }
+            }
+        }
         tmp.node.placement = self.placement(&placement_props, n.line, parent_kind, kind);
+        if kind == Kind::List {
+            // The List self-scrolls on its layout's axis (D121/D128): a
+            // `layout Row` strip pans sideways, everything else scrolls
+            // down. Viewport doctrine (D121): an unplaced List EXPANDS on
+            // that axis to the room its parent offers; a hug there (D123)
+            // is the author's opt-out — the box is the content — and the
+            // scroll axis' `max_*` cap (D124) bounds only that hug (on any
+            // other size the cap would fight the viewport: refused whole).
+            let horizontal = n.children.iter().any(|c| matches!(c, AstItem::Node(k) if k.type_word == "layout" && k.name.as_deref() == Some("Row")));
+            let p = &mut tmp.node.placement;
+            if horizontal {
+                if p.width == Len::Unset {
+                    p.width = Len::Fill(1.0);
+                }
+                if (p.max_width.is_some() || p.max_width_fill) && !matches!(p.width, Len::Hug(_)) {
+                    self.error("G1018", n.line, "a row-layout List's `max_width=` caps `width=hug` — write `width=hug` (the strip grows with its rows to the cap, then scrolls)");
+                }
+                if p.max_height.is_some() || p.max_height_fill {
+                    self.error("G9017", n.line, "a Row strip runs SIDEWAYS — it caps with `max_width=`, not `max_height=`");
+                }
+            } else {
+                if p.height == Len::Unset {
+                    p.height = Len::Fill(1.0);
+                }
+                if (p.max_height.is_some() || p.max_height_fill) && !matches!(p.height, Len::Hug(_)) {
+                    self.error("G1018", n.line, "a List's `max_height=` caps `height=hug` — write `height=hug` (the box grows with its rows to the cap, then scrolls)");
+                }
+            }
+        }
         // `aspect=` is a relation: ONE spelled axis drives, the other is
         // derived; both `fill` = the largest ratio box that fits (GPAR80,
         // the addon's _aspect_fit rules). Fenced here — the checks need
@@ -2811,7 +3090,13 @@ impl<'a> Compiler<'a> {
             AstItem::Node(w) if w.type_word == "when" => Some(w),
             _ => None,
         });
-        for w in style_whens.iter().chain(own_whens) {
+        for w in &style_whens {
+            if let Some(mut tw) = self.when(w, kind) {
+                tw.styled = true;
+                tmp.whens.push(tw);
+            }
+        }
+        for w in own_whens {
             if let Some(tw) = self.when(w, kind) {
                 tmp.whens.push(tw);
             }
@@ -3070,7 +3355,17 @@ impl<'a> Compiler<'a> {
                 Some(f) => {
                     for item in &f.default {
                         if let AstItem::Node(k) = item {
-                            let child = self.outer(|me| me.node(k, Some(parent_kind), None));
+                            let mut child = self.outer(|me| me.node(k, Some(parent_kind), None));
+                            // Content of the bare default `slot` is
+                            // EXEMPT from the free-fill default (the
+                            // spec's D71 exemption, GPAR97): a sizeless
+                            // box there keeps its content size.
+                            if child.node.placement.width == Len::Unset {
+                                child.node.placement.width = Len::Hug(1.0);
+                            }
+                            if child.node.placement.height == Len::Unset {
+                                child.node.placement.height = Len::Hug(1.0);
+                            }
                             out.push(child);
                         }
                     }
@@ -3090,12 +3385,21 @@ impl<'a> Compiler<'a> {
         match fill {
             Some(items) => {
                 let mut region = c.clone();
-                region.children.clear();
+                // The fill replaces the slot's DEFAULT content only: a
+                // nested `slot` is the widget's own machinery (the thumb
+                // inside a track) and survives, seated after the fill
+                // (the addon's slotn.fill-below-nested shape).
+                let kept: Vec<AstItem> = region.children.drain(..).filter(|i| matches!(i, AstItem::Node(k) if k.type_word == "slot")).collect();
                 let mut tmp = self.node(&region, Some(parent_kind), None);
                 for item in &items {
                     if let AstItem::Node(k) = item {
                         let child = self.outer(|me| me.node(k, Some(Kind::Slot), None));
                         tmp.children.push(child);
+                    }
+                }
+                for item in &kept {
+                    if let AstItem::Node(k) = item {
+                        self.slot_child(k, Kind::Slot, &mut tmp.children);
                     }
                 }
                 out.push(tmp);
@@ -3111,12 +3415,15 @@ impl<'a> Compiler<'a> {
     /// children (contiguous), then each child's own children — so
     /// `children` is a range and `subtree_end` bounds the descendants.
     fn flatten(&mut self, root: TmpNode) {
-        let id = self.push_slot(root.node, root.props, root.handlers, root.whens, root.transitions, NO_NODE);
+        let id = self.push_slot(root.node, root.props, root.handlers, root.whens, root.transitions, root.custom_states, NO_NODE);
         self.place_children(id, root.children);
     }
 
-    fn push_slot(&mut self, mut node: Node, props: Vec<Prop>, handlers: Vec<OnHandler>, whens: Vec<WhenTmp>, transitions: Vec<Transition>, parent: NodeId) -> NodeId {
+    fn push_slot(&mut self, mut node: Node, props: Vec<Prop>, handlers: Vec<OnHandler>, whens: Vec<WhenTmp>, transitions: Vec<Transition>, custom_states: Vec<StrId>, parent: NodeId) -> NodeId {
         let id = self.page.nodes.len() as NodeId;
+        for cs in custom_states {
+            self.page.custom_states.push((id, cs));
+        }
         node.parent = parent;
         let pf = self.page.props.len() as u32;
         self.page.props.extend(props);
@@ -3148,7 +3455,7 @@ impl<'a> Compiler<'a> {
         let count = children.len() as u32;
         let mut slots: Vec<(NodeId, Vec<TmpNode>)> = Vec::new();
         for child in children {
-            let cid = self.push_slot(child.node, child.props, child.handlers, child.whens, child.transitions, id);
+            let cid = self.push_slot(child.node, child.props, child.handlers, child.whens, child.transitions, child.custom_states, id);
             slots.push((cid, child.children));
         }
         self.page.nodes[id as usize].children = (first, count);
@@ -3194,8 +3501,8 @@ impl<'a> Compiler<'a> {
             "change" if kind == Kind::Radio => {
                 self.error("G0072", line, "`change` lives on the `choice` group — the value is \"which one\"; wire `on:change=` on the choice line (a Radio exposes `when selected`)");
             }
-            "activate" if !kind.is_press_surface() => {
-                self.error("G0072", line, format!("`on:{event}` fires only on a press surface (Button, Check, Toggle, Radio, ListItem) — a {kind:?} never emits it"));
+            "activate" if !kind.is_press_surface() && kind != Kind::List => {
+                self.error("G0072", line, format!("`on:{event}` fires only on a press surface (Button, Check, Toggle, Radio, ListItem) or the List that owns them — a {kind:?} never emits it"));
             }
             "pointer" if kind.is_press_surface() || matches!(kind, Kind::Scroll | Kind::Slider | Kind::Input) => {
                 self.error("G0072", line, format!("`on:pointer` takes the raw finger, so a {kind:?}'s own gestures would never fire — put the pointer surface on a passive box (Layers, Panel)"));
@@ -3226,6 +3533,13 @@ impl<'a> Compiler<'a> {
             AstValue::Ident { word, .. } => Action::Named(self.intern(word)),
             AstValue::Call { name, args } => {
                 let arg = args.first().and_then(AstValue::as_ident).unwrap_or("");
+                // One argument per action (GPAR93): the extras would be
+                // dropped silently — `emit` carries the name alone, a
+                // flip goes to one arrangement.
+                if matches!(name.as_str(), "go" | "toggle" | "play" | "emit") && args.len() > 1 {
+                    self.error("G0050", p.line, format!("`{name}(…)` takes one argument, got {} — the extras would carry nothing", args.len()));
+                    return None;
+                }
                 match name.as_str() {
                     "go" | "toggle" => {
                         let target = if arg == "base" {
@@ -3339,6 +3653,12 @@ impl<'a> Compiler<'a> {
                 self.error("G1016", p.line, "a seat move is a view-level `when` response — top level: `when <state> { node.seat = seatName }`");
                 continue;
             }
+            if p.key == "margin" || p.key.ends_with(".margin") {
+                // GPAR94 (the addon's pose rule): a pose moves one edge
+                // at a time; `margin=` re-declares all four.
+                self.error("G1014", p.line, "a pose moves one edge at a time — write `margin_left=`/`margin_top=`/… (`margin=` re-declares all four edges)");
+                continue;
+            }
             if let Some((node_name, prop_name)) = split_target(&p.key) {
                 let ap = AstProp { key: prop_name.to_string(), value: p.value.clone(), line: p.line };
                 if let Some(prop) = {
@@ -3358,7 +3678,19 @@ impl<'a> Compiler<'a> {
                 props.push(prop);
             }
         }
-        Some(WhenTmp { state, line: w.line, props, descendants, host: false })
+        // Placement answers the VIEW's conditions — `when <arrangement>`,
+        // `when screen.*` (GP1's poses). An input or control state
+        // styles LOOKS: a held box re-anchoring mid-press would fight
+        // the finger (GPAR97, the addon's control-scope refusal).
+        if matches!(state, State::Held | State::Hovered | State::Focused | State::FocusWithin | State::Selected | State::StateDisabled | State::Custom(_)) {
+            for pr in &props {
+                if pr.key.is_placement() {
+                    self.error("G1014", w.line, format!("`{:?}` under `when {}` — placement answers the view's conditions (`when <arrangement>`, `when screen.*`); a state styles looks (background, opacity, translate…)", pr.key, state_word(&self.page, state)));
+                    break;
+                }
+            }
+        }
+        Some(WhenTmp { state, line: w.line, props, descendants, host: false, styled: false })
     }
 
     // ----- placement ------------------------------------------------------
@@ -3666,7 +3998,12 @@ impl<'a> Compiler<'a> {
                     self.error("G0059", *l, format!("`{key}` — write `node.prop = value`"));
                     continue;
                 };
-                let Some(id) = self.page.find(node_name) else {
+                if prop_name == "margin" {
+                    // GPAR94 (the addon's pose rule): per-edge only.
+                    self.error("G1014", *l, "a pose moves one edge at a time — write `margin_left=`/`margin_top=`/… (`margin=` re-declares all four edges)");
+                    continue;
+                }
+                let Some(id) = self.page.find(node_name).or_else(|| self.root_aliases.get(node_name).and_then(|t| self.page.find(t))) else {
                     self.error("G0060", *l, format!("`{key}`: no node named `{node_name}`"));
                     continue;
                 };
@@ -3690,7 +4027,7 @@ impl<'a> Compiler<'a> {
                     // each keep their own line for the later-line tie-break.
                     match self.node_whens[id as usize].iter_mut().find(|w| w.state == state && w.line == line) {
                         Some(w) => w.props.push(prop),
-                        None => self.node_whens[id as usize].push(WhenTmp { state, line, props: vec![prop], descendants: Vec::new(), host: false }),
+                        None => self.node_whens[id as usize].push(WhenTmp { state, line, props: vec![prop], descendants: Vec::new(), host: false, styled: false }),
                     }
                 }
             }
@@ -3802,7 +4139,7 @@ impl<'a> Compiler<'a> {
                     // Widget-body names carry their instance prefix (`inst/name`).
                     let named = |i: &usize| {
                         let full = if self.page.nodes[*i].name != NO_STR { self.page.str(self.page.nodes[*i].name) } else { "" };
-                        full == name || full.rsplit('/').next() == Some(name.as_str())
+                        full == name || full.rsplit('/').next() == Some(name.as_str()) || self.root_aliases.get(&format!("{full}/{name}")).map(String::as_str) == Some(full)
                     };
                     // Own subtree first; then anywhere — the shipped
                     // scope resolves targets through the named map, so a
@@ -3814,7 +4151,7 @@ impl<'a> Compiler<'a> {
                         // response is a build error, not a silently dead
                         // line (docs/todo-gogo-parity.md GPAR82).
                         Some(t) if !self.check_prop_kind(&word, prop.key, self.page.nodes[t].kind, line) => {}
-                        Some(t) => moved.push((t, owner, WhenTmp { state: w.state, line: w.line, props: vec![prop], descendants: Vec::new(), host: w.host })),
+                        Some(t) => moved.push((t, owner, WhenTmp { state: w.state, line: w.line, props: vec![prop], descendants: Vec::new(), host: w.host, styled: w.styled })),
                         None => {
                             let line = self.page.nodes[owner].line;
                             self.error("G0060", line, format!("`when … {name}.…`: no node named `{name}`"));
@@ -3894,6 +4231,23 @@ impl<'a> Compiler<'a> {
                 }
             }
         }
+        // Two blocks on ONE condition writing one prop, authored in the
+        // same place: the loser would silently vanish (last-wins), so
+        // the pair is refused (GPAR94). A style's block under a node's
+        // own is the normal per-state override and stays legal.
+        for (i, list) in whens.iter().enumerate() {
+            for a in 0..list.len() {
+                for b in a + 1..list.len() {
+                    let (wa, wb) = (&list[a], &list[b]);
+                    if wa.state != wb.state || wa.styled || wb.styled || wa.host || wb.host || of[i][a] != of[i][b] || wa.line == wb.line {
+                        continue;
+                    }
+                    if let Some(p) = wa.props.iter().find(|p| wb.props.iter().any(|q| q.key == p.key)) {
+                        self.error("G0054", wb.line, format!("two `when {}` blocks both set `{:?}` (lines {} and {}) — one writer per condition and property", state_word(&self.page, wa.state), p.key, wa.line, wb.line));
+                    }
+                }
+            }
+        }
         // Whens pool, contiguous per node.
         for (i, list) in whens.into_iter().enumerate() {
             let first = self.page.whens.len() as u32;
@@ -3907,6 +4261,35 @@ impl<'a> Compiler<'a> {
                 self.page.whens.push(When { state: w.state, props: (pf, pc), of: of[i][j], line: w.line });
             }
             self.page.nodes[i].whens = (first, self.page.whens.len() as u32 - first);
+        }
+        // A posed margin on a stack child (GPAR94, the addon's pose rule
+        // = the node-line G1014): the parent seats its children — the
+        // pose could never bind. The addon's OTHER pose refusals (a
+        // margin against the declared alignment) are NOT ported: in Rust
+        // a margin on an aligned or centered axis is load-bearing — it
+        // feeds a hug parent's claim (D241/D242) and shifts a centered
+        // box (GPAR38) — so those forms mean something here.
+        for i in 0..self.page.nodes.len() {
+            let (w0, wc) = self.page.nodes[i].whens;
+            if wc == 0 {
+                continue;
+            }
+            let parent = self.page.nodes[i].parent;
+            let in_stack = parent != NO_NODE && {
+                let k = self.page.nodes[parent as usize].kind;
+                k.is_stack() || matches!(k, Kind::Flow | Kind::Grid | Kind::GridRow | Kind::Tiles)
+            };
+            if !in_stack {
+                continue;
+            }
+            for wi in w0..w0 + wc {
+                let w = self.page.whens[wi as usize];
+                for pi in w.props.0..w.props.0 + w.props.1 {
+                    if matches!(self.page.props[pi as usize].key, PropKey::MarginLeft | PropKey::MarginTop | PropKey::MarginRight | PropKey::MarginBottom) {
+                        self.error("G1014", w.line, "a posed margin on a stack child — the parent seats its children; space them with `spacing=`/`gap`");
+                    }
+                }
+            }
         }
         // Unresolved `$refs` (not a theme value anywhere).
         let refs: Vec<(StrId, u32)> = self
@@ -3938,6 +4321,191 @@ impl<'a> Compiler<'a> {
                 self.error("G6001", line, format!("`${word}` is not a theme value or widget parameter — {hint}"));
             }
         }
+        // List structure (GP28's fence families, round 6 — the addon's
+        // G9010/G9011/G9013/G9016 + the two advisory lints). The List is
+        // the one control that owns selection: its body is statics plus
+        // exactly ONE `repeat` whose row root is a `ListItem`, and its
+        // zero-items view is ONE List-level `empty { }`.
+        for i in 0..self.page.nodes.len() {
+            let node = &self.page.nodes[i];
+            let line = node.line;
+            if node.kind == Kind::ListItem {
+                let parent = node.parent;
+                let ok = parent != NO_NODE && self.page.nodes[parent as usize].kind == Kind::Repeat && {
+                    let mut a = self.page.nodes[parent as usize].parent;
+                    let mut in_list = false;
+                    while a != NO_NODE {
+                        if self.page.nodes[a as usize].kind == Kind::List {
+                            in_list = true;
+                            break;
+                        }
+                        if !matches!(self.page.nodes[a as usize].kind, Kind::Row | Kind::Flow | Kind::Tiles | Kind::Column) {
+                            break;
+                        }
+                        a = self.page.nodes[a as usize].parent;
+                    }
+                    in_list
+                };
+                if !ok {
+                    self.error("G9013", line, "`ListItem` is a List row's root — it belongs at the root of the `repeat` inside a `List`; anywhere else, a `Panel` is the box you want");
+                }
+                continue;
+            }
+            if node.kind != Kind::List {
+                continue;
+            }
+            let list = i as NodeId;
+            let (c0, cc) = node.children;
+            let mut empties = 0u32;
+            let mut repeats: Vec<NodeId> = Vec::new();
+            for c in c0..c0 + cc {
+                match self.page.nodes[c as usize].kind {
+                    Kind::Empty => empties += 1,
+                    Kind::Repeat => repeats.push(c),
+                    Kind::Slot => self.error("G9013", self.page.nodes[c as usize].line, "a List has no slots — its rows come from the `repeat`, its statics sit in the body"),
+                    // the `layout` panel: rows one level down
+                    Kind::Row | Kind::Flow | Kind::Tiles | Kind::Column => {
+                        let (g0, gc) = self.page.nodes[c as usize].children;
+                        for g in g0..g0 + gc {
+                            if self.page.nodes[g as usize].kind == Kind::Repeat {
+                                repeats.push(g);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            match empties {
+                0 => self.error("G9016", line, "a List declares its zero-items view: one `empty { }` in the List body (bare is fine — `empty { }`)"),
+                1 => {}
+                _ => self.error("G9016", line, "one `empty { }` per List — the zero-items view is a single seat"),
+            }
+            match repeats.len() {
+                0 => self.error("G9010", line, "a List holds exactly one `repeat` — none here; statics alone are a `Column`'s job"),
+                1 => {}
+                _ => self.error("G9010", line, "a List holds exactly one `repeat` — its selection and rows are one roster"),
+            }
+            for r in &repeats {
+                let (r0, rc) = self.page.nodes[*r as usize].children;
+                let mut roots = 0u32;
+                let mut root: Option<NodeId> = None;
+                for c in r0..r0 + rc {
+                    match self.page.nodes[c as usize].kind {
+                        Kind::Empty => self.error("G9016", self.page.nodes[c as usize].line, "in a List the zero-items view lives at the LIST level — move `empty { }` beside the repeat, not inside it"),
+                        _ => {
+                            roots += 1;
+                            root = Some(c);
+                        }
+                    }
+                }
+                if roots > 1 {
+                    self.error("G9011", self.page.nodes[*r as usize].line, "a List row has ONE root — wrap the parts in a single `ListItem { … }`");
+                } else if let Some(root) = root {
+                    if self.page.nodes[root as usize].kind != Kind::ListItem {
+                        self.error("G9011", self.page.nodes[root as usize].line, "a List row's root is a `ListItem` — the one tap-and-select surface per row; wrap this in one (`ListItem { … }`)");
+                    } else {
+                        // G9014 (advisory): the List flips SELECTED on the
+                        // ROW root — a `when selected` below it never fires.
+                        let end = self.page.nodes[root as usize].subtree_end;
+                        for d in root + 1..end {
+                            let (w0, wc) = self.page.nodes[d as usize].whens;
+                            for w in &self.page.whens[w0 as usize..(w0 + wc) as usize] {
+                                if w.state != State::Selected {
+                                    continue;
+                                }
+                                // A control's OWN selected (a Toggle in
+                                // the row) and a block watching the row
+                                // root both fire — only a passive box's
+                                // dead condition warns.
+                                let watched = if w.of == NO_NODE { d as NodeId } else { w.of };
+                                if watched == root || self.page.nodes[watched as usize].kind.is_press_surface() {
+                                    continue;
+                                }
+                                self.warning("G9014", self.page.nodes[d as usize].line, "`when selected` below the row's root never fires — the List checks the ListItem; style the root (or watch it: the row's own state)");
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            // G9015 (advisory): a viewport List whose ancestors provably
+            // hand it its minimum — near zero — before any sized box.
+            let pl = &self.page.nodes[list as usize].placement;
+            let hug_scroll = matches!(pl.height, Len::Hug(_));
+            if !hug_scroll {
+                let mut a = self.page.nodes[list as usize].parent;
+                while a != NO_NODE {
+                    let an = &self.page.nodes[a as usize];
+                    if matches!(an.placement.height, Len::Exact(_)) || an.placement.min_height > 0.0 {
+                        break;
+                    }
+                    if an.kind == Kind::Scroll {
+                        self.warning("G9015", line, "a viewport List inside a Scroll gets its minimum — near zero — and starves; give the List a `height=` (or `height=hug` if the page should scroll as one)");
+                        break;
+                    }
+                    if an.kind.is_stack() && (an.placement.valign != Align::AlignUnset || matches!(an.placement.height, Len::Hug(_))) {
+                        self.warning("G9015", line, "an anchored or hug ancestor asks this List for its minimum — near zero — and starves it; write `height=` on the List (or `height=hug` for a content-sized menu)");
+                        break;
+                    }
+                    if an.parent == NO_NODE {
+                        break;
+                    }
+                    a = an.parent;
+                }
+            }
+        }
+        // Default looks (D122): a BARE row shows selection, the press and
+        // the keyboard cursor out of the box — the addon's resolver
+        // injects `selected`, `focused` and `held` responses where the
+        // author styled none (per-state: an author's `when selected`
+        // replaces only the selected default). `select=off` rows carry
+        // the focus and held defaults but never the selected one.
+        for i in 0..self.page.nodes.len() {
+            if self.page.nodes[i].kind != Kind::ListItem {
+                continue;
+            }
+            let mut off = false;
+            let mut a = self.page.nodes[i].parent;
+            while a != NO_NODE {
+                if self.page.nodes[a as usize].kind == Kind::List {
+                    off = matches!(self.page.prop(a, PropKey::Select), Some(Value::VIdent(w)) if self.page.str(w) == "off");
+                    break;
+                }
+                a = self.page.nodes[a as usize].parent;
+            }
+            let (w0, wc) = self.page.nodes[i].whens;
+            let styled = |st: State| self.page.whens[w0 as usize..(w0 + wc) as usize].iter().any(|w| w.state == st);
+            let mut add: Vec<(State, Rgba)> = Vec::new();
+            // Priority comes from `State::priority` (focused < selected <
+            // held), so the injection order carries no weight.
+            if !styled(State::Focused) {
+                add.push((State::Focused, LIST_FOCUS_FILL));
+            }
+            if !off && !styled(State::Selected) {
+                add.push((State::Selected, LIST_SELECTED_FILL));
+            }
+            if !styled(State::Held) {
+                add.push((State::Held, LIST_HELD_FILL));
+            }
+            if add.is_empty() {
+                continue;
+            }
+            // Whens are one contiguous range per node: move the node's to
+            // the table's end and append the injected ones.
+            let n0 = self.page.whens.len() as u32;
+            for wi in w0..w0 + wc {
+                let w = self.page.whens[wi as usize];
+                self.page.whens.push(w);
+            }
+            let line = self.page.nodes[i].line;
+            for (state, color) in add {
+                let p0 = self.page.props.len() as u32;
+                self.page.props.push(Prop { key: PropKey::Background, value: Value::VColor(color) });
+                self.page.whens.push(When { state, props: (p0, 1), of: NO_NODE, line });
+            }
+            let count = self.page.whens.len() as u32 - n0;
+            self.page.nodes[i].whens = (n0, count);
+        }
         self.one_writer_guard();
     }
 
@@ -3959,7 +4527,7 @@ impl<'a> Compiler<'a> {
                 let target = &self.page.nodes[lane.node as usize];
                 for w in &self.page.whens[target.whens.0 as usize..(target.whens.0 + target.whens.1) as usize] {
                     let owner = if w.of == NO_NODE { lane.node } else { w.of };
-                    let node_state = matches!(w.state, State::Held | State::Hovered | State::Focused | State::FocusWithin | State::Selected | State::StateDisabled);
+                    let node_state = matches!(w.state, State::Held | State::Hovered | State::Focused | State::FocusWithin | State::Selected | State::StateDisabled | State::Custom(_));
                     let same_scope = if t.node == NO_NODE { !node_state } else { node_state && owner == t.node };
                     if !same_scope {
                         continue;
@@ -3994,6 +4562,7 @@ fn state_word(page: &Page, state: State) -> String {
         State::ScreenOrientation(w) | State::ScreenClass(w) => format!("screen.{}", page.str(w)),
         State::ArrangementScreen(i, w) => format!("{} screen.{}", page.arrangements.get(i as usize).map(|a| page.str(*a)).unwrap_or("base"), page.str(w)),
         State::ScreenPair(a, b) => format!("screen.{} screen.{}", page.str(a), page.str(b)),
+        State::Custom(s) => page.str(s).to_string(),
     }
 }
 

@@ -181,7 +181,7 @@ fn seat_move_targets_a_declared_seat() {
 fn untimed_arrangement_may_move_a_seat() {
     let mut fx = Fx::new("arrangement o\nwhen o { m.seat = s }\nView v { Row r halign=left, valign=top, height=20 { Column h { Rectangle m 10x10 }; seat s } }");
     assert_eq!(fx.children_of("h"), vec!["m"]);
-    fx.rt.go(0);
+    fx.rt.go_id(0);
     assert_eq!(fx.children_of("s"), vec!["m"], "{:?}", fx.lay().1);
 }
 
@@ -197,7 +197,7 @@ fn timed_arrangement_seat_move_builds_and_applies() {
     let tail = "when o { m.seat = s }\nView v { Row r halign=left, valign=top, height=20 { Column h { Rectangle m 10x10 }; seat s } }";
     for rule in ["transition base -> o duration=0.1", "transition duration=0.1", "transition any -> base duration=0.1"] {
         let mut fx = Fx::new(&format!("arrangement o\n{rule}\n{tail}"));
-        fx.rt.go(0);
+        fx.rt.go_id(0);
         assert_eq!(fx.children_of("s"), vec!["m"], "rule `{rule}`: {:?}", fx.lay().1);
     }
 }
@@ -226,9 +226,9 @@ fn one_occupant_per_seat() {
 #[test]
 fn two_arrangements_may_share_a_seat() {
     let mut fx = Fx::new("arrangement o\narrangement p\nwhen o { m.seat = s }\nwhen p { m2.seat = s }\nView v { Row r halign=left, valign=top, height=20 { Column h { Rectangle m 10x10; Rectangle m2 10x10 }; seat s } }");
-    fx.rt.go(0);
+    fx.rt.go_id(0);
     assert_eq!(fx.children_of("s"), vec!["m"]);
-    fx.rt.go(1);
+    fx.rt.go_id(1);
     assert_eq!(fx.children_of("s"), vec!["m2"]);
 }
 
@@ -281,19 +281,19 @@ fn seat_move_and_restore_lifecycle() {
     assert_eq!(fx.rect("sideSeat").w, 20.0, "seat.occupied-min: {:?}", fx.rect("sideSeat"));
     assert_eq!(fx.rect("mover").w, 20.0, "{:?}", fx.rect("mover"));
     // The composed pair outranks the class alone and drops with the arrangement.
-    fx.rt.go(0);
+    fx.rt.go_id(0);
     assert_eq!(fx.children_of("pairSeat"), vec!["mover"], "seat.pair-wins");
-    fx.rt.go(u32::MAX);
+    fx.rt.go_id(u32::MAX);
     assert_eq!(fx.children_of("sideSeat"), vec!["mover"], "seat.pair-drops");
     // `= home` (D238): parent AND index while the class move still holds.
-    fx.rt.go(1);
+    fx.rt.go_id(1);
     assert_eq!(fx.children_of("homeCol"), vec!["mover", "trail"], "seat.home-target");
-    fx.rt.go(u32::MAX);
+    fx.rt.go_id(u32::MAX);
     assert_eq!(fx.children_of("sideSeat"), vec!["mover"], "seat.home-target-drops");
     // A plain arrangement claim vs the class's sideSeat: equal rank (one
     // condition each), the LATER line wins — `when lifted` sits below
     // `when screen.landscapeSmall` in the fixture...
-    fx.rt.go(2);
+    fx.rt.go_id(2);
     assert_eq!(fx.children_of("liftSeat"), vec!["mover"], "seat.later-single-wins");
     // ...its composed claim (two conditions) outranks the plain one...
     fx.class(Some(ScreenClass::PortraitSmall));
@@ -302,7 +302,7 @@ fn seat_move_and_restore_lifecycle() {
     fx.class(None);
     assert_eq!(fx.children_of("liftSeat"), vec!["mover"], "seat.arrangement-no-class");
     // ...and dropping the arrangement sends mover home (parent AND index).
-    fx.rt.go(u32::MAX);
+    fx.rt.go_id(u32::MAX);
     assert_eq!(fx.children_of("homeCol"), vec!["mover", "trail"], "seat.arrangement-drops-home");
     fx.class(Some(ScreenClass::LandscapeSmall));
     assert_eq!(fx.children_of("sideSeat"), vec!["mover"], "seat.class-reapplies-after-arrangement");
@@ -345,8 +345,8 @@ fn untimed_arrangement_reanchor_restores_the_span() {
     let mut fx = Fx::new(ARRANGEMENT_ANCHOR);
     let span = fx.rect("card");
     assert!(span.x == 10.0 && span.w == 180.0, "aanchor.base-span: {span:?}");
-    fx.rt.go(0);
-    fx.rt.go(u32::MAX);
+    fx.rt.go_id(0);
+    fx.rt.go_id(u32::MAX);
     let back = fx.rect("card");
     assert!(back.x == 10.0 && back.w == 180.0, "aanchor.restores: {back:?}");
 }
@@ -356,10 +356,9 @@ fn untimed_arrangement_reanchor_restores_the_span() {
 /// x 10 — in Godot a posed alignment key RE-DECLARES the axis (the
 /// declared `margin_right=10` drops; the pose's own margin stands alone).
 #[test]
-#[ignore = "NEW: Godot docks the card at x=10 (posed halign drops the base margin_right) vs Rust x=20 (margin_right kept; aligned both-margins path adds margin_left twice)"]
 fn docked_pose_drops_the_base_pins() {
     let mut fx = Fx::new(ARRANGEMENT_ANCHOR);
-    fx.rt.go(0);
+    fx.rt.go_id(0);
     let docked = fx.rect("card");
     assert!(docked.x == 10.0 && docked.w == 40.0, "aanchor.docked: {docked:?}");
 }
@@ -396,12 +395,15 @@ View flowView {
 }
 ";
 
-/// `_flow_pose_tests` 7486-7487 `flow.err-align`: a `when` may not re-pin
-/// a stack child's alignment — the parent seats its children (D164).
+/// `_flow_pose_tests` 7486-7487 `flow.err-align`: Godot refuses a posed
+/// halign on a Column child ("seats its children"). FLIP (GPAR94, round
+/// 6, recorded): a stack child's `halign` binds on the CROSS axis in
+/// BOTH engines' static form, so the posed form stays meaningful here —
+/// it realigns the cross axis. Posed MARGINS on a stack child are
+/// refused (nothing for them to bind), matching the node-line G1014.
 #[test]
-#[ignore = "NEW: Godot refuses a posed halign on a Column child (\"seats its children\") vs Rust builds clean and realigns"]
-fn posed_alignment_on_a_stack_child_is_refused() {
-    assert!(refuses("when screen.landscapeSmall { b.halign=right }\nView v { Column c { Rectangle b 10x10 } }"));
+fn posed_alignment_on_a_stack_child_realigns_the_cross_axis() {
+    assert!(!refuses("when screen.landscapeSmall { b.halign=right }\nView v { Column c { Rectangle b 10x10 } }"));
 }
 
 /// `_flow_pose_tests` 7488-7489 `flow.err-margin`: a `when` may not pose a
@@ -436,11 +438,11 @@ fn poses_resize_stack_children_and_restore() {
     fx.class(Some(ScreenClass::LandscapeSmall));
     assert!(near(w(&fx, "lead"), 60.0, 0.5) && near(w(&fx, "mid"), 80.0, 0.5) && near(w(&fx, "btn"), 70.0, 0.5) && near(w(&fx, "tail"), 90.0, 0.5), "flow.posed: lead={} mid={} btn={} tail={}", w(&fx, "lead"), w(&fx, "mid"), w(&fx, "btn"), w(&fx, "tail"));
     assert!(near(w(&fx, "card"), 300.0, 0.5), "flow.card-unposed: {}", w(&fx, "card"));
-    fx.rt.go(0);
+    fx.rt.go_id(0);
     assert!(near(w(&fx, "lead"), 90.0, 0.5) && near(w(&fx, "tail"), 60.0, 0.5), "flow.pair-wins: lead={} tail={}", w(&fx, "lead"), w(&fx, "tail"));
     let card = fx.rect("card");
     assert!(near(card.x, 200.0, 0.5) && near(card.w, 100.0, 0.5), "flow.pair-align: {card:?}");
-    fx.rt.go(u32::MAX);
+    fx.rt.go_id(u32::MAX);
     assert!(near(w(&fx, "lead"), 60.0, 0.5), "flow.pair-drops: {}", w(&fx, "lead"));
     assert!(near(w(&fx, "card"), 300.0, 0.5), "flow.card-restores: {}", w(&fx, "card"));
     fx.class(None);
@@ -511,11 +513,11 @@ fn posed_sizes_move_the_real_box() {
 fn declared_floor_stands_under_a_posed_width() {
     let mut fx = Fx::new("arrangement abc\narrangement xyz\nwhen abc { floored.width = 40 }\nwhen xyz { floored.width = 20 }\nView v { Layers floored min_width=30, width=50, height=20, halign=left, valign=center }");
     assert_eq!(fx.rect("floored").w, 50.0, "psize.base");
-    fx.rt.go(0);
+    fx.rt.go_id(0);
     assert!(near(fx.rect("floored").w, 40.0, 0.5), "psize.floor-under: {:?}", fx.rect("floored"));
-    fx.rt.go(1);
+    fx.rt.go_id(1);
     assert!(near(fx.rect("floored").w, 30.0, 0.5), "psize.floor-wins: {:?}", fx.rect("floored"));
-    fx.rt.go(u32::MAX);
+    fx.rt.go_id(u32::MAX);
     assert_eq!(fx.rect("floored").w, 50.0, "psize.floor-restores");
 }
 
@@ -538,11 +540,11 @@ fn timed_grow_glides_the_box_both_ways() {
         rt.glide(rects)[g]
     };
     assert_eq!(frame(&mut rt, &mut page, 0.0).w, 80.0);
-    rt.go(2);
+    rt.go_id(2);
     assert_eq!(frame(&mut rt, &mut page, 0.0).w, 80.0, "psize.raise-deferred: no snap to 120 up front");
     assert_eq!(frame(&mut rt, &mut page, 0.6).w, 120.0, "psize.raise-lands");
     assert!(!rt.animating());
-    rt.go(u32::MAX);
+    rt.go_id(u32::MAX);
     // The shrink starts from the full 120 (the room Godot lowers the stamp
     // for) and is under way a tenth of a second later.
     assert_eq!(frame(&mut rt, &mut page, 0.0).w, 120.0, "psize.lower-immediate: the shrink starts from the full box");
@@ -625,12 +627,12 @@ fn reveal_pose_tweens_the_layout_space() {
     };
     let (_, r) = frame(&mut rt, &mut page, 0.0);
     assert!(r[hello as usize].h == 0.0 && r[hello as usize].w > 0.0, "reveal.concealed-min: {:?}", r[hello as usize]);
-    rt.go(0);
+    rt.go_id(0);
     let (_, r) = frame(&mut rt, &mut page, 0.05);
     assert!(r[hello as usize].h > 0.0 && r[hello as usize].h < nat, "reveal.tween-midway: {:?}", r[hello as usize]);
     let (res, r) = frame(&mut rt, &mut page, 0.3);
     assert!(near(r[hello as usize].h, nat, 0.01) && res.num(&page, hello, PropKey::Opacity) == Some(1.0), "reveal.open/open-min: {:?} opacity {:?}", r[hello as usize], res.num(&page, hello, PropKey::Opacity));
-    rt.go(u32::MAX);
+    rt.go_id(u32::MAX);
     let (_, r) = frame(&mut rt, &mut page, 0.3);
     assert_eq!(r[hello as usize].h, 0.0, "reveal.home");
     // The disclosure button composes with toggle(): a tap opens.

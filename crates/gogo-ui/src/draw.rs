@@ -152,7 +152,7 @@ pub(crate) fn clips(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId) -> 
                 px || py
             })
         });
-    matches!(node.kind, Kind::Scroll | Kind::Slot) || res.bool(page, id, PropKey::ClipContents).unwrap_or(false) || (node.kind == Kind::Label && res.bool(page, id, PropKey::ClipText).unwrap_or(false)) || written_overflow
+    matches!(node.kind, Kind::Scroll | Kind::List | Kind::Slot) || res.bool(page, id, PropKey::ClipContents).unwrap_or(false) || (node.kind == Kind::Label && res.bool(page, id, PropKey::ClipText).unwrap_or(false)) || written_overflow
 }
 
 fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, out: &mut Vec<Draw>) {
@@ -441,11 +441,33 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             walk(page, res, rects, c, opacity, out);
         }
     }
-    if node.kind == Kind::Scroll && res.ident(page, id, PropKey::Bars) != Some("never") {
+    if matches!(node.kind, Kind::Scroll | Kind::List) && res.ident(page, id, PropKey::Bars) != Some("never") {
         // Godot's auto scroll bars: a gray grabber in the right column /
-        // bottom row, as long as the viewport's share of the content.
-        let content_w = res.children(page, id).iter().map(|c| rects[*c as usize].w).fold(0.0, f32::max);
-        let content_h = res.children(page, id).iter().map(|c| rects[*c as usize].h).fold(0.0, f32::max);
+        // bottom row, as long as the viewport's share of the content —
+        // which is the UNION of the children's rects (a Scroll's one
+        // content box; a List's whole stacked body).
+        let mut kids = res.children(page, id);
+        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+        let mut any = false;
+        let mut i = 0;
+        while i < kids.len() {
+            let c = kids[i];
+            i += 1;
+            if page.nodes[c as usize].kind == Kind::Repeat {
+                kids.extend(res.children(page, c));
+                continue;
+            }
+            let r = rects[c as usize];
+            if r.w <= 0.0 && r.h <= 0.0 {
+                continue;
+            }
+            any = true;
+            lo[0] = lo[0].min(r.x);
+            lo[1] = lo[1].min(r.y);
+            hi[0] = hi[0].max(r.right());
+            hi[1] = hi[1].max(r.bottom());
+        }
+        let (content_w, content_h) = if any { (hi[0] - lo[0], hi[1] - lo[1]) } else { (0.0, 0.0) };
         let grabber = mul_alpha(SCROLL_GRABBER, opacity);
         let offset = res.scroll.get(id as usize).copied().unwrap_or([0.0, 0.0]);
         if content_h > rect.h {
@@ -561,7 +583,7 @@ fn hit_laid(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: bo
         // `interactive=true` claims input (the catcher plate), `false`
         // makes a control hit-invisible; else input-taking kinds only.
         let interactive = res.bool(page, id, PropKey::Interactive);
-        let takes_input = any || interactive == Some(true) || (interactive != Some(false) && (node.kind.is_press_surface() || matches!(node.kind, Kind::Scroll | Kind::Slider | Kind::Input)));
+        let takes_input = any || interactive == Some(true) || (interactive != Some(false) && (node.kind.is_press_surface() || matches!(node.kind, Kind::Scroll | Kind::List | Kind::Slider | Kind::Input)));
         if !takes_input {
             continue;
         }

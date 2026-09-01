@@ -52,12 +52,12 @@ fn base_is_the_rest_end_of_a_builtin_flip_and_home_mirrors_it() {
     let bar = page.find("bar").unwrap();
     let mut rt = Runtime::new(&page);
     resolve_animated(&page, &mut rt);
-    rt.go(0);
+    rt.go_id(0);
     resolve_animated(&page, &mut rt);
     rt.tick(&mut page, 1.0);
     let r = resolve_animated(&page, &mut rt);
     assert_eq!(r.placement[bar as usize].width, Len::Exact(300.0));
-    rt.go(BASE);
+    rt.go_id(BASE);
     resolve_animated(&page, &mut rt);
     rt.tick(&mut page, 0.5);
     let r = resolve_animated(&page, &mut rt);

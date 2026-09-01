@@ -418,7 +418,6 @@ fn render_theme_entry_style_applies() {
 /// `control Slider { … }` shadows the built-in and is refused. Rust
 /// expands the widget silently — `Slider s` becomes the widget's Layers.
 #[test]
-#[ignore = "NEW: Godot refuses a `control Slider` shadowing the built-in vs Rust expands it silently (`s` becomes Kind::Layers)"]
 fn render_shadowing_a_builtin_kind_is_refused() {
     let c = build("control Slider $value=0 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n Layers { slot track { } }\n}\nView v { Slider s value=1 }");
     assert!(gogo::has_errors(&c.diags), "shadowing a built-in is an error; got kind {:?}", c.page.nodes[c.page.find("s").unwrap() as usize].kind);
@@ -822,7 +821,6 @@ fn wiring_unknown_emit_name_is_the_hosts_rustc_error() {
 /// malformed — the form is `emit(HostSignalName)`. Rust keeps the first
 /// argument and drops the rest silently.
 #[test]
-#[ignore = "NEW: Godot refuses `emit(relayed, 2)` (form is emit(HostSignalName)) vs Rust keeps the first arg and drops the rest silently"]
 fn wiring_emit_takes_exactly_one_name() {
     assert!(gogo::has_errors(&diags("View v { Button b on:activate=emit(relayed, 2) }")));
 }
@@ -1003,13 +1001,14 @@ fn diag_unclosed_brace_is_refused() {
 fn diag_source_and_registry_match_both_ways() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut codes: Vec<String> = Vec::new();
-    for file in ["compile.rs", "parser.rs", "lexer.rs"] {
+    for file in ["compile.rs", "parser.rs", "lexer.rs", "runtime.rs"] {
         let text = std::fs::read_to_string(root.join("src").join(file)).unwrap();
         let bytes = text.as_bytes();
         let mut i = 0;
         while let Some(at) = text[i..].find("\"G") {
             let start = i + at + 1;
-            if start + 5 <= bytes.len() && bytes[start + 1..start + 5].iter().all(u8::is_ascii_digit) && bytes.get(start + 5) == Some(&b'"') {
+            // `"G9101"` (a diag call) or `"G9101: …` (a runtime Err string).
+            if start + 5 <= bytes.len() && bytes[start + 1..start + 5].iter().all(u8::is_ascii_digit) && matches!(bytes.get(start + 5), Some(&b'"') | Some(&b':')) {
                 let code = text[start..start + 5].to_string();
                 if !codes.contains(&code) {
                     codes.push(code);
@@ -1045,4 +1044,72 @@ fn diag_source_and_registry_match_both_ways() {
     let mut declared: Vec<&str> = gogo::diag::SHARED_WITH_ADDON.to_vec();
     declared.sort_unstable();
     assert_eq!(shared, declared, "a code shared with the published registry is shared on purpose only — same meaning, listed in diag::SHARED_WITH_ADDON");
+}
+
+/// gogo_control_root.gd:389 `declared_states()` + resolver 7752/7780/8214
+/// (GPAR116, round 5): a control's `state a, b` line declares its own
+/// state vocabulary — the host raises one through `Runtime::set_custom`
+/// on the instance root, `when <name>` responds ANYWHERE in that control
+/// (a descendant's block watches the root), an instance-site `when
+/// <name>` binds too, and a declared state outranks the built-ins (the
+/// addon's priority 100+). An undeclared name is refused at the seam,
+/// and `when <name>` outside the control stays G0036.
+#[test]
+fn a_declared_state_raises_through_the_control_seam() {
+    let src = r#"control Spinner {
+    state busy, broken
+    Panel body width=100, height=40, background=#333333 {
+        when busy opacity=0.5
+        Label tag text="ready" {
+            when broken opacity=0.25
+        }
+    }
+}
+View v { Column c halign=left, valign=top { Spinner sp; Spinner sp2 { when busy opacity=0.75 } } }
+"#;
+    let c = ok(src);
+    let page = c.page;
+    let mut rt = Runtime::new(&page);
+    let sp = page.find("sp").unwrap();
+    let tag = page.find("sp/tag").unwrap();
+    // the seam refuses a name the control never declared
+    let err = rt.set_custom(&page, sp, "spinning", true).unwrap_err();
+    assert!(err.contains("declared state"), "{err}");
+    rt.set_custom(&page, sp, "busy", true).unwrap();
+    let res = resolve(&page, &rt);
+    assert_eq!(res.num(&page, sp, PropKey::Opacity), Some(0.5), "the root's own `when busy` responds");
+    // a DESCENDANT's `when broken` watches the control root
+    rt.set_custom(&page, sp, "broken", true).unwrap();
+    let res = resolve(&page, &rt);
+    assert_eq!(res.num(&page, tag, PropKey::Opacity), Some(0.25), "a when anywhere in the control responds");
+    // clearing unwinds; the second instance never moved
+    rt.set_custom(&page, sp, "busy", false).unwrap();
+    rt.set_custom(&page, sp, "broken", false).unwrap();
+    let res = resolve(&page, &rt);
+    assert_eq!(res.num(&page, sp, PropKey::Opacity), None, "cleared");
+    // the instance-site `when busy` binds to that instance's root
+    let sp2 = page.find("sp2").unwrap();
+    rt.set_custom(&page, sp2, "busy", true).unwrap();
+    let res = resolve(&page, &rt);
+    assert_eq!(res.num(&page, sp2, PropKey::Opacity), Some(0.75), "instance-site when");
+    assert_eq!(res.num(&page, sp, PropKey::Opacity), None, "sp stays at rest");
+    // outside any control the word is still an unknown state
+    let d = diags("View v { Panel p { when busy opacity=0.5 } }");
+    assert!(has_code(&d, "G0036"), "{d:#?}");
+}
+
+/// GPAR61 (round 7, 2026-08-31): the addon's third leg — every
+/// registered code has a teaching entry in docs/gogo-errors.md and every
+/// entry is a registered code (no page for a retired number can linger).
+#[test]
+fn every_diag_code_has_a_teaching_entry_and_no_entry_is_stale() {
+    let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/gogo-errors.md")).expect("docs/gogo-errors.md");
+    let headings: Vec<&str> = doc.lines().filter_map(|l| l.strip_prefix("## ")).filter_map(|l| l.split_whitespace().next()).collect();
+    for (code, _) in gogo::diag::REGISTRY {
+        assert!(headings.contains(code), "`{code}` is registered but has no `## {code}` entry in docs/gogo-errors.md");
+    }
+    for h in &headings {
+        assert!(gogo::diag::REGISTRY.iter().any(|(c, _)| c == h), "docs/gogo-errors.md teaches `{h}`, which is not a registered code");
+        assert!(!gogo::diag::RETIRED.contains(h), "docs/gogo-errors.md teaches retired `{h}`");
+    }
 }

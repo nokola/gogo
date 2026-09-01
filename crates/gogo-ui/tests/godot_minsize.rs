@@ -150,7 +150,7 @@ fn seat_measures_its_occupant_by_declared_width_intent() {
     let c = ok("arrangement seated\nView v {\n Column col halign=left, valign=top, width=100 {\n  Row hugRow height=30 { seat hugSeat }\n  Row hugnRow height=30 { seat hugnSeat }\n  seat fillSeat\n }\n Panel hugOcc { Label hugLbl text=\"a reseated line with room to wrap\", wrap=true }\n Panel hugnOcc width=hug(2) { Label hugnLbl text=\"a reseated line with room to wrap\", wrap=true }\n Panel fillOcc width=fill { Label fillLbl text=\"a reseated line with room to wrap\", wrap=true }\n}\nwhen seated {\n hugOcc.seat = hugSeat\n hugnOcc.seat = hugnSeat\n fillOcc.seat = fillSeat\n}\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go(0);
+    rt.go_id(0);
     let (_, rects) = lay(&page, &rt, 400.0, 400.0);
     // 33 chars × 8.25 = 272.25 unwrapped.
     let unwrapped = 272.25;
@@ -179,7 +179,7 @@ fn a_fill_occupant_in_a_row_seat_reports_wrapped() {
     let c = ok("arrangement seated\nView v {\n Column col halign=left, valign=top, width=100 {\n  Row fillRow height=30 { seat fillSeat }\n }\n Panel fillOcc width=fill { Label fillLbl text=\"a reseated line with room to wrap\", wrap=true }\n}\nwhen seated { fillOcc.seat = fillSeat }\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go(0);
+    rt.go_id(0);
     let (_, rects) = lay(&page, &rt, 400.0, 400.0);
     let fill_seat = rect(&page, &rects, "fillSeat");
     assert!(fill_seat.w < 272.25 * 0.5, "fill occupant should wrap: {fill_seat:?}");
@@ -538,12 +538,16 @@ fn aspect_derives_the_unspelled_axis() {
 /// the two passes used to disagree by the border on ListItem/Slot.
 #[test]
 fn border_insets_content_in_layout_on_every_kind() {
-    let c = ok("View v { List l halign=left, valign=top, width=200 {\n ListItem li border_thickness=3, padding=5 { Rectangle r min_size=10x10 }\n} }\n");
-    let page = c.page;
-    let rt = Runtime::new(&page);
+    // (The fixture wears the full legal List shape — empty seat + one
+    // repeat — since the round-6 structure fences; one live row.)
+    let c = ok("View v { List l halign=left, valign=top, width=200 {\n empty { }\n repeat t capacity=1 { ListItem li border_thickness=3, padding=5 { Rectangle r min_size=10x10 } }\n} }\n");
+    let mut page = c.page;
+    let mut rt = Runtime::new(&page);
+    let rep = page.find("t").unwrap();
+    rt.set_count(&mut page, rep, 1);
     let (_, rects) = lay(&page, &rt, 400.0, 400.0);
-    let li = rect(&page, &rects, "li");
-    let r = rect(&page, &rects, "r");
+    let li = rect(&page, &rects, "t/0/li");
+    let r = rect(&page, &rects, "t/0/r");
     assert_eq!(r.x - li.x, 8.0, "border 3 + padding 5: li={li:?} r={r:?}");
     assert_eq!(r.y - li.y, 8.0, "li={li:?} r={r:?}");
 }
@@ -780,13 +784,13 @@ fn a_capped_layers_under_a_column_follows_content_between_floor_and_cap() {
     };
     let (h, y) = row_and_below(&rt);
     assert!(near(h, 30.0) && near(y, 30.0), "floor: row={h} below={y}");
-    rt.go(0);
+    rt.go_id(0);
     let (h, y) = row_and_below(&rt);
     assert!(near(h, 45.0) && near(y, 45.0), "follows: row={h} below={y}");
-    rt.go(1);
+    rt.go_id(1);
     let (h, y) = row_and_below(&rt);
     assert!(near(h, 60.0) && near(y, 60.0), "cap binds: row={h} below={y}");
-    rt.go(u32::MAX);
+    rt.go_id(u32::MAX);
     let (h, y) = row_and_below(&rt);
     assert!(near(h, 30.0) && near(y, 30.0), "shrinks back: row={h} below={y}");
 }
@@ -800,7 +804,7 @@ fn content_past_a_container_cap_is_clipped_not_overdrawn() {
     let c = ok(CCAP_SRC);
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go(1);
+    rt.go_id(1);
     let (res, rects) = lay(&page, &rt, 40.0, 120.0);
     let row = rect(&page, &rects, "ccRow");
     let content = rect(&page, &rects, "ccContent");
@@ -834,7 +838,7 @@ fn a_seated_glyph_stays_put_when_its_minimum_changes() {
     let (_, rects) = lay(&page, &rt, 200.0, 200.0);
     let glyph = rect(&page, &rects, "seatGlyph");
     assert!(near(glyph.x, 17.0) && near(glyph.y, 43.0), "{glyph:?}");
-    rt.go(0);
+    rt.go_id(0);
     let (_, rects) = lay(&page, &rt, 200.0, 200.0);
     let glyph = rect(&page, &rects, "seatGlyph");
     assert!(near(glyph.x, 17.0) && near(glyph.y, 43.0) && near(glyph.h, 4.0), "{glyph:?}");

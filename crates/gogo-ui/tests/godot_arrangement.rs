@@ -304,7 +304,6 @@ fn misspelled_arrangement_hint_names_the_nearest() {
 /// arrangement may not take a built-in state's name (`held`) or a retired
 /// state spelling (`pressed`). Rust builds both.
 #[test]
-#[ignore = "NEW: Godot refuses `arrangement held` / `arrangement pressed` vs Rust builds both"]
 fn arrangement_may_not_shadow_a_state_word() {
     assert!(refused("arrangement held\nView v { Rectangle bar }"), "a built-in state's name");
     assert!(refused("arrangement pressed\nView v { Rectangle bar }"), "a retired spelling");
@@ -314,7 +313,6 @@ fn arrangement_may_not_shadow_a_state_word() {
 /// refused — an arrangement line declares a name, nothing else. Rust
 /// builds it and drops the prop without a word.
 #[test]
-#[ignore = "NEW: Godot refuses props on an `arrangement` line vs Rust builds and drops `bar.width=2` silently"]
 fn arrangement_line_declares_a_name_only() {
     let src = "arrangement s bar.width=2\nView v { Rectangle bar }";
     assert!(refused(src), "{:#?}", diags(src));
@@ -324,25 +322,25 @@ fn arrangement_line_declares_a_name_only() {
 /// takes per-edge margin pins, never the `margin=` shorthand. Rust
 /// accepts `bar.margin=4` in a `when` and sets all four edges.
 #[test]
-#[ignore = "NEW: Godot refuses `x.margin=N` in a when (per-edge pins only) vs Rust applies it to all four edges"]
 fn posed_margin_shorthand_is_refused() {
     assert!(refused("arrangement s\nwhen s { bar.margin=4 }\nView v { Layers l { Rectangle bar halign=left } }"), "arrangement pose");
     assert!(refused("when screen.landscapeSmall { bar.margin=4 }\nView v { Layers l { Rectangle bar halign=left } }"), "screen pose");
 }
 
-/// `arr.err-center-margin` (6763): a posed `margin_left` on a centered box
-/// pins no edge and is refused. Rust builds it.
+/// `arr.err-center-margin` (6763): Godot refuses a posed `margin_left`
+/// on a centered box ("pins no edge"). FLIP (GPAR94, round 6, recorded):
+/// in Rust a margin on a centered or aligned axis is LOAD-BEARING — it
+/// feeds a hug parent's claim (D241/D242) and a centered pair shifts the
+/// center (GPAR38) — so the pose builds and means what it says.
 #[test]
-#[ignore = "NEW: Godot refuses a posed margin on a `halign=center` box (doesn't bind) vs Rust builds it"]
-fn posed_margin_on_a_centered_axis_is_refused() {
+fn posed_margin_on_a_centered_axis_builds_here() {
     let src = "arrangement s\nwhen s { bar.margin_left=4 }\nView v { Layers l { Rectangle bar halign=center, width=20 } }";
-    assert!(refused(src), "{:#?}", diags(src));
+    assert!(!refused(src), "{:#?}", diags(src));
 }
 
 /// `arr.err-when-empty` (6770): `when s { }` holds no responses and is
 /// refused. Rust builds it.
 #[test]
-#[ignore = "NEW: Godot refuses an empty `when s { }` (no responses) vs Rust builds it"]
 fn empty_when_block_is_refused() {
     let src = "arrangement s\nwhen s { }\nView v { Rectangle bar }";
     assert!(refused(src), "{:#?}", diags(src));
@@ -384,7 +382,6 @@ fn transition_scope_rules_are_checked() {
 /// `arr.err-toggle-form` (6796): `toggle(a, b)` is not the toggle form.
 /// Rust reads the first argument and drops the rest.
 #[test]
-#[ignore = "NEW: Godot refuses `toggle(a, b)` (form is toggle(name)) vs Rust reads `a` and drops `b` silently"]
 fn toggle_takes_exactly_one_arrangement() {
     let src = "arrangement a\nView v { Button b 50x50, on:activate=toggle(a, b) }";
     assert!(refused(src), "{:#?}", diags(src));
@@ -435,7 +432,7 @@ fn arrangement_flip_poses_tweens_and_comes_home() {
     assert!(near(b.bottom(), H) && near(b.y, H - 60.0), "base pose: {b:?}");
     assert_eq!(rt.arrangement, BASE);
 
-    rt.go(collapsed);
+    rt.go_id(collapsed);
     assert_eq!(rt.arrangement, collapsed);
     frame(&mut page, &mut rt, 0.0);
     let (_, rects) = frame(&mut page, &mut rt, 0.05);
@@ -452,7 +449,7 @@ fn arrangement_flip_poses_tweens_and_comes_home() {
     let b = again[bar as usize];
     assert!(near(b.bottom(), H + 40.0) && near(b.y, H - 50.0), "re-assert on relayout: {b:?}");
 
-    rt.go(BASE);
+    rt.go_id(BASE);
     frame(&mut page, &mut rt, 0.0);
     let (res, rects) = frame(&mut page, &mut rt, 0.3);
     let b = rects[bar as usize];
@@ -480,7 +477,7 @@ fn go_and_toggle_buttons_flip_the_arrangement() {
     assert_eq!(rt.arrangement, BASE, "toggle from its own pose comes home");
     tap(&page, &mut rt, &mut input, toggle_btn, 3.0);
     assert_eq!(rt.arrangement, collapsed, "toggle from base goes there");
-    rt.go(wide);
+    rt.go_id(wide);
     tap(&page, &mut rt, &mut input, toggle_btn, 4.0);
     assert_eq!(rt.arrangement, collapsed, "toggle from another pose goes there");
 }
@@ -489,14 +486,13 @@ fn go_and_toggle_buttons_flip_the_arrangement() {
 /// never declared is refused and the current pose stays. Rust accepts
 /// any index, which drops the pose.
 #[test]
-#[ignore = "GPAR27: Runtime::go(unknown) accepted; Godot refuses and keeps the pose"]
 fn unknown_arrangement_flip_keeps_the_pose() {
     let c = ok(STATE_VIEW);
     let page = c.page;
     let bar = page.find("bar").unwrap();
     let mut rt = Runtime::new(&page);
-    rt.go(0);
-    rt.go(99);
+    rt.go_id(0);
+    rt.go_id(99);
     let (_, rects) = lay(&page, &rt);
     assert_eq!(rt.arrangement, 0, "the pose is kept");
     assert!(near(rects[bar as usize].h, 90.0), "{:?}", rects[bar as usize]);
@@ -606,7 +602,7 @@ fn view_rule_times_the_flip_and_retargets_mid_flight() {
     let tag = page.find("tag").unwrap() as usize;
     let mut rt = Runtime::new(&page);
     frame(&mut page, &mut rt, 0.0);
-    rt.go(0);
+    rt.go_id(0);
     frame(&mut page, &mut rt, 0.0);
     let (_, r) = frame(&mut page, &mut rt, 0.25);
     assert!((r[slab].y - 87.5).abs() < 0.01, "view timing: {:?}", r[slab]);
@@ -615,15 +611,15 @@ fn view_rule_times_the_flip_and_retargets_mid_flight() {
     let (_, r) = frame(&mut page, &mut rt, 0.5);
     assert!(near(r[plate].y, 100.0), "node lands: {:?}", r[plate]);
 
-    rt.go(BASE);
+    rt.go_id(BASE);
     frame(&mut page, &mut rt, 0.0);
     let (_, r) = frame(&mut page, &mut rt, 10.0);
     assert!(near(r[slab].y, 0.0) && near(r[plate].y, 0.0) && near(r[tag].y, 0.0), "home: {:?}/{:?}/{:?}", r[slab], r[plate], r[tag]);
-    rt.go(0);
+    rt.go_id(0);
     frame(&mut page, &mut rt, 0.0);
     let (_, r) = frame(&mut page, &mut rt, 0.25);
     let mid = r[slab].y;
-    rt.go(BASE);
+    rt.go_id(BASE);
     let (_, r) = frame(&mut page, &mut rt, 0.0);
     assert!((r[slab].y - mid).abs() < 0.01, "retarget: no snap at the flip: {} vs {mid}", r[slab].y);
     let (_, r) = frame(&mut page, &mut rt, 0.05);
@@ -645,7 +641,7 @@ fn node_pose_pair_rules_time_their_own_share() {
     let tag = page.find("tag").unwrap() as usize;
     let mut rt = Runtime::new(&page);
     frame(&mut page, &mut rt, 0.0);
-    rt.go(0);
+    rt.go_id(0);
     let (_, r) = frame(&mut page, &mut rt, 0.0);
     assert!(near(r[tag].y, 100.0), "duration=0 snaps at flip time: {:?}", r[tag]);
     let (_, r) = frame(&mut page, &mut rt, 0.25);
@@ -691,7 +687,6 @@ fn posed_alignment_value_is_checked() {
 /// blocks of the SAME condition may not both set one prop. Rust merges
 /// them and the later line wins silently.
 #[test]
-#[ignore = "NEW: Godot refuses two `when <same condition>` blocks setting one prop (both set) vs Rust merges them, last wins"]
 fn two_blocks_of_one_condition_may_not_both_set_a_prop() {
     assert!(refused("when screen.landscapeSmall { bar.opacity=0.5 }\nwhen screen.landscapeSmall { bar.opacity=1 }\nView v { Rectangle bar }"), "class");
     assert!(refused("arrangement o\nwhen o screen.landscapeSmall { bar.opacity=0.5 }\nwhen o screen.landscapeSmall { bar.opacity=1 }\nView v { Rectangle bar }"), "pair");
@@ -701,7 +696,6 @@ fn two_blocks_of_one_condition_may_not_both_set_a_prop() {
 /// child with a margin — the Column seats its children. Rust builds it
 /// (the static-margin lint G1014 does not look into `when` blocks).
 #[test]
-#[ignore = "NEW: Godot refuses a posed margin on a Column child (seats its children) vs Rust builds it"]
 fn posed_margin_on_a_stack_child_is_refused() {
     let src = "when screen.landscapeSmall { bar.margin_left=4 }\nView v { Column c { Rectangle bar width=20, height=20 } }";
     assert!(refused(src), "{:#?}", diags(src));
@@ -730,7 +724,7 @@ fn alignment_pose_under_a_timed_arrangement_builds_and_glides() {
     let mut rt = Runtime::new(&page);
     let (_, r) = frame(&mut page, &mut rt, 0.0);
     assert_eq!(r[bar].w, 80.0, "base spans the margins: {:?}", r[bar]);
-    rt.go(0);
+    rt.go_id(0);
     frame(&mut page, &mut rt, 0.0);
     let (_, r) = frame(&mut page, &mut rt, 0.1);
     assert!(r[bar].w < 80.0 && r[bar].w > 0.0, "gliding toward the left-docked hug: {:?}", r[bar]);
@@ -739,16 +733,18 @@ fn alignment_pose_under_a_timed_arrangement_builds_and_glides() {
     assert!(!rt.animating());
 }
 
-/// `screen.err-pair-node-scope` (7018): a composed `when <arrangement>
-/// screen.<class>` is a view-level block; inside a node it is refused.
-/// Rust accepts the block form on a node (GP1's own pin uses it); the
-/// Godot one-line spelling `when o screen.landscapeSmall opacity=0.5`
-/// happens to fail there as a parse error (G0017), not as the scope rule.
+/// `screen.err-pair-node-scope` (7018): Godot takes a composed `when
+/// <arrangement> screen.<class>` at view level only. FLIP (GPAR94,
+/// DECIDED by the user 2026-09-01): a `when` works the same wherever a
+/// `when` is legal — adding a screen word to a node's condition must not
+/// force the block to the top of the file, and a STYLE's blocks (which
+/// attach to nodes) could otherwise never compose at all. The one-writer
+/// fence still refuses two blocks on one condition writing one prop,
+/// wherever the two sit, so conflicts stay visible.
 #[test]
-#[ignore = "NEW: Godot refuses a node-scope composed pair (view-level only) vs Rust builds `Rectangle bar { when o screen.landscapeSmall { opacity=0.5 } }`"]
-fn composed_pair_is_view_level_only() {
+fn composed_pair_binds_at_node_scope_too() {
     let src = "arrangement o\nView v { Rectangle bar { when o screen.landscapeSmall { opacity=0.5 } } }";
-    assert!(refused(src), "{:#?}", diags(src));
+    assert!(!refused(src), "{:#?}", diags(src));
 }
 
 // ---------------------------------------------------- _screen_tests: runtime
@@ -788,7 +784,7 @@ fn screen_class_poses_compose_with_arrangements() {
     let b = r[bar as usize];
     assert!(near(b.bottom(), H + 10.0) && near(b.y, H - 70.0) && near(opacity(&page, &res, tag), 0.25), "class pose: {b:?} tag={}", opacity(&page, &res, tag));
 
-    rt.go(open);
+    rt.go_id(open);
     frame(&mut page, &mut rt, 0.0);
     let (res, r) = frame(&mut page, &mut rt, 0.3);
     let b = r[bar as usize];
@@ -800,7 +796,7 @@ fn screen_class_poses_compose_with_arrangements() {
     assert!(near(p.x, 10.0) && near(p.right(), W - 10.0) && near(opacity(&page, &res, chip), 1.0), "pair lets go with the class: {p:?} chip={}", opacity(&page, &res, chip));
 
     set_class(&page, &mut rt, ScreenClass::LandscapeSmall);
-    rt.go(BASE);
+    rt.go_id(BASE);
     frame(&mut page, &mut rt, 0.0);
     let (_, r) = frame(&mut page, &mut rt, 0.3);
     let b = r[bar as usize];
@@ -820,7 +816,6 @@ fn screen_class_poses_compose_with_arrangements() {
 /// the class pose's 20 when the arrangement leaves. Rust counts the near
 /// margin twice on an aligned axis with both margins (x=40 / 80).
 #[test]
-#[ignore = "GPAR38: aligned axis with both margins double-counts the near margin (pane x=40, Godot 20)"]
 fn pane_axis_redeclare_and_pair_margin() {
     let c = ok(SCREEN_VIEW);
     let mut page = c.page;
@@ -831,7 +826,7 @@ fn pane_axis_redeclare_and_pair_margin() {
     let (_, r) = lay(&page, &rt);
     let p = r[pane as usize];
     assert!(near(p.x, 20.0) && near(p.right(), 100.0), "axis re-declare: {p:?}");
-    rt.go(0);
+    rt.go_id(0);
     frame(&mut page, &mut rt, 0.0);
     let (res, r) = frame(&mut page, &mut rt, 0.3);
     let p = r[pane as usize];
@@ -842,7 +837,7 @@ fn pane_axis_redeclare_and_pair_margin() {
     let (res, r) = frame(&mut page, &mut rt, 0.3);
     let p = r[pane as usize];
     assert!(near(p.x, 40.0) && near(opacity(&page, &res, chip), 0.5), "pair re-applies: {p:?} chip={}", opacity(&page, &res, chip));
-    rt.go(BASE);
+    rt.go_id(BASE);
     frame(&mut page, &mut rt, 0.0);
     let (res, r) = frame(&mut page, &mut rt, 0.3);
     let p = r[pane as usize];
@@ -1006,9 +1001,9 @@ fn orientation_axis_poses_pairs_and_the_seat_move() {
     let (res, r) = lay(&page, &rt);
     assert!(near(r[bar as usize].h, 44.0) && near(opacity(&page, &res, chip), 0.5), "pair over the single: {:?} chip={}", r[bar as usize], opacity(&page, &res, chip));
 
-    rt.go(0);
+    rt.go_id(0);
     frame(&mut page, &mut rt, 0.3);
-    rt.go(BASE);
+    rt.go_id(BASE);
     frame(&mut page, &mut rt, 0.0);
     let (_, r) = frame(&mut page, &mut rt, 0.3);
     assert!(near(r[bar as usize].h, 44.0), "arrangement off keeps the pair: {:?}", r[bar as usize]);
@@ -1044,7 +1039,7 @@ fn equal_count_pairs_tie_to_the_later_line() {
         let bar = page.find("bar").unwrap();
         let mut rt = Runtime::new(&page);
         rt.set_screen(&page, Orientation::Landscape, ScreenClass::LotsOfSpace);
-        rt.go(0);
+        rt.go_id(0);
         let (res, _) = lay(&page, &rt);
         assert_eq!(res.placement[bar as usize].height, Len::Exact(want), "{:?}", res.placement[bar as usize]);
     }
@@ -1093,12 +1088,12 @@ View v {
         let tag = page.find("tag").unwrap();
         let mut rt = Runtime::new(&page);
         rt.set_screen(&page, Orientation::Landscape, ScreenClass::LotsOfSpace);
-        rt.go(0);
+        rt.go_id(0);
         let (res, _) = lay(&page, &rt);
         assert_eq!(res.placement[bar as usize].height, Len::Exact(want_h), "{:?}", res.placement[bar as usize]);
         assert!(near(opacity(&page, &res, tag), want_a), "opacity {}", opacity(&page, &res, tag));
         // Only one of the two holds → that one poses, order irrelevant.
-        rt.go(u32::MAX);
+        rt.go_id(u32::MAX);
         let (res, _) = lay(&page, &rt);
         assert_eq!(res.placement[bar as usize].height, Len::Exact(30.0));
     }
@@ -1120,3 +1115,20 @@ fn portrait_with_an_unposed_class_is_base() {
     assert!(near(r[bar as usize].h, 20.0), "{:?}", r[bar as usize]);
 }
 
+/// GPAR27 (round 6, 2026-08-31): `go` with an arrangement the page never
+/// declared KEEPS the pose (the addon's printerr + early return). The
+/// typed door (`Runtime::go(Arrangement::Wide)` on the emitted enum)
+/// makes the misspelling a rustc error instead; `go_id` is the
+/// runtime-compiled page's door and carries the guard.
+#[test]
+fn go_with_an_unknown_arrangement_keeps_the_pose() {
+    let c = ok("arrangement wide\nView v { Panel p width=10, height=10 }\nwhen wide { p.width = 20 }\n");
+    let page = c.page;
+    let mut rt = Runtime::new(&page);
+    rt.go_id(0);
+    assert_eq!(rt.arrangement, 0, "the declared arrangement lands");
+    rt.go_id(7);
+    assert_eq!(rt.arrangement, 0, "an unknown index is refused and the pose keeps");
+    rt.go_id(gogo::runtime::BASE);
+    assert_eq!(rt.arrangement, gogo::runtime::BASE, "base is always reachable");
+}

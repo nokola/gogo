@@ -12,7 +12,11 @@ pub enum AstValue {
     /// must point its errors at itself, not at the `areas=` word
     /// (GPAR99).
     Str { text: String, key: Option<String>, line: u32 },
-    Ref { name: String, opacity: Option<f32> },
+    Ref { name: String, opacity: Option<f32>, pos: Option<f32> },
+    /// A named call argument (`arc(from=-225, sweep=270)`) — the grammar
+    /// production (GPAR32); which calls READ the names is each call
+    /// site's own business (GP40/GP33 track the features).
+    Named { name: String, value: Box<AstValue> },
     Ident { word: String, opacity: Option<f32>, pos: Option<f32> },
     Size { w: Option<f32>, h: Option<f32> },
     Call { name: String, args: Vec<AstValue> },

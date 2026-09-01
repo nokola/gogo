@@ -128,6 +128,8 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G0077", "control-body lines in a widget body"),
     ("G0078", "a bool key / `overlay` with `space_only`"),
     ("G0079", "unknown unit on a number"),
+    ("G0080", "`round()` goes inside `live()`"),
+    ("G0081", "`bind()` is gone — write `live(...)`"),
     ("G1002", "grid track bookkeeping — arity, spans and the skip they owe"),
     ("G1003", "areas-form rules — rectangles, one name per child, tracks per line"),
     ("G1004", "`wrap=true` with no width to wrap at (lint)"),
@@ -138,6 +140,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G1014", "margins under a Column/Row/Flow/Grid"),
     ("G1015", "a seat declaration's shape — a named, empty socket in a container"),
     ("G1017", "`aspect=` contract — one driven axis, a free parent, a positive ratio"),
+    ("G1018", "a List's `max_height=` rides `height=hug` — the cap bounds the hug, then the list scrolls"),
     ("G1016", "a seat move's rules — a declared seat, a container home, one writer, no cycles"),
     ("G2001", "unknown property"),
     ("G2002", "a property spelled in another dialect / another kind's word"),
@@ -156,6 +159,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G5002", "unknown style"),
     ("G5003", "widget cycle"),
     ("G5105", "an automatic slot in a host that measures children — driven layout must stay relayout-local"),
+    ("G5106", "an `automatic=position` slot takes its width from its content"),
     ("G5107", "`automatic=` driver coupling"),
     ("G6001", "undefined `$ref`"),
     ("G6002", "`$value` defined twice"),
@@ -173,6 +177,20 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G9004", "the item binding shadows a `$` value"),
     ("G9007", "`empty { }` block rules"),
     ("G9008", "a dotted `$ref` outside a repeat item binding"),
+    ("G9010", "a List holds exactly one `repeat`"),
+    ("G9011", "a List row's root is a `ListItem`"),
+    ("G9013", "`ListItem` belongs at a List repeat's root; a List has no slots"),
+    ("G9014", "a `when selected` below the row's root never fires (warning)"),
+    ("G9015", "a viewport List its ancestors provably starve (warning)"),
+    ("G9016", "a List declares one `empty { }` zero-items view, at the List level"),
+    ("G9017", "`layout` block rules — inside a List, a closed kind set, rows only"),
+    // Runtime refusals: carried in `Err` strings from `Runtime::set_items`
+    // / `set_selected`, not compile diagnostics — registered so the code a
+    // host prints is findable in docs/gogo-errors.md like any other.
+    ("G9101", "`set_items` refused whole — not a keyed repeat, or an item broke the template"),
+    ("G9102", "item key shape — strings or whole numbers, one type per assignment"),
+    ("G9103", "duplicate item key"),
+    ("G9104", "`selected` write refused — the last good selection stands"),
 ];
 
 /// The codes above that also stand in the addon's PUBLISHED registry —
@@ -180,7 +198,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
 /// refuses any OTHER overlap: a new Rust code can never land on a
 /// published number by accident.
 pub const SHARED_WITH_ADDON: &[&str] = &[
-    "G0002", "G1002", "G1003", "G1004", "G2001", "G2002", "G2003", "G2004", "G3002", "G3005", "G4003", "G5002", "G5105", "G6001", "G7003", "G8001", "G9002", "G9003", "G9004", "G9007", "G9008",
+    "G0002", "G1002", "G1003", "G1004", "G2001", "G2002", "G2003", "G2004", "G3002", "G3005", "G4003", "G5002", "G5105", "G5106", "G6001", "G7003", "G8001", "G9002", "G9003", "G9004", "G9007", "G9008", "G9010", "G9011", "G9013", "G9014", "G9015", "G9016", "G9017", "G9101", "G9102", "G9103", "G9104",
 ];
 
 /// Numbers this crate once used and vacated (or skipped) in the GPAR61

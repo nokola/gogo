@@ -32,7 +32,8 @@ use gogo::draw::{Draw, draw};
 use gogo::input::{Event, EventKind, Input, Phase, Touch};
 use gogo::layout::{FixedAdvance, Rect, layout};
 use gogo::page::{Action, Kind, NodeId, PropKey, palette_color};
-use gogo::runtime::{DISABLED, HELD, Item, ItemKey, ItemValue, Runtime, SELECTED, resolve};
+use gogo::layout::starved;
+use gogo::runtime::{DISABLED, FOCUSED, HELD, Item, ItemKey, ItemValue, Runtime, SELECTED, resolve};
 use gogo::{Page, compile};
 
 const FRAME: Rect = Rect { x: 0.0, y: 0.0, w: 400.0, h: 800.0 };
@@ -499,8 +500,11 @@ fn repeat_items_survive_a_rebuild() {
 
 // -------------------------------------------------------------- _list_tests
 
+// The Godot suite hosts the picker on a screen-filling root; the column
+// takes the screen's height here the same way, so the viewport List (it
+// EXPANDS since GPAR113 — it no longer hugs its rows) shows its rows.
 const PICKER: &str = r#"View v {
-    Column outer width=200, halign=left, valign=top {
+    Column outer width=200, height=fill, halign=left, valign=top {
         List picker spacing=2 {
             Label header text="Tasks"
             empty { Label text="none yet" }
@@ -537,49 +541,83 @@ fn list_builds_as_a_spaced_stack() {
 
 /// `_list_tests` 12808-12809 (`list.items`): once rows are present the
 /// List-level `empty { Label text="none yet" }` seat hides (D128) — the
-/// shown texts are the header and the rows, nothing else. Rust treats
-/// the List-level `empty` as an ordinary child: it stays visible under
-/// the rows (a repeat's OWN `empty { }` does hide, see
-/// `repeat_stack_shows_items_by_count`).
+/// shown texts are the header and the rows, nothing else, and the seat's
+/// spacing slot goes with it (GPAR96, round 5: the seat joins the
+/// repeat's pool `empties`; a repeat's OWN `empty { }` always hid).
 #[test]
-#[ignore = "NEW: Godot hides the List-level `empty` seat once rows exist vs Rust keeps drawing it ([Tasks, none yet, a, b, c])"]
 fn list_level_empty_seat_hides_once_rows_exist() {
     let mut fx = Fx::new(PICKER);
     fx.fill("tasks", &["a", "b", "c"]);
     assert_eq!(texts(&fx.page, &fx.rt), ["Tasks", "a", "b", "c"], "list.items");
 }
 
+const KEYED_PICKER: &str = r#"View v {
+    List kpicker width=200, height=300, halign=left, valign=top, on:change=pick, on:activate=open {
+        empty { }
+        repeat ktasks by $item.key {
+            ListItem { Label text=$item.title }
+        }
+    }
+}"#;
+
 /// `_list_tests` 12782-12786 + 12813-12827 (`list.signals`,
 /// `.mode-default`, `.selected-initial`, `.select-checks`,
 /// `.changed-fired`, `.same-write-silent`, `.null-clears`): the List owns
-/// the selection — `select=one` by default, `selected` starts null, a
-/// code write checks that row and fires `change` once, a same-value
-/// write is silent, null clears. Rust's List is a Column: no `selected`,
-/// and `on:activate` on it is even refused (G0072).
+/// the selection — `select=one` by default, the selection starts empty, a
+/// code write checks that row and reports the change once, a same-value
+/// write is silent, an empty write clears, a two-key write under `one` is
+/// refused whole (G9104). Godot's `selected` property + `change` signal
+/// are `Runtime::set_selected` (its Ok(bool) IS "did it change") and
+/// `selected_keys` here (GPAR113, round 5).
 #[test]
-#[ignore = "GP28: not ported: List selection owner (`selected`, `change`, `activate(key,item)` on the List)"]
 fn list_owns_selection_and_reports_change() {
     let src = "View v { List picker on:change=pick, on:activate=open { empty { } repeat tasks capacity=3 { ListItem { Label text=\"\" } } } }";
     assert!(builds(src), "list.signals: a List emits change and activate; Rust: {:?}", codes(src));
-    panic!("Godot: picker.selected = 2 checks row b, change fires [2]; the same write is silent; null clears — Rust: no List-level selection");
+    let mut fx = Fx::new(KEYED_PICKER);
+    let list = fx.page.find("kpicker").unwrap();
+    let rep = fx.page.find("ktasks").unwrap();
+    assert!(fx.rt.selected_keys(&fx.page, list).is_empty(), "list.selected-initial");
+    fx.rt.set_items(&mut fx.page, rep, &[rec(1, "a"), rec(2, "b"), rec(3, "c")]).unwrap();
+    let items = fx.rt.items(&fx.page, rep);
+    assert_eq!(fx.rt.set_selected(&fx.page, list, &[ItemKey::Int(2)]), Ok(true), "list.changed-fired");
+    assert!(fx.rt.has(items[1], SELECTED) && !fx.rt.has(items[0], SELECTED), "the write checks row b");
+    assert_eq!(fx.rt.selected_keys(&fx.page, list), vec![ItemKey::Int(2)]);
+    assert_eq!(fx.rt.set_selected(&fx.page, list, &[ItemKey::Int(2)]), Ok(false), "list.same-write-silent");
+    assert_eq!(fx.rt.set_selected(&fx.page, list, &[]), Ok(true), "list.null-clears");
+    assert!(!fx.rt.has(items[1], SELECTED));
+    let err = fx.rt.set_selected(&fx.page, list, &[ItemKey::Int(1), ItemKey::Int(2)]).unwrap_err();
+    assert!(err.contains("G9104"), "list.select-checks: {err}");
 }
 
 /// `_list_tests` 12793-12804 + 12862-12877 + 12883-12887
 /// (`list.scroll-host`, `.scroll-follows-focus`, `.expands-default`,
 /// `.scrolls`, `.scroll-starts-top`, `.follow-focus-scrolls`): the List
-/// self-scrolls (an internal scroll host holding statics AND rows), starts
-/// at the top, keeps the cursor in view, and an unplaced List EXPANDS to
-/// the room its parent offers. Rust's List is a plain Column: it hugs its
-/// rows and never pans.
+/// self-scrolls (the box IS the viewport, statics pan WITH the rows),
+/// starts at the top, and an unplaced List EXPANDS to the room its
+/// parent offers (GPAR113, round 5 — it used to hug its rows and never
+/// pan).
 #[test]
-#[ignore = "GP28: not ported: List self-scroll + viewport doctrine (observed: an unplaced List hugs its rows)"]
 fn list_self_scrolls_and_expands_by_default() {
-    let mut fx = Fx::new("View v { Column outer width=200, height=300, halign=left, valign=top { Button b1 text=\"New Game\"; List picker { empty { } repeat tasks capacity=3 { ListItem { Label text=\"\" } } } } }");
-    fx.fill("tasks", &["a", "b", "c"]);
+    let mut fx = Fx::new("View v { Column outer width=200, height=300, halign=left, valign=top { Button b1 text=\"New Game\"; List picker { empty { } repeat tasks capacity=30 { ListItem { Label text=\"\" } } } } }");
+    let rows_owned: Vec<String> = (0..30).map(|i| format!("t{i}")).collect();
+    let rows: Vec<&str> = rows_owned.iter().map(String::as_str).collect();
+    fx.fill("tasks", &rows);
     let r = fx.rects();
     let picker = fx.page.find("picker").unwrap() as usize;
     let outer = fx.page.find("outer").unwrap() as usize;
     assert_eq!(r[picker].bottom(), r[outer].bottom(), "list.expands-default: an unplaced List fills the column's leftover room: {:?} in {:?}", r[picker], r[outer]);
+    // list.scroll-starts-top + .scrolls: a drag on the rows pans the body.
+    assert_eq!(fx.rt.scroll[picker], [0.0, 0.0], "list.scroll-starts-top");
+    let (x, y) = (r[picker].x + 50.0, r[picker].bottom() - 20.0);
+    fx.touch(Phase::Down, x, y, 0.0);
+    fx.touch(Phase::Move, x, y - 120.0, 0.05);
+    fx.touch(Phase::Up, x, y - 120.0, 0.1);
+    assert!(fx.rt.scroll[picker][1] > 50.0, "list.scrolls: the content panned up: {:?}", fx.rt.scroll[picker]);
+    // The rows really MOVE (the content frame shifts by the offset) —
+    // and the statics pan with them, one doctrine both ways.
+    let items = fx.items("tasks");
+    let after = fx.rects();
+    assert!(after[items[0] as usize].y < r[items[0] as usize].y - 50.0, "the first row slid up: {:?} -> {:?}", r[items[0] as usize], after[items[0] as usize]);
 }
 
 /// `_list_tests` 12829-12841 (`list.reorder-keeps`, `.rebuild-rechecks`,
@@ -587,9 +625,27 @@ fn list_self_scrolls_and_expands_by_default() {
 /// KEY across reconciles — a reorder moves it, changed data re-checks the
 /// fresh row, `[]` leaves it inert, the key coming back re-attaches it.
 #[test]
-#[ignore = "GP28: not ported: selection kept by key across a keyed reconcile (needs GP27's set_items too)"]
 fn list_selection_survives_reconcile_by_key() {
-    panic!("Godot: selected=2 stays on `b` through reorder, rebuild (`B!`), clear (inert, still 2) and refill — Rust: no List selection, no keyed reconcile");
+    let mut fx = Fx::new(KEYED_PICKER);
+    let list = fx.page.find("kpicker").unwrap();
+    let rep = fx.page.find("ktasks").unwrap();
+    fx.rt.set_items(&mut fx.page, rep, &[rec(1, "a"), rec(2, "b"), rec(3, "c")]).unwrap();
+    fx.rt.set_selected(&fx.page, list, &[ItemKey::Int(2)]).unwrap();
+    // list.reorder-keeps: the selection follows the KEY, not the slot.
+    fx.rt.set_items(&mut fx.page, rep, &[rec(3, "c"), rec(2, "b"), rec(1, "a")]).unwrap();
+    let items = fx.rt.items(&fx.page, rep);
+    assert!(fx.rt.has(items[1], SELECTED) && !fx.rt.has(items[0], SELECTED), "list.reorder-keeps");
+    // list.rebuild-rechecks: changed data re-binds the row, still checked.
+    fx.rt.set_items(&mut fx.page, rep, &[rec(2, "B!"), rec(1, "a")]).unwrap();
+    let items = fx.rt.items(&fx.page, rep);
+    assert!(fx.rt.has(items[0], SELECTED), "list.rebuild-rechecks");
+    // list.clear-keeps-inert: the absent key stays selected, inert…
+    fx.rt.set_items(&mut fx.page, rep, &[rec(1, "a")]).unwrap();
+    assert_eq!(fx.rt.selected_keys(&fx.page, list), vec![ItemKey::Int(2)], "list.clear-keeps-inert");
+    // list.inert-reattaches: …and re-attaches when its item returns.
+    fx.rt.set_items(&mut fx.page, rep, &[rec(1, "a"), rec(2, "b")]).unwrap();
+    let items = fx.rt.items(&fx.page, rep);
+    assert!(fx.rt.has(items[1], SELECTED), "list.inert-reattaches");
 }
 
 /// `_list_tests` 12843-12856 + 12857-12860 + 12869-12872 (`list.tap-activates`,
@@ -614,9 +670,9 @@ fn tap_on_a_row_activates_it() {
 /// `_list_tests` 12852-12861 (`list.tap-selects`, `.tap-again-no-deselect`):
 /// in `select=one` the tap SELECTS the row (its `selected` state goes on)
 /// and a second tap re-activates without deselecting (radio doctrine).
-/// Rust's ListItem tap activates only — the row's state never changes.
+/// (GPAR113, round 5: the tap's side effect landed with the selection
+/// owner.)
 #[test]
-#[ignore = "GP28: not ported: tap selects in `select=one` (observed: the row's SELECTED bit stays off after a tap)"]
 fn tap_selects_the_row_in_one_mode() {
     let mut fx = Fx::new(PICKER);
     fx.fill("tasks", &["a", "b", "c"]);
@@ -645,27 +701,42 @@ fn keyboard_moves_the_cursor_and_enter_activates() {
 /// `.pressed-slide-back-rearms`, `.default-pressed-clears`,
 /// `.default-focus-on-styled-row`): a BARE row shows selection, the press
 /// and the keyboard cursor out of the box (D122) — the theme's selected
-/// fill, a half-strength fill while held, a quarter-strength echo that
-/// draws only after a keyboard move; untouched rows stay transparent.
+/// fill, a half-strength fill while held, a quarter-strength echo for
+/// the cursor; untouched rows stay transparent. (GPAR113, round 5: the
+/// fills are compile-injected `when` responses — an author's own rule
+/// for a state replaces exactly that state's default. FOCUS-VISIBLE
+/// pointer-parking is GP26's keyboard work; the state is set by hand
+/// here.)
 #[test]
-#[ignore = "GP28: not ported: ListItem default looks (selected / held / focus fills)"]
 fn bare_row_default_looks() {
     let mut fx = Fx::new(PICKER);
     fx.fill("tasks", &["a", "b", "c"]);
     let items = fx.items("tasks");
+    let row0 = fx.rects()[items[0] as usize];
+    let plate = |fx: &Fx, i: usize| -> Option<[u8; 4]> {
+        let res = resolve(&fx.page, &fx.rt);
+        let rects = lay(&fx.page, &fx.rt);
+        let r = rects[items[i] as usize];
+        draw(&fx.page, &res, &rects).iter().find_map(|d| match d {
+            Draw::Quad { rect, color, .. } if *rect == r => Some(color.0),
+            _ => None,
+        })
+    };
     // list.default-rest-is-slate: an untouched bare row draws no plate.
-    let res = resolve(&fx.page, &fx.rt);
-    let rects = fx.rects();
-    let row = rects[items[0] as usize];
-    let plates: Vec<Draw> = draw(&fx.page, &res, &rects).into_iter().filter(|d| matches!(d, Draw::Quad { rect, .. } if *rect == row)).collect();
-    assert!(plates.is_empty(), "{plates:?}");
-    // list.default-pressed-look: a held bare row draws a plate.
-    let (x, y) = (row.x + row.w / 2.0, row.y + row.h / 2.0);
+    assert_eq!(plate(&fx, 0), None, "an untouched bare row draws no plate");
+    // list.default-pressed-look: a half-strength fill while held.
+    let (x, y) = (row0.x + row0.w / 2.0, row0.y + row0.h / 2.0);
     fx.touch(Phase::Down, x, y, 0.0);
-    let res = resolve(&fx.page, &fx.rt);
-    let plates: Vec<Draw> = draw(&fx.page, &res, &rects).iter().filter(|d| matches!(d, Draw::Quad { rect, .. } if *rect == row)).cloned().collect();
-    assert_eq!(plates.len(), 1, "Godot: a half-strength fill while held; Rust draws: {plates:?}");
-    panic!("and the selected fill / keyboard-only focus echo (D122) have no Rust counterpart yet");
+    assert_eq!(plate(&fx, 0), Some([255, 255, 255, 38]), "list.default-pressed-look");
+    // The release taps: `one` selects — the full ItemList fill.
+    fx.touch(Phase::Up, x, y, 0.1);
+    assert_eq!(plate(&fx, 0), Some([255, 255, 255, 77]), "list.default-checked-look");
+    // The cursor is a quarter-strength echo; selected outranks it (the
+    // priority ladder), so a checked row keeps the full fill.
+    fx.rt.set_state(items[1], FOCUSED, true);
+    assert_eq!(plate(&fx, 1), Some([255, 255, 255, 19]), "list.default-focus-look");
+    fx.rt.set_state(items[0], FOCUSED, true);
+    assert_eq!(plate(&fx, 0), Some([255, 255, 255, 77]), "list.default-checked-beats-focus");
 }
 
 const STYLED: &str = r#"style SelRow {
@@ -749,17 +820,31 @@ fn list_select_modes_build() {
 /// `select=many` — taps toggle, read-back is present keys in collection
 /// order then inert keys, malformed writes are refused whole (G9104).
 #[test]
-#[ignore = "GP28: not ported: `select=many` (toggle taps, ordered read-back, G9104 refusals)"]
 fn select_many_toggles_and_reads_back_in_order() {
-    let mut fx = Fx::new("View v { List tags select=many, width=200, height=120, halign=left, valign=top { empty { } repeat opts capacity=3 { ListItem { Label text=\"\" } } } }");
-    fx.fill("opts", &["red", "green", "blue"]);
-    let items = fx.items("opts");
+    let mut fx = Fx::new("View v { List tags select=many, width=200, height=120, halign=left, valign=top { empty { } repeat opts by $item { ListItem { Label text=$item } } } }");
+    let list = fx.page.find("tags").unwrap();
+    let rep = fx.page.find("opts").unwrap();
+    let strs = |v: &[&str]| -> Vec<Item> { v.iter().map(|s| Item::Value(ItemValue::Str(s.to_string()))).collect() };
+    let key = |s: &str| ItemKey::Str(s.to_string());
+    fx.rt.set_items(&mut fx.page, rep, &strs(&["red", "green", "blue"])).unwrap();
+    let items = fx.rt.items(&fx.page, rep);
     fx.tap(items[2], 0.0);
     fx.tap(items[0], 1.0);
-    assert!(fx.rt.has(items[0], SELECTED) && fx.rt.has(items[2], SELECTED), "list.many-collection-order: red and blue selected");
+    assert!(fx.rt.has(items[0], SELECTED) && fx.rt.has(items[2], SELECTED), "list.many-tap-toggles: on");
+    // list.many-collection-order: present keys read in collection order,
+    // not tap order.
+    assert_eq!(fx.rt.selected_keys(&fx.page, list), vec![key("red"), key("blue")], "list.many-collection-order");
     fx.tap(items[2], 2.0);
-    assert!(!fx.rt.has(items[2], SELECTED), "list.many-tap-toggles");
-    panic!("and the List-level read-back/refusals ([red, blue], inert keys, G9104) have no Rust surface");
+    assert!(!fx.rt.has(items[2], SELECTED), "list.many-tap-toggles: off");
+    // list.many-inert-order: an absent selected key reads back AFTER the
+    // present ones, in the order it entered.
+    fx.rt.set_selected(&fx.page, list, &[key("blue"), key("red")]).unwrap();
+    fx.rt.set_items(&mut fx.page, rep, &strs(&["red", "green"])).unwrap();
+    assert_eq!(fx.rt.selected_keys(&fx.page, list), vec![key("red"), key("blue")], "list.many-inert-order");
+    // list.many-dup-refused: refusals keep the last good selection whole.
+    let err = fx.rt.set_selected(&fx.page, list, &[key("red"), key("red")]).unwrap_err();
+    assert!(err.contains("G9104"), "list.many-dup-refused: {err}");
+    assert_eq!(fx.rt.selected_keys(&fx.page, list), vec![key("red"), key("blue")], "the last good selection stands");
 }
 
 /// `_list_tests` 13099-13122 (`list.off-activates`, `.off-never-checks`):
@@ -780,9 +865,36 @@ fn select_off_activates_without_selecting() {
 /// is refused silently and the rows carry the focus and held defaults but
 /// never the selected one.
 #[test]
-#[ignore = "GP28: not ported: `select=off` write refusal and per-mode default looks"]
 fn select_off_refuses_writes_and_drops_the_checked_default() {
-    panic!("Godot: menu.selected = 'save' stays null with no change; rows have focused/held conditions, no selected — Rust: no List selection surface");
+    let mut fx = Fx::new("View v { List menu select=off, width=200, height=100, halign=left, valign=top { empty { } repeat entries by $item { ListItem { Label text=$item } } } }");
+    let list = fx.page.find("menu").unwrap();
+    let rep = fx.page.find("entries").unwrap();
+    fx.rt.set_items(&mut fx.page, rep, &[Item::Value(ItemValue::Str("save".to_string()))]).unwrap();
+    let items = fx.rt.items(&fx.page, rep);
+    // list.off-write-refused: G9104, and the selection stays empty.
+    let err = fx.rt.set_selected(&fx.page, list, &[ItemKey::Str("save".to_string())]).unwrap_err();
+    assert!(err.contains("G9104"), "list.off-write-refused: {err}");
+    assert!(fx.rt.selected_keys(&fx.page, list).is_empty());
+    // A tap never checks under `off` (activation still fires elsewhere).
+    fx.tap(items[0], 0.0);
+    assert!(!fx.rt.has(items[0], SELECTED), "a tap never checks under off");
+    // list.off-no-checked-default: the held default still shades the row…
+    let plate = |fx: &Fx| -> Option<[u8; 4]> {
+        let res = resolve(&fx.page, &fx.rt);
+        let rects = lay(&fx.page, &fx.rt);
+        let r = rects[items[0] as usize];
+        draw(&fx.page, &res, &rects).iter().find_map(|d| match d {
+            Draw::Quad { rect, color, .. } if *rect == r => Some(color.0),
+            _ => None,
+        })
+    };
+    let r = fx.rects()[items[0] as usize];
+    fx.touch(Phase::Down, r.x + 10.0, r.y + r.h / 2.0, 1.0);
+    assert_eq!(plate(&fx), Some([255, 255, 255, 38]), "the held default stays under off");
+    fx.touch(Phase::Up, r.x + 10.0, r.y + r.h / 2.0, 1.1);
+    // …but the SELECTED default was never injected: force the bit, no fill.
+    fx.rt.set_state(items[0], SELECTED, true);
+    assert_eq!(plate(&fx), None, "list.off-no-checked-default");
 }
 
 /// `_list_tests` 13137-13170 (`list.hug-ok`, `.hug-sizes-to-content`,
@@ -811,10 +923,24 @@ fn hug_list_is_its_content() {
 /// no-height nudge — a viewport List a hug parent starves reports
 /// `starved` at runtime; `height=`/`hug` keeps it quiet; a headed list
 /// whose rows get less than one row's room is half-starved and nudges.
+/// The Rust spelling is `layout::starved` — a tooling/test surface like
+/// `layout::offscreen` (GPAR113, round 5).
 #[test]
-#[ignore = "GP28: not ported: viewport doctrine + the runtime `starved` nudge (Rust's List hugs, nothing starves)"]
 fn viewport_list_starved_by_a_hug_parent_warns() {
-    panic!("Godot: `List starving` under a hug Column reports starved=true, `List sized height=100` false, the headed list true after data arrives — Rust: no starved flag");
+    let mut fx = Fx::new("View v { Column smenu halign=left, valign=top { Button sb text=\"x\"; List starving { empty { } repeat t capacity=1 { ListItem { Label text=\"\" } } }; List sized height=100 { empty { } repeat u capacity=1 { ListItem { Label text=\"\" } } }; List hugsafe height=hug { empty { } repeat w capacity=1 { ListItem { Label text=\"\" } } } } }");
+    let check = |fx: &Fx, name: &str| -> bool {
+        let res = resolve(&fx.page, &fx.rt);
+        let rects = layout(&fx.page, &res, FRAME, &FixedAdvance);
+        starved(&fx.page, &res, &fx.rt, &rects).contains(&fx.page.find(name).unwrap())
+    };
+    // list.starved-warns: the hug Column hands the viewport its fixed
+    // minimum — zero — and the nudge names it.
+    assert!(check(&fx, "starving"), "list.starved-warns");
+    assert!(!check(&fx, "sized"), "list.placed-stays-quiet");
+    assert!(!check(&fx, "hugsafe"), "list.hug-not-starved");
+    // list.half-starved-warns: with data the rows still get no room.
+    fx.fill("t", &["one"]);
+    assert!(check(&fx, "starving"), "list.half-starved-warns");
 }
 
 /// `_list_tests` 13172-13193 + 13207 (`list.maxheight-ok`,
@@ -841,12 +967,28 @@ fn max_height_caps_a_hug_list() {
 /// `_list_tests` 13190-13193 + 13205 (`list.maxheight-scrolls-past-cap`,
 /// `.err-maxheight-needs-hug`): past the cap the List's internal scroll
 /// takes over, and `max_height` without `height=hug` is a build error
-/// ("height=hug"). Rust caps any box and never pans a List.
+/// (G1018 — GPAR113, round 5; on other kinds the cap stays a general
+/// placement word).
 #[test]
-#[ignore = "GP28: not ported: List scroll past the hug cap; `max_height` needs `height=hug` (Rust: a general cap)"]
 fn max_height_scrolls_past_the_cap_and_needs_hug() {
+    // list.err-maxheight-needs-hug: on any other height the cap would
+    // fight the viewport — refused whole (G1018).
     let src = "View v { List l max_height=100 { empty { } repeat t capacity=1 { ListItem { Label text=\"\" } } } }";
-    assert!(!builds(src), "list.err-maxheight-needs-hug: Rust built it: {:?}", codes(src));
+    assert!(codes(src).contains(&"G1018".to_string()), "list.err-maxheight-needs-hug: {:?}", codes(src));
+    // list.maxheight-scrolls-past-cap: the capped hug box pans its rows.
+    let mut fx = Fx::new("View v { Column mx halign=left, valign=top { List capped height=hug, max_height=64, spacing=0 { empty { } repeat tasks capacity=12 { ListItem { Label text=\"\" } } } } }");
+    let many_owned: Vec<String> = (0..12).map(|i| format!("t{i}")).collect();
+    let many: Vec<&str> = many_owned.iter().map(String::as_str).collect();
+    fx.fill("tasks", &many);
+    let capped = fx.page.find("capped").unwrap();
+    let r = fx.rects()[capped as usize];
+    assert_eq!(r.h, 64.0);
+    fx.touch(Phase::Down, r.x + 20.0, r.bottom() - 5.0, 0.0);
+    fx.touch(Phase::Move, r.x + 20.0, r.bottom() - 55.0, 0.05);
+    fx.touch(Phase::Up, r.x + 20.0, r.bottom() - 55.0, 0.1);
+    assert!(fx.rt.scroll[capped as usize][1] > 10.0, "list.maxheight-scrolls-past-cap: {:?}", fx.rt.scroll[capped as usize]);
+    let items = fx.items("tasks");
+    assert!(fx.rects()[items[0] as usize].y < r.y, "the first row slid up past the box top: {:?} vs {r:?}", fx.rects()[items[0] as usize]);
 }
 
 /// `_list_tests` 13194-13203 + 13212-13241 (`list.starve-ok`,
@@ -893,7 +1035,6 @@ fn list_lints_stay_quiet_where_godot_is_quiet() {
 /// it never fires), G9015 for provable starvation (a valign-anchored
 /// Column chain, a Scroll page).
 #[test]
-#[ignore = "GP28: not ported: List lints G9014 (inner `when selected`) and G9015 (provable starvation)"]
 fn list_lints_inner_selected_and_provable_starvation() {
     let cases = [
         ("list.lint-inner-checked", "G9014", "View v { List l { empty { } repeat t capacity=1 { ListItem { Label text=\"x\" { when selected opacity=0.5 } } } } }"),
@@ -942,9 +1083,22 @@ fn layout_kind_picks_the_items_panel() {
 /// `_list_tests` 13309-13312 (`list.layout-row-scrolls`): a Row strip
 /// past its `max_width` pans sideways (the List's internal scroll).
 #[test]
-#[ignore = "GP28: not ported: List self-scroll (a Row strip past its cap pans sideways)"]
 fn layout_row_strip_scrolls_sideways() {
-    panic!("Godot: 8 chips in a max_width=120 strip give the horizontal bar range — Rust: the rows overflow the clipped box, nothing pans");
+    let mut fx = Fx::new("View v { List strip select=one, width=hug, max_width=120, halign=left, valign=top { empty { } layout Row spacing=2 { repeat chips capacity=8 { ListItem { Label text=\"\" } } } } }");
+    let chips_owned: Vec<String> = (0..8).map(|i| format!("chip {i}")).collect();
+    let chips: Vec<&str> = chips_owned.iter().map(String::as_str).collect();
+    fx.fill("chips", &chips);
+    let strip = fx.page.find("strip").unwrap();
+    let r = fx.rects()[strip as usize];
+    assert_eq!(r.w, 120.0, "the cap bounds the hug: {r:?}");
+    fx.touch(Phase::Down, r.right() - 10.0, r.y + r.h / 2.0, 0.0);
+    fx.touch(Phase::Move, r.right() - 90.0, r.y + r.h / 2.0, 0.05);
+    fx.touch(Phase::Up, r.right() - 90.0, r.y + r.h / 2.0, 0.1);
+    assert!(fx.rt.scroll[strip as usize][0] > 10.0, "list.layout-row-scrolls: {:?}", fx.rt.scroll[strip as usize]);
+    let items = fx.items("chips");
+    let before = fx.rects()[items[0] as usize];
+    let _ = before;
+    assert!(fx.rects()[items[0] as usize].x < r.x, "the first chip slid left out of view: {:?}", fx.rects()[items[0] as usize]);
 }
 
 /// `_list_tests` 13332-13347 (`list.err-empty-missing`, `.err-empty-inner`,
@@ -956,7 +1110,6 @@ fn layout_row_strip_scrolls_sideways() {
 /// `max_width`, not `max_height`). Rust builds all of them (`layout Grid`
 /// is even a known kind).
 #[test]
-#[ignore = "GP28: not ported: List `empty` seat (G9016) and `layout` block (G9017) rules"]
 fn list_empty_seat_and_layout_block_rules() {
     let cases = [
         ("list.err-empty-missing", "View v { List l { repeat t capacity=1 { ListItem { Label text=\"\" } } } }"),
@@ -978,7 +1131,6 @@ fn list_empty_seat_and_layout_block_rules() {
 /// repeat (G9010) whose template has one root and that root is a
 /// `ListItem` (G9011, the fix-it names the wrap).
 #[test]
-#[ignore = "GP28: not ported: List structure rules G9010/G9011 (one repeat, one ListItem root)"]
 fn list_holds_one_repeat_with_one_listitem_root() {
     let cases = [
         ("list.err-no-repeat", "View v { List l { Label text=\"x\" } }"),
@@ -998,7 +1150,6 @@ fn list_holds_one_repeat_with_one_listitem_root() {
 /// one|many|off (G9012), a List has no slots. Rust accepts all of them
 /// (`select=` is an unread host word here).
 #[test]
-#[ignore = "GP28: not ported: ListItem placement (G9013), `select=` values (G9012), no-slot rule"]
 fn listitem_belongs_at_a_list_row_root() {
     let cases = [
         ("list.err-listitem-static", "View v { Column { ListItem { Label text=\"x\" } } }"),

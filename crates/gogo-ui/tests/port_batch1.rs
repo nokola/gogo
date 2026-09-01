@@ -31,11 +31,11 @@ fn composed_when_needs_both_halves() {
     let mut rt = Runtime::new(&page);
     let width = |page: &gogo::Page, rt: &Runtime| resolve(page, rt).placement[p as usize].width;
     assert_eq!(width(&page, &rt), gogo::page::Len::Exact(100.0));
-    rt.go(0);
+    rt.go_id(0);
     assert_eq!(width(&page, &rt), gogo::page::Len::Exact(100.0), "the arrangement alone must not pose");
     rt.set_screen(&page, gogo::Orientation::Landscape, gogo::ScreenClass::LotsOfSpace);
     assert_eq!(width(&page, &rt), gogo::page::Len::Exact(300.0));
-    rt.go(u32::MAX);
+    rt.go_id(u32::MAX);
     assert_eq!(width(&page, &rt), gogo::page::Len::Exact(100.0), "the class alone must not pose");
     assert!(codes("View v { Panel p { when screen.huge { width = 1 } } }").contains(&"G0036".to_string()));
     assert!(codes("View v { Panel p { when screen.landscape screen.portrait { width = 1 } } }").contains(&"G0038".to_string()));
@@ -139,7 +139,7 @@ fn rotate_reaches_the_draw_list() {
     let c = ok("arrangement flipped\nView v {\n Rectangle arrow width=20, height=10, halign=left, valign=top\n}\nwhen flipped { arrow.rotate = 180 }\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go(0);
+    rt.go_id(0);
     let res = resolve(&page, &rt);
     let rects = layout(&page, &res, Rect::new(0.0, 0.0, 100.0, 100.0), &FixedAdvance);
     let draws = draw(&page, &res, &rects);

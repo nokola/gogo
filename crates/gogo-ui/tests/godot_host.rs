@@ -313,7 +313,7 @@ fn stacks_and_flow_touch_unless_spacing_is_written() {
 /// List rows touch too. Godot's rows come keyed (`set_items`); Rust builds `repeat capacity=N` instances (GP27) and code shows two.
 #[test]
 fn list_rows_touch() {
-    let c = ok("View v {\n    List l {\n        repeat t capacity=2 {\n            empty { }\n            ListItem { Label text=\"row\" }\n        }\n    }\n}\n");
+    let c = ok("View v {\n    List l {\n        empty { }\n        repeat t capacity=2 {\n            ListItem { Label text=\"row\" }\n        }\n    }\n}\n");
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
     let t = id(&page, "t");

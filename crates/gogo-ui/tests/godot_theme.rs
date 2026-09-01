@@ -623,10 +623,9 @@ fn cross_file_key_drift_is_refused() {
 }
 
 /// `_translation_tests` 2961-2963 (`tr.err-theme-value`): keys live on
-/// displayed text only — `$title = "Fantasia"/appTitle` is refused. Rust
-/// records the key on the theme value and builds.
+/// displayed text only — `$title = "Fantasia"/appTitle` is refused
+/// (G8001, GPAR89 round 6; the key used to be recorded silently).
 #[test]
-#[ignore = "NEW: Godot refuses a translation key on a theme value ($title = \"x\"/key) vs Rust accepts it (key recorded on the $value, builds clean)"]
 fn theme_value_never_carries_a_key() {
     let errs = errors("$title = \"Fantasia\"/appTitle\nView v { Label t text=$title }\n");
     assert!(!errs.is_empty(), "a keyed theme value must not build");

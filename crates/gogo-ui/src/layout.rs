@@ -479,7 +479,42 @@ impl<'a> Lay<'a> {
                 }
                 (w, h)
             }
-            Kind::Column | Kind::Choice | Kind::List => self.stack_min(id, Axis::Y, inner_w),
+            Kind::Column | Kind::Choice => self.stack_min(id, Axis::Y, inner_w),
+            Kind::List => {
+                let full = self.stack_min(id, Axis::Y, inner_w);
+                let p = self.placement(id);
+                let horizontal = list_is_row(self.page, id);
+                let scroll_hug = if horizontal { matches!(p.width, Len::Hug(_)) } else { matches!(p.height, Len::Hug(_)) };
+                if scroll_hug {
+                    // `height=hug` (D123): the box IS the content — chosen
+                    // explicitly, so the trade is the author's: a hug List
+                    // does not scroll. `max_height=` (D124) bounds the
+                    // growth (under `layout Row`: the authored max-WIDTH),
+                    // and past the cap the internal scroll takes over.
+                    let (mut w, mut h) = full;
+                    if horizontal {
+                        if let Some(cap) = p.max_width {
+                            w = w.min(cap);
+                        }
+                    } else if let Some(cap) = p.max_height {
+                        h = h.min(cap);
+                    }
+                    (w, h)
+                } else {
+                    // Viewport doctrine (D121/D127): FIXED authored content
+                    // — statics, and the `empty` view while it shows —
+                    // sizes the box like fixed content anywhere else; the
+                    // rows are the viewport's business and report nothing
+                    // (the box is the parent's offer).
+                    let (w, mut h) = self.list_fixed_min(id, inner_w);
+                    if horizontal {
+                        // A strip's CROSS axis is content-sized (one row
+                        // tall); only the scroll axis is the viewport's.
+                        h = full.1;
+                    }
+                    (w, h)
+                }
+            }
             Kind::Row => self.stack_min(id, Axis::X, inner_w),
             Kind::Flow => self.flow_min(id, inner_w),
             Kind::Tiles => self.tiles_min(id, inner_w),
@@ -677,7 +712,8 @@ impl<'a> Lay<'a> {
         let inner = rect.inset(inset[0], inset[1], inset[2], inset[3]);
         let kind = self.node(id).kind;
         match kind {
-            Kind::Column | Kind::Choice | Kind::List => self.place_stack(id, inner, Axis::Y),
+            Kind::Column | Kind::Choice => self.place_stack(id, inner, Axis::Y),
+            Kind::List => self.place_list(id, inner),
             Kind::Row => self.place_stack(id, inner, Axis::X),
             Kind::Flow => self.place_flow(id, inner),
             Kind::Tiles => self.place_tiles(id, inner),
@@ -759,6 +795,29 @@ impl<'a> Lay<'a> {
         let spacing = self.spacing(id);
         let children = self.visible_children(id);
         let sizes: Vec<(f32, f32)> = children.iter().map(|c| self.size_at(*c, None)).collect();
+        if self.res.ident(self.page, id, PropKey::Orientation) == Some("vertical") {
+            // `orientation=vertical` (GPAR97, WrapPanel's other axis):
+            // items run DOWN and wrap into columns — the same packing,
+            // transposed (a column is as wide as its widest item).
+            let swapped: Vec<(f32, f32)> = sizes.iter().map(|(w, h)| (*h, *w)).collect();
+            let cols = flow_rows(&swapped, inner.h, spacing);
+            let mut x = inner.x;
+            for col in cols {
+                let mut y = inner.y;
+                for i in col.first..col.end {
+                    let c = children[i];
+                    let (w, h) = sizes[i];
+                    let p = *self.placement(c);
+                    let (cx, cw) = free_axis(x, col.height, p.width, p.halign, None, None, w, p.min_width, p.max_width, false, false);
+                    let rect = Rect::new(cx, y, cw, h);
+                    self.rects[c as usize] = rect;
+                    self.place_children(c, rect);
+                    y += h + spacing;
+                }
+                x += col.height + spacing;
+            }
+            return;
+        }
         let rows = flow_rows(&sizes, inner.w, spacing);
         let mut y = inner.y;
         for row in rows {
@@ -894,6 +953,59 @@ impl<'a> Lay<'a> {
             let written = self.written[id as usize];
             self.place(c, frame, [!sx && written[0], !sy && written[1]]);
         }
+    }
+
+    /// The List IS its own viewport (D121, the addon's internal
+    /// GogoScroll): its body — statics, the `empty` view and the rows —
+    /// stacks in a frame as tall as the content and pans under the box,
+    /// so statics scroll WITH the rows, one doctrine both ways.
+    fn place_list(&mut self, id: NodeId, inner: Rect) {
+        let horizontal = list_is_row(self.page, id);
+        let offset = self.res_scroll(id);
+        // bars= (D138): the words a Scroll takes; an overflowing axis
+        // reserves the bar's lane unless `never` (the AUTO mode).
+        let probe = self.stack_min(id, Axis::Y, if horizontal { None } else { Some(inner.w) });
+        let overflow = if horizontal { probe.0 > inner.w } else { probe.1 > inner.h };
+        let lane = if overflow && self.res.ident(self.page, id, PropKey::Bars) != Some("never") { SCROLL_BAR_EPX } else { 0.0 };
+        let inner = if horizontal {
+            Rect::new(inner.x, inner.y, inner.w, (inner.h - lane).max(0.0))
+        } else {
+            Rect::new(inner.x, inner.y, (inner.w - lane).max(0.0), inner.h)
+        };
+        let frame = if horizontal {
+            let w = self.stack_min(id, Axis::Y, None).0;
+            Rect::new(inner.x - offset[0], inner.y, w.max(inner.w), inner.h)
+        } else {
+            let h = self.stack_min(id, Axis::Y, Some(inner.w)).1;
+            Rect::new(inner.x, inner.y - offset[1], inner.w, h.max(inner.h))
+        };
+        self.place_stack(id, frame, Axis::Y);
+    }
+
+    /// Minimum of a List's non-repeating content: visible non-row
+    /// children stacked with spacing — exact in the empty state, a
+    /// floor always. Rows never size the box, and a `layout` strip is
+    /// the rows' seat, skipped whole (D128).
+    fn list_fixed_min(&self, id: NodeId, inner_w: Option<f32>) -> (f32, f32) {
+        let spacing = self.spacing(id);
+        let (mut w, mut h, mut count) = (0.0f32, 0.0f32, 0u32);
+        for c in self.sizing_children(id) {
+            let n = self.node(c);
+            if n.kind == Kind::ListItem {
+                continue;
+            }
+            if n.kind == Kind::Row && self.res.children(self.page, c).iter().any(|g| self.node(*g).kind == Kind::Repeat) {
+                continue;
+            }
+            let (cw, ch) = self.child_extent(c, inner_w);
+            w = w.max(cw);
+            h += ch;
+            count += 1;
+        }
+        if count > 1 {
+            h += spacing * (count - 1) as f32;
+        }
+        (w, h)
     }
 
     fn res_scroll(&self, _id: NodeId) -> [f32; 2] {
@@ -1237,6 +1349,12 @@ fn free_axis(start: f32, extent: f32, len: Len, align: Align, m_near: Option<f32
 /// the triad (a hug axis is content-sized, nothing to scroll). The one
 /// rule for layout and input.
 pub fn scroll_axes_of(page: &Page, res: &Resolved, id: NodeId) -> (bool, bool) {
+        if page.nodes[id as usize].kind == Kind::List {
+            // A List self-scrolls on its layout's axis (D121/D128): a
+            // `layout Row` strip pans sideways, everything else scrolls
+            // down; statics pan with the rows either way.
+            return if list_is_row(page, id) { (true, false) } else { (false, true) };
+        }
         if let Some(allow) = res.ident(page, id, PropKey::Allow) {
             return match allow {
                 "horizontal" => (true, false),
@@ -1370,7 +1488,7 @@ mod tests {
         let (p, r) = lay("View v {
  Column c spacing=4, valign=top {
   Label a text=\"Tasks\", font_size=10
-  repeat tasks by $item.id { ListItem { Label text=$item.title } }
+  repeat tasks by $item.id { Panel { Label text=$item.title } }
   Label b text=\"Next\", font_size=10
  }
 }
@@ -1446,11 +1564,11 @@ mod tests {
         let res = resolve(&c.page, &rt);
         let r = layout(&c.page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
         assert_eq!(rect(&c.page, &r, "bar").w, 100.0);
-        rt.go(0);
+        rt.go_id(0);
         let res = resolve(&c.page, &rt);
         let r = layout(&c.page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
         assert_eq!(rect(&c.page, &r, "bar").w, 300.0);
-        rt.go(crate::runtime::BASE);
+        rt.go_id(crate::runtime::BASE);
         let res = resolve(&c.page, &rt);
         let r = layout(&c.page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
         assert_eq!(rect(&c.page, &r, "bar").w, 100.0);
@@ -1468,6 +1586,50 @@ mod tests {
 /// fullscreen tile parked at `margin_right=-80`); its subtree is parked
 /// with it. Gone/hidden subtrees and a Scroll's content (meant to run past
 /// the viewport) never count.
+/// A List whose rows sit in a `layout Row` strip — the one form that
+/// pans sideways (D128). The strip is the Row child holding the repeat.
+fn list_is_row(page: &Page, id: NodeId) -> bool {
+    page.children(id).any(|c| page.nodes[c].kind == Kind::Row && page.children(c as NodeId).any(|g| page.nodes[g].kind == Kind::Repeat))
+}
+
+/// The D123 no-height nudge (the addon's runtime `starved` flag): the
+/// viewport Lists whose rows got less than one row's room — usually a
+/// hug ancestor starved one (a hug parent asks for minimums, and a
+/// viewport's minimum is its fixed content only). The fix is the
+/// author's: `height=` (a sized box) or `height=hug` (the content
+/// shape) — hug lists are content-sized on purpose and never starve.
+pub fn starved(page: &Page, res: &Resolved, rt: &crate::runtime::Runtime, rects: &[Rect]) -> Vec<NodeId> {
+    let mut out = Vec::new();
+    for i in 0..page.nodes.len() {
+        let id = i as NodeId;
+        if page.nodes[i].kind != Kind::List || res.gone(page, id) || res.hidden(page, id) {
+            continue;
+        }
+        let hugged = if list_is_row(page, id) { matches!(res.placement[i].width, Len::Hug(_)) } else { matches!(res.placement[i].height, Len::Hug(_)) };
+        if hugged {
+            continue;
+        }
+        // Statics' laid heights come off the box; a row's rect keeps its
+        // natural stacked height (the content frame never squeezes it),
+        // so the first row IS one row's ask.
+        let rows = rt.list_rows(page, id);
+        let mut fixed = 0.0f32;
+        for c in res.children(page, id) {
+            let n = &page.nodes[c as usize];
+            if matches!(n.kind, Kind::Repeat | Kind::ListItem) || res.gone(page, c) {
+                continue;
+            }
+            fixed += rects[c as usize].h;
+        }
+        let room = rects[i].h - fixed;
+        let ask = rows.first().map(|r| rects[*r as usize].h).unwrap_or(1.0).max(1.0);
+        if room + 0.01 < ask {
+            out.push(id);
+        }
+    }
+    out
+}
+
 pub fn offscreen(page: &Page, res: &Resolved, rects: &[Rect], viewport: Rect) -> Vec<NodeId> {
     let mut out: Vec<NodeId> = Vec::new();
     if !page.nodes.is_empty() {

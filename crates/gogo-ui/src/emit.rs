@@ -98,11 +98,30 @@ fn slice<T: std::fmt::Debug>(items: &[T]) -> String {
     s
 }
 
+/// The page's arrangements as code: `enum Arrangement` (one variant per
+/// declared name, `#[repr(u32)]` = the index `when <name>` poses match),
+/// plus `Base` (the rest pose) — `Runtime::go(Arrangement::Wide)` cannot
+/// name a pose the page lacks (GPAR27).
+fn emit_arrangements(page: &Page, out: &mut String) {
+    if page.arrangements.is_empty() {
+        return;
+    }
+    out.push_str("    /// The page's declared arrangements; `Base` is the rest pose.\n");
+    out.push_str("    #[allow(clippy::enum_variant_names, non_camel_case_types, dead_code)]\n    #[derive(Clone, Copy, Debug, PartialEq, Eq)]\n    #[repr(u32)]\n    pub enum Arrangement {\n");
+    for (i, a) in page.arrangements.iter().enumerate() {
+        out.push_str(&format!("        {} = {i},\n", key_variant(page.str(*a))));
+    }
+    out.push_str(&format!("        Base = {},\n", u32::MAX));
+    out.push_str("    }\n\n");
+    out.push_str("    impl gogo::ArrangementName for Arrangement {\n        fn id(self) -> u32 {\n            self as u32\n        }\n    }\n\n");
+}
+
 /// The Rust source of `pub mod <module>`.
 pub fn emit_rust(page: &Page, module: &str) -> String {
     let mut out = String::new();
     out.push_str(&format!("#[allow(unused_imports, clippy::all)]\npub mod {module} {{\n"));
     out.push_str("    use gogo::page::*;\n    use gogo::page::{Kind::*, Len::*, Align::*, PropKey::*, Value::*, State::*, Action::*, Auto::*};\n\n");
+    emit_arrangements(page, &mut out);
     out.push_str("    pub static PAGE: StaticPage = StaticPage {\n");
     out.push_str(&format!("        nodes: {},\n", slice(&page.nodes)));
     out.push_str(&format!("        strings: {},\n", slice(&page.strings.iter().map(String::as_str).collect::<Vec<_>>())));
@@ -113,6 +132,7 @@ pub fn emit_rust(page: &Page, module: &str) -> String {
     out.push_str(&format!("        theme: {},\n", slice(&page.theme)));
     out.push_str(&format!("        kind_defaults: {},\n", slice(&page.kind_defaults)));
     out.push_str(&format!("        arrangements: {},\n", slice(&page.arrangements)));
+    out.push_str(&format!("        custom_states: {},\n", slice(&page.custom_states)));
     out.push_str(&format!("        transitions: {},\n", slice(&page.transitions)));
     out.push_str(&format!("        anims: {},\n", slice(&page.anims)));
     out.push_str(&format!("        anim_heads: {},\n", slice(&page.anim_heads)));
@@ -211,6 +231,20 @@ mod tests {
         assert!(src.contains("pub enum Key {\n    Ok = 0,\n    N16by9 = 1,\n    PickColorHint = 2,\n}"), "{src}");
         assert!(src.contains("\"16by9\" => Some(Key::N16by9),"), "{src}");
         assert!(src.contains("impl gogo::KeyName for Key"), "{src}");
+    }
+
+    /// GPAR27: a page with arrangements emits their typed handle —
+    /// `enum Arrangement { Wide = 0, Base }` + the `ArrangementName`
+    /// impl — so `Runtime::go(Arrangement::Wide)` cannot misspell.
+    #[test]
+    fn arrangements_emit_a_typed_enum() {
+        let c = compile("arrangement wide\nView v { Panel p width=10 }\nwhen wide { p.width = 20 }\n", &|_| None);
+        let src = emit_rust(&c.page, "t");
+        assert!(src.contains("pub enum Arrangement"), "{src}");
+        assert!(src.contains("Wide = 0"), "{src}");
+        assert!(src.contains("impl gogo::ArrangementName for Arrangement"), "{src}");
+        let c = compile("View v { Panel p width=10 }", &|_| None);
+        assert!(!emit_rust(&c.page, "t").contains("enum Arrangement"), "no arrangements, no enum");
         let mut clash = Keys::default();
         clash.intern("fxColor", "a", "").unwrap();
         clash.intern("fx_color", "b", "").unwrap();

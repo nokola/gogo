@@ -29,6 +29,10 @@ impl<'a> Parser<'a> {
         &self.tokens[self.pos.min(self.tokens.len() - 1)].tok
     }
 
+    fn peek_at(&self, ahead: usize) -> &Tok {
+        &self.tokens[(self.pos + ahead).min(self.tokens.len() - 1)].tok
+    }
+
     fn line(&self) -> u32 {
         self.tokens[self.pos.min(self.tokens.len() - 1)].line
     }
@@ -274,7 +278,7 @@ impl<'a> Parser<'a> {
                     }
                     need_comma = true;
                 }
-                Tok::Ref { name, opacity } => {
+                Tok::Ref { name, opacity, pos } => {
                     if need_comma {
                         self.error("G0017", format!("missing `,` before `${name}`"));
                     }
@@ -290,7 +294,7 @@ impl<'a> Parser<'a> {
                         let Some(value) = self.value() else { break };
                         node.params.push(AstProp { key: name, value, line: self.line() });
                     } else {
-                        node.args.push(AstValue::Ref { name, opacity });
+                        node.args.push(AstValue::Ref { name, opacity, pos });
                     }
                     need_comma = true;
                 }
@@ -353,6 +357,16 @@ impl<'a> Parser<'a> {
                     self.error("G0019", format!("missing `)` in `{name}(`"));
                     break;
                 }
+                // `arc(from=-225, sweep=270)` — a named argument
+                // (GPAR32: the production; the call site owns the names).
+                Tok::Ident { word, opacity: None, pos: None } if self.peek_at(1) == &Tok::Eq => {
+                    let aname = word.clone();
+                    self.pos += 2;
+                    match self.value() {
+                        Some(v) => args.push(AstValue::Named { name: aname, value: Box::new(v) }),
+                        None => break,
+                    }
+                }
                 _ => match self.value() {
                     Some(v) => args.push(v),
                     None => break,
@@ -391,7 +405,7 @@ impl<'a> Parser<'a> {
             Tok::Size { w, h } => AstValue::Size { w, h },
             Tok::Color { rgba, opacity, pos } => AstValue::Color { rgba, opacity, pos },
             Tok::Str { text, key } => AstValue::Str { text, key, line },
-            Tok::Ref { name, opacity } => AstValue::Ref { name, opacity },
+            Tok::Ref { name, opacity, pos } => AstValue::Ref { name, opacity, pos },
             Tok::LBracket => {
                 let mut items = Vec::new();
                 loop {

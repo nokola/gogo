@@ -13,7 +13,7 @@ pub enum Tok {
     /// `.Style` (a dot after whitespace).
     Style(String),
     /// `$name` with an optional attached path (`$task.id`) and `/opacity`.
-    Ref { name: String, opacity: Option<f32> },
+    Ref { name: String, opacity: Option<f32>, pos: Option<f32> },
     Str { text: String, key: Option<String> },
     /// A number with its unit (`""`, `epx`, `px`, `%`).
     Num { value: f32, unit: String },
@@ -373,6 +373,8 @@ impl<'a> Lexer<'a> {
         }
         let name = self.dotted_word();
         let opacity = self.opacity_suffix();
-        self.push(Tok::Ref { name, opacity });
+        // `$edge@0.24` — a theme color as a gradient stop (GPAR86).
+        let pos = self.pos_suffix();
+        self.push(Tok::Ref { name, opacity, pos });
     }
 }

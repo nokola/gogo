@@ -226,7 +226,19 @@ fn event_action(page: &Page, node: NodeId, event: &str) -> Option<Action> {
 fn scroll_ancestor(page: &Page, node: NodeId) -> Option<NodeId> {
     let mut n = page.nodes[node as usize].parent;
     while n != NO_NODE {
-        if page.nodes[n as usize].kind == Kind::Scroll {
+        if matches!(page.nodes[n as usize].kind, Kind::Scroll | Kind::List) {
+            return Some(n);
+        }
+        n = page.nodes[n as usize].parent;
+    }
+    None
+}
+
+/// The List a row belongs to — the selection owner a tap reports to.
+fn list_ancestor(page: &Page, node: NodeId) -> Option<NodeId> {
+    let mut n = page.nodes[node as usize].parent;
+    while n != NO_NODE {
+        if page.nodes[n as usize].kind == Kind::List {
             return Some(n);
         }
         n = page.nodes[n as usize].parent;
@@ -253,7 +265,7 @@ fn within(page: &Page, node: NodeId, root: NodeId) -> bool {
 fn scroll_taker(page: &Page, res: &Resolved, node: NodeId, vertical: bool) -> Option<NodeId> {
     let mut n = node;
     while n != NO_NODE {
-        if page.nodes[n as usize].kind == Kind::Scroll {
+        if matches!(page.nodes[n as usize].kind, Kind::Scroll | Kind::List) {
             let axes = scroll_axes(page, res, n);
             if if vertical { axes.1 } else { axes.0 } {
                 return Some(n);
@@ -264,16 +276,37 @@ fn scroll_taker(page: &Page, res: &Resolved, node: NodeId, vertical: bool) -> Op
     None
 }
 
-/// How far a Scroll's content can move: (max_x, max_y) in epx.
-fn scroll_range(page: &Page, rects: &[Rect], scroll: NodeId) -> [f32; 2] {
+/// How far a Scroll's content can move: (max_x, max_y) in epx. The
+/// content is the UNION of the children's rects — a Scroll's one content
+/// box, or a List's whole stacked body (a `repeat` stands for its rows;
+/// statics move with them, one doctrine both ways).
+fn scroll_range(page: &Page, res: &Resolved, rects: &[Rect], scroll: NodeId) -> [f32; 2] {
     let viewport = rects[scroll as usize];
-    let mut max = [0.0f32; 2];
-    for c in page.children(scroll) {
-        let r = rects[c];
-        max[0] = max[0].max(r.w - viewport.w);
-        max[1] = max[1].max(r.h - viewport.h);
+    let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+    let mut any = false;
+    let mut kids = res.children(page, scroll);
+    let mut i = 0;
+    while i < kids.len() {
+        let c = kids[i];
+        i += 1;
+        if page.nodes[c as usize].kind == Kind::Repeat {
+            kids.extend(res.children(page, c));
+            continue;
+        }
+        let r = rects[c as usize];
+        if r.w <= 0.0 && r.h <= 0.0 {
+            continue;
+        }
+        any = true;
+        lo[0] = lo[0].min(r.x);
+        lo[1] = lo[1].min(r.y);
+        hi[0] = hi[0].max(r.right());
+        hi[1] = hi[1].max(r.bottom());
     }
-    max
+    if !any {
+        return [0.0, 0.0];
+    }
+    [(hi[0] - lo[0] - viewport.w).max(0.0), (hi[1] - lo[1] - viewport.h).max(0.0)]
 }
 
 /// Which axes a Scroll pans: `allow=` when present, else the triad reading
@@ -366,8 +399,8 @@ impl Input {
         // `go(x)` / `toggle(x)` flip the view's arrangement right here — a
         // declarative wiring, no host handler.
         match action {
-            Some(Action::Go(a)) => rt.go(a),
-            Some(Action::ToggleArrangement(a)) => rt.toggle(a),
+            Some(Action::Go(a)) => rt.go_id(a),
+            Some(Action::ToggleArrangement(a)) => rt.toggle_id(a),
             _ => {}
         }
         events.push(Event { node, kind, action });
@@ -507,7 +540,7 @@ impl Input {
                 let mut caught_accum: Option<(NodeId, [f32; 2])> = None;
                 let caught = match self.fling.take() {
                     Some(f) if hit_node.is_some_and(|n| within(page, n, f.scroll)) => {
-                        let range = scroll_range(page, rects, f.scroll);
+                        let range = scroll_range(page, res, rects, f.scroll);
                         let raw = [f.accum[0] - f.accum[0].clamp(0.0, range[0]), f.accum[1] - f.accum[1].clamp(0.0, range[1])];
                         // The pull stays under the finger (GPAR5, the
                         // shipped catch): freezing a mid-spring bounce
@@ -558,7 +591,7 @@ impl Input {
                     self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum: [0.0; 2], value_from: 0.0, toggle_moved: false, release_owed: false, raw });
                     return events;
                 }
-                let scroll = if kind == Kind::Scroll { Some(node) } else { scroll_ancestor(page, node) };
+                let scroll = if matches!(kind, Kind::Scroll | Kind::List) { Some(node) } else { scroll_ancestor(page, node) };
                 let mut value_from = 0.0;
                 let pressed = (kind.is_press_surface() || kind == Kind::Slider) && !caught;
                 if pressed {
@@ -671,7 +704,7 @@ impl Input {
                 } else if p.panning {
                     if let Some(scroll) = p.scroll {
                         let axes = scroll_axes(page, res, scroll);
-                        let range = scroll_range(page, rects, scroll);
+                        let range = scroll_range(page, res, rects, scroll);
                         if axes.0 {
                             p.accum[0] -= delta.0;
                         }
@@ -709,7 +742,7 @@ impl Input {
                 if p.panning {
                     if let Some(scroll) = p.scroll {
                         let axes = scroll_axes(page, res, scroll);
-                        let range = scroll_range(page, rects, scroll);
+                        let range = scroll_range(page, res, rects, scroll);
                         // Velocity from the trailing window; a finger that
                         // rested before lifting gives no glide. Masked to
                         // the enabled axes BEFORE anything else, so a
@@ -761,6 +794,16 @@ impl Input {
                         self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                     }
                     Kind::ListItem if inside => {
+                        // Selection is the mode's side effect (spec §5, the
+                        // List owns it): `one` selects — never deselects by
+                        // tap — `many` toggles, `off` nothing. `change` on
+                        // the LIST first, then the row's `activate` (the
+                        // toggling-surface order above).
+                        if let Some(list) = list_ancestor(page, p.node) {
+                            if rt.tap_select(page, list, p.node) {
+                                self.push_event(rt, &mut events, list, EventKind::Change(Value::VIdent(page.nodes[p.node as usize].name)), event_action(page, list, "change"));
+                            }
+                        }
                         self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                     }
                     Kind::Check if inside => {
@@ -827,7 +870,7 @@ impl Input {
             }
         }
         let axes = scroll_axes(page, res, f.scroll);
-        let range = scroll_range(page, rects, f.scroll);
+        let range = scroll_range(page, res, rects, f.scroll);
         let before = rt.scroll[f.scroll as usize];
         for i in 0..2 {
             let on = if i == 0 { axes.0 } else { axes.1 };

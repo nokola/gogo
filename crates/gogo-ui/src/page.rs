@@ -12,6 +12,15 @@ pub const NO_NODE: NodeId = u32::MAX;
 /// Content of a `disabled` control dims to this unless the theme or a
 /// `when disabled` says otherwise (`Page::disabled_opacity`).
 pub const DISABLED_OPACITY: f32 = 0.3;
+
+/// A bare ListItem row's injected state fills (D122): selection, the
+/// press and the keyboard cursor show out of the box. The addon reads
+/// the engine theme's ItemList `selected` color with white@0.3 as the
+/// fallback (list_item.gd); with no engine theme here the fallback IS
+/// the color — held at half strength, the cursor echo at a quarter.
+pub const LIST_SELECTED_FILL: Rgba = Rgba([255, 255, 255, 77]);
+pub const LIST_HELD_FILL: Rgba = Rgba([255, 255, 255, 38]);
+pub const LIST_FOCUS_FILL: Rgba = Rgba([255, 255, 255, 19]);
 /// The empty string; `name == NO_STR` = unnamed.
 pub const NO_STR: StrId = 0;
 /// A translation key (`text="x"/key`), one id space for the WHOLE build:
@@ -279,6 +288,9 @@ pub enum PropKey {
     AccessibilityName,
     KeyboardTarget,
     Select,
+    /// `Flow orientation=vertical` — items run DOWN and wrap into
+    /// columns (WrapPanel's other axis; GPAR97).
+    Orientation,
     Render,
     Step,
     IconSrc,
@@ -374,6 +386,7 @@ pub const WORDS: &[(&str, PropKey)] = &[
     ("accessibility_name", PropKey::AccessibilityName),
     ("keyboard_target", PropKey::KeyboardTarget),
     ("select", PropKey::Select),
+    ("orientation", PropKey::Orientation),
     ("render", PropKey::Render),
     ("step", PropKey::Step),
     ("icon", PropKey::IconSrc),
@@ -553,7 +566,8 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
     match kind {
         Kind::View => &[BOX, PLATE, PADDING, &[PropKey::DisabledOpacity]],
         Kind::Panel | Kind::Layers | Kind::Custom => SHARED,
-        Kind::Column | Kind::Row | Kind::Flow => &[BOX, PLATE, PADDING, &[PropKey::Spacing]],
+        Kind::Column | Kind::Row => &[BOX, PLATE, PADDING, &[PropKey::Spacing]],
+        Kind::Flow => &[BOX, PLATE, PADDING, &[PropKey::Spacing, PropKey::Orientation]],
         Kind::Scroll => &[BOX, PLATE, PADDING, &[PropKey::Allow, PropKey::Bars]],
         Kind::Grid => &[BOX, PLATE, PADDING, &[PropKey::Cols, PropKey::Areas, PropKey::RowHeight, PropKey::Spacing]],
         Kind::Tiles => &[BOX, PLATE, PADDING, &[PropKey::Cols, PropKey::Spacing]],
@@ -569,7 +583,7 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
         Kind::Check | Kind::Radio => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::SelectedProp]],
         Kind::Toggle => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::SelectedProp, PropKey::Value]],
         Kind::Choice => &[BOX, &[PropKey::Value, PropKey::Spacing]],
-        Kind::List => &[BOX, PLATE, PADDING, &[PropKey::Select, PropKey::Spacing]],
+        Kind::List => &[BOX, PLATE, PADDING, &[PropKey::Select, PropKey::Spacing, PropKey::Bars]],
         Kind::ListItem => &[BOX, PLATE, PADDING, PRESS, &[PropKey::SelectedProp]],
         Kind::Slot => &[BOX, PLATE, PADDING, &[PropKey::Automatic]],
         Kind::Seat | Kind::GridRow => &[BOX],
@@ -683,6 +697,10 @@ pub enum State {
     ArrangementScreen(u32, StrId),
     /// `when screen.<orientation> screen.<class>`: both must hold.
     ScreenPair(StrId, StrId),
+    /// A control's declared state (`state a, b` in its body), raised and
+    /// cleared by the host through `Runtime::set_custom` — the control
+    /// script's own vocabulary (GPAR116, the addon's declared_states).
+    Custom(StrId),
 }
 
 /// The five screen classes a `when screen.<class>` may pose for — a CLOSED
@@ -799,6 +817,10 @@ impl State {
             State::Selected => 5,
             State::Held => 6,
             State::StateDisabled => 7,
+            // A control's own state outranks every built-in (the addon
+            // gives declared states priority 100+): the script raised it
+            // on purpose, over whatever the finger is doing.
+            State::Custom(_) => 8,
         }
     }
 }
@@ -1059,7 +1081,6 @@ pub const UNREAD_BY_DESIGN: &[(PropKey, &str)] = &[
     (PropKey::TapPulse, "host-read: the press feedback pulse is drawn by the host; not built here yet"),
     (PropKey::AccessibilityName, "host-read: no screen-reader bridge here yet"),
     (PropKey::KeyboardTarget, "host-read: no keyboard focus routing here yet"),
-    (PropKey::Select, "host-read: List selection mode; Lists get their items from the host"),
     (PropKey::Render, "accepted for old files that picked a renderer per node; one renderer here"),
     (PropKey::IconSrc, "accepted for old files; an icon file hint nothing reads"),
     (PropKey::IconSize, "accepted for old files beside `icon=`; icons are not drawn here"),
@@ -1085,6 +1106,9 @@ pub struct StaticPage {
     pub choices: &'static [ChoiceGroup],
     pub repeats: &'static [RepeatInfo],
     pub bind_sites: &'static [BindSite],
+    /// Control instance roots and the states their `state` lines declare
+    /// — the `Runtime::set_custom` gate (GPAR116).
+    pub custom_states: &'static [(NodeId, StrId)],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1104,6 +1128,8 @@ pub struct Page {
     pub choices: Vec<ChoiceGroup>,
     pub repeats: Vec<RepeatInfo>,
     pub bind_sites: Vec<BindSite>,
+    /// See `StaticPage::custom_states`.
+    pub custom_states: Vec<(NodeId, StrId)>,
 }
 
 impl Page {
@@ -1124,6 +1150,7 @@ impl Page {
             choices: s.choices.to_vec(),
             repeats: s.repeats.to_vec(),
             bind_sites: s.bind_sites.to_vec(),
+            custom_states: s.custom_states.to_vec(),
         }
     }
 
@@ -1157,6 +1184,10 @@ impl Page {
             n.whens = (nw0, wc);
             self.nodes.push(n);
         }
+        // A cloned control root declares the same states as its template
+        // (a control inside a repeat row keeps its `set_custom` gate).
+        let declared: Vec<(NodeId, StrId)> = self.custom_states.iter().filter(|(n, _)| *n >= src && *n < end).map(|(n, s)| (*n + delta, *s)).collect();
+        self.custom_states.extend(declared);
         base
     }
 

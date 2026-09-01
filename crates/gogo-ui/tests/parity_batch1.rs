@@ -289,7 +289,7 @@ fn margins_never_stretch_a_hug_box() {
 fn scale_shrinks_glyphs_corners_and_borders_with_the_box() {
     let c = ok("arrangement small\nView v {\n Button b text=\"OK\", width=100, height=40, halign=left, valign=top, corner_radius=8, border_thickness=2, border_color=#FF0000FF, font_size=20\n}\nwhen small { b.scale = 0.5 }\n");
     let mut rt = Runtime::new(&c.page);
-    rt.go(0);
+    rt.go_id(0);
     let list = draws(&c.page, &rt);
     // The plate: half the box (about its center), half the corner, half the border.
     let plate = list

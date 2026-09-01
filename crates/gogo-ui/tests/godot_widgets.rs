@@ -150,10 +150,10 @@ fn widget_instance_params_passthrough_and_bare_slot() {
 /// Godot host's `OnSizeSliderChange` still fires — the `signals` Slider's
 /// change auto-wires under the INSTANCE name. Rust's auto-wire is "the
 /// node's own name is the handler", and the Slider inside the body is
-/// unnamed (the instance name went to the Column root), so the change
-/// event leaves with no route.
+/// unnamed (the instance name went to the Column root). GPAR95 (round
+/// 5): the surface's events now report `Action::Named(<instance>)` when
+/// no `on:` is written — the file's widget name IS the handler.
 #[test]
-#[ignore = "NEW: Godot auto-wires a `signals` node's change under the instance name; Rust emits the event with action None on an unnamed node"]
 fn signals_node_change_auto_wires_under_the_instance_name() {
     let c = ok(&format!("{LABELED_SLIDER}View v {{ LabeledSlider sizeSlider label=\"Size\", min=1, max=300, value=80 }}\n"));
     let p = &c.page;
@@ -226,26 +226,29 @@ fn widget_body_names_resolve_per_instance() {
 }
 
 /// `lookup.root-self` 3134: Godot resolves the body root's OWN name
-/// (`a/root`) to the instance itself. Rust replaces the body root's name
-/// with the instance name, so `a/root` is a miss — and a widget's own
-/// `anim` cannot target its root by that name either (`root.opacity` is
-/// G0060; `self.` is the only spelling).
+/// (`a/root`) to the instance itself. GPAR95 (round 5): the body
+/// root's own name is an alias for the instance in every address
+/// position — a widget's own `anim` can target `root.opacity` again
+/// (`self.` stays the other spelling).
 #[test]
-#[ignore = "NEW: Godot `a/root` is the instance; Rust drops the body root's own name (find = None, `root.x` in a widget anim = G0060)"]
 fn body_root_own_name_is_the_instance() {
-    let c = ok(&format!("{LOOKUP_WIDGETS}View v {{ MiniSlider a caption=\"A\" }}\n"));
-    assert_eq!(c.page.find("a/root"), c.page.find("a"), "{:?}", c.page.nodes.iter().map(|n| c.page.str(n.name)).collect::<Vec<_>>());
+    // an anim targeting the root by its body name binds to the instance
+    let c = ok("widget Pulse {\n Layers root height=10 { }\n anim fade {\n  root.opacity from=1, to=0.5, duration=0.1\n }\n}\nView v { Pulse a }\n");
+    let a = c.page.find("a").unwrap();
+    assert!(!c.page.anims.is_empty(), "the anim compiled");
+    assert!(c.page.anims.iter().all(|t| t.node == a), "`root` bound to the instance: {:?}", c.page.anims);
 }
 
 /// `lookup.two-hops-miss` 3144: Godot documents `out/innerInst/captionLabel`
 /// as a miss (one level per map). Rust names the node exactly that and
-/// resolves it — the Rust side is the more useful one; recorded so the
-/// difference is a decision, not an accident.
+/// RESOLVES it — the more useful side, kept on purpose (GPAR95, decided
+/// with the tracker row: "two-hop lookup resolving in Rust is BETTER").
 #[test]
-#[ignore = "NEW: Godot `out/innerInst/captionLabel` is a documented miss; Rust resolves it (full `a/b/c` names)"]
-fn two_hop_lookup_is_a_miss() {
+fn two_hop_lookup_resolves_here() {
     let c = ok(&format!("{LOOKUP_WIDGETS}View v {{ Outer out }}\n"));
-    assert_eq!(c.page.find("out/innerInst/captionLabel"), None, "{:?}", c.page.nodes.iter().map(|n| c.page.str(n.name)).collect::<Vec<_>>());
+    let l = c.page.find("out/innerInst/captionLabel");
+    assert!(l.is_some(), "{:?}", c.page.nodes.iter().map(|n| c.page.str(n.name)).collect::<Vec<_>>());
+    assert_eq!(c.page.nodes[l.unwrap() as usize].kind, Kind::Label);
 }
 
 /// `lookup.view-ok`, `lookup.view-inner` 3150-3159: the `lookup_view.gogo`
@@ -374,12 +377,11 @@ fn slot_minimum_is_content_plus_padding() {
 /// `slotn.nested-ok` 3310 (PORT: it builds) and `slotn.nested-survives`,
 /// `slotn.fill-below-nested`, `slotn.nested-keeps-default` 3311-3321
 /// (NEW): a slot declared INSIDE another slot's default content survives
-/// a fill of the outer slot and draws above it — Godot: track children
-/// = [tick1, tick2, slot thumb (with its Circle)]. Rust's fill clears the
-/// declaration's children wholesale: track = [tick1, tick2], the `thumb`
-/// slot is gone.
+/// a fill of the outer slot and draws above it — track children
+/// = [tick1, tick2, slot thumb (with its Circle)]: the fill replaces the
+/// DEFAULT content only; a nested slot is the widget's own machinery
+/// (GPAR95, round 5).
 #[test]
-#[ignore = "NEW: Godot keeps a nested slot declaration through a fill of its parent slot (3 children, thumb last); Rust drops it (2 children, no `b/thumb`)"]
 fn nested_slot_declaration_survives_a_fill() {
     let c = ok("widget Bar {\n Layers {\n  slot track height=10 {\n   Rectangle bg color=#111111FF\n   slot thumb { Circle 8x8, color=#FFFFFFFF }\n  }\n }\n}\nBar b {\n slot track {\n  Rectangle tick1 2x8, color=#888888FF\n  Rectangle tick2 2x8, color=#888888FF\n }\n}\n");
     let p = &c.page;
@@ -524,14 +526,21 @@ fn styled_fader_instance_builds() {
 
 /// `ctl.custom-when-applies` 3497: a `when dragging` on the instance
 /// (dragging = a custom `state` the control declares) styles the root
-/// while the state holds. Rust has no custom state words — and the
-/// instance-line `when` blocks are not kept at all (page.whens is empty).
+/// while the state holds. GPAR116 (round 5): the state binds
+/// (`State::Custom`), the host raises it through `Runtime::set_custom`
+/// — the addon's control-script seam.
 #[test]
-#[ignore = "GP37: not ported: custom `state <name>` words on a control (instance `when dragging` has no state to bind to)"]
 fn custom_state_when_applies_while_dragging() {
     let c = ok(&format!("{}View v {{ Fader vol 200x24, value=0 {{\n when dragging opacity=0.4\n}} }}\n", fader_static()));
-    assert_eq!(c.page.whens.len(), 1, "the instance's `when dragging` must exist as a when: {:?}", c.page.whens);
-    panic!("GP37: no custom-state write — Godot: press on the track → dragging → root opacity 0.4");
+    let page = c.page;
+    let mut rt = Runtime::new(&page);
+    let vol = page.find("vol").unwrap();
+    rt.set_custom(&page, vol, "dragging", true).unwrap();
+    let res = resolve(&page, &rt);
+    assert_eq!(res.num(&page, vol, PropKey::Opacity), Some(0.4), "the raised state restyles the root");
+    rt.set_custom(&page, vol, "dragging", false).unwrap();
+    let res = resolve(&page, &rt);
+    assert_eq!(res.num(&page, vol, PropKey::Opacity), None, "cleared");
 }
 
 /// `ctl.disabled-beats-custom` 3500-3501 (its expressible half): a
@@ -582,10 +591,9 @@ fn presence_follows_the_state() {
 /// build) and `ctl.live-default-round-text` 3545,
 /// `ctl.live-round-step-text` 3551 (NEW): a float shown through `live()`
 /// prints at 0.1 by default ("10.2"), `live(round($value, 1))` picks the
-/// step ("11"). Rust prints the raw float ("10.234235") and `round(...)`
-/// is an identity ("10.6").
+/// step ("11"). (GPAR95, round 5: the display rounding is applied at
+/// compile — `live()` in a text position bakes the shown string.)
 #[test]
-#[ignore = "NEW: Godot live() shows floats at 0.1 and honors round($v, step) (\"10.2\", \"11\"); Rust prints the raw float and ignores round (\"10.234235\", \"10.6\")"]
 fn live_float_display_rounding() {
     let c = ok(&format!("{}Fader fr 100x24, value=10.234235\n", fader_static()));
     let texts = drawn_texts(&c.page);
@@ -593,6 +601,9 @@ fn live_float_display_rounding() {
     let c = ok(&format!("{}Fader fr 100x24, value=10.6\n", fader_static().replace("live($value)", "live(round($value, 1))")));
     let texts = drawn_texts(&c.page);
     assert_eq!(texts, vec!["11".to_string()], "{texts:?}");
+    // a THEME number through live() shows too (it used to draw nothing)
+    let c = ok("$x = 5\nView v { Label l text=live($x) }");
+    assert_eq!(drawn_texts(&c.page), vec!["5".to_string()]);
 }
 
 /// `ctl.live-default-round` 3542, `ctl.live-round-step` 3548 alone: the
@@ -606,9 +617,8 @@ fn live_and_live_round_sources_build() {
 }
 
 /// `ctl.err-bare-round` 3553-3555: `round($value, 0.1)` outside `live()`
-/// is refused ("goes inside live()"). Rust accepts it as an identity.
+/// is refused ("goes inside live()") — G0080 (GPAR95, round 5).
 #[test]
-#[ignore = "NEW: Godot refuses a bare round($value, 0.1) outside live(); Rust accepts it silently (identity)"]
 fn bare_round_outside_live_is_refused() {
     let text = err_text(&format!("{}Fader fr 100x24\n", fader_static().replace("live($value)", "round($value, 0.1)")));
     assert!(text.contains("goes inside live()"), "{text}");
@@ -623,10 +633,9 @@ fn stepped_fader_builds() {
 
 /// `ctl.err-fill-width-thumb` 3570-3582: a `width=fill` child in a
 /// position slot with no width of its own vanished silently (user-caught)
-/// — Godot refuses it at build ("takes its width from its content"). Rust
-/// still lays the slot AND the Circle out at width 0.
+/// — refused at build ("takes its width from its content"), G5106
+/// (GPAR95, round 5).
 #[test]
-#[ignore = "NEW: Godot refuses width=fill content in an unsized position slot; Rust lays the slot and its Circle out 0 wide, silently"]
 fn fill_width_content_in_a_position_slot_is_refused() {
     let src = "control BadThumb $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n Layers {\n  slot track height=24 {\n   slot thumb automatic=position by $value in $min..$max { Circle width=fill, height=fill, color=#FFFFFFFF }\n  }\n }\n}\nBadThumb b 100x24\n";
     let text = err_text(src);
@@ -647,9 +656,9 @@ fn fill_width_content_is_fine_in_a_sized_position_slot() {
 }
 
 /// `ctl.err-d9` 3596-3603: `state hover` names a built-in — it must be
-/// spelled `state_builtin`. Rust keeps no control state words.
+/// spelled `state_builtin` (G0077; GPAR116/95 round 5 — `state` declares
+/// the control's OWN words).
 #[test]
-#[ignore = "GP37: not ported: control `state`/`state_builtin` words (a built-in name under `state` is not checked)"]
 fn builtin_name_under_state_is_refused() {
     let text = err_text("control C1 $value=0 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n state hover\n Layers { }\n}\nC1 c\n");
     assert!(text.contains("state_builtin"), "{text}");
@@ -689,10 +698,9 @@ fn live_is_a_plain_ref_read_anywhere() {
 }
 
 /// `ctl.err-bind-redirect` 3616-3618: `bind($value)` is refused naming
-/// `live($value)`. Rust compiles an unknown call to a `VCall` the Label
-/// cannot show — the label draws NOTHING, with no diagnostic.
+/// `live($value)` — G0081 (GPAR95, round 5; an unknown call used to
+/// compile to a `VCall` the Label cannot show: nothing drew, no word).
 #[test]
-#[ignore = "NEW: Godot refuses bind($value) naming live($value); Rust accepts any unknown call in text= and the label draws nothing"]
 fn unknown_call_in_text_is_refused() {
     let src = format!("{}Fader f 100x24\n", fader_static().replace("live($value)", "bind($value)"));
     let text = err_text(&src);
@@ -712,9 +720,8 @@ fn relayout_and_two_writer_fences() {
 
 /// `ctl.err-feel-endpoints` 3629-3636: a control body's default feel is
 /// the bare `transition duration=…` — one with endpoints
-/// (`any -> dragging`) is refused. Rust keeps no control feel.
+/// (`any -> dragging`) is refused (G0034).
 #[test]
-#[ignore = "GP37: not ported: control body words (default-feel `transition` with endpoints is not checked)"]
 fn default_feel_takes_no_endpoints() {
     let text = err_text("control C2 $value=0 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n transition any -> dragging duration=0.1\n Layers { }\n}\nC2 c\n");
     assert!(text.contains("default feel"), "{text}");

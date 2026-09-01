@@ -20,6 +20,14 @@ pub const DISABLED: u8 = 32;
 /// `base` — no arrangement active.
 pub const BASE: u32 = u32::MAX;
 
+/// A page build's typed arrangement handle (`enum Arrangement` in the
+/// generated module) — `Runtime::go`/`toggle` take one, so a misspelled
+/// arrangement is a rustc error (GPAR27, the E7 typed-handles design;
+/// `Key`/`KeyName` is the translation-key half).
+pub trait ArrangementName: Copy {
+    fn id(self) -> u32;
+}
+
 /// One field value a repeat item carries — the leaf types the shipped
 /// addon binds (gogo_repeat.gd: String, number, bool, Color; structures
 /// don't bind whole).
@@ -75,7 +83,19 @@ struct Pool {
 
 /// A repeat's pool, created on first touch.
 fn new_pool(page: &Page, repeat: NodeId) -> Pool {
-    Pool { repeat, slots: Vec::new(), live: Vec::new(), keyed: Vec::new(), scratch: Vec::new(), empties: page.children(repeat).map(|i| i as NodeId).filter(|c| page.nodes[*c as usize].kind == Kind::Empty).collect() }
+    let mut empties: Vec<NodeId> = page.children(repeat).map(|i| i as NodeId).filter(|c| page.nodes[*c as usize].kind == Kind::Empty).collect();
+    // A List-level `empty { }` (D128) is this repeat's zero-items view
+    // too: it hides once rows exist — and its spacing slot goes with it —
+    // exactly like the repeat's own block (GPAR96).
+    let mut a = page.nodes[repeat as usize].parent;
+    while a != NO_NODE {
+        if page.nodes[a as usize].kind == Kind::List {
+            empties.extend(page.children(a).map(|i| i as NodeId).filter(|c| page.nodes[*c as usize].kind == Kind::Empty));
+            break;
+        }
+        a = page.nodes[a as usize].parent;
+    }
+    Pool { repeat, slots: Vec::new(), live: Vec::new(), keyed: Vec::new(), scratch: Vec::new(), empties }
 }
 
 /// The key leaf of `item` (validated by `set_items` before use).
@@ -173,6 +193,18 @@ pub struct Runtime {
     /// Live repeat rows, one pool per touched repeat (`set_count` /
     /// `set_items`).
     pools: Vec<Pool>,
+    /// How many arrangements the page declares — `go_id`'s refusal
+    /// bound (an unknown index keeps the pose, GPAR27).
+    arrangement_count: u32,
+    /// Raised control states: (control root, declared state name) —
+    /// `set_custom` writes, `when <name>` conditions read (GPAR116).
+    customs: Vec<(NodeId, StrId)>,
+    /// Each List's selection, the keys in the order they entered
+    /// (repeat/List spec §5; `one` holds at most one). Kept BY KEY so a
+    /// `set_items` reconcile re-finds the rows; a key with no present
+    /// item is INERT — it renders nothing and reads back until
+    /// reassigned or the item arrives (select-then-load).
+    list_sel: Vec<(NodeId, Vec<ItemKey>)>,
     /// The focused Input's caret (node, chars) — written by the input
     /// machine, drawn by the renderer (GPAR112).
     pub caret: Option<(NodeId, u32)>,
@@ -242,6 +274,9 @@ impl Runtime {
             state_anims: Vec::new(),
             finished: Vec::new(),
             pools: Vec::new(),
+            arrangement_count: page.arrangements.len() as u32,
+            customs: Vec::new(),
+            list_sel: Vec::new(),
             caret: None,
             motion: vec![Motion::IDENTITY; page.nodes.len()],
             owned_text: vec![NO_STR; page.nodes.len()],
@@ -529,8 +564,157 @@ impl Runtime {
         let prev = std::mem::replace(&mut self.pools[pi].live, next);
         self.pools[pi].scratch = prev;
         self.show_empties(page, pi, zero);
+        // The selection is kept BY KEY across reconciles (list.reorder-keeps):
+        // re-assert it over the fresh rows; absent keys stay INERT in the
+        // List's memory and re-attach when their item returns.
+        let mut a = page.nodes[repeat as usize].parent;
+        while a != NO_NODE {
+            if page.nodes[a as usize].kind == Kind::List {
+                if self.list_sel.iter().any(|(n, _)| *n == a) {
+                    self.apply_selected(page, a);
+                }
+                break;
+            }
+            a = page.nodes[a as usize].parent;
+        }
         self.dirty = true;
         Ok(())
+    }
+
+    /// The rows a List owns right now, display order: every live row of
+    /// every repeat under it (statics are never rows).
+    pub fn list_rows(&self, page: &Page, list: NodeId) -> Vec<NodeId> {
+        let end = page.nodes[list as usize].subtree_end;
+        let mut out = Vec::new();
+        for p in &self.pools {
+            if p.repeat > list && p.repeat < end {
+                out.extend(p.live.iter().map(|s| p.slots[*s as usize]));
+            }
+        }
+        out
+    }
+
+    /// Writes a List's selection from code — one write path with the tap
+    /// (the addon's `_write_selected`). Refusals (G9104) keep the last
+    /// good selection, never a half-applied write: `select=off` has no
+    /// selection to write, `one` takes at most one key, duplicates are
+    /// refused. Key SHAPE is the type's own guarantee (`ItemKey` is a
+    /// string or a whole number — the addon checks that at its Variant
+    /// surface).
+    ///
+    /// Returns whether the selection actually changed — the addon fires
+    /// `change` exactly then and a same-value write is silent; a host
+    /// notifies off this bool the same way.
+    pub fn set_selected(&mut self, page: &Page, list: NodeId, keys: &[ItemKey]) -> Result<bool, String> {
+        let mode = match page.prop(list, PropKey::Select) {
+            Some(Value::VIdent(w)) => page.str(w),
+            _ => "one",
+        };
+        let name = page.str(page.nodes[list as usize].name);
+        if mode == "off" {
+            return Err(format!("G9104: `{name}` has select=off — no selection to write (activation still fires)"));
+        }
+        if mode == "one" && keys.len() > 1 {
+            return Err(format!("G9104: `{name}` has select=one — write one key or none, got {}", keys.len()));
+        }
+        for (i, k) in keys.iter().enumerate() {
+            if keys[..i].contains(k) {
+                return Err(format!("G9104: duplicate key {k:?} in `{name}`'s selection"));
+            }
+        }
+        let cur = self.list_sel.iter().find(|(n, _)| *n == list).map(|(_, k)| k.as_slice()).unwrap_or(&[]);
+        if cur == keys {
+            return Ok(false);
+        }
+        match self.list_sel.iter_mut().find(|(n, _)| *n == list) {
+            Some(e) => e.1 = keys.to_vec(),
+            None => self.list_sel.push((list, keys.to_vec())),
+        }
+        self.apply_selected(page, list);
+        Ok(true)
+    }
+
+    /// A List's live selection (the addon's `selected` read-back):
+    /// present keys in collection order, then inert keys in the order
+    /// they entered the selection.
+    pub fn selected_keys(&self, page: &Page, list: NodeId) -> Vec<ItemKey> {
+        let Some((_, sel)) = self.list_sel.iter().find(|(n, _)| *n == list) else { return Vec::new() };
+        let mut out: Vec<ItemKey> = Vec::new();
+        for row in self.list_rows(page, list) {
+            if let Some(k) = self.item_key(page, row) {
+                if sel.contains(k) && !out.contains(k) {
+                    out.push(k.clone());
+                }
+            }
+        }
+        for k in sel {
+            if !out.contains(k) {
+                out.push(k.clone());
+            }
+        }
+        out
+    }
+
+    /// A tap's selection side effect on `row` (spec §5, user call
+    /// 2026-07-15): `one` selects it — a re-tap stays selected, the radio
+    /// doctrine — `many` toggles it, `off` nothing. Returns whether the
+    /// selection changed (the caller fires `change` exactly then).
+    pub fn tap_select(&mut self, page: &Page, list: NodeId, row: NodeId) -> bool {
+        let mode = match page.prop(list, PropKey::Select) {
+            Some(Value::VIdent(w)) => page.str(w),
+            _ => "one",
+        };
+        let was = self.has(row, SELECTED);
+        let flips = match mode {
+            "one" => !was,
+            "many" => true,
+            _ => false,
+        };
+        if !flips {
+            return false;
+        }
+        let on = !was;
+        if let Some(k) = self.item_key(page, row).cloned() {
+            let e = match self.list_sel.iter_mut().find(|(n, _)| *n == list) {
+                Some(e) => e,
+                None => {
+                    self.list_sel.push((list, Vec::new()));
+                    self.list_sel.last_mut().unwrap()
+                }
+            };
+            if mode == "one" {
+                e.1.clear();
+                e.1.push(k);
+            } else if on {
+                if !e.1.contains(&k) {
+                    e.1.push(k);
+                }
+            } else {
+                e.1.retain(|x| x != &k);
+            }
+        }
+        if mode == "one" {
+            for r in self.list_rows(page, list) {
+                if r != row {
+                    self.set_state(r, SELECTED, false);
+                }
+            }
+        }
+        self.set_state(row, SELECTED, on);
+        true
+    }
+
+    /// Sets each row's SELECTED to its key's membership in the List's
+    /// selection — the state IS the look (`when selected`), so styles
+    /// re-assert wherever this runs (code write, reconcile). Rows with
+    /// no key (the counted `set_count` form) clear here: keyed memory
+    /// cannot vouch for them.
+    fn apply_selected(&mut self, page: &Page, list: NodeId) {
+        let keys: Vec<ItemKey> = self.list_sel.iter().find(|(n, _)| *n == list).map(|(_, k)| k.clone()).unwrap_or_default();
+        for row in self.list_rows(page, list) {
+            let on = self.item_key(page, row).is_some_and(|k| keys.contains(k));
+            self.set_state(row, SELECTED, on);
+        }
     }
 
     /// Writes one item's `$item.<field>` values onto a slot through the
@@ -890,6 +1074,34 @@ impl Runtime {
         self.set_prop(node, PropKey::Visibility, Value::VIdent(word));
     }
 
+    /// Raises or clears one of a control's declared states (`state a, b`
+    /// in its body) — the code seam the addon's control scripts use
+    /// (gogo_control_root.declared_states / set_state). `when <name>`
+    /// blocks in that control restyle on the flip; `transition` rules
+    /// naming the state time it.
+    ///
+    /// An undeclared name is refused (`Err` naming the control), so a
+    /// typo cannot silently do nothing.
+    pub fn set_custom(&mut self, page: &Page, root: NodeId, state: &str, on: bool) -> Result<(), String> {
+        let sid = page.intern_lookup(state);
+        let name = page.str(page.nodes[root as usize].name);
+        if sid == NO_STR || !page.custom_states.iter().any(|(n, s)| *n == root && *s == sid) {
+            return Err(format!("`{state}` is not a declared state of `{name}` — its `state` line names them"));
+        }
+        let has = self.customs.iter().any(|e| *e == (root, sid));
+        if has == on {
+            return Ok(());
+        }
+        if on {
+            self.customs.push((root, sid));
+        } else {
+            self.customs.retain(|e| *e != (root, sid));
+        }
+        self.changes.push(if on { (root, None, Some(State::Custom(sid))) } else { (root, Some(State::Custom(sid)), None) });
+        self.dirty = true;
+        Ok(())
+    }
+
     pub fn set_state(&mut self, node: NodeId, bit: u8, on: bool) {
         let s = &mut self.states[node as usize];
         let before = *s;
@@ -947,7 +1159,20 @@ impl Runtime {
         }
     }
 
-    pub fn go(&mut self, arrangement: u32) {
+    /// Moves the view to an arrangement by its typed handle — the
+    /// `enum Arrangement` a page's build emits (GPAR27): an unknown
+    /// arrangement is a rustc error, never a silent no-op.
+    pub fn go<A: ArrangementName>(&mut self, arrangement: A) {
+        self.go_id(arrangement.id());
+    }
+
+    /// `go` for a runtime-compiled page (tests, hot reload), by the
+    /// arrangement's index. An index the page never declared is refused
+    /// and the pose KEEPS (the addon's printerr + early return, GPAR27).
+    pub fn go_id(&mut self, arrangement: u32) {
+        if arrangement != BASE && arrangement >= self.arrangement_count {
+            return;
+        }
         if self.arrangement != arrangement {
             let from = self.arrangement;
             self.arrangement = arrangement;
@@ -956,9 +1181,15 @@ impl Runtime {
         }
     }
 
-    pub fn toggle(&mut self, arrangement: u32) {
+    /// `go`-or-back-to-base on the typed handle (the addon's toggle).
+    pub fn toggle<A: ArrangementName>(&mut self, arrangement: A) {
+        self.toggle_id(arrangement.id());
+    }
+
+    /// `toggle` by index, for a runtime-compiled page.
+    pub fn toggle_id(&mut self, arrangement: u32) {
         let target = if self.arrangement == arrangement { BASE } else { arrangement };
-        self.go(target);
+        self.go_id(target);
     }
 
     /// The host names the live screen orientation and class; every `when
@@ -988,6 +1219,18 @@ impl Runtime {
             State::Selected => self.has(node, SELECTED),
             State::StateDisabled => self.disabled(page, node),
             State::Arrangement(i) => self.arrangement == i,
+            // Raised on the control root; a `when <name>` anywhere in
+            // that control responds — the walk finds the root above.
+            State::Custom(s) => {
+                let mut n = node;
+                while n != NO_NODE {
+                    if self.customs.iter().any(|(cn, cs)| *cn == n && *cs == s) {
+                        return true;
+                    }
+                    n = page.nodes[n as usize].parent;
+                }
+                false
+            }
             State::ScreenOrientation(w) | State::ScreenClass(w) => self.screen.contains(&w),
             State::ArrangementScreen(i, w) => self.arrangement == i && self.screen.contains(&w),
             State::ScreenPair(o, c) => self.screen.contains(&o) && self.screen.contains(&c),
@@ -1731,7 +1974,7 @@ mod tests {
         let bar = page.find("bar").unwrap();
         let mut rt = Runtime::new(&page);
         resolve_animated(&page, &mut rt);
-        rt.go(0);
+        rt.go_id(0);
         resolve_animated(&page, &mut rt);
         rt.tick(&mut page, 0.5);
         let r = resolve_animated(&page, &mut rt);

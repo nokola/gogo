@@ -24,6 +24,7 @@ pub use draw::{Draw, Fit, GradientKind, TextAlign, draw, hit};
 pub use input::{Event, EventKind, Input, Key, Phase, Touch};
 pub use layout::{FixedAdvance, Rect, TextMeasure, layout};
 pub use locale::{KeyName, Keys, Locale};
+pub use runtime::ArrangementName;
 pub use page::{Kind, KeyId, NO_KEY, NO_NODE, NO_STR, NodeId, Orientation, Page, PropKey, Rgba, ScreenClass, StaticPage, StrId, Value};
 pub use anim::{Easing, Finish, Motion};
 pub use runtime::{Resolved, Runtime, resolve, resolve_animated};

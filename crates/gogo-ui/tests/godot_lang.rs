@@ -309,22 +309,18 @@ fn pin_matrix_margin_shorthand_binds_touched_edges() {
     assert_eq!(l.rect("b"), Rect::new(344.0, 354.0, 40.0, 30.0), "{:?}", l.rect("b"));
 }
 
-/// `_pin_matrix_tests` 2112-2113 (pinmx.err-center-margin): Godot refuses
-/// a `margin_left` under `halign=center` at load ("doesn't bind" — a
-/// centered box pins no edge).
+/// `_pin_matrix_tests` 2112-2115 (pinmx.err-center-margin,
+/// pinmx.err-far-on-aligned): Godot refuses `margin_left` under
+/// `halign=center` and `margin_right` under `halign=left` at load
+/// ("doesn't bind"). FLIP (GPAR94, round 6, recorded): in Rust these
+/// margins are LOAD-BEARING — every margin counts into a hug parent's
+/// claim (D241/D242, the negative form is the decided hang-out rule),
+/// a centered pair shifts the center (GPAR38), and a capped axis takes
+/// them as insets — so both forms build and mean what they say.
 #[test]
-#[ignore = "NEW: Godot refuses margin_left under halign=center at load; Rust builds clean and ignores the margin (box stays centered at x=180)"]
-fn pin_matrix_center_with_edge_margin_is_refused() {
-    assert!(gogo::has_errors(&compile("Panel b 40x30, halign=center, margin_left=4", &|_| None).diags));
-}
-
-/// `_pin_matrix_tests` 2114-2115 (pinmx.err-far-on-aligned): Godot refuses
-/// a far-edge margin under a near-edge alignment (`halign=left,
-/// margin_right=4`) at load.
-#[test]
-#[ignore = "NEW: Godot refuses margin_right under halign=left at load; Rust builds clean and ignores the margin (x stays 0)"]
-fn pin_matrix_far_margin_under_near_alignment_is_refused() {
-    assert!(gogo::has_errors(&compile("Panel b 40x30, halign=left, margin_right=4", &|_| None).diags));
+fn pin_matrix_margins_against_alignment_build_here() {
+    assert!(!gogo::has_errors(&compile("Panel b 40x30, halign=center, margin_left=4", &|_| None).diags));
+    assert!(!gogo::has_errors(&compile("Panel b 40x30, halign=left, margin_right=4", &|_| None).diags));
 }
 
 /// `_pin_matrix_tests` 2116-2117 (pinmx.err-span-overconstrained): both
@@ -766,7 +762,6 @@ fn vocab_new_names_build_to_their_kinds() {
 /// `_vocab_tests` 12355-12358 (vocab.flow-orientation): `Flow` keeps
 /// WrapPanel's `orientation=vertical` — items run down, not across.
 #[test]
-#[ignore = "NEW: Godot Flow orientation=vertical runs items down; Rust warns G2001 (unknown prop) and lays them across (b at x=10,y=0)"]
 fn vocab_flow_orientation_vertical() {
     let l = lay("View v { Flow f orientation=vertical { Rectangle a 10x10; Rectangle b 10x10 } }");
     let a = l.rect("a");
@@ -808,7 +803,6 @@ fn vocab_view_is_root_only() {
 /// `_vocab_tests` 12410 (vocab.view-not-widget-body): a widget body may
 /// not be a `View`.
 #[test]
-#[ignore = "NEW: Godot refuses a View as a widget body; Rust builds `widget W { View v { } }` + `W w` clean (G7012 fires only when the instance sits inside a tree)"]
 fn vocab_view_is_not_a_widget_body() {
     assert!(gogo::has_errors(&compile("widget W { View v { } }\nW w", &|_| None).diags));
 }
@@ -886,7 +880,6 @@ fn vocab_gap_refuses_both_forms() {
 /// `_vocab_tests` 12447 (vocab.gap-no-children): a gap IS the space — it
 /// takes no children.
 #[test]
-#[ignore = "NEW: Godot refuses children on a gap (IS the space); Rust builds `gap 8 { Label x }` clean, the Label is never laid out (rect 0x0)"]
 fn vocab_gap_refuses_children() {
     assert!(gogo::has_errors(&compile("View v { Column c { gap 8 { Label x text=\"x\" } } }", &|_| None).diags));
 }
@@ -894,7 +887,48 @@ fn vocab_gap_refuses_children() {
 /// `_vocab_tests` 12448 (vocab.gap-reserved-widget): `gap` is a built-in
 /// word — a widget may not take the name.
 #[test]
-#[ignore = "NEW: Godot refuses `widget gap`; Rust accepts it and a later `gap` line expands the widget (widget lookup precedes the built-in)"]
 fn vocab_gap_is_reserved_as_a_widget_name() {
     assert!(gogo::has_errors(&compile("widget gap { Panel p }\nView c", &|_| None).diags));
+}
+
+/// GPAR35 (round 5, 2026-08-31): a nested `uses` resolves against the
+/// INCLUDING file's directory, the addon's rule — `sub/widgets.gogo`
+/// writing `uses "inner.gogo"` loads `sub/inner.gogo`, and `..` walks
+/// up. The miss error names the resolved path so a wrong base is
+/// visible.
+#[test]
+fn nested_uses_resolve_against_the_including_files_dir() {
+    let loader = |path: &str| match path {
+        "sub/widgets.gogo" => Some("uses \"inner.gogo\"\n".to_string()),
+        "sub/inner.gogo" => Some("$fromInner = 7\n".to_string()),
+        _ => None,
+    };
+    let c = compile("uses \"sub/widgets.gogo\"\nView v { Label l text=\"x\" }", &loader);
+    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(c.page.theme.iter().any(|t| c.page.str(t.name) == "fromInner"), "the nested include's value landed");
+    // `..` climbs out of the include's directory
+    let loader2 = |path: &str| match path {
+        "sub/widgets.gogo" => Some("uses \"../top_shared.gogo\"\n".to_string()),
+        "top_shared.gogo" => Some("$fromTop = 3\n".to_string()),
+        _ => None,
+    };
+    let c = compile("uses \"sub/widgets.gogo\"\nView v { Label l text=\"x\" }", &loader2);
+    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(c.page.theme.iter().any(|t| c.page.str(t.name) == "fromTop"), "`..` climbed to the top directory");
+    // a miss reports the RESOLVED path
+    let c = compile("uses \"sub/widgets.gogo\"\nView v { }", &|path: &str| if path == "sub/widgets.gogo" { Some("uses \"gone.gogo\"\n".to_string()) } else { None });
+    assert!(c.diags.iter().any(|d| d.code == "G0024" && d.message.contains("sub/gone.gogo")), "{:#?}", c.diags);
+}
+
+/// GPAR32 (round 6, 2026-08-31): named call arguments are GRAMMAR —
+/// `arc(from=-225, sweep=270)` parses (it was a G0021 "expected a
+/// value" parse error), so the real complaint shows instead: the
+/// `automatic=` set is closed (G5107). Which calls READ the names is
+/// each site's own feature (GP33 owns `arc`).
+#[test]
+fn named_call_arguments_parse() {
+    let src = "widget W { Layers l { slot p automatic=arc(from=-225, sweep=270) { Circle 6x6 } } }\nView v { W w }";
+    let d = compile(src, &|_| None).diags;
+    assert!(!d.iter().any(|x| x.code == "G0021" || x.code == "G0019"), "the form parses: {d:#?}");
+    assert!(d.iter().any(|x| x.code == "G5107"), "the closed-set complaint shows instead: {d:#?}");
 }

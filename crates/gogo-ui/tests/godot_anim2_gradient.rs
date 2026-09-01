@@ -274,16 +274,14 @@ fn anim_level_groups_with_after_order_cross_node_choreography() {
 
 /// `_structured_anim_tests` 7928-7930 (group.anim-level-self): at page
 /// level `self.` names the file's own root, so `anim pop { group squash
-/// duration_each=0.8 { self.scale to=5 } }` next to `Button b` builds.
-/// Rust knows `self` only inside a widget's own anim.
+/// duration_each=0.8 { self.scale to=5 } }` next to `Button b` builds
+/// (GPAR86, round 6; inside a widget `self` stays the widget's root).
 #[test]
-#[ignore = "NEW: Godot page-level `self.` = the file's root node vs Rust G0060 `no node named self` (only a widget's own anim has self)"]
 fn page_level_self_names_the_root() {
     let src = "anim pop { group squash duration_each=0.8 { self.scale to=5 } }\nView v { Button b }\n";
     assert!(!fails(src), "{:#?}", diags(src));
     let all = lanes(&compile(src, &|_| None).page, "pop");
-    assert_eq!(all.len(), 2, "uniform scale = both axes: {all:#?}");
-    assert_eq!(all[0].node, "v");
+    assert!(!all.is_empty() && all.iter().all(|l| l.node == "v" && l.channel == "scale"), "self drives the ROOT's scale: {all:#?}");
 }
 
 /// `_structured_anim_tests` 7933-7942 (group.mixed-forms-ok): D136's one
@@ -312,9 +310,9 @@ fn group_names_are_unique_and_each_lines_stay_bare() {
 
 /// `_structured_anim_tests` 7946 (group.err-assign): an anim body holds
 /// journeys (`to=`), never assignments — `box.opacity = 0` inside a group
-/// is a load error in Godot. Rust drops the line without a word.
+/// is a load error in Godot — and here too (G0063, GPAR86 round 6; it
+/// used to be dropped without a word).
 #[test]
-#[ignore = "NEW: Godot refuses `box.opacity = 0` inside an anim (journeys, not assignments) vs Rust silently drops the assignment line, no diagnostic"]
 fn assignments_inside_an_anim_are_refused() {
     let src = "anim a { group duration_each=0.1 { box.opacity = 0 } }\nView v { Rectangle box }\n";
     assert!(fails(src), "{:#?}", diags(src));
@@ -617,9 +615,9 @@ fn unpinned_stops_spread_evenly_and_default_to_linear_left_to_right() {
 
 /// `_gradient_tests` 8305-8312 (gradient.entry-kinds, gradient.ref-entry):
 /// a `$ref` may carry a stop position (`$edge@0`) and resolves like any
-/// color position — the first stop is #10203040.
+/// color position — the first stop is #10203040 (GPAR86, round 6: the
+/// lexer reads `@pos` after a ref and the stop bakes at compile).
 #[test]
-#[ignore = "NEW: Godot `$edge@0` is a legal stops entry vs Rust lexer G0001 `unexpected character @` (a $ref takes /opacity but no @pos)"]
 fn a_ref_stop_carries_its_position() {
     let src = "$edge = #10203040\nView v { Gradient g width=100, height=10, stops=[$edge@0, accent/0.5@0.3, white@1] }";
     assert!(!fails(src), "{:#?}", diags(src));

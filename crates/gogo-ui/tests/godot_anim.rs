@@ -627,7 +627,9 @@ fn scale_of_a_non_number_is_refused() {
 /// writer; `Compiler::one_writer_guard`).
 #[test]
 fn one_writer_per_property_at_node_and_view_scope() {
-    let node = "anim press { self.scale to=0.5, duration=0.1 }\nstyle S {\n transition any -> held duration=0.1, anim=press\n when held scale=0.5\n}\nView v { Button b .S }\n";
+    // (`self.` at page scope names the FILE ROOT since GPAR86 — the
+    // clash must target the button by name.)
+    let node = "anim press { b.scale to=0.5, duration=0.1 }\nstyle S {\n transition any -> held duration=0.1, anim=press\n when held scale=0.5\n}\nView v { Button b .S }\n";
     assert!(fails(node), "{}", messages(node));
     let view = "anim zoom { menu.scale to=0.9, duration=0.1 }\narrangement zoomed\nwhen zoomed { menu.scale=0.9 }\ntransition any -> zoomed duration=0.1, anim=zoom\nView v { Column menu { Button b text=\"m\" } }\n";
     assert!(fails(view), "{}", messages(view));
@@ -635,8 +637,8 @@ fn one_writer_per_property_at_node_and_view_scope() {
 
 /// `_motion_tests` 5540-5548 (motion.when-anim-different-props-ok): an
 /// anim popping `scale` beside a `when held rotate=` coexist — different
-/// properties, no writer clash. (`self.` outside a widget is G0060 in Rust
-/// — GP32 scopes `self` to a widget root — so the anim names the button.)
+/// properties, no writer clash. (The anim names the button; page-level
+/// `self.` is the FILE ROOT — GPAR86, the addon's reading.)
 #[test]
 fn anim_and_when_on_different_properties_coexist() {
     ok("anim press { b.scale to=0.9, duration=0.1 }\nstyle S {\n transition any -> held duration=0.1, anim=press\n when held rotate=3\n}\nView v { Button b .S }\n");
@@ -715,7 +717,7 @@ fn an_arrangement_can_hold_motion() {
     let page = c.page;
     let menu = page.find("menu").unwrap() as usize;
     let mut rt = Runtime::new(&page);
-    rt.go(0);
+    rt.go_id(0);
     let r = resolve(&page, &rt);
     assert_eq!(r.motion[menu].scale, [0.9, 0.9], "{:?}", r.motion[menu]);
 }

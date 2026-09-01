@@ -709,7 +709,7 @@ fn motion_pumps_run_exactly_while_something_moves() {
     let mut fx = Fx::new(STATE_VIEW);
     assert!(!fx.rt.animating() && !fx.input.is_gliding());
     let _ = resolve_animated(&fx.page, &mut fx.rt);
-    fx.rt.go(0);
+    fx.rt.go_id(0);
     let _ = resolve_animated(&fx.page, &mut fx.rt);
     assert!(fx.rt.animating(), "a timed arrangement flip pumps while gliding");
     fx.rt.tick(&mut fx.page, 0.5);
