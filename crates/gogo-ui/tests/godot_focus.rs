@@ -13,7 +13,7 @@
 //! D129 VISIBLE focus: a key grant shows the ring, a tap parks focus
 //! with no ring — except on an Input, whose caret always warrants one.
 use gogo::draw::{Draw, draw};
-use gogo::input::{Event, EventKind, Input, Key, Phase, Touch};
+use gogo::input::{Event, EventKind, Input, Key, Mods, Phase, Touch};
 use gogo::layout::{FixedAdvance, Rect, layout};
 use gogo::page::{BUTTON_FOCUS_RING, BUTTON_FOCUS_RING_EPX, NodeId, PropKey, Rgba, Value};
 use gogo::runtime::{DISABLED, FOCUS_WITHIN, FOCUSED, HOVERED, Runtime, SELECTED, resolve};
@@ -23,6 +23,8 @@ struct Fx {
     page: Page,
     rt: Runtime,
     input: Input,
+    /// The tap clock — see `tap`.
+    now: f64,
 }
 
 impl Fx {
@@ -31,12 +33,12 @@ impl Fx {
         assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
         let page = c.page;
         let rt = Runtime::new(&page);
-        Fx { page, rt, input: Input::new() }
+        Fx { page, rt, input: Input::new(), now: 0.0 }
     }
     fn key(&mut self, k: Key) -> Vec<Event> {
         let res = resolve(&self.page, &self.rt);
         let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        self.input.key(&mut self.page, &mut self.rt, &res, &rects, k)
+        self.input.key(&mut self.page, &mut self.rt, &res, &rects, k, Mods::NONE)
     }
     fn tap(&mut self, node: &str) -> Vec<Event> {
         let id = self.page.find(node).unwrap();
@@ -44,8 +46,12 @@ impl Fx {
         let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
         let r = rects[id as usize];
         let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-        let mut ev = self.input.touch(&self.page, &mut self.rt, &res, &rects, Touch { phase: Phase::Down, x, y, t: 0.0, id: 1 });
-        ev.extend(self.input.touch(&self.page, &mut self.rt, &res, &rects, Touch { phase: Phase::Up, x, y, t: 0.1, id: 1 }));
+        // Taps sit a second apart: two same-spot taps within the
+        // double-click window would word-select in a field.
+        self.now += 1.0;
+        let t = self.now;
+        let mut ev = self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x, y, t, id: 1 });
+        ev.extend(self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x, y, t: t + 0.1, id: 1 }));
         ev
     }
     fn id(&self, name: &str) -> NodeId {
@@ -395,13 +401,13 @@ fn a_mouse_press_captures_hover() {
     let res = resolve(&fx.page, &fx.rt);
     let rects = layout(&fx.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
     let r = rects[fx.id("a") as usize];
-    fx.input.touch(&fx.page, &mut fx.rt, &res, &rects, Touch { phase: Phase::Down, x: r.x + r.w / 2.0, y: r.y + r.h / 2.0, t: 0.0, id: 1 });
+    fx.input.touch(&fx.page, &mut fx.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x: r.x + r.w / 2.0, y: r.y + r.h / 2.0, t: 0.0, id: 1 });
     fx.hover_xy(350.0, 700.0);
     assert!(fx.rt.has(fx.id("a"), HOVERED), "the press holds the hovered look off-box");
     let rs = rects[fx.id("s") as usize];
     fx.hover_xy(rs.x + rs.w / 2.0, rs.y + rs.h / 2.0);
     assert!(!fx.rt.has(fx.id("s"), HOVERED), "nothing new hovers mid-press");
-    fx.input.touch(&fx.page, &mut fx.rt, &res, &rects, Touch { phase: Phase::Up, x: 350.0, y: 700.0, t: 0.2, id: 1 });
+    fx.input.touch(&fx.page, &mut fx.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x: 350.0, y: 700.0, t: 0.2, id: 1 });
     assert!(!fx.rt.has(fx.id("a"), HOVERED), "released elsewhere: hover clears");
 }
 

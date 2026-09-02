@@ -92,7 +92,7 @@ fn pointer_reports_every_phase_in_node_space() {
     let mut input = Input::new();
     let res = resolve(&page, &rt);
     let rects = layout(&page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-    let mut touch = |phase: Phase, x: f32, y: f32, t: f64, rt: &mut Runtime| input.touch(&page, rt, &res, &rects, Touch { phase, x, y, t, id: 1 });
+    let mut touch = |phase: Phase, x: f32, y: f32, t: f64, rt: &mut Runtime| input.touch(&page, rt, &res, &rects, &FixedAdvance, Touch { phase, x, y, t, id: 1 });
     let ev = touch(Phase::Down, 25.0, 15.0, 0.0, &mut rt);
     assert_eq!(ev.len(), 1);
     assert_eq!(ev[0].node, pad);

@@ -93,7 +93,7 @@ impl Fx {
     }
     fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) {
         let (res, rects) = self.lay();
-        self.input.touch(&self.page, &mut self.rt, &res, &rects, Touch { phase, x, y, t, id: 1 });
+        self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase, x, y, t, id: 1 });
     }
     fn background(&mut self, name: &str) -> Option<Rgba> {
         let id = self.id(name);

@@ -125,7 +125,7 @@ impl Fx {
     fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) -> Vec<Event> {
         let res = resolve(&self.page, &self.rt);
         let rects = layout(&self.page, &res, FRAME, &FixedAdvance);
-        self.input.touch(&self.page, &mut self.rt, &res, &rects, Touch { phase, x, y, t, id: 1 })
+        self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase, x, y, t, id: 1 })
     }
     /// A tap at the middle of `node` (Godot's `_conf_press(at, true/false)`).
     fn tap(&mut self, node: NodeId, t: f64) -> Vec<Event> {

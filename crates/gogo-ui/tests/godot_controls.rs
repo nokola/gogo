@@ -110,7 +110,7 @@ impl Fx {
     }
     fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) -> Vec<Event> {
         let (res, rects) = self.lay();
-        self.input.touch(&self.page, &mut self.rt, &res, &rects, Touch { phase, x, y, t, id: 1 })
+        self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase, x, y, t, id: 1 })
     }
     fn tap(&mut self, x: f32, y: f32, t: f64) -> Vec<Event> {
         let mut ev = self.touch(Phase::Down, x, y, t);
@@ -138,6 +138,7 @@ fn trace(events: &[Event]) -> Vec<String> {
             EventKind::Edit(Value::VNum(v)) => format!("edit:{v}"),
             EventKind::Edit(_) => "edit".to_string(),
             EventKind::Pointer { phase, .. } => format!("pointer:{phase:?}"),
+            EventKind::ClipboardCopy | EventKind::ClipboardCut | EventKind::ClipboardPaste => "clipboard".to_string(),
         })
         .collect()
 }

@@ -636,8 +636,8 @@ fn reveal_pose_tweens_the_layout_space() {
     let (res, r) = frame(&mut rt, &mut page, 0.0);
     let b = r[more as usize];
     let mut input = Input::new();
-    input.touch(&page, &mut rt, &res, &r, Touch { phase: Phase::Down, x: b.x + 5.0, y: b.y + 5.0, t: 1.0, id: 1 });
-    let ev = input.touch(&page, &mut rt, &res, &r, Touch { phase: Phase::Up, x: b.x + 5.0, y: b.y + 5.0, t: 1.1, id: 1 });
+    input.touch(&page, &mut rt, &res, &r, &FixedAdvance, Touch { phase: Phase::Down, x: b.x + 5.0, y: b.y + 5.0, t: 1.0, id: 1 });
+    let ev = input.touch(&page, &mut rt, &res, &r, &FixedAdvance, Touch { phase: Phase::Up, x: b.x + 5.0, y: b.y + 5.0, t: 1.1, id: 1 });
     assert!(ev.iter().any(|e| e.kind == EventKind::Activate), "{ev:?}");
     assert_eq!(rt.arrangement, 0, "reveal.toggle-opens");
     // A gone child earns nothing.

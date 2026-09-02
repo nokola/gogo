@@ -21,7 +21,7 @@ pub mod runtime;
 pub use compile::{CompileOptions, Compiled, compile, compile_with};
 pub use diag::{Diagnostic, Severity, has_errors};
 pub use draw::{Draw, Fit, GradientKind, TextAlign, draw, hit};
-pub use input::{Event, EventKind, Input, Key, Phase, Touch};
+pub use input::{Event, EventKind, Input, Key, MOUSE_ID, Mods, Phase, Touch};
 pub use layout::{FixedAdvance, Rect, TextMeasure, layout};
 pub use locale::{KeyName, Keys, Locale};
 pub use runtime::ArrangementName;

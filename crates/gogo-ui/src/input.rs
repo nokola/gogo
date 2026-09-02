@@ -23,7 +23,7 @@
 //! press holds the hovered look until release. Coordinates are epx.
 
 use crate::draw::hit;
-use crate::layout::{Rect, SLIDER_KNOB_EPX, TOGGLE_PILL};
+use crate::layout::{DEFAULT_FONT_SIZE, Rect, SLIDER_KNOB_EPX, TOGGLE_PILL, TextMeasure};
 use crate::draw::TOGGLE_KNOB_EPX;
 use crate::page::*;
 use crate::runtime::{FOCUS_WITHIN, FOCUSED, HELD, HOVERED, Resolved, Runtime, SELECTED};
@@ -71,8 +71,84 @@ pub struct Touch {
     pub y: f32,
     /// Seconds, any monotonic origin.
     pub t: f64,
-    /// The finger (the platform's touch id; a mouse is one fixed id).
+    /// The finger (the platform's touch id; a mouse is one fixed id —
+    /// `MOUSE_ID`).
     pub id: u64,
+}
+
+/// The mouse's `Touch.id`: touch ids are the platform's, the one mouse
+/// rides this fixed id. Mouse-only behaviors key off it — a mouse drag
+/// in a field SELECTS, a finger's drag pans the Scroll instead (D75
+/// spirit: pointer kinds never blur into each other).
+pub const MOUSE_ID: u64 = u64::MAX;
+
+/// Modifier keys as they stood at the keystroke — the shell reads them
+/// from the platform and passes them with every key.
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub struct Mods {
+    pub shift: bool,
+    pub ctrl: bool,
+}
+
+impl Mods {
+    pub const NONE: Mods = Mods { shift: false, ctrl: false };
+    pub const SHIFT: Mods = Mods { shift: true, ctrl: false };
+    pub const CTRL: Mods = Mods { shift: false, ctrl: true };
+}
+
+/// Seconds two presses may sit apart and still read as a double click
+/// (word select in a field).
+const DOUBLE_CLICK_S: f64 = 0.35;
+
+/// Seconds a still finger press in a field takes to mature into
+/// word-select + the edit bar (the touch door to copy/paste — a phone
+/// has no Ctrl).
+const LONG_PRESS_S: f32 = 0.5;
+
+/// The edit bar's button cell, epx.
+pub const EDIT_BAR_CELL_EPX: f32 = 64.0;
+/// The edit bar's height, epx.
+pub const EDIT_BAR_H_EPX: f32 = 40.0;
+const EDIT_BAR_GAP_EPX: f32 = 4.0;
+
+/// One edit-bar button.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EditOp {
+    Cut,
+    Copy,
+    Paste,
+    All,
+}
+
+impl EditOp {
+    /// The drawn label (English literals — bar i18n is a logged open).
+    pub fn label(self) -> &'static str {
+        match self {
+            EditOp::Cut => "Cut",
+            EditOp::Copy => "Copy",
+            EditOp::Paste => "Paste",
+            EditOp::All => "All",
+        }
+    }
+}
+
+/// The edit bar's buttons for a field's rectangle: fixed cells docked
+/// just above the field (below it when the field touches the top edge).
+/// Cut/Copy show only over a selection; All only when there is text.
+/// ONE function drives BOTH the drawer and the tap hit-check, so the
+/// look and the touch always agree.
+pub fn edit_bar_rects(field: Rect, has_selection: bool, has_text: bool) -> Vec<(EditOp, Rect)> {
+    let mut ops = Vec::new();
+    if has_selection {
+        ops.push(EditOp::Cut);
+        ops.push(EditOp::Copy);
+    }
+    ops.push(EditOp::Paste);
+    if has_text {
+        ops.push(EditOp::All);
+    }
+    let y = if field.y - EDIT_BAR_H_EPX - EDIT_BAR_GAP_EPX >= 0.0 { field.y - EDIT_BAR_H_EPX - EDIT_BAR_GAP_EPX } else { field.y + field.h + EDIT_BAR_GAP_EPX };
+    ops.into_iter().enumerate().map(|(i, op)| (op, Rect::new(field.x + i as f32 * (EDIT_BAR_CELL_EPX + EDIT_BAR_GAP_EPX), y, EDIT_BAR_CELL_EPX, EDIT_BAR_H_EPX))).collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,6 +169,13 @@ pub enum EventKind {
     /// in the node's own epx space (0,0 = its top-left), captured until up.
     /// A mouse is one pointer — the shell feeds it as one fixed finger.
     Pointer { phase: Phase, x: f32, y: f32 },
+    /// The edit bar's Copy/Cut/Paste (a REQUEST, not a result): gogo
+    /// never touches a clipboard — the shell answers each through the
+    /// same door as Ctrl+C/X/V (`selected_text`, `delete_selection`,
+    /// `paste`). No `on:` handler; the shell consumes these itself.
+    ClipboardCopy,
+    ClipboardCut,
+    ClipboardPaste,
 }
 
 /// What happened, on which node, and the `on:` action the file names for
@@ -204,6 +287,49 @@ pub enum Key {
 }
 
 /// The field's text as shown: the last code write, else the file's word.
+/// The caret index a press at `x` means: the nearer character boundary
+/// of the field's text, measured through the same `TextMeasure` the
+/// layout used (the drawn text starts 8 epx into the plate — draw.rs's
+/// inset).
+fn index_from_x(page: &Page, rt: &Runtime, res: &Resolved, rects: &[Rect], measure: &dyn TextMeasure, node: NodeId, x: f32) -> usize {
+    let local = x - (rects[node as usize].x + 8.0);
+    let font_size = res.font_size(page, node).unwrap_or(DEFAULT_FONT_SIZE);
+    let font_id = res.font(page, node).unwrap_or(crate::page::NO_STR);
+    let font = if font_id == crate::page::NO_STR { None } else { Some(page.str(font_id)) };
+    let chars: Vec<char> = input_text(page, rt, node).chars().collect();
+    let mut prev = 0.0;
+    for i in 0..chars.len() {
+        let s: String = chars[..i + 1].iter().collect();
+        let (w, _) = measure.measure(&s, font_size, None, font);
+        if local < (prev + w) / 2.0 {
+            return i;
+        }
+        prev = w;
+    }
+    chars.len()
+}
+
+/// The word span at `i`: an alphanumeric/underscore run, else the run of
+/// whatever else sits under the press (a double click on a gap selects
+/// the gap — the everywhere behavior).
+fn word_at(text: &[char], i: usize) -> (usize, usize) {
+    if text.is_empty() {
+        return (0, 0);
+    }
+    let i = i.min(text.len() - 1);
+    let wordy = |c: char| c.is_alphanumeric() || c == '_';
+    let class = wordy(text[i]);
+    let mut lo = i;
+    while lo > 0 && wordy(text[lo - 1]) == class {
+        lo -= 1;
+    }
+    let mut hi = i + 1;
+    while hi < text.len() && wordy(text[hi]) == class {
+        hi += 1;
+    }
+    (lo, hi)
+}
+
 fn input_text(page: &Page, rt: &Runtime, node: NodeId) -> String {
     match text_value(page, rt, node) {
         Value::VText { text, .. } => page.str(text).to_string(),
@@ -237,6 +363,19 @@ pub struct Input {
     hover: Option<NodeId>,
     /// The caret, in CHARS into the field's text.
     caret: usize,
+    /// The selection's FIXED end, in chars — `None` = nothing selected.
+    /// The caret is always the moving end (Shift+arrows, a mouse drag),
+    /// so extending and shrinking need no cases: one anchor, one mover.
+    anchor: Option<usize>,
+    /// The last press that landed in a field (time, node) — a second
+    /// press there within `DOUBLE_CLICK_S` selects the word under it.
+    last_field_press: Option<(f64, NodeId)>,
+    /// Seconds the current field press has held still — at LONG_PRESS_S
+    /// it matures (word-select + the edit bar). Reset on Down.
+    hold: f32,
+    /// Where the current field press landed (chars) — the long-press
+    /// selects the word THERE, not wherever the finger drifted.
+    press_index: usize,
     /// The text at focus (or the last commit): `change` fires once per
     /// genuine transition — the shipped changed-means-CHANGED law.
     committed: String,
@@ -534,6 +673,9 @@ impl Input {
         }
         self.focus_visible = false;
         rt.caret = None;
+        rt.selection = None;
+        rt.edit_bar = None;
+        self.anchor = None;
         self.caret = 0;
         self.committed.clear();
     }
@@ -546,7 +688,7 @@ impl Input {
     /// Input, characters edit at the caret and stream `edit`, Enter
     /// commits `change` once per genuine change (the shipped
     /// changed-means-CHANGED law), Home/End move the caret.
-    pub fn key(&mut self, page: &mut Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], k: Key) -> Vec<Event> {
+    pub fn key(&mut self, page: &mut Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], k: Key, mods: Mods) -> Vec<Event> {
         let mut events = Vec::new();
         // D129 modality edge: ANY key press means keyboard driving — a
         // parked (ringless) owner gets its ring and its chain lights, in
@@ -612,18 +754,43 @@ impl Input {
         let Some(f) = self.focus.filter(|_| in_field) else { return events };
         let mut text: Vec<char> = input_text(page, rt, f).chars().collect();
         self.caret = self.caret.min(text.len());
+        self.anchor = self.anchor.map(|a| a.min(text.len())).filter(|a| *a != self.caret);
+        let sel = self.selection();
         match k {
+            Key::Char('a' | 'A') if mods.ctrl => {
+                // Ctrl+A: everything selected, the caret at the end.
+                self.anchor = Some(0);
+                self.caret = text.len();
+            }
+            // Other Ctrl+letters are the shell's shortcuts (copy/paste);
+            // they must never insert.
+            Key::Char(_) if mods.ctrl => return events,
             Key::Char(c) if !c.is_control() => {
-                // `max_length=` caps typing at that many characters
-                // (Godot's LineEdit word; GPAR112). Absent or 0 = no cap.
-                let cap = match page.prop(f, PropKey::MaxLength) {
-                    Some(Value::VNum(n)) if n > 0.0 => n as usize,
-                    _ => usize::MAX,
-                };
-                if text.len() < cap {
-                    text.insert(self.caret, c);
-                    self.caret += 1;
+                if let Some((lo, hi)) = sel {
+                    // Typing REPLACES the selection — one edit; the
+                    // result is shorter, so `max_length=` cannot grow.
+                    text.splice(lo..hi, [c]);
+                    self.caret = lo + 1;
+                    self.anchor = None;
+                } else {
+                    // `max_length=` caps typing at that many characters
+                    // (Godot's LineEdit word; GPAR112). Absent or 0 = no cap.
+                    let cap = match page.prop(f, PropKey::MaxLength) {
+                        Some(Value::VNum(n)) if n > 0.0 => n as usize,
+                        _ => usize::MAX,
+                    };
+                    if text.len() < cap {
+                        text.insert(self.caret, c);
+                        self.caret += 1;
+                    }
                 }
+            }
+            // With a selection both erasers erase JUST the selection.
+            Key::Backspace | Key::Delete if sel.is_some() => {
+                let (lo, hi) = sel.unwrap();
+                text.drain(lo..hi);
+                self.caret = lo;
+                self.anchor = None;
             }
             Key::Backspace if self.caret > 0 => {
                 self.caret -= 1;
@@ -632,10 +799,43 @@ impl Input {
             Key::Delete if self.caret < text.len() => {
                 text.remove(self.caret);
             }
+            Key::Left | Key::Right | Key::Home | Key::End if mods.shift => {
+                // Shift extends: the anchor plants where the caret stood
+                // and only the caret moves — Shift+Left on a rightward
+                // selection SHRINKS it (one anchor, one moving end).
+                if self.anchor.is_none() {
+                    self.anchor = Some(self.caret);
+                }
+                self.caret = match k {
+                    Key::Left => self.caret.saturating_sub(1),
+                    Key::Right => (self.caret + 1).min(text.len()),
+                    Key::Home => 0,
+                    _ => text.len(),
+                };
+                if self.anchor == Some(self.caret) {
+                    self.anchor = None;
+                }
+            }
+            // A plain arrow COLLAPSES a selection to its side — no move
+            // (the everywhere behavior).
+            Key::Left if sel.is_some() => {
+                self.caret = sel.unwrap().0;
+                self.anchor = None;
+            }
+            Key::Right if sel.is_some() => {
+                self.caret = sel.unwrap().1;
+                self.anchor = None;
+            }
             Key::Left => self.caret = self.caret.saturating_sub(1),
             Key::Right => self.caret = (self.caret + 1).min(text.len()),
-            Key::Home => self.caret = 0,
-            Key::End => self.caret = text.len(),
+            Key::Home => {
+                self.caret = 0;
+                self.anchor = None;
+            }
+            Key::End => {
+                self.caret = text.len();
+                self.anchor = None;
+            }
             Key::Enter => {
                 let now: String = text.iter().collect();
                 if now != self.committed {
@@ -646,9 +846,9 @@ impl Input {
             }
             _ => return events,
         }
-        rt.caret = Some((f, self.caret as u32));
+        self.publish(rt, f);
         rt.dirty = true;
-        if matches!(k, Key::Left | Key::Right | Key::Home | Key::End) {
+        if matches!(k, Key::Left | Key::Right | Key::Home | Key::End) || mods.ctrl {
             return events;
         }
         let now: String = text.iter().collect();
@@ -665,6 +865,9 @@ impl Input {
         rt.set_state(f, FOCUSED, false);
         set_chain(page, rt, f, FOCUS_WITHIN, false);
         rt.caret = None;
+        rt.selection = None;
+        rt.edit_bar = None;
+        self.anchor = None;
         if page.nodes[f as usize].kind == Kind::Input {
             let now = input_text(page, rt, f);
             if now != self.committed {
@@ -701,7 +904,8 @@ impl Input {
                 self.committed = input_text(page, rt, n);
             }
             self.caret = input_text(page, rt, n).chars().count();
-            rt.caret = Some((n, self.caret as u32));
+            self.anchor = None;
+            self.publish(rt, n);
         }
         let warranted = self.focus_visible || in_field;
         rt.set_state(n, FOCUSED, warranted);
@@ -872,11 +1076,92 @@ impl Input {
         events
     }
 
-    /// The focused Input's text + caret for seeding an IME (GPAR112):
-    /// `None` when no Input holds the caret.
-    pub fn ime_seed(&self, page: &Page, rt: &Runtime) -> Option<(String, usize)> {
+    /// The selected span ordered (lo, hi) in chars; `None` = nothing
+    /// selected (a collapsed anchor counts as nothing).
+    fn selection(&self) -> Option<(usize, usize)> {
+        let a = self.anchor?;
+        if a == self.caret {
+            return None;
+        }
+        Some((a.min(self.caret), a.max(self.caret)))
+    }
+
+    /// The focused field's selected text — the shell's copy door reads
+    /// it (gogo never touches a clipboard itself).
+    pub fn selected_text(&self, page: &Page, rt: &Runtime) -> Option<String> {
         let f = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input)?;
-        Some((input_text(page, rt, f), self.caret))
+        let (lo, hi) = self.selection()?;
+        Some(input_text(page, rt, f).chars().skip(lo).take(hi - lo).collect())
+    }
+
+    /// Pastes `text` into the focused field — a standing selection is
+    /// replaced, else it inserts at the caret. One `edit` when the text
+    /// genuinely changes; `max_length=` caps the RESULT like typing (the
+    /// paste is trimmed to fit); control characters are dropped (a
+    /// single-line field). The clipboard itself is the shell's — gogo
+    /// only takes text in.
+    pub fn paste(&mut self, page: &mut Page, rt: &mut Runtime, paste: &str) -> Vec<Event> {
+        let mut events = Vec::new();
+        let Some(f) = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input) else { return events };
+        let mut text: Vec<char> = input_text(page, rt, f).chars().collect();
+        self.caret = self.caret.min(text.len());
+        self.anchor = self.anchor.map(|a| a.min(text.len())).filter(|a| *a != self.caret);
+        let (lo, hi) = self.selection().unwrap_or((self.caret, self.caret));
+        let cap = match page.prop(f, PropKey::MaxLength) {
+            Some(Value::VNum(n)) if n > 0.0 => n as usize,
+            _ => usize::MAX,
+        };
+        let room = cap.saturating_sub(text.len() - (hi - lo));
+        let ins: Vec<char> = paste.chars().filter(|c| !c.is_control()).take(room).collect();
+        let n = ins.len();
+        text.splice(lo..hi, ins);
+        self.caret = lo + n;
+        self.anchor = None;
+        self.publish(rt, f);
+        rt.dirty = true;
+        let now: String = text.iter().collect();
+        if now != input_text(page, rt, f) {
+            rt.set_text(page, f, &now);
+            self.push_event(rt, &mut events, f, EventKind::Edit(text_value(page, rt, f)), event_action(page, f, "edit"));
+        }
+        events
+    }
+
+    /// Removes the selected span (the cut's second half — the shell
+    /// copies first, then calls this). One `edit`; nothing selected =
+    /// nothing happens.
+    pub fn delete_selection(&mut self, page: &mut Page, rt: &mut Runtime) -> Vec<Event> {
+        let mut events = Vec::new();
+        let Some(f) = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input) else { return events };
+        let Some((lo, hi)) = self.selection() else { return events };
+        let mut text: Vec<char> = input_text(page, rt, f).chars().collect();
+        let hi = hi.min(text.len());
+        let lo = lo.min(hi);
+        text.drain(lo..hi);
+        self.caret = lo;
+        self.anchor = None;
+        self.publish(rt, f);
+        rt.dirty = true;
+        let now: String = text.iter().collect();
+        rt.set_text(page, f, &now);
+        self.push_event(rt, &mut events, f, EventKind::Edit(text_value(page, rt, f)), event_action(page, f, "edit"));
+        events
+    }
+
+    /// Writes the caret + selection into the runtime — the drawer takes
+    /// the caret bar and the highlight from these two.
+    fn publish(&self, rt: &mut Runtime, f: NodeId) {
+        rt.caret = Some((f, self.caret as u32));
+        rt.selection = self.selection().map(|(lo, hi)| (f, lo as u32, hi as u32));
+    }
+
+    /// The focused Input's text + selection span for seeding an IME
+    /// (GPAR112): `None` when no Input holds the caret. No selection =
+    /// a collapsed span at the caret.
+    pub fn ime_seed(&self, page: &Page, rt: &Runtime) -> Option<(String, usize, usize)> {
+        let f = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input)?;
+        let (lo, hi) = self.selection().unwrap_or((self.caret, self.caret));
+        Some((input_text(page, rt, f), lo, hi))
     }
 
     /// One whole-text update FROM an IME (GPAR112, the GameActivity
@@ -886,7 +1171,7 @@ impl Input {
     /// `max_length` like typing, moves the caret, streams `edit` once
     /// per genuine change; the commit law is untouched (Enter and the
     /// focus-loss doors still commit once per genuine change).
-    pub fn ime_replace(&mut self, page: &mut Page, rt: &mut Runtime, text: &str, cursor: usize) -> Vec<Event> {
+    pub fn ime_replace(&mut self, page: &mut Page, rt: &mut Runtime, text: &str, start: usize, end: usize) -> Vec<Event> {
         let mut events = Vec::new();
         let Some(f) = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input) else { return events };
         let cap = match page.prop(f, PropKey::MaxLength) {
@@ -894,8 +1179,12 @@ impl Input {
             _ => usize::MAX,
         };
         let new: String = text.chars().take(cap).collect();
-        self.caret = cursor.min(new.chars().count());
-        rt.caret = Some((f, self.caret as u32));
+        let len = new.chars().count();
+        self.caret = end.min(len);
+        // The IME's span becomes the selection (a keyboard's own
+        // long-press select shows in the field).
+        self.anchor = Some(start.min(len)).filter(|a| *a != self.caret);
+        self.publish(rt, f);
         rt.dirty = true;
         if new != input_text(page, rt, f) {
             rt.set_text(page, f, &new);
@@ -979,7 +1268,7 @@ impl Input {
     }
 
     /// Feeds one touch sample; returns the events it completed.
-    pub fn touch(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], t: Touch) -> Vec<Event> {
+    pub fn touch(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], measure: &dyn TextMeasure, t: Touch) -> Vec<Event> {
         let mut events = Vec::new();
         match t.phase {
             Phase::Down => {
@@ -992,6 +1281,41 @@ impl Input {
                 // keeps its own press and the list keeps rolling
                 // underneath (D130, GPAR4). A FAST catch is "caught": the
                 // child under the finger is not pressed by accident.
+                // The edit bar floats over everything: its taps are its
+                // own, and any OTHER press dismisses it (the press then
+                // runs its normal course).
+                if let Some(bn) = rt.edit_bar {
+                    let has_sel = self.focus == Some(bn) && self.selection().is_some();
+                    let has_text = !input_text(page, rt, bn).is_empty();
+                    let op = edit_bar_rects(rects[bn as usize], has_sel, has_text).into_iter().find(|(_, r)| r.contains(t.x, t.y)).map(|(op, _)| op);
+                    match op {
+                        Some(EditOp::All) => {
+                            // Select-all keeps the bar up — Copy is the
+                            // natural next tap.
+                            let len = input_text(page, rt, bn).chars().count();
+                            self.anchor = Some(0).filter(|_| len > 0);
+                            self.caret = len;
+                            self.publish(rt, bn);
+                            rt.dirty = true;
+                            return events;
+                        }
+                        Some(op) => {
+                            rt.edit_bar = None;
+                            rt.dirty = true;
+                            let kind = match op {
+                                EditOp::Cut => EventKind::ClipboardCut,
+                                EditOp::Copy => EventKind::ClipboardCopy,
+                                _ => EventKind::ClipboardPaste,
+                            };
+                            events.push(Event { node: bn, kind, action: None });
+                            return events;
+                        }
+                        None => {
+                            rt.edit_bar = None;
+                            rt.dirty = true;
+                        }
+                    }
+                }
                 let hit_node = hit(page, res, rects, t.x, t.y, false);
                 let mut caught_accum: Option<(NodeId, [f32; 2])> = None;
                 let caught = match self.fling.take() {
@@ -1030,6 +1354,26 @@ impl Input {
                 // to nothing otherwise (GPAR112 — the focus-loss commit
                 // door: Enter, blur; once per genuine change).
                 self.grant(page, rt, res, rects, Some(node).filter(|n| page.nodes[*n as usize].focusable), false, &mut events);
+                if kind == Kind::Input && self.focus == Some(node) {
+                    // The press puts the caret where it LANDED (it used
+                    // to jump to the end of the text); a second press
+                    // within DOUBLE_CLICK_S selects the word there.
+                    let idx = index_from_x(page, rt, res, rects, measure, node, t.x);
+                    let dbl = self.last_field_press.is_some_and(|(pt, pn)| pn == node && t.t - pt < DOUBLE_CLICK_S);
+                    self.last_field_press = Some((t.t, node));
+                    if dbl {
+                        let chars: Vec<char> = input_text(page, rt, node).chars().collect();
+                        let (lo, hi) = word_at(&chars, idx);
+                        self.anchor = Some(lo).filter(|_| lo != hi);
+                        self.caret = hi;
+                    } else {
+                        self.caret = idx;
+                        self.anchor = None;
+                    }
+                    self.press_index = idx;
+                    self.hold = 0.0;
+                    self.publish(rt, node);
+                }
                 let raw = event_action(page, node, "pointer");
                 if let Some(action) = raw {
                     let r = rects[node as usize];
@@ -1118,7 +1462,7 @@ impl Input {
                         // goes back to where the finger found it). Nothing
                         // scrolls that way: the child keeps the finger for good.
                         let vertical = dy > dx;
-                        let child_keeps = (p.kind == Kind::Slider && !vertical) || (p.kind == Kind::Toggle && p.toggle_moved);
+                        let child_keeps = (p.kind == Kind::Slider && !vertical) || (p.kind == Kind::Toggle && p.toggle_moved) || (p.kind == Kind::Input && t.id == MOUSE_ID);
                         let taker = if child_keeps { None } else { scroll_taker(page, res, rects, p.node, vertical) };
                         match taker {
                             Some(scroll) => {
@@ -1147,6 +1491,21 @@ impl Input {
                     let f = toggle_fraction(res, rects, p.node, t.x);
                     rt.set_prop(p.node, PropKey::Value, Value::VNum(f));
                     rt.set_state(p.node, SELECTED, f >= 0.5);
+                } else if p.kind == Kind::Input && t.id == MOUSE_ID && !p.panning && self.focus == Some(p.node) {
+                    // The mouse drag selects: the anchor is where the
+                    // press landed, the caret follows the cursor. A
+                    // FINGER pans the Scroll instead — its selection
+                    // door is the long-press (step 3).
+                    let idx = index_from_x(page, rt, res, rects, measure, p.node, t.x);
+                    if self.anchor.is_none() {
+                        self.anchor = Some(self.caret);
+                    }
+                    self.caret = idx;
+                    if self.anchor == Some(idx) {
+                        self.anchor = None;
+                    }
+                    self.publish(rt, p.node);
+                    rt.dirty = true;
                 } else if p.panning {
                     if let Some(scroll) = p.scroll {
                         let axes = scroll_axes(page, res, scroll);
@@ -1321,6 +1680,27 @@ impl Input {
     /// still moves. A scroll offset code moved since the last write is
     /// adopted: the glide stands down rather than fight it.
     pub fn tick(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], dt: f32) -> bool {
+        // The long-press door — a FINGER only (the mouse has drag-select
+        // and Ctrl): a field press held still for LONG_PRESS_S selects
+        // the word it landed on and raises the edit bar.
+        if let Some(p) = self.press {
+            if p.kind == Kind::Input && p.id != MOUSE_ID && !p.panning && self.focus == Some(p.node) {
+                let (dx, dy) = (p.last.0 - p.start.0, p.last.1 - p.start.1);
+                if (dx * dx + dy * dy).sqrt() <= SCROLL_DEADZONE {
+                    let before = self.hold;
+                    self.hold += dt;
+                    if before < LONG_PRESS_S && self.hold >= LONG_PRESS_S {
+                        let chars: Vec<char> = input_text(page, rt, p.node).chars().collect();
+                        let (lo, hi) = word_at(&chars, self.press_index);
+                        self.anchor = Some(lo).filter(|_| lo != hi);
+                        self.caret = hi;
+                        self.publish(rt, p.node);
+                        rt.edit_bar = Some(p.node);
+                        rt.dirty = true;
+                    }
+                }
+            }
+        }
         let Some(mut f) = self.fling else { return false };
         if let Some((s, expected)) = self.expected {
             if s == f.scroll && rt.scroll[s as usize] != expected {
@@ -1394,7 +1774,7 @@ mod tests {
         }
         fn touch_id(&mut self, phase: Phase, x: f32, y: f32, t: f64, id: u64) -> Vec<Event> {
             let (res, rects) = self.lay();
-            self.input.touch(&self.page, &mut self.rt, &res, &rects, Touch { phase, x, y, t, id })
+            self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase, x, y, t, id })
         }
         fn tick(&mut self, dt: f32) -> bool {
             let (res, rects) = self.lay();

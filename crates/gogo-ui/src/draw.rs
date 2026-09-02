@@ -56,6 +56,13 @@ pub enum Draw {
     /// chars of the text to place it — glyph positions live where glyphs
     /// live, never in this layout-space list (GPAR112).
     Caret { rect: Rect, text: StrId, key: KeyId, font_size: f32, font: StrId, index: u32, color: Rgba },
+    /// The focused Input's selected span: the renderer measures the two
+    /// prefixes (`lo`, `hi` in chars) and fills between them — pushed
+    /// BEFORE the text so the glyphs draw over the highlight.
+    Selection { rect: Rect, text: StrId, key: KeyId, font_size: f32, font: StrId, lo: u32, hi: u32, color: Rgba },
+    /// Chrome text the page never interned (the edit bar's labels): the
+    /// renderer shapes `label` directly, centered in `rect`.
+    Chrome { rect: Rect, label: &'static str, font_size: f32, color: Rgba },
     ClipPush(Rect),
     ClipPop,
     /// GP33 `automatic=arc`: everything until the pop shows only inside
@@ -103,6 +110,17 @@ pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
         return out;
     }
     walk(page, res, rects, 0, 1.0, &mut out);
+    // The edit bar draws LAST — it floats over whatever follows the
+    // field in the tree (long-press raised it; input.rs eats its taps
+    // through the same `edit_bar_rects`).
+    if let Some(bn) = res.edit_bar {
+        let has_sel = res.selection.is_some_and(|(n, _, _)| n == bn);
+        let has_text = matches!(res.prop(page, bn, PropKey::Text), Some(Value::VText { text, key }) if !(page.str(text).is_empty() && key == NO_KEY));
+        for (op, r) in crate::input::edit_bar_rects(rects[bn as usize], has_sel, has_text) {
+            out.push(Draw::Quad { rect: r, color: Rgba([0x33, 0x33, 0x33, 0xF5]), corner: 4.0, border: 1.0, border_color: Rgba([0xFF, 0xFF, 0xFF, 0x28]) });
+            out.push(Draw::Chrome { rect: r, label: op.label(), font_size: 14.0, color: Rgba([0xFF, 0xFF, 0xFF, 0xFF]) });
+        }
+    }
     out
 }
 
@@ -526,6 +544,18 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             // Godot's default LineEdit plate: (0.1, 0.1, 0.1) at 0.6, no border.
             let bg = color(PropKey::Background).unwrap_or(mul_alpha(Rgba([0x1A, 0x1A, 0x1A, 0x99]), opacity));
             out.push(Draw::Quad { rect, color: bg, corner, border, border_color });
+            // The selection highlight, under the glyphs (white at 25%
+            // over the dark chrome; no property word yet — the
+            // selection round, step 1).
+            if let Some((sn, lo, hi)) = res.selection {
+                if sn == id {
+                    let (stext, skey) = match res.prop(page, id, PropKey::Text) {
+                        Some(Value::VText { text, key }) => (text, key),
+                        _ => (0, NO_KEY),
+                    };
+                    out.push(Draw::Selection { rect: text_rect.inset(8.0, 0.0, 8.0, 0.0), text: stext, key: skey, font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE), font: res.font(page, id).unwrap_or(NO_STR), lo, hi, color: Rgba([255, 255, 255, 64]) });
+                }
+            }
             let mut field_is_empty = true;
             if let Some(Value::VText { text, key }) = res.prop(page, id, PropKey::Text) {
                 field_is_empty = page.str(text).is_empty() && key == NO_KEY;
@@ -638,6 +668,8 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                 Draw::Circle { border, .. } => *border *= k,
                 Draw::Text { font_size, .. } => *font_size *= k,
                 Draw::Caret { font_size, .. } => *font_size *= k,
+                Draw::Selection { font_size, .. } => *font_size *= k,
+                Draw::Chrome { font_size, .. } => *font_size *= k,
                 _ => {}
             }
         }

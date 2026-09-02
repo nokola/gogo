@@ -236,6 +236,12 @@ pub struct Runtime {
     /// The focused Input's caret (node, chars) — written by the input
     /// machine, drawn by the renderer (GPAR112).
     pub caret: Option<(NodeId, u32)>,
+    /// The focused Input's selected span (node, lo, hi in chars) — the
+    /// drawer paints the highlight under the glyphs from it.
+    pub selection: Option<(NodeId, u32, u32)>,
+    /// The field whose edit bar (Cut/Copy/Paste/All) is up — raised by a
+    /// long-press, dropped by blur or any press off the bar.
+    pub edit_bar: Option<NodeId>,
     /// `transition … anim=<name>` players in flight or held (GPAR109):
     /// who flipped, the condition entered, the anim, and what it displaced
     /// at play start — the condition's end restores the displaced
@@ -332,6 +338,8 @@ impl Runtime {
             list_sel: Vec::new(),
             vis_seen: Vec::new(),
             caret: None,
+            selection: None,
+            edit_bar: None,
             motion: vec![Motion::IDENTITY; page.nodes.len()],
             owned_text: vec![NO_STR; page.nodes.len()],
             last: Vec::new(),
@@ -1462,6 +1470,10 @@ pub struct Resolved {
     pub presence: Vec<(NodeId, bool)>,
     /// The focused Input's caret (copied from the Runtime).
     pub caret: Option<(NodeId, u32)>,
+    /// The focused Input's selected span (copied from the Runtime).
+    pub selection: Option<(NodeId, u32, u32)>,
+    /// The field whose edit bar is up (copied from the Runtime).
+    pub edit_bar: Option<NodeId>,
     /// The language keyed text shows (copied from the Runtime; one Arc
     /// bump per pass, no allocation).
     pub locale: Option<Arc<Locale>>,
@@ -1732,7 +1744,7 @@ impl Resolved {
 }
 
 fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
-    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), auto: Vec::new(), presence: Vec::new(), caret: rt.caret };
+    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), auto: Vec::new(), presence: Vec::new(), caret: rt.caret, selection: rt.selection, edit_bar: rt.edit_bar };
     for (i, node) in page.nodes.iter().enumerate() {
         let id = i as NodeId;
         let mut placement = node.placement;
