@@ -17,8 +17,8 @@ struct Screen {
 
 struct Quad {
     @location(0) rect: vec4<f32>,          // x, y, w, h (device px)
-    @location(1) color: vec4<f32>,         // fill (gradient: from; glyph/image: tint)
-    @location(2) border_color: vec4<f32>,  // border (gradient: to)
+    @location(1) color: vec4<f32>,         // fill (gradient: from, PREMULTIPLIED OKLAB; glyph/image: tint)
+    @location(2) border_color: vec4<f32>,  // border (gradient: to, premultiplied Oklab)
     @location(3) params: vec4<f32>,        // corner, border, kind, angle (radians)
     @location(4) uv: vec4<f32>,            // u0, v0, u1, v1 (kinds 4, 5); band start, end (kinds 2, 3)
     @location(5) rot: vec4<f32>,           // sin, cos, center x, center y (device px)
@@ -64,6 +64,29 @@ fn vs_main(@builtin(vertex_index) vi: u32, q: Quad) -> VsOut {
 fn rounded_rect_sdf(p: vec2<f32>, half: vec2<f32>, r: f32) -> f32 {
     let q = abs(p) - half + vec2<f32>(r, r);
     return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - r;
+}
+
+// A premultiplied-Oklab value back to premultiplied sRGB (Ottosson's
+// inverse + the sRGB encode). Out-of-gamut mixes clamp per channel; zero
+// alpha has no hue to divide out and is transparent black.
+fn srgb_pm_from_oklab_pm(lab_pm: vec4<f32>) -> vec4<f32> {
+    let alpha = lab_pm.w;
+    if (alpha <= 0.0) {
+        return vec4<f32>(0.0);
+    }
+    let lab = lab_pm.xyz / alpha;
+    let l_ = lab.x + 0.3963377774 * lab.y + 0.2158037573 * lab.z;
+    let m_ = lab.x - 0.1055613458 * lab.y - 0.0638541728 * lab.z;
+    let s_ = lab.x - 0.0894841775 * lab.y - 1.2914855480 * lab.z;
+    let l = l_ * l_ * l_;
+    let m = m_ * m_ * m_;
+    let s = s_ * s_ * s_;
+    let lin = clamp(vec3<f32>(
+        4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+        -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+        -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s), vec3<f32>(0.0), vec3<f32>(1.0));
+    let enc = select(1.055 * pow(lin, vec3<f32>(1.0 / 2.4)) - 0.055, lin * 12.92, lin <= vec3<f32>(0.0031308));
+    return vec4<f32>(enc * alpha, alpha);
 }
 
 @fragment
@@ -156,7 +179,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
         let span = max(in.band.y - in.band.x, 0.0001);
         let t = clamp((run - in.band.x) / span, 0.0, 1.0);
-        color = mix(fill_pm, border_pm, t);
+        // Authored colors mix in premultiplied Oklab (gogo's one law —
+        // gogo/src/color.rs is the CPU twin of this math): the quad build
+        // hands both stops as (L,a,b)*alpha + alpha, so the plain mix IS
+        // the Oklab lerp; only the mixed result converts back to the
+        // premultiplied sRGB the blend expects.
+        color = srgb_pm_from_oklab_pm(mix(in.color, in.border_color, t));
     } else if (border > 0.0) {
         // Blends fill into border over one pixel at the border's inner
         // edge, the same ramp the rim gets below.

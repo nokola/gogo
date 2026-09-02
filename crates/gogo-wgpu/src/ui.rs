@@ -289,7 +289,10 @@ impl UiRenderer {
                     };
                     // The compass (0 = to top, clockwise) as the shader's
                     // direction angle (0 = to the right): a quarter turn back.
-                    self.quads.push(Quad { rect: px(rect), color: from.to_f32(), border_color: to.to_f32(), params: [0.0, 0.0, k, (angle - 90.0).to_radians()], uv: [band.0, band.1, 0.0, 0.0], rot, wedge });
+                    // Stops ride the color slots as premultiplied Oklab
+                    // (gogo's one mixing law): the shader lerps them raw
+                    // and converts the mix back to sRGB per pixel.
+                    self.quads.push(Quad { rect: px(rect), color: gogo::color::oklab_pm_from_rgba(*from).0, border_color: gogo::color::oklab_pm_from_rgba(*to).0, params: [0.0, 0.0, k, (angle - 90.0).to_radians()], uv: [band.0, band.1, 0.0, 0.0], rot, wedge });
                 }
                 Draw::Text { rect, text: text_id, key, font_size, color, halign, valign, wrap, font } => {
                     if current_tex != ATLAS {
