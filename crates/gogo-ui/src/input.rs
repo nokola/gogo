@@ -14,13 +14,19 @@
 //! decays and springs back. `disabled` cascades: nothing under a disabled
 //! ancestor takes input. Tab and the arrows move keyboard focus between
 //! reachable boxes (GP26): file order for Tab, nearest-in-direction for
-//! arrows, unless the focused control claims the key. Coordinates are epx.
+//! arrows, unless the focused control claims the key — Enter/Space
+//! activate, a Slider's arrows step by `step=`, a Toggle's pick its
+//! sides — and a wheel tick steps the steppable control under the
+//! pointer. A key grant scrolls its box into view. `hovered` answers a
+//! REAL mouse only (D75 — the shell decides the source; touch never
+//! hovers): the box under the cursor and EVERY ancestor light, and a
+//! press holds the hovered look until release. Coordinates are epx.
 
 use crate::draw::hit;
 use crate::layout::{Rect, SLIDER_KNOB_EPX, TOGGLE_PILL};
 use crate::draw::TOGGLE_KNOB_EPX;
 use crate::page::*;
-use crate::runtime::{FOCUS_WITHIN, FOCUSED, HELD, Resolved, Runtime, SELECTED};
+use crate::runtime::{FOCUS_WITHIN, FOCUSED, HELD, HOVERED, Resolved, Runtime, SELECTED};
 
 /// Pan starts after this much travel (spec: 16 epx).
 pub const SCROLL_DEADZONE: f32 = 16.0;
@@ -225,6 +231,10 @@ pub struct Input {
     /// arrived BY KEY — a tap parks focus without ring residue; caret
     /// controls (Input) always warrant one.
     focus_visible: bool,
+    /// The box under the mouse (the hit-test top; its whole ancestor
+    /// chain holds the HOVERED bit). None on touch devices — only the
+    /// shell's mouse motion sets it.
+    hover: Option<NodeId>,
     /// The caret, in CHARS into the field's text.
     caret: usize,
     /// The text at focus (or the last commit): `change` fires once per
@@ -240,14 +250,16 @@ fn event_action(page: &Page, node: NodeId, event: &str) -> Option<Action> {
 
 /// Keyboard-reachable RIGHT NOW: the compile-baked `focusable` flag
 /// minus the runtime facts — disabled (an ancestor's counts) and hidden
-/// (own or an ancestor's `gone`/`space_only`).
+/// (own or an ancestor's — the tap path's `gone`/`hidden` pair, so a
+/// repeat's template and unshown rows and a presence mark are skipped
+/// exactly like a `visibility=` word).
 fn reachable(page: &Page, rt: &Runtime, res: &Resolved, node: NodeId) -> bool {
     if !page.nodes[node as usize].focusable || rt.disabled(page, node) {
         return false;
     }
     let mut n = node;
     loop {
-        if matches!(res.ident(page, n, PropKey::Visibility), Some("gone") | Some("space_only")) {
+        if res.gone(page, n) || res.hidden(page, n) {
             return false;
         }
         let p = page.nodes[n as usize].parent;
@@ -258,14 +270,14 @@ fn reachable(page: &Page, rt: &Runtime, res: &Resolved, node: NodeId) -> bool {
     }
 }
 
-/// `focus_within` up the chain (D129): the bit rides the owner and every
-/// ancestor — the one state that looks up — under the ring's own
-/// visible-focus warrant, so a settings row lights while its inner
-/// control is key-focused and a tap into a Button parks silently.
-fn set_within(page: &Page, rt: &mut Runtime, node: NodeId, on: bool) {
+/// Writes a state bit on `node` and every ancestor — the looking-up
+/// states: `focus_within` (D129) and `hovered` (the chain reading, user
+/// call 2026-09-02 — the game staple: a settings row lights while its
+/// inner slider is key-focused or under the mouse).
+fn set_chain(page: &Page, rt: &mut Runtime, node: NodeId, bit: u8, on: bool) {
     let mut n = node;
     loop {
-        rt.set_state(n, FOCUS_WITHIN, on);
+        rt.set_state(n, bit, on);
         let p = page.nodes[n as usize].parent;
         if p == NO_NODE {
             return;
@@ -419,6 +431,17 @@ fn snap_step(page: &Page, res: &Resolved, node: NodeId, v: f32) -> f32 {
     res.snap_slider(page, node, v)
 }
 
+/// A Toggle's current side, a this-frame write included (the tap
+/// path's derivation): the value when one was ever written, else the
+/// `selected` bit.
+fn toggle_on(rt: &Runtime, res: &Resolved, page: &Page, node: NodeId) -> bool {
+    if rt.writes.iter().any(|(n, w)| *n == node && w.key == PropKey::Value) {
+        value_of(rt, res, page, node) >= 0.5
+    } else {
+        rt.has(node, SELECTED)
+    }
+}
+
 /// The value as shown: a write this frame (not yet resolved) or the
 /// resolved one, quantized either way.
 fn value_of(rt: &Runtime, res: &Resolved, page: &Page, node: NodeId) -> f32 {
@@ -504,7 +527,10 @@ impl Input {
         // reporting now would land on nobody.
         if let Some(f) = self.focus.take() {
             rt.set_state(f, FOCUSED, false);
-            set_within(page, rt, f, false);
+            set_chain(page, rt, f, FOCUS_WITHIN, false);
+        }
+        if let Some(h) = self.hover.take() {
+            set_chain(page, rt, h, HOVERED, false);
         }
         self.focus_visible = false;
         rt.caret = None;
@@ -529,15 +555,40 @@ impl Input {
             if !self.focus_visible {
                 self.focus_visible = true;
                 rt.set_state(f, FOCUSED, true);
-                set_within(page, rt, f, true);
+                set_chain(page, rt, f, FOCUS_WITHIN, true);
                 rt.dirty = true;
             }
         }
-        let in_field = self.focus.is_some_and(|f| page.nodes[f as usize].kind == Kind::Input);
+        let focus_kind = self.focus.map(|f| page.nodes[f as usize].kind);
+        let in_field = focus_kind == Some(Kind::Input);
         match k {
             Key::Tab | Key::TabBack => {
                 let target = self.tab_target(page, rt, res, k == Key::TabBack);
-                self.grant(page, rt, target.or(self.focus), true, &mut events);
+                self.grant(page, rt, res, rects, target.or(self.focus), true, &mut events);
+                return events;
+            }
+            // Section 5.5: the focused control claims its actions BEFORE
+            // traversal — a claimed arrow never moves focus (Tab is the
+            // way off a Slider or Toggle, matching the shipped router).
+            Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End if focus_kind == Some(Kind::Slider) => {
+                let f = self.focus.unwrap();
+                if !rt.disabled(page, f) {
+                    self.step_slider(page, rt, res, f, k, &mut events);
+                }
+                return events;
+            }
+            Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End if focus_kind == Some(Kind::Toggle) => {
+                let f = self.focus.unwrap();
+                if !rt.disabled(page, f) {
+                    self.set_toggle(page, rt, res, f, matches!(k, Key::Right | Key::Up | Key::End), &mut events);
+                }
+                return events;
+            }
+            Key::Enter | Key::Char(' ') if matches!(focus_kind, Some(kk) if kk.is_press_surface()) => {
+                let f = self.focus.unwrap();
+                if !rt.disabled(page, f) {
+                    self.activate_focused(page, rt, res, f, &mut events);
+                }
                 return events;
             }
             Key::Up | Key::Down | Key::Left | Key::Right if !(in_field && matches!(k, Key::Left | Key::Right)) => {
@@ -553,7 +604,7 @@ impl Input {
                 // No box that way keeps focus put — the ring still
                 // upgrades in place (D129: a key press shows focus).
                 let target = self.arrow_target(page, rt, res, rects, dx, dy).or(self.focus);
-                self.grant(page, rt, target, true, &mut events);
+                self.grant(page, rt, res, rects, target, true, &mut events);
                 return events;
             }
             _ => {}
@@ -612,7 +663,7 @@ impl Input {
         let Some(f) = self.focus.take() else { return };
         self.focus_visible = false;
         rt.set_state(f, FOCUSED, false);
-        set_within(page, rt, f, false);
+        set_chain(page, rt, f, FOCUS_WITHIN, false);
         rt.caret = None;
         if page.nodes[f as usize].kind == Kind::Input {
             let now = input_text(page, rt, f);
@@ -633,7 +684,7 @@ impl Input {
     /// by the D129 visible-focus rule: a key grant always shows the
     /// ring, a tap shows it only on caret controls — a tapped Button
     /// parks focus with no ring residue.
-    fn grant(&mut self, page: &Page, rt: &mut Runtime, node: Option<NodeId>, by_key: bool, events: &mut Vec<Event>) {
+    fn grant(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], node: Option<NodeId>, by_key: bool, events: &mut Vec<Event>) {
         let moved = self.focus != node;
         if moved {
             self.blur(page, rt, events);
@@ -654,7 +705,203 @@ impl Input {
         }
         let warranted = self.focus_visible || in_field;
         rt.set_state(n, FOCUSED, warranted);
-        set_within(page, rt, n, warranted);
+        set_chain(page, rt, n, FOCUS_WITHIN, warranted);
+        // follow_focus (GPAR113): a KEY grant scrolls its box into view
+        // — a tap is already in view under the finger.
+        if by_key && moved {
+            self.scroll_into_view(page, rt, res, rects, n);
+        }
+        rt.dirty = true;
+    }
+
+    /// Nudges every Scroll/List above `node` just enough that its rect
+    /// sits inside the viewport (the addon's ScrollContainer
+    /// `follow_focus`) — clamped to the pannable range, never an
+    /// overscroll; a glide on that Scroll stands down.
+    fn scroll_into_view(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], node: NodeId) {
+        let mut s = scroll_ancestor(page, node);
+        while let Some(sc) = s {
+            let v = rects[sc as usize];
+            let r = rects[node as usize];
+            let mut accum = rt.scroll[sc as usize];
+            let before = accum;
+            if r.bottom() > v.bottom() {
+                accum[1] += r.bottom() - v.bottom();
+            }
+            if r.y < v.y {
+                accum[1] -= v.y - r.y;
+            }
+            if r.right() > v.right() {
+                accum[0] += r.right() - v.right();
+            }
+            if r.x < v.x {
+                accum[0] -= v.x - r.x;
+            }
+            if accum != before {
+                let range = scroll_range(page, res, rects, sc);
+                accum[0] = accum[0].clamp(0.0, range[0]);
+                accum[1] = accum[1].clamp(0.0, range[1]);
+                if self.fling.as_ref().map_or(false, |fl| fl.scroll == sc) {
+                    self.fling = None;
+                }
+                if rt.scroll[sc as usize] != accum {
+                    rt.scroll[sc as usize] = accum;
+                    rt.dirty = true;
+                }
+            }
+            s = scroll_ancestor(page, sc);
+        }
+    }
+
+    /// A focused Slider's steps (the shipped slider_behavior): arrows
+    /// move by `step=` (1 with none), Home/End jump to the ends —
+    /// quantized from `min` and clamped (Range's rule). A step commits
+    /// `change` directly, no `edit` (a step and a programmatic write
+    /// are indistinguishable at the seam); one landing on the current
+    /// value reports nothing.
+    fn step_slider(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, f: NodeId, k: Key, events: &mut Vec<Event>) {
+        let min = res.num(page, f, PropKey::Min).unwrap_or(0.0);
+        let max = res.num(page, f, PropKey::Max).unwrap_or(100.0);
+        let step = match res.num(page, f, PropKey::Step) {
+            Some(s) if s > 0.0 => s,
+            _ => 1.0,
+        };
+        let was = value_of(rt, res, page, f);
+        let v = match k {
+            Key::Right | Key::Up => snap_step(page, res, f, was + step),
+            Key::Left | Key::Down => snap_step(page, res, f, was - step),
+            Key::Home => min,
+            _ => max,
+        };
+        if v != was {
+            rt.set_prop(f, PropKey::Value, Value::VNum(v));
+            self.push_event(rt, events, f, EventKind::Change(Value::VNum(v)), event_action(page, f, "change"));
+        }
+    }
+
+    /// A Toggle's logical sides (the shipped toggle_behavior):
+    /// increment/End = on, decrement/Home = off; `selected` follows
+    /// live, `change(bool)` once per genuine transition.
+    fn set_toggle(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, f: NodeId, on: bool, events: &mut Vec<Event>) {
+        let was = toggle_on(rt, res, page, f);
+        rt.set_prop(f, PropKey::Value, Value::VNum(if on { 1.0 } else { 0.0 }));
+        rt.set_state(f, SELECTED, on);
+        if on != was {
+            self.push_event(rt, events, f, EventKind::Change(Value::VBool(on)), event_action(page, f, "change"));
+        }
+    }
+
+    /// Enter/Space on the focused control — the completions a finished
+    /// tap runs (`change` first, then `activate`, the toggling-surface
+    /// order), so a key accept and a tap are one law.
+    fn activate_focused(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, f: NodeId, events: &mut Vec<Event>) {
+        match page.nodes[f as usize].kind {
+            Kind::Button => {
+                if res.bool(page, f, PropKey::ToggleMode).unwrap_or(false) {
+                    let on = !rt.has(f, SELECTED);
+                    rt.set_state(f, SELECTED, on);
+                    self.push_event(rt, events, f, EventKind::Change(Value::VBool(on)), event_action(page, f, "change"));
+                }
+                self.push_event(rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
+            }
+            Kind::ListItem => {
+                if let Some(list) = list_ancestor(page, f) {
+                    if rt.tap_select(page, list, f) {
+                        self.push_event(rt, events, list, EventKind::Change(Value::VIdent(page.nodes[f as usize].name)), event_action(page, list, "change"));
+                    }
+                }
+                self.push_event(rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
+            }
+            Kind::Check => {
+                let on = !rt.has(f, SELECTED);
+                rt.set_state(f, SELECTED, on);
+                self.push_event(rt, events, f, EventKind::Change(Value::VBool(on)), event_action(page, f, "change"));
+                self.push_event(rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
+            }
+            Kind::Toggle => {
+                let was = toggle_on(rt, res, page, f);
+                self.set_toggle(page, rt, res, f, !was, events);
+                self.push_event(rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
+            }
+            Kind::Radio => {
+                let already = rt.has(f, SELECTED);
+                let choice = page.nodes[f as usize].choice;
+                let mut change_action: Option<Action> = None;
+                if choice != NO_CHOICE {
+                    for (i, n) in page.nodes.iter().enumerate() {
+                        if n.kind == Kind::Radio && n.choice == choice {
+                            rt.set_state(i as NodeId, SELECTED, i as NodeId == f);
+                        }
+                    }
+                    change_action = page.choices[choice as usize].action;
+                }
+                if !already {
+                    self.push_event(rt, events, f, EventKind::Change(Value::VIdent(page.nodes[f as usize].name)), change_action);
+                }
+                self.push_event(rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
+            }
+            _ => {}
+        }
+    }
+
+    /// A wheel tick rides the same logical pair the arrows use (spec
+    /// section 5.5: keyboard, reader and wheel share one path): up =
+    /// increment, down = decrement, on the steppable control under the
+    /// POINTER (Slider, Toggle) — which also takes focus, parked like
+    /// any pointer grant. Panning a Scroll by wheel is the desktop
+    /// conveniences round (GP42), not this.
+    pub fn wheel(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], x: f32, y: f32, up: bool) -> Vec<Event> {
+        let mut events = Vec::new();
+        let mut n = hit(page, res, rects, x, y, false);
+        while let Some(c) = n {
+            if matches!(page.nodes[c as usize].kind, Kind::Slider | Kind::Toggle) {
+                break;
+            }
+            let p = page.nodes[c as usize].parent;
+            n = if p == NO_NODE { None } else { Some(p) };
+        }
+        let Some(c) = n else { return events };
+        if rt.disabled(page, c) {
+            return events;
+        }
+        self.grant(page, rt, res, rects, Some(c), false, &mut events);
+        match page.nodes[c as usize].kind {
+            Kind::Slider => self.step_slider(page, rt, res, c, if up { Key::Up } else { Key::Down }, &mut events),
+            _ => self.set_toggle(page, rt, res, c, up, &mut events),
+        }
+        events
+    }
+
+    /// One mouse-motion sample — the shell calls this for a REAL mouse
+    /// only (D75: touch never hovers). The topmost input-taking box
+    /// under the cursor and EVERY ancestor hold `hovered` (the chain
+    /// reading, user call 2026-09-02); while a press is active hover is
+    /// FROZEN — the capture bracket: slipping off a held button keeps
+    /// its hovered look, and nothing new hovers until release. Motion
+    /// never changes modality (D129).
+    pub fn hover(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], x: f32, y: f32) {
+        if self.press.is_some() {
+            return;
+        }
+        self.apply_hover(page, rt, hit(page, res, rects, x, y, false));
+    }
+
+    /// The mouse left the window (or this page): nothing hovers here.
+    pub fn unhover(&mut self, page: &Page, rt: &mut Runtime) {
+        self.apply_hover(page, rt, None);
+    }
+
+    fn apply_hover(&mut self, page: &Page, rt: &mut Runtime, new: Option<NodeId>) {
+        if self.hover == new {
+            return;
+        }
+        if let Some(old) = self.hover {
+            set_chain(page, rt, old, HOVERED, false);
+        }
+        if let Some(n) = new {
+            set_chain(page, rt, n, HOVERED, true);
+        }
+        self.hover = new;
         rt.dirty = true;
     }
 
@@ -750,7 +997,7 @@ impl Input {
                 // D129 — only caret controls warrant a tap ring), off
                 // to nothing otherwise (GPAR112 — the focus-loss commit
                 // door: Enter, blur; once per genuine change).
-                self.grant(page, rt, Some(node).filter(|n| page.nodes[*n as usize].focusable), false, &mut events);
+                self.grant(page, rt, res, rects, Some(node).filter(|n| page.nodes[*n as usize].focusable), false, &mut events);
                 let raw = event_action(page, node, "pointer");
                 if let Some(action) = raw {
                     let r = rects[node as usize];
@@ -898,6 +1145,14 @@ impl Input {
                 self.press = Some(p);
             }
             Phase::Up | Phase::Cancel => {
+                // The hover capture bracket closes here: a mouse that
+                // slipped off mid-press re-checks where it is — back
+                // over the box keeps hover, anywhere else clears it.
+                // Gated on hover being SET at all: only mouse motion
+                // sets it, so a finger's release changes nothing (D75).
+                if self.hover.is_some() && self.press.map_or(false, |p| p.id == t.id) {
+                    self.apply_hover(page, rt, hit(page, res, rects, t.x, t.y, false));
+                }
                 let Some(mut p) = self.press else { return events };
                 if p.id != t.id {
                     return events;
