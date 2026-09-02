@@ -481,8 +481,11 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             let track = Rect::new(rect.x, rect.y + (rect.h - SLIDER_TRACK_EPX) / 2.0, rect.w, SLIDER_TRACK_EPX);
             let track_color = color(PropKey::Background).unwrap_or(mul_alpha(SLIDER_TRACK, opacity));
             let fill = color(PropKey::Color).unwrap_or(mul_alpha(SLIDER_FILL, opacity));
-            out.push(Draw::Quad { rect: track, color: track_color, corner: SLIDER_TRACK_EPX / 2.0, border: 0.0, border_color: Rgba::TRANSPARENT });
-            out.push(Draw::Quad { rect: Rect::new(track.x, track.y, track.w * t, track.h), color: fill, corner: SLIDER_TRACK_EPX / 2.0, border: 0.0, border_color: Rgba::TRANSPARENT });
+            // `slot.track.corner_radius=` (a for= style) lands on the
+            // node's corner word; unset keeps the stadium end.
+            let track_corner = if corner > 0.0 { corner } else { SLIDER_TRACK_EPX / 2.0 };
+            out.push(Draw::Quad { rect: track, color: track_color, corner: track_corner, border: 0.0, border_color: Rgba::TRANSPARENT });
+            out.push(Draw::Quad { rect: Rect::new(track.x, track.y, track.w * t, track.h), color: fill, corner: track_corner, border: 0.0, border_color: Rgba::TRANSPARENT });
             let knob = SLIDER_KNOB_EPX;
             out.push(Draw::Circle { rect: Rect::new(rect.x + (rect.w - knob) * t, rect.y + (rect.h - knob) / 2.0, knob, knob), color: mul_alpha(DEFAULT_TEXT_COLOR, opacity), border: 0.0, border_color: Rgba::TRANSPARENT });
         }

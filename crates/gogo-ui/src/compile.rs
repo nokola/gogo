@@ -60,6 +60,11 @@ struct StyleDef {
     for_target: Option<String>,
     /// `style X extends=Y`: the parent whose props/whens come first.
     extends: Option<String>,
+    /// `slot.<name>.<prop>=` writes for a `for=<control>` target —
+    /// checked at the declaration (customization spec §3.4), delivered to each
+    /// wearer's slot node as its body builds (baked per instance,
+    /// approved 2026-09-02).
+    slot_props: Vec<(String, AstProp)>,
     line: u32,
 }
 
@@ -151,26 +156,74 @@ struct TmpNode {
 /// The slot names in a control body whose `automatic=` is a radial kind
 /// (`arc(...)`/`angle(...)`) — their aperture belongs to the driver, so a
 /// `for=` style may not restyle it (G3002).
-fn radial_slot_names(body: &AstNode) -> Vec<String> {
+/// The contract slots a `control` body declares: each named `slot` and
+/// its `automatic=` word ("" when static).
+///
+/// Needed because a `slot.<name>.…` path names a region the writer
+/// can't see from the style line — unknown names and driven words are
+/// checked against this list at the declaration, instead of dying
+/// silently inside the control.
+fn slot_contract(body: &AstNode, widgets: &HashMap<String, WidgetDef>) -> Vec<(String, String)> {
     let mut out = Vec::new();
     let mut stack = vec![body];
     while let Some(n) = stack.pop() {
         if n.type_word == "slot" {
-            if let Some(p) = n.props.iter().find(|p| p.key == "automatic") {
-                if matches!(&p.value, AstValue::Call { name, .. } if name == "arc" || name == "angle") {
-                    if let Some(name) = &n.name {
-                        out.push(name.clone());
-                    }
-                }
+            if let Some(name) = &n.name {
+                let auto = n.props.iter().find(|p| p.key == "automatic").map(|p| match &p.value {
+                    AstValue::Call { name, .. } => name.clone(),
+                    v => v.as_ident().unwrap_or("").to_string(),
+                }).unwrap_or_default();
+                out.push((name.clone(), auto));
             }
         }
         for c in &n.children {
             if let AstItem::Node(k) = c {
-                stack.push(k);
+                // A nested widget instance's `slot x { }` children FILL
+                // that widget — they are not this control's contract.
+                if !widgets.contains_key(&k.type_word) {
+                    stack.push(k);
+                }
             }
         }
     }
     out
+}
+
+/// The built-in kinds that declare contract slots. A built-in draws its
+/// parts itself (no child nodes), so its paths land on node words via
+/// `builtin_slot_prop`; a kind absent here has no slots to restyle.
+fn builtin_slots(kind: Kind) -> Option<&'static [&'static str]> {
+    match kind {
+        Kind::Slider => Some(&["track", "fill", "thumb", "label"]),
+        _ => None,
+    }
+}
+
+/// Where a built-in's `slot.<name>.<prop>=` lands: the node word its
+/// drawing already reads for that part. None = the part exists but that
+/// word isn't restylable yet — an error, never a silent drop (E8).
+fn builtin_slot_prop(kind: Kind, slot: &str, prop: &str) -> Option<&'static str> {
+    match (kind, slot, prop) {
+        (Kind::Slider, "track", "background") => Some("background"),
+        (Kind::Slider, "track", "corner_radius") => Some("corner_radius"),
+        (Kind::Slider, "fill", "background") => Some("color"),
+        _ => None,
+    }
+}
+
+/// Whether a `when` block answers with any `slot.` path — those need a
+/// contract resolved before the block can be rewritten.
+fn when_has_slot_path(w: &AstNode) -> bool {
+    w.props.iter().any(|p| p.key.starts_with("slot."))
+        || w.children.iter().any(|c| matches!(c, AstItem::Assign { key, dollar: false, .. } if key.starts_with("slot.")))
+}
+
+/// What a `slot.<name>.<prop>=` path checks against: a built-in kind
+/// drawing its own parts, or a declared `control`'s slot list (from
+/// `slot_contract`). The String is the target's display word.
+enum SlotTarget {
+    Builtin(Kind, String),
+    Control(String, Vec<(String, String)>),
 }
 
 /// A node-level transition's node before flattening assigns the real id.
@@ -478,6 +531,11 @@ pub struct Compiler<'a> {
     /// Per widget instance being expanded: the instance's `on:` props still
     /// waiting for the body's `signals` node (`None` = the root took them).
     instance_on: Vec<Option<Vec<AstProp>>>,
+    /// Per widget instance being expanded: `slot.<name>.<prop>=` writes
+    /// (already checked at their declaration) waiting for their slot
+    /// node to build — style writes first, instance-line writes after,
+    /// so the later-wins read gives the closest writer the last word.
+    slot_writes: Vec<HashMap<String, Vec<AstProp>>>,
     /// While a Gradient's own line compiles: its name and the
     /// gradient-only words it carries, so G2003's Rectangle rewrite can be
     /// spelled out (`check_stops`).
@@ -582,6 +640,7 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         choice_depth: 0,
         fills: Vec::new(),
         instance_on: Vec::new(),
+        slot_writes: Vec::new(),
         stops_ctx: None,
         repeat_binding: None,
         in_when: 0,
@@ -983,19 +1042,6 @@ impl<'a> Compiler<'a> {
                 // contract is checkable, unlike a plain widget's body.
                 Some(word) if self.widgets.get(word).map_or(false, |d| d.control) => {
                     for_target = Some(word.to_string());
-                    // A driven radial's aperture has ONE writer — the kind's
-                    // config (§4.5): a `slot.<name>.from/sweep=` restyle
-                    // would fight the driver (the shipped G3002).
-                    let radial_slots = self.widgets.get(word).map(|d| radial_slot_names(&d.body)).unwrap_or_default();
-                    for p in &props {
-                        if let Some(rest) = p.key.strip_prefix("slot.") {
-                            if let Some((slot_name, prop_word)) = rest.split_once('.') {
-                                if matches!(prop_word, "from" | "sweep") && radial_slots.iter().any(|r| r == slot_name) {
-                                    self.error("G3002", p.line, format!("slot '{slot_name}' moves by itself — `{prop_word}=` is the driver's to write"));
-                                }
-                            }
-                        }
-                    }
                 }
                 Some(word) if self.widgets.contains_key(word) => {
                     self.error("G3006", fp.line, format!("`{word}` is a widget — widgets are styled through their own body's nodes, not `for=`"));
@@ -1019,7 +1065,42 @@ impl<'a> Compiler<'a> {
                 self.error("G1002", p.line, format!("`{}=` is grid structure and can't come from a style — write it on the Grid line", p.key));
             }
         }
-        let mut def = StyleDef { props, for_target, extends, line: n.line, ..Default::default() };
+        // `slot.<name>.<prop>=` paths are checked HERE, at the
+        // declaration (customization spec §3.4) — a wearer only ever receives writes
+        // that already passed. A control's go to `slot_props` for its
+        // slot node; a built-in's land back in `props` on the node word
+        // its drawing reads.
+        let has_paths = props.iter().any(|p| p.key.starts_with("slot."));
+        let when_paths = n.children.iter().any(|c| matches!(c, AstItem::Node(k) if k.type_word == "when" && when_has_slot_path(k)));
+        let mut slot_target: Option<SlotTarget> = None;
+        if has_paths || when_paths {
+            slot_target = match &for_target {
+                None => {
+                    self.error("G3002", n.line, format!("a slot path needs a contract to check against — name the control: `style {name} for=<Control>, slot.…`"));
+                    None
+                }
+                Some(t) => Some(self.slot_target_of(t)),
+            };
+        }
+        let mut slot_props: Vec<(String, AstProp)> = Vec::new();
+        if has_paths {
+            let mut kept: Vec<AstProp> = Vec::new();
+            for p in std::mem::take(&mut props) {
+                if !p.key.starts_with("slot.") {
+                    kept.push(p);
+                } else if let Some(t) = &slot_target {
+                    if let Some((slot, ap)) = self.slot_path(&p, t, false) {
+                        if slot.is_empty() {
+                            kept.push(ap);
+                        } else {
+                            slot_props.push((slot, ap));
+                        }
+                    }
+                }
+            }
+            props = kept;
+        }
+        let mut def = StyleDef { props, for_target, extends, slot_props, line: n.line, ..Default::default() };
         for item in &n.children {
             match item {
                 AstItem::Node(c) if c.type_word == "when" => def.whens.push(c.clone()),
@@ -1028,7 +1109,152 @@ impl<'a> Compiler<'a> {
                 AstItem::Assign { key, line, .. } => self.error("G0026", *line, format!("a style block holds `when` and `transition` lines, not `{key} =`")),
             }
         }
+        if when_paths {
+            for w in &mut def.whens {
+                self.rewrite_slot_when(w, slot_target.as_ref());
+            }
+        }
         def
+    }
+
+    /// The contract behind a `for=` word: a built-in kind, or a declared
+    /// control's slot list.
+    fn slot_target_of(&self, word: &str) -> SlotTarget {
+        match Kind::from_word(word) {
+            Some(k) => SlotTarget::Builtin(k, word.to_string()),
+            None => {
+                let slots = self.widgets.get(word).map(|d| slot_contract(&d.body, &self.widgets)).unwrap_or_default();
+                SlotTarget::Control(word.to_string(), slots)
+            }
+        }
+    }
+
+    /// Checks one `slot.<name>.<prop>=` path against a contract and says
+    /// where it lands.
+    ///
+    /// Needed because the region behind a path is invisible from the
+    /// writing line — unknown slots, driven words, and content words
+    /// must refuse at the declaration, never die inside the control.
+    ///
+    /// Returns (slot to deliver to, rewritten prop); an empty slot name
+    /// means the prop lands on the control node itself (a built-in reads
+    /// its part looks from its own words). None = refused, the error
+    /// already points at the writing line.
+    fn slot_path(&mut self, p: &AstProp, target: &SlotTarget, in_when: bool) -> Option<(String, AstProp)> {
+        let rest = p.key.strip_prefix("slot.").unwrap_or(&p.key);
+        let Some((slot_name, prop_word)) = rest.split_once('.') else {
+            self.error("G3002", p.line, "a slot path is `slot.<name>.<prop>=` — one region, one word");
+            return None;
+        };
+        let auto: &str = match target {
+            SlotTarget::Builtin(k, w) => {
+                let Some(names) = builtin_slots(*k) else {
+                    self.error("G3002", p.line, format!("a {w} has no slots to restyle — its states still check"));
+                    return None;
+                };
+                if !names.contains(&slot_name) {
+                    self.error("G3002", p.line, format!("{w} has no slot '{slot_name}' — slots: {}", names.join(", ")));
+                    return None;
+                }
+                ""
+            }
+            SlotTarget::Control(w, slots) => match slots.iter().find(|(n, _)| n == slot_name) {
+                None => {
+                    let names: Vec<&str> = slots.iter().map(|(n, _)| n.as_str()).collect();
+                    self.error("G3002", p.line, format!("{w} has no slot '{slot_name}' — slots: {}", names.join(", ")));
+                    return None;
+                }
+                Some((_, auto)) => auto.as_str(),
+            },
+        };
+        // The driven word has ONE writer — the slot's `automatic=`
+        // config (the shipped G3002).
+        let driven: &[&str] = match auto {
+            "length" => &["width", "size"],
+            "position" => &["halign"],
+            "presence" => &["visibility"],
+            "arc" | "angle" => &["from", "sweep"],
+            _ => &[],
+        };
+        if driven.contains(&prop_word) {
+            self.error("G3002", p.line, format!("slot '{slot_name}' moves by itself — `{prop_word}=` is the driver's to write"));
+            return None;
+        }
+        // Restyling content IS filling (customization spec §3.4): the region keeps box
+        // words; a content word means bring your own node.
+        let content_node = match prop_word {
+            "text" | "font_size" | "font_color" | "font" | "wrap" | "clip_text" | "text_halign" | "text_valign" => Some("Label"),
+            "source" | "fit" => Some("Image"),
+            _ => None,
+        };
+        if let Some(kw) = content_node {
+            self.error("G3002", p.line, format!("`{prop_word}` styles the slot's content, not the region — fill it: `slot {slot_name} {{ {kw} {prop_word}=… }}`"));
+            return None;
+        }
+        let motion = matches!(prop_word, "scale" | "scale.x" | "scale.y" | "translate.x" | "translate.y" | "rotate");
+        if motion && !in_when {
+            self.error("G3002", p.line, format!("motion is `when` response vocabulary — a base look declares no transform (`when held slot.{slot_name}.{prop_word}=…`)"));
+            return None;
+        }
+        if in_when && !motion && !matches!(prop_word, "opacity" | "background" | "border_color") {
+            self.error("G3002", p.line, format!("a `when` response on a slot moves and tints (`scale`, `translate.x/.y`, `rotate`, `opacity`, `background`, `border_color`) — `{prop_word}=` is the region's base look; write it on the style line: `slot.{slot_name}.{prop_word}=`"));
+            return None;
+        }
+        let (out_slot, out_key) = match target {
+            SlotTarget::Builtin(k, w) => match builtin_slot_prop(*k, slot_name, prop_word) {
+                Some(mapped) => (String::new(), mapped.to_string()),
+                None => {
+                    self.error("G3002", p.line, format!("the built-in {w}'s '{slot_name}' doesn't take `{prop_word}=` yet — restylable today: track.background, track.corner_radius, fill.background"));
+                    return None;
+                }
+            },
+            SlotTarget::Control(..) => (slot_name.to_string(), prop_word.to_string()),
+        };
+        let mut value = p.value.clone();
+        if out_key == "size" {
+            if let AstValue::Num { value: v, .. } = &value {
+                // `slot.thumb.size=8` — a bare number is a square (customization spec §3.4).
+                value = AstValue::Size { w: Some(*v), h: Some(*v) };
+            }
+        }
+        Some((out_slot, AstProp { key: out_key, value, line: p.line }))
+    }
+
+    /// Rewrites a `when` block's `slot.<name>.<prop>` responses onto
+    /// their real addresses: a control's slot becomes a descendant
+    /// response (`<slot>.<prop>`, resolved to the wearer's node), a
+    /// built-in's becomes the node word its drawing reads. A refused
+    /// path is removed here — its error already points at the line.
+    /// `target` None = no contract stood (that error was raised once);
+    /// the paths are dropped without a second message.
+    fn rewrite_slot_when(&mut self, w: &mut AstNode, target: Option<&SlotTarget>) {
+        let rewrite = |me: &mut Self, key: String, value: AstValue, line: u32| -> Option<(String, AstValue)> {
+            let t = target?;
+            let (slot, ap) = me.slot_path(&AstProp { key, value, line }, t, true)?;
+            let key = if slot.is_empty() { ap.key } else { format!("{slot}.{}", ap.key) };
+            Some((key, ap.value))
+        };
+        let mut kept: Vec<AstProp> = Vec::new();
+        for p in std::mem::take(&mut w.props) {
+            if !p.key.starts_with("slot.") {
+                kept.push(p);
+            } else if let Some((key, value)) = rewrite(self, p.key.clone(), p.value.clone(), p.line) {
+                kept.push(AstProp { key, value, line: p.line });
+            }
+        }
+        w.props = kept;
+        let mut kids: Vec<AstItem> = Vec::new();
+        for item in std::mem::take(&mut w.children) {
+            match item {
+                AstItem::Assign { key, dollar: false, value, line } if key.starts_with("slot.") => {
+                    if let Some((key, value)) = rewrite(self, key, value, line) {
+                        kids.push(AstItem::Assign { key, dollar: false, value, line });
+                    }
+                }
+                other => kids.push(other),
+            }
+        }
+        w.children = kids;
     }
 
     /// The style `name` resolves to here: the innermost widget scope
@@ -1077,6 +1303,11 @@ impl<'a> Compiler<'a> {
             let mut props = parent.props.clone();
             props.extend(merged.props);
             merged.props = props;
+            // Slot writes ride the chain like props: parent first, so
+            // the child's write to the same region wins the later read.
+            let mut slot_props = parent.slot_props.clone();
+            slot_props.extend(merged.slot_props);
+            merged.slot_props = slot_props;
             let mut whens = parent.whens.clone();
             whens.extend(merged.whens);
             merged.whens = whens;
@@ -3040,6 +3271,17 @@ impl<'a> Compiler<'a> {
                     other => fills.default.push(other.clone()),
                 }
             }
+            // An instance-line `when` may answer with `slot.` paths —
+            // rewritten onto their real addresses with the same check a
+            // `for=` style gets at its declaration.
+            if def.control && inst_states.iter().any(|k| k.type_word == "when" && when_has_slot_path(k)) {
+                let target = SlotTarget::Control(n.type_word.clone(), slot_contract(&def.body, &self.widgets));
+                for k in &mut inst_states {
+                    if k.type_word == "when" {
+                        self.rewrite_slot_when(k, Some(&target));
+                    }
+                }
+            }
             self.fills.push(fills);
             let prefix = match &n.name {
                 Some(name) => name.clone(),
@@ -3051,6 +3293,7 @@ impl<'a> Compiler<'a> {
             self.prefix.push(prefix);
             self.style_scopes.push(def.styles.clone());
             self.widget_stack.push(n.type_word.clone());
+            self.slot_writes.push(HashMap::new());
             if def.control {
                 self.control_scopes.insert(self.prefix.join("/"));
             }
@@ -3096,6 +3339,7 @@ impl<'a> Compiler<'a> {
             self.instance_on.pop();
             self.style_scopes.pop();
             self.widget_stack.pop();
+            self.slot_writes.pop();
             // `when`/`transition` blocks written under the INSTANCE line
             // land on the instance root (the shipped _collect_states on
             // the root; GPAR68) — they were dropped without a word.
@@ -3358,8 +3602,19 @@ impl<'a> Compiler<'a> {
             match resolved {
                 Some(def) => {
                     if let Some(target) = &def.for_target {
-                        if *target != n.type_word {
-                            self.error("G3006", n.line, format!("style `{s}` is for {target} — applied here to {}", n.type_word));
+                        // An instance-worn style is worn by the INSTANCE
+                        // (`Fader f .Thin`) — the body root underneath
+                        // keeps its own kind word.
+                        let worn_on = if *from_instance { instance.map_or(n.type_word.as_str(), |i| i.type_word.as_str()) } else { n.type_word.as_str() };
+                        if target != worn_on {
+                            self.error("G3006", n.line, format!("style `{s}` is for {target} — applied here to {worn_on}"));
+                        }
+                    }
+                    if !def.slot_props.is_empty() {
+                        if let Some(w) = self.slot_writes.last_mut() {
+                            for (slot, p) in &def.slot_props {
+                                w.entry(slot.clone()).or_default().push(p.clone());
+                            }
                         }
                     }
                     all_props.extend(def.props.iter().cloned());
@@ -3402,6 +3657,44 @@ impl<'a> Compiler<'a> {
             let root_takes_on = matches!(self.instance_on.last(), None | Some(None));
             all_props.extend(i.props.iter().filter(|p| !params.contains(&p.key) && (root_takes_on || !p.key.starts_with("on:"))).cloned());
         }
+        // `slot.<name>.<prop>=` written on a line (a control instance,
+        // or a built-in with parts): checked against the contract
+        // standing here, then delivered to the slot node / the node word
+        // its drawing reads — the same check a `for=` style gets at its
+        // declaration.
+        if all_props.iter().any(|p| p.key.starts_with("slot.")) {
+            let shown = instance.map_or(n.type_word.as_str(), |i| i.type_word.as_str()).to_string();
+            let target: Option<SlotTarget> = if builtin_slots(kind).is_some() {
+                Some(SlotTarget::Builtin(kind, n.type_word.clone()))
+            } else if instance.is_some() {
+                match self.widget_stack.last().and_then(|w| self.widgets.get(w)) {
+                    Some(d) if d.control => Some(SlotTarget::Control(shown.clone(), slot_contract(&d.body, &self.widgets))),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            let mut kept: Vec<AstProp> = Vec::new();
+            for p in std::mem::take(&mut all_props) {
+                if !p.key.starts_with("slot.") {
+                    kept.push(p);
+                    continue;
+                }
+                match &target {
+                    None => self.error("G3002", p.line, format!("`{}`: a {shown} has no slots to restyle — slot paths ride a control's contract (a `for=` style, or a control instance line)", p.key)),
+                    Some(t) => {
+                        if let Some((slot, ap)) = self.slot_path(&p, t, false) {
+                            if slot.is_empty() {
+                                kept.push(ap);
+                            } else if let Some(w) = self.slot_writes.last_mut() {
+                                w.entry(slot).or_default().push(ap);
+                            }
+                        }
+                    }
+                }
+            }
+            all_props = kept;
+        }
         if signals {
             if let Some(slot) = self.instance_on.last_mut() {
                 if let Some(props) = slot.take() {
@@ -3427,6 +3720,17 @@ impl<'a> Compiler<'a> {
             }
         }
         if kind == Kind::Slot {
+            // The writes routed to this slot land now — after the slot
+            // line's own words, so the wearer's write wins the
+            // later-wins read (body default < style < instance line,
+            // approved 2026-09-02).
+            if let Some(name) = &n.name {
+                if let Some(w) = self.slot_writes.last_mut() {
+                    if let Some(list) = w.remove(name) {
+                        all_props.extend(list);
+                    }
+                }
+            }
             tmp.node.auto = self.automatic(n, parent_kind);
             // A position slot rides its content's size: `width=fill`
             // content in an unsized slot has nothing to fill and would
@@ -4351,6 +4655,26 @@ impl<'a> Compiler<'a> {
                 self.error("G1014", p.line, "a pose moves one edge at a time — write `margin_left=`/`margin_top=`/… (`margin=` re-declares all four edges)");
                 continue;
             }
+            if p.key.starts_with("slot.") {
+                // A built-in's path lands on the node word its drawing
+                // reads; anything else has no contract here (a control
+                // instance's paths were rewritten before this runs).
+                if builtin_slots(kind).is_some() {
+                    if let Some((_, ap)) = self.slot_path(p, &SlotTarget::Builtin(kind, format!("{kind:?}")), true) {
+                        if let Some(prop) = {
+                            self.in_when += 1;
+                            let r = self.prop(&ap, kind);
+                            self.in_when -= 1;
+                            r
+                        } {
+                            props.push(prop);
+                        }
+                    }
+                } else {
+                    self.error("G3002", p.line, format!("`{}`: slot paths ride a control's contract — nothing here declares slots", p.key));
+                }
+                continue;
+            }
             if let Some((node_name, prop_name)) = split_target(&p.key) {
                 let ap = AstProp { key: prop_name.to_string(), value: p.value.clone(), line: p.line };
                 if let Some(prop) = {
@@ -4839,8 +5163,15 @@ impl<'a> Compiler<'a> {
             // lives (GPAR83, the shipped scope rule): climb from IT to
             // the press surface whose state the `when` watches — a
             // sibling target no longer parks the response on the View.
+            // A control instance root stops the climb too: it holds its
+            // own contract states (`when dragging slot.thumb.…` on a
+            // Fader answers the FADER, not some surface above it).
+            let is_watchable = |me: &Self, id: NodeId| {
+                me.page.nodes[id as usize].kind.is_press_surface()
+                    || (me.page.nodes[id as usize].name != NO_STR && me.control_scopes.contains(me.page.str(me.page.nodes[id as usize].name)))
+            };
             let mut of_node = owner as NodeId;
-            while of_node != NO_NODE && !self.page.nodes[of_node as usize].kind.is_press_surface() && self.page.nodes[of_node as usize].parent != NO_NODE {
+            while of_node != NO_NODE && !is_watchable(self, of_node) && self.page.nodes[of_node as usize].parent != NO_NODE {
                 of_node = self.page.nodes[of_node as usize].parent;
             }
             let host = w.host;

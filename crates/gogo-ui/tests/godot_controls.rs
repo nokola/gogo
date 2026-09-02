@@ -281,9 +281,8 @@ fn render_declared_value_quantizes_at_once() {
 /// `style … for=Slider` rounds the track to
 /// 3 and leaves its default color; `slot.track.background=` paints it.
 #[test]
-#[ignore = "GP40: not ported: `style X for=<Control>` + `slot.<name>.<prop>` paths"]
 fn render_for_slider_style_restyles_the_track() {
-    let fx = Fx::new("style ThinSlider for=Slider\nView v { Slider s .ThinSlider render=gogo, value=30, width=200 }");
+    let fx = Fx::new("style ThinSlider for=Slider, slot.track.corner_radius=3\nView v { Slider s .ThinSlider render=gogo, value=30, width=200 }");
     let (track, _, _) = slider_parts(&fx.draws());
     assert!((quad_corner(track) - 3.0).abs() < 1e-3, "{track:?}");
     assert_eq!(quad_color(track), SLIDER_TRACK, "a corner alone does not paint the box: {track:?}");
@@ -335,9 +334,9 @@ fn render_autowire_by_name_and_code_writes_stay_silent() {
 /// "accepted for old files that picked a renderer per node; one renderer
 /// here"), so every one of these builds with no error, and a for=Slider
 /// style or a slot fill on a Slider needs no `render=gogo` exit. (The
-/// Godot fixtures' `slot.track.corner_radius=3` style path is dropped
-/// here: slot paths are not built (GP40) and an unbuilt word is a build
-/// error since E8, not a silent pass.)
+/// Godot fixtures' `slot.track.corner_radius=3` style path is kept out
+/// of these sources — the render= words are the subject here; slot
+/// paths build since GP40 step 1, 2026-09-02.)
 #[test]
 fn render_is_one_renderer_so_the_render_word_builds_everywhere() {
     let sources: Vec<String> = vec![
@@ -1111,4 +1110,83 @@ fn every_diag_code_has_a_teaching_entry_and_no_entry_is_stale() {
         assert!(gogo::diag::REGISTRY.iter().any(|(c, _)| c == h), "docs/gogo-errors.md teaches `{h}`, which is not a registered code");
         assert!(!gogo::diag::RETIRED.contains(h), "docs/gogo-errors.md teaches retired `{h}`");
     }
+}
+
+// ----- GP40 step 1: static `slot.` paths (customization spec §3.4) -----
+
+/// Checked styles (approved 2026-09-02): a `for=` style's
+/// `slot.<name>.<prop>=` restyles that region on every wearer — the
+/// write is baked into the instance's slot node at compile — and an
+/// instance-line path overrides the style's (the closest write wins).
+/// `size=` with a bare number is a square.
+#[test]
+fn slot_paths_restyle_a_controls_regions() {
+    let src = format!("{FADER_SRC}style Thin for=Fader, slot.track.height=4, slot.thumb.size=8\nView v {{ Column c {{ Fader a .Thin 200x24; Fader b .Thin 200x24, slot.track.height=2 }} }}");
+    let fx = Fx::new(&src);
+    assert_eq!(fx.rect("a/track").h, 4.0, "the style's write reaches the region");
+    assert_eq!(fx.rect("a/thumb").w, 8.0, "a bare `size=` number is a square");
+    assert_eq!(fx.rect("b/track").h, 2.0, "the instance line wins over the style");
+}
+
+/// `for=` gates wearing (the shipped application gate): the style
+/// dresses its one control type — legal on that control's instance,
+/// refused anywhere else (checked against the INSTANCE the wearer
+/// names, not the body root underneath).
+#[test]
+fn a_for_style_wears_on_its_control_only() {
+    ok(&format!("{FADER_SRC}style T for=Fader, slot.track.height=4\nView v {{ Fader f .T 100x24 }}"));
+    assert!(gogo::has_errors(&diags(&format!("{FADER_SRC}style T for=Fader, slot.track.height=4\nView v {{ Button b .T text=\"x\" }}"))));
+}
+
+/// A `when` response through a slot path moves and tints — and rides
+/// the HOST's state: while the Fader reports `dragging`, its thumb dims
+/// to 0.8.
+#[test]
+fn slot_when_response_rides_the_host_state() {
+    let src = format!("{FADER_SRC}style Ghost for=Fader {{ when dragging slot.thumb.opacity=0.8 }}\nView v {{ Fader f .Ghost 200x24, value=50 }}");
+    let mut fx = Fx::new(&src);
+    let alpha = |fx: &Fx| fx.draws().iter().find_map(|d| if let Draw::Circle { color, .. } = d { Some(color.0[3]) } else { None }).unwrap();
+    assert_eq!(alpha(&fx), 255);
+    let f = fx.node("f");
+    fx.rt.set_custom(&fx.page, f, "dragging", true).unwrap();
+    for _ in 0..40 {
+        fx.rt.tick(&mut fx.page, 1.0 / 60.0);
+    }
+    assert_eq!(alpha(&fx), 204, "0.8 while dragging");
+}
+
+/// The declaration-time fence battery: every refusal points at the
+/// writing line, never dies silently inside the control.
+#[test]
+fn slot_path_fences() {
+    // an unknown slot lists the real ones
+    let d = diags(&format!("{FADER_SRC}style X for=Fader, slot.trak.height=4\nView v {{ Fader f .X 100x24 }}"));
+    assert!(d.iter().any(|g| g.message.contains("no slot 'trak'") && g.message.contains("track")), "{d:#?}");
+    // a driven slot refuses the driver's word
+    let d = diags(&format!("{FADER_SRC}style X for=Fader, slot.progress.width=10\nView v {{ Fader f .X 100x24 }}"));
+    assert!(d.iter().any(|g| g.message.contains("moves by itself")), "{d:#?}");
+    // restyling content IS filling — the error routes the writer there
+    let d = diags(&format!("{FADER_SRC}style X for=Fader, slot.label.font_size=12\nView v {{ Fader f .X 100x24 }}"));
+    assert!(d.iter().any(|g| g.message.contains("fill it")), "{d:#?}");
+    // motion is `when` vocabulary, not a base look
+    assert!(gogo::has_errors(&diags(&format!("{FADER_SRC}style X for=Fader, slot.thumb.scale=1.2\nView v {{ Fader f .X 100x24 }}"))));
+    // a plain style has no contract to check against
+    assert!(gogo::has_errors(&diags("style X slot.track.height=4\nView v { Panel p .X }")));
+    // nor does a plain node
+    assert!(gogo::has_errors(&diags("View v { Rectangle r 10x10, slot.track.height=4, color=red }")));
+    // a `when` response holds motion and tint, not geometry
+    assert!(gogo::has_errors(&diags(&format!("{FADER_SRC}style X for=Fader {{ when dragging slot.track.height=2 }}\nView v {{ Fader f .X 100x24 }}"))));
+}
+
+/// `extends=` carries slot writes down the chain like props — the
+/// child's write to the same region wins; dropping the parent's would
+/// un-style every wearer of the derived style silently.
+#[test]
+fn extends_carries_slot_writes_and_the_child_wins() {
+    let src = format!("{FADER_SRC}style Thin for=Fader, slot.track.height=4, slot.thumb.size=8
+style Flat for=Fader, extends=Thin, slot.track.height=6
+View v {{ Fader f .Flat 200x24 }}");
+    let fx = Fx::new(&src);
+    assert_eq!(fx.rect("f/track").h, 6.0, "the child's write wins");
+    assert_eq!(fx.rect("f/thumb").w, 8.0, "the parent's other write survives");
 }

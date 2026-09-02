@@ -669,7 +669,7 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
         Kind::Gradient => &[BOX, &[PropKey::Stops, PropKey::GradientFill, PropKey::Angle, PropKey::GradientRepeat, PropKey::From, PropKey::To]],
         Kind::Arc => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::From, PropKey::Sweep, PropKey::Thickness]],
         // A Slider's `background=` is its track, `color=` the filled part.
-        Kind::Slider => &[BOX, &[PropKey::Background, PropKey::Color, PropKey::Value, PropKey::Min, PropKey::Max, PropKey::Step]],
+        Kind::Slider => &[BOX, &[PropKey::Background, PropKey::CornerRadius, PropKey::Color, PropKey::Value, PropKey::Min, PropKey::Max, PropKey::Step]],
         Kind::Input => &[BOX, PLATE, PADDING, TEXT, &[PropKey::Value, PropKey::PlaceholderText, PropKey::MaxLength]],
         Kind::Check | Kind::Radio => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::SelectedProp]],
         Kind::Toggle => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::SelectedProp, PropKey::Value]],
