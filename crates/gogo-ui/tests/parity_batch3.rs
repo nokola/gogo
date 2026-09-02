@@ -40,12 +40,12 @@ fn base_is_the_rest_end_of_a_builtin_flip_and_home_mirrors_it() {
     resolve_animated(&page, &mut rt);
     rt.tick(&mut page, 0.5);
     let r = resolve_animated(&page, &mut rt);
-    assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([128, 128, 128, 255])), "half way up after 0.5 s of the 1 s rule");
+    assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([99, 99, 99, 255])), "half way up after 0.5 s of the 1 s rule");
     rt.set_state(b, HELD, false);
     resolve_animated(&page, &mut rt);
     rt.tick(&mut page, 0.5);
     let r = resolve_animated(&page, &mut rt);
-    assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([64, 64, 64, 255])), "the release mirrors the entering rule");
+    assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([33, 33, 33, 255])), "the release mirrors the entering rule");
 
     let c = ok("arrangement wide\ntransition base -> wide duration=1, easing=linear\nwhen wide { bar.width = 300 }\nView v { Panel bar width=100, height=20, halign=left, valign=top }");
     let mut page = c.page;
@@ -229,5 +229,5 @@ fn a_child_response_times_by_the_declaring_scope() {
     resolve_animated(&page, &mut rt);
     rt.tick(&mut page, 0.5);
     let r = resolve_animated(&page, &mut rt);
-    assert_eq!(r.color(&page, flash, PropKey::Color), Some(Rgba([128, 128, 128, 255])), "half way, timed by b's own rule");
+    assert_eq!(r.color(&page, flash, PropKey::Color), Some(Rgba([99, 99, 99, 255])), "half way, timed by b's own rule");
 }

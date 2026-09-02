@@ -547,6 +547,13 @@ impl PropKey {
         }
     }
 
+    /// Keys holding ONE color — the keys whose `.a` anim lane (GP40)
+    /// moves alpha alone, and whose anim layer stores `VNum` alphas for
+    /// `compose_anim` to put on the ladder's hue.
+    pub fn is_color(self) -> bool {
+        matches!(self, PropKey::Background | PropKey::Color | PropKey::BorderColor | PropKey::FontColor | PropKey::SelectionColor | PropKey::StopColor(_))
+    }
+
     /// The word a key is written as (`PropKey::FontColor` → `font_color`);
     /// `Other` has no fixed spelling and gives "".
     pub fn word(self) -> &'static str {
@@ -799,6 +806,15 @@ pub enum Value {
     VItem(StrId),
 }
 
+impl Value {
+    /// The number inside a `VNum`, if that's what this value is.
+    pub fn as_num(self) -> Option<f32> {
+        match self {
+            Value::VNum(n) => Some(n),
+            _ => None,
+        }
+    }}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Prop {
     pub key: PropKey,
@@ -1024,9 +1040,12 @@ pub struct AnimTrack {
     pub node: NodeId,
     /// `translate.x`, `scale`, `rotate`, `opacity`…
     pub channel: StrId,
-    /// `None` = `to=` alone: start from the live value when the track starts.
-    pub from: Option<f32>,
-    pub to: f32,
+    /// `None` = `to=` alone: start from the live value when the track
+    /// starts. A motion channel's endpoints are `VNum`; a prop lane's
+    /// (GP40 color/non-motion lanes) are whatever its key takes
+    /// (`VColor`, `VNum`…).
+    pub from: Option<Value>,
+    pub to: Value,
     pub start: f32,
     pub duration: f32,
     pub easing: StrId,

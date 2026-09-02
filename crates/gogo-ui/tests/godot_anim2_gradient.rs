@@ -85,8 +85,8 @@ fn lanes(page: &Page, anim: &str) -> Vec<Lane> {
         .map(|t| Lane {
             node: page.str(page.nodes[t.node as usize].name).to_string(),
             channel: page.str(t.channel).to_string(),
-            from: t.from,
-            to: t.to,
+            from: t.from.and_then(gogo::page::Value::as_num),
+            to: t.to.as_num().unwrap_or(f32::NAN),
             start: t.start,
             duration: t.duration,
             autoreverse: t.autoreverse,
@@ -705,7 +705,6 @@ fn stop_write_fences() {
 /// lane — the per-stop property surface landed (GP40 step 4); the LANE
 /// rides the non-motion anim engine, its own unported GP40 item.
 #[test]
-#[ignore = "GP40: color/non-motion anim LANES (`g.stop_1_color.a to=…`) — the anim engine drives motion channels only; the per-stop property surface itself landed 2026-09-02"]
 fn stops_are_animatable() {
     let src = "anim glow { g.stop_1_color.a to=0.42, duration=0.1 }\nView v { Gradient g stops=[white, black], on:show=play(glow) }";
     assert!(!fails(src), "{:#?}", diags(src));

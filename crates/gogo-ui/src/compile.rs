@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::anim::{Channel, EASING_PARAM_KEYS, Easing, PARAMS_FOR_CURVE};
+use crate::anim::{Channel, prop_lane, EASING_PARAM_KEYS, Easing, PARAMS_FOR_CURVE};
 use crate::ast::{AstItem, AstNode, AstProp, AstValue, Document};
 use crate::diag::Diagnostic;
 use crate::locale::Keys;
@@ -2165,6 +2165,24 @@ impl<'a> Compiler<'a> {
     fn double_pin_check(&mut self, anim: StrId, line: u32) {
         let mut seen: Vec<(NodeId, StrId)> = Vec::new();
         let mut errs: Vec<String> = Vec::new();
+        // GP40: `background` and `background.a` in one anim would both
+        // own the (node, property) lane and fight — one spelling per
+        // property per anim.
+        let mut lanes: Vec<(NodeId, PropKey, bool)> = Vec::new();
+        for t in self.page.anims.iter().filter(|t| t.anim == anim) {
+            let w = self.page.str(t.channel);
+            if Channel::parse(w).is_some() {
+                continue;
+            }
+            let Some((key, alpha)) = prop_lane(w) else { continue };
+            if lanes.iter().any(|(n, k, a)| *n == t.node && *k == key && *a != alpha) {
+                let nm = self.page.str(self.page.nodes[t.node as usize].name).to_string();
+                let bw = w.strip_suffix(".a").unwrap_or(w);
+                errs.push(format!("{nm} animates both the whole `{bw}` and `{bw}.a` — the lane has one writer; pick one spelling"));
+            } else if !lanes.contains(&(t.node, key, alpha)) {
+                lanes.push((t.node, key, alpha));
+            }
+        }
         for t in self.page.anims.iter().filter(|t| t.anim == anim) {
             if t.from.is_none() {
                 continue;
@@ -2476,13 +2494,25 @@ impl<'a> Compiler<'a> {
                             }
                             (n.to_string(), rest.to_string())
                         }
+                        // GP40 prop lanes: `<node>.<prop word>[.a]` — any
+                        // word a `transition` rule can move (checked below,
+                        // once the node and its kind are known). Bare inside
+                        // `each`, like the motion words.
+                        Some((n, rest)) if prop_lane(rest).is_some() => {
+                            if st.each_of.is_some() {
+                                self.error("G0062", step.line, format!("`{path}`: the `each` already names the target — write the property bare (`{rest}`)"));
+                                continue;
+                            }
+                            (n.to_string(), rest.to_string())
+                        }
+                        _ if st.each_of.is_some() && prop_lane(path).is_some() => (String::new(), path.to_string()),
                         _ => {
                             if path.ends_with(".modulate.a") || path == "modulate.a" {
                                 self.error("G0075", step.line, "`modulate.a` is a Godot engine word — write `opacity`");
-                            } else if Channel::parse(path).is_some() {
+                            } else if Channel::parse(path).is_some() || prop_lane(path).is_some() {
                                 self.error("G0063", step.line, format!("`{path}` needs a node: `<node>.{path}` (bare paths only inside `each`)"));
                             } else {
-                                self.error("G0063", step.line, format!("`{path}`: want `<node>.translate.x|translate.y|scale|scale.x|scale.y|rotate|opacity`"));
+                                self.error("G0063", step.line, format!("`{path}`: want `<node>.` + a motion word (`translate.x|translate.y|scale|scale.x|scale.y|rotate|opacity`) or an animatable property word (`background`, `corner_radius`, `stop_1_color.a`…)"));
                             }
                             continue;
                         }
@@ -2508,6 +2538,26 @@ impl<'a> Compiler<'a> {
                         self.error("G0060", step.line, format!("`{path}`: no node named `{node_name}`{}", if node_name == "self" { " (`self` is the widget's root, inside a widget's own anim)" } else { "" }));
                         continue;
                     };
+                    // GP40 prop lanes: the word must be one anims may
+                    // drive (the `transition` list + live stops), `.a`
+                    // needs a color word, and the target kind must take
+                    // the word at all — the same kind-words table `when`
+                    // responses answer to.
+                    let plane: Option<(PropKey, bool)> = if Channel::parse(&channel).is_some() { None } else { prop_lane(&channel) };
+                    if let Some((key, alpha_only)) = plane {
+                        let base_word = channel.strip_suffix(".a").unwrap_or(&channel).to_string();
+                        if !crate::runtime::animatable(key) {
+                            self.error("G0063", step.line, format!("`{base_word}` isn't an animatable word — anims move what `transition` rules move (colors, opacity, corner_radius, border_thickness, font_size, sizes, margins, paddings) plus the live stop family"));
+                            continue;
+                        }
+                        if alpha_only && !key.is_color() {
+                            self.error("G0063", step.line, format!("`.a` moves a color's alpha alone — `{base_word}` isn't a color word"));
+                            continue;
+                        }
+                        if !self.check_prop_kind(&base_word, key, self.page.nodes[node as usize].kind, step.line) {
+                            continue;
+                        }
+                    }
                     let num = |key: &str| step.props.iter().find(|p| p.key == key).and_then(|p| p.value.as_num());
                     if step.props.iter().any(|p| p.key == "delay") {
                         self.error("G0066", step.line, "`delay=` on a property line was retired — a pause is its own step (`then delay=0.3`), a shift is `offset=`");
@@ -2525,6 +2575,12 @@ impl<'a> Compiler<'a> {
                     scopes.push(step);
                     let autoreverse = scopes.iter().rev().find_map(|s| s.props.iter().find(|p| p.key == "autoreverse").map(|p| p.value == AstValue::Bool(true))).unwrap_or(false);
                     if !keys.is_empty() {
+                        if let Some((key, false)) = plane {
+                            if key.is_color() {
+                                self.error("G0064", step.line, "`key` children carry numbers — a color lane spells its segments as chained steps (`then <node>.background to=…`)");
+                                continue;
+                            }
+                        }
                         if num("duration").is_some() {
                             self.error("G0064", step.line, "`duration=` beside `key` children — the keys own the timeline; the last key's `t` is the length");
                         }
@@ -2554,7 +2610,7 @@ impl<'a> Compiler<'a> {
                                 None if t <= 0.0 => (Some(v), cluster_start, 0.0),
                                 None => (None, if jump { cluster_start + t } else { cluster_start }, if jump { 0.0 } else { t }),
                             };
-                            self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from, to: v, start, duration, easing, current: false, autoreverse: false });
+                            self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from: from.map(Value::VNum), to: Value::VNum(v), start, duration, easing, current: false, autoreverse: false });
                             end = start + duration;
                             prev = Some((t, v));
                         }
@@ -2569,7 +2625,7 @@ impl<'a> Compiler<'a> {
                                 let (t0, v0, _, _) = parsed[i];
                                 let (t1, _, jump, easing) = parsed[i + 1];
                                 let (start, duration) = if jump { (cluster_start + 2.0 * lane - t0, 0.0) } else { (cluster_start + 2.0 * lane - t1, t1 - t0) };
-                                self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from: None, to: v0, start, duration, easing, current: false, autoreverse: false });
+                                self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from: None, to: Value::VNum(v0), start, duration, easing, current: false, autoreverse: false });
                                 end = end.max(start + duration);
                             }
                         }
@@ -2581,14 +2637,37 @@ impl<'a> Compiler<'a> {
                         cluster_end = cluster_end.max(end);
                         continue;
                     }
-                    let (from, current) = match step.props.iter().find(|p| p.key == "from") {
-                        Some(p) if p.value.as_ident() == Some("current") => (None, true),
-                        Some(p) => (p.value.as_num(), false),
+                    // A whole-value prop lane's endpoints go through the
+                    // general value reader, so palette words and mode
+                    // pairs spell the same as anywhere; motion channels
+                    // and `.a` lanes stay numbers.
+                    let value_key: Option<PropKey> = match plane {
+                        Some((key, false)) => Some(key),
+                        _ => None,
+                    };
+                    let from_ast = step.props.iter().find(|p| p.key == "from").map(|p| (p.value.clone(), p.line));
+                    let (from, current): (Option<Value>, bool) = match &from_ast {
+                        Some((v, _)) if v.as_ident() == Some("current") => (None, true),
+                        Some((v, line)) => match value_key {
+                            Some(key) => (Some(self.value(v, *line, Some(key))), false),
+                            None => (v.as_num().map(Value::VNum), false),
+                        },
                         None => (None, false),
                     };
-                    let Some(to) = num("to") else {
-                        self.error("G0064", step.line, format!("`{path}` needs `to=`"));
-                        continue;
+                    let to_ast = step.props.iter().find(|p| p.key == "to").map(|p| (p.value.clone(), p.line));
+                    let to: Value = match (&to_ast, value_key) {
+                        (Some((v, line)), Some(key)) => self.value(v, *line, Some(key)),
+                        (Some((v, _)), None) => match v.as_num() {
+                            Some(n) => Value::VNum(n),
+                            None => {
+                                self.error("G0064", step.line, format!("`{path}` takes a number `to=`"));
+                                continue;
+                            }
+                        },
+                        (None, _) => {
+                            self.error("G0064", step.line, format!("`{path}` needs `to=`"));
+                            continue;
+                        }
                     };
                     let Some(duration) = num("duration").or_else(|| Self::anim_num(&scopes, "duration_each")) else {
                         self.error("G0064", step.line, format!("`{path}` has no length — write `duration=` on the line or `duration_each=` on an enclosing group or the anim header"));
@@ -2787,7 +2866,7 @@ impl<'a> Compiler<'a> {
     /// (GPAR30 — `font_color=accent` used to fall through to the white
     /// default with a clean build).
     fn is_color_key(key: PropKey) -> bool {
-        matches!(key, PropKey::Background | PropKey::Color | PropKey::BorderColor | PropKey::Stops | PropKey::FontColor | PropKey::SelectionColor)
+        matches!(key, PropKey::Background | PropKey::Color | PropKey::BorderColor | PropKey::Stops | PropKey::FontColor | PropKey::SelectionColor | PropKey::StopColor(_))
     }
 
     /// A palette word's bytes for one mode, following override links and
@@ -6127,7 +6206,7 @@ mod anim_tests {
         let ok = p.find("ok").unwrap();
         let w = p.whens[p.nodes[face as usize].whens.0 as usize];
         assert_eq!((w.state, w.of), (State::Held, ok));
-        let tracks: Vec<(&str, &str, Option<f32>, f32, f32, f32)> = p.anims.iter().map(|t| (p.str(p.nodes[t.node as usize].name), p.str(t.channel), t.from, t.to, t.start, t.duration)).collect();
+        let tracks: Vec<(&str, &str, Option<f32>, f32, f32, f32)> = p.anims.iter().map(|t| (p.str(p.nodes[t.node as usize].name), p.str(t.channel), t.from.and_then(Value::as_num), t.to.as_num().unwrap_or(f32::NAN), t.start, t.duration)).collect();
         assert_eq!(tracks[0], ("a", "translate.x", Some(-60.0), 0.0, 0.0, 0.5));
         assert_eq!(tracks[1], ("b", "opacity", Some(0.0), 1.0, 0.0, 0.5));
         assert_eq!(tracks[2], ("b", "scale", None, 1.05, 0.5, 0.25));

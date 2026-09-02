@@ -200,12 +200,13 @@ fn baked_tracks_carry_from_duration_easing_and_keys() {
     let channels: Vec<&str> = t.iter().map(|t| page.str(t.channel)).collect();
     assert_eq!(channels, ["translate.x", "rotate", "rotate"], "{t:#?}");
     let tx = t[0];
-    assert_eq!(tx.from, Some(-60.0), "pinned from");
+    assert_eq!(tx.from, Some(gogo::page::Value::VNum(-60.0)), "pinned from");
     assert_eq!(tx.duration, 0.5);
     assert_eq!(page.str(tx.easing), "cubic_out");
     // The keyed lane: key 1 pins 14 at once, key 2 glides 0..0.8 to 0.
-    assert_eq!((t[1].from, t[1].to, t[1].start, t[1].duration), (Some(14.0), 14.0, 0.0, 0.0), "{t:#?}");
-    assert_eq!((t[2].from, t[2].to, t[2].start, t[2].duration), (None, 0.0, 0.0, 0.8), "{t:#?}");
+    use gogo::page::Value::VNum;
+    assert_eq!((t[1].from, t[1].to, t[1].start, t[1].duration), (Some(VNum(14.0)), VNum(14.0), 0.0, 0.0), "{t:#?}");
+    assert_eq!((t[2].from, t[2].to, t[2].start, t[2].duration), (None, VNum(0.0), 0.0, 0.8), "{t:#?}");
     assert_eq!(page.str(t[2].easing), "cubic_out");
 }
 

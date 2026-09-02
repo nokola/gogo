@@ -6,6 +6,7 @@
 
 pub mod anim;
 pub mod ast;
+pub mod color;
 pub mod compile;
 pub mod diag;
 pub mod draw;

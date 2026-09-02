@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::anim::{Channel, Easing, Finish, Motion, Player, Tween, lerp_value};
+use crate::anim::{Channel, Easing, Finish, Motion, Player, Tween, get_pval, lerp_value, prop_lane};
 use crate::layout::{BUTTON_PADDING, Rect};
 use crate::locale::{KeyName, Locale};
 use crate::page::*;
@@ -212,6 +212,13 @@ pub struct Runtime {
     /// next writer of that property — a `when` flip that writes it, a code
     /// write, another anim — or `stop(restore)`.
     pub held: Vec<(NodeId, Channel, f32)>,
+    /// The prop-lane ANIM LAYER (GP40 color/non-motion lanes): per
+    /// (node, key), what players wrote. Same law as `motion` — only
+    /// entries a player owns (or `held_props` keeps) reach the picture.
+    pub prop_anim: Vec<(NodeId, PropKey, Value)>,
+    /// Finished prop lanes' end poses still standing (WPF HoldEnd) — the
+    /// prop half of `held`. An alpha-only lane holds a `VNum`.
+    pub held_props: Vec<(NodeId, PropKey, Value)>,
     /// Live repeat rows, one pool per touched repeat (`set_count` /
     /// `set_items`).
     pools: Vec<Pool>,
@@ -251,7 +258,7 @@ pub struct Runtime {
     /// who flipped, the condition entered, the anim, and what it displaced
     /// at play start — the condition's end restores the displaced
     /// channels (gogo_states.gd `_cancel_state_anim`).
-    state_anims: Vec<(NodeId, State, StrId, Vec<(NodeId, Channel, f32, bool)>)>,
+    state_anims: Vec<(NodeId, State, StrId, Vec<(NodeId, Channel, f32, bool)>, Vec<(NodeId, PropKey, Value, bool)>)>,
     /// Anims that ended on their own since the last `take_finished`
     /// (one entry per player that ran out). Needed because a host
     /// sequencing on an anim's end (Godot's `finished`) otherwise polls
@@ -333,6 +340,8 @@ impl Runtime {
             glide_late: 0.0,
             tweens: Vec::new(),
             held: Vec::new(),
+            prop_anim: Vec::new(),
+            held_props: Vec::new(),
             shown: vec![Motion::IDENTITY; page.nodes.len()],
             players: Vec::new(),
             state_anims: Vec::new(),
@@ -413,7 +422,29 @@ impl Runtime {
         for (node, channel, v) in &self.held {
             live[*node as usize].set(*channel, *v);
         }
-        let mut player = Player::new(page, anim, &mut self.motion, &live, &self.held, finish);
+        // GP40 prop lanes: what each lane SHOWS right now. One resolve
+        // answers it all (`compose_anim` already lays held poses and
+        // owned lanes over the ladder), and it runs only when this anim
+        // has prop lanes at all.
+        let mut plive: Vec<(NodeId, PropKey, Value)> = Vec::new();
+        let lanes: Vec<(NodeId, PropKey, bool)> = page.anims.iter().filter(|t| t.anim == anim).filter_map(|t| { let w = page.str(t.channel); if Channel::parse(w).is_some() { None } else { prop_lane(w).map(|(k, a)| (t.node, k, a)) } }).collect();
+        if !lanes.is_empty() {
+            let r = resolve(page, self);
+            for (node, key, alpha) in lanes {
+                if plive.iter().any(|(n, k, _)| *n == node && *k == key) {
+                    continue;
+                }
+                let v = if alpha {
+                    Value::VNum(r.color(page, node, key).map(|c| c.0[3] as f32 / 255.0).unwrap_or(1.0))
+                } else if key.is_color() {
+                    Value::VColor(r.color(page, node, key).unwrap_or(Rgba::TRANSPARENT))
+                } else {
+                    r.prop(page, node, key).unwrap_or(Value::VNum(0.0))
+                };
+                plive.push((node, key, v));
+            }
+        }
+        let mut player = Player::new(page, anim, &mut self.motion, &live, &self.held, &mut self.prop_anim, &plive, &self.held_props, self.variant, finish);
         // The channels move to the new player; the older ones keep their
         // clocks (a deferred hide still hides on time) and hand over the
         // true base, so `stop(restore)` lands where the FIRST play found
@@ -427,6 +458,17 @@ impl Runtime {
             }
             self.held.retain(|h| !(h.0 == node && h.1 == channel));
         }
+        for (node, key) in player.owns_props.clone() {
+            for p in &mut self.players {
+                if let Some(base) = p.hand_over_prop(node, key) {
+                    player.inherit_base_prop(node, key, base);
+                }
+            }
+            self.held_props.retain(|h| !(h.0 == node && h.1 == key));
+        }
+        // Anim beats transition (GP40, user call): a tween flying on a
+        // lane this play now owns is cut — two writers would fight.
+        self.tweens.retain(|t| !player.owns_props.contains(&(t.node, t.key)));
         self.players.push(player);
         self.dirty = true;
     }
@@ -953,6 +995,13 @@ impl Runtime {
         self.players.iter().any(|p| p.anim == anim && !p.stopped)
     }
 
+    /// Is a prop lane (GP40) an anim's right now — a live player's, or a
+    /// finished one's held end pose? The tween spawner asks BEFORE
+    /// `compose_anim` has stamped the resolved copy.
+    pub fn anim_owns_prop_now(&self, node: NodeId, key: PropKey) -> bool {
+        self.held_props.iter().any(|h| h.0 == node && h.1 == key) || self.players.iter().filter(|p| !p.stopped).any(|p| p.owns_props.contains(&(node, key)))
+    }
+
     /// The anims that ended on their own since the last call, drained
     /// (GP20's `finished`). `stop()` never lands here.
     pub fn take_finished(&mut self) -> Vec<StrId> {
@@ -965,7 +1014,7 @@ impl Runtime {
     pub fn stop(&mut self, anim: StrId, restore: bool) {
         let mut any = false;
         for p in self.players.iter_mut().filter(|p| p.anim == anim) {
-            p.stop(restore, &mut self.motion);
+            p.stop(restore, &mut self.motion, &mut self.prop_anim);
             if restore {
                 // Release the channels: the ladder shows again — except
                 // where the play found a held end pose, which comes back.
@@ -974,16 +1023,28 @@ impl Runtime {
                         self.held.push((node, channel, base));
                     }
                 }
+                for (node, key, base, base_held) in p.owned_bases_props() {
+                    if base_held {
+                        self.held_props.push((node, key, base));
+                    }
+                }
             } else {
                 // Left where it is: the current values stand as held ends.
                 for (node, channel) in &p.owns {
                     self.held.push((*node, *channel, self.motion[*node as usize].get(*channel)));
+                }
+                for (node, key) in &p.owns_props {
+                    if let Some(v) = get_pval(&self.prop_anim, *node, *key) {
+                        self.held_props.push((*node, *key, v));
+                    }
                 }
             }
             any = true;
         }
         if any {
             self.players.retain(|p| !p.stopped);
+            let players = &self.players;
+            self.prop_anim.retain(|e| players.iter().any(|p| p.owns_props.contains(&(e.0, e.1))));
             self.dirty = true;
         }
     }
@@ -994,14 +1055,14 @@ impl Runtime {
     /// timing, here they snap (no shipped page glides one yet). A channel
     /// a LIVE player owns is that player's; it is left alone.
     fn end_state_anims(&mut self, who: NodeId, state: State) {
-        let ended: Vec<(NodeId, State, StrId, Vec<(NodeId, Channel, f32, bool)>)> = {
+        let ended: Vec<(NodeId, State, StrId, Vec<(NodeId, Channel, f32, bool)>, Vec<(NodeId, PropKey, Value, bool)>)> = {
             let (out, keep) = self.state_anims.drain(..).partition(|e| e.0 == who && e.1 == state);
             self.state_anims = keep;
             out
         };
-        for (_, _, anim, displaced) in ended {
+        for (_, _, anim, displaced, displaced_props) in ended {
             for p in self.players.iter_mut().filter(|p| p.anim == anim) {
-                p.stop(false, &mut self.motion);
+                p.stop(false, &mut self.motion, &mut self.prop_anim);
             }
             self.players.retain(|p| !p.stopped);
             for (n, channel, base, base_held) in displaced {
@@ -1012,6 +1073,16 @@ impl Runtime {
                 self.motion[n as usize].set(channel, base);
                 if base_held {
                     self.held.push((n, channel, base));
+                }
+            }
+            for (n, key, base, base_held) in displaced_props {
+                if self.players.iter().any(|p| p.owns_props.contains(&(n, key))) {
+                    continue;
+                }
+                self.held_props.retain(|h| !(h.0 == n && h.1 == key));
+                self.prop_anim.retain(|e| !(e.0 == n && e.1 == key));
+                if base_held {
+                    self.held_props.push((n, key, base));
                 }
             }
             self.dirty = true;
@@ -1050,18 +1121,18 @@ impl Runtime {
         let before = self.tweens.len();
         self.tweens.retain(|t| t.elapsed < t.duration);
         moving |= before > 0;
-        let mut finished: Vec<(Finish, Vec<(NodeId, Channel)>, StrId)> = Vec::new();
+        let mut finished: Vec<(Finish, Vec<(NodeId, Channel)>, Vec<(NodeId, PropKey)>, StrId)> = Vec::new();
         let mut players = std::mem::take(&mut self.players);
         players.retain_mut(|p| {
-            let alive = p.tick(dt, &mut self.motion);
+            let alive = p.tick(dt, &mut self.motion, &mut self.prop_anim);
             if !alive {
-                finished.push((p.finish, p.owns.clone(), p.anim));
+                finished.push((p.finish, p.owns.clone(), p.owns_props.clone(), p.anim));
             }
             alive
         });
         moving |= !players.is_empty() || !finished.is_empty();
         self.players = players;
-        for (f, owns, anim) in finished {
+        for (f, owns, owns_props, anim) in finished {
             self.finished.push(anim);
             if let Finish::Hide(node) | Finish::HideWhen(node) = f {
                 if let Finish::Hide(_) = f {
@@ -1078,6 +1149,11 @@ impl Runtime {
                 for (n, channel) in owns {
                     self.motion[n as usize].set(channel, Motion::IDENTITY.get(channel));
                 }
+                // Prop lanes release outright on a hide: the layer entry
+                // goes and the ladder look comes back for the re-show.
+                for (n, key) in owns_props {
+                    self.prop_anim.retain(|e| !(e.0 == n && e.1 == key));
+                }
             } else {
                 // A finished anim's end pose is a standing value the author
                 // chose (WPF HoldEnd): it stays until the next writer. A
@@ -1090,6 +1166,16 @@ impl Runtime {
                         self.held.push((node, channel, self.motion[node as usize].get(channel)));
                     } else {
                         self.motion[node as usize].set(channel, Motion::IDENTITY.get(channel));
+                    }
+                }
+                for (node, key) in owns_props {
+                    self.held_props.retain(|h| !(h.0 == node && h.1 == key));
+                    let v = get_pval(&self.prop_anim, node, key);
+                    self.prop_anim.retain(|e| !(e.0 == node && e.1 == key));
+                    if let Some(v) = v {
+                        if self.visible_now(page, node) {
+                            self.held_props.push((node, key, v));
+                        }
                     }
                 }
             }
@@ -1446,6 +1532,9 @@ pub struct Resolved {
     /// playing, or a finished anim's held end. Draw reads it to let an anim
     /// outrank the built-in disabled dim on opacity.
     pub anim_owned: Vec<u16>,
+    /// Prop lanes an anim owns right now (GP40) — playing, or a held end
+    /// pose. `when` writes and `transition` tweens yield to these.
+    pub anim_owned_props: Vec<(NodeId, PropKey)>,
     pub placement: Vec<Placement>,
     /// (node, prop) — later entries win.
     pub overrides: Vec<(NodeId, Prop)>,
@@ -1501,9 +1590,21 @@ impl Resolved {
     }
 
     pub fn color(&self, page: &Page, node: NodeId, key: PropKey) -> Option<Rgba> {
-        let mut c = match self.prop(page, node, key)? {
-            Value::VColor(c) => c,
-            Value::VStop { color, .. } => color,
+        let mut c = match self.prop(page, node, key) {
+            Some(Value::VColor(c)) => c,
+            Some(Value::VStop { color, .. }) => color,
+            // A live stop key nobody wrote yet answers from the DECLARED
+            // `stops=` entry (1-based) — the anim door's `.a` lanes (GP40)
+            // and code readers see the color the gradient draws.
+            None if matches!(key, PropKey::StopColor(_)) => {
+                let PropKey::StopColor(n) = key else { return None };
+                let list = self.prop(page, node, PropKey::Stops)?;
+                match page.list(list).get((n as usize).checked_sub(1)?)? {
+                    Value::VStop { color, .. } => *color,
+                    Value::VColor(c) => *c,
+                    _ => return None,
+                }
+            }
             _ => return None,
         };
         // `color.a = 0.5` in a `when`: the fill keeps its hue, alpha alone moves.
@@ -1709,7 +1810,6 @@ pub fn resolve(page: &Page, rt: &Runtime) -> Resolved {
 /// land as the LAST override, so `Resolved::num`/`color` answer with the
 /// anim's value like any other writer. Nothing multiplies.
 fn compose_anim(page: &Page, rt: &Runtime, r: &mut Resolved) {
-    let _ = page;
     let mut apply = |node: NodeId, channel: Channel, v: f32| {
         match channel {
             Channel::Opacity => r.overrides.push((node, Prop { key: PropKey::Opacity, value: Value::VNum(v) })),
@@ -1728,12 +1828,44 @@ fn compose_anim(page: &Page, rt: &Runtime, r: &mut Resolved) {
             apply(*node, *channel, rt.motion[*node as usize].get(*channel));
         }
     }
+    for (node, key, v) in &rt.held_props {
+        apply_prop_lane(page, r, *node, *key, *v);
+    }
+    for p in rt.players.iter().filter(|p| !p.stopped) {
+        for (node, key) in &p.owns_props {
+            if let Some(v) = get_pval(&rt.prop_anim, *node, *key) {
+                apply_prop_lane(page, r, *node, *key, v);
+            }
+        }
+    }
+}
+
+/// Lands one prop lane's value as the LAST override (GP40) — the anim is
+/// the top of the ladder for its lane, like the motion channels. An
+/// alpha-only lane arrives as a `VNum` on a color key: the ladder's hue
+/// with the anim's alpha, so a `when` can restyle the hue mid-play.
+fn apply_prop_lane(page: &Page, r: &mut Resolved, node: NodeId, key: PropKey, v: Value) {
+    let value = match v {
+        Value::VNum(a) if key.is_color() => match r.color(page, node, key) {
+            Some(c) => Value::VColor(c.with_opacity(a)),
+            // No declared color to fade: nothing to show.
+            None => return,
+        },
+        v => v,
+    };
+    r.overrides.push((node, Prop { key, value }));
+    r.anim_owned_props.push((node, key));
 }
 
 impl Resolved {
     /// Does an anim own this channel on this node right now?
     pub fn anim_owns(&self, node: NodeId, channel: Channel) -> bool {
         self.anim_owned.get(node as usize).is_some_and(|b| b & channel.bit() != 0)
+    }
+
+    /// Does an anim own this PROP lane (GP40) right now?
+    pub fn anim_owns_prop(&self, node: NodeId, key: PropKey) -> bool {
+        self.anim_owned_props.contains(&(node, key))
     }
 
     /// An automatic slot's SHOWN fraction (GP33): the driver's value this
@@ -1750,7 +1882,7 @@ impl Resolved {
 }
 
 fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
-    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), auto: Vec::new(), presence: Vec::new(), caret: rt.caret, selection: rt.selection, sel_handles: rt.sel_handles };
+    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], anim_owned_props: Vec::new(), placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), auto: Vec::new(), presence: Vec::new(), caret: rt.caret, selection: rt.selection, sel_handles: rt.sel_handles };
     for (i, node) in page.nodes.iter().enumerate() {
         let id = i as NodeId;
         let mut placement = node.placement;
@@ -1924,7 +2056,8 @@ fn apply_placement(p: &mut Placement, page: &Page, prop: Prop) {
     }
 }
 
-/// The keys a `transition` rule can move.
+/// The keys a `transition` rule can move — and (GP40, user call) exactly
+/// what the `anim` door may drive too: ONE list, two doors.
 const ANIMATABLE: &[PropKey] = &[
     PropKey::Background,
     PropKey::Color,
@@ -1957,6 +2090,13 @@ const ANIMATABLE: &[PropKey] = &[
     PropKey::FontColor,
     PropKey::Angle,
 ];
+
+/// May the anim door drive this key (GP40)? The `transition` list, plus
+/// the live stop family — their numbers ride in the key, so the const
+/// list can't carry them.
+pub fn animatable(key: PropKey) -> bool {
+    matches!(key, PropKey::StopColor(_) | PropKey::StopOffset(_)) || ANIMATABLE.contains(&key)
+}
 
 /// A placement field as a prop value (`None` where the file did not speak).
 fn placement_value(p: &Placement, key: PropKey) -> Option<Value> {
@@ -2031,6 +2171,18 @@ fn find_rule(page: &Page, node: NodeId, from: Option<State>, to: Option<State>) 
     best
 }
 
+/// `when_writes`, for a PROP lane (GP40): does the flip's `when` write
+/// this very key?
+fn when_writes_key(page: &Page, node: NodeId, key: PropKey, who: NodeId) -> bool {
+    let n = &page.nodes[node as usize];
+    page.whens[n.whens.0 as usize..(n.whens.0 + n.whens.1) as usize].iter().any(|w| {
+        let owner = if w.of == NO_NODE { node } else { w.of };
+        let node_state = matches!(w.state, State::Held | State::Hovered | State::Focused | State::FocusWithin | State::Selected | State::StateDisabled);
+        let flipped = if who == NO_NODE { !node_state } else { node_state && owner == who };
+        flipped && page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize].iter().any(|p| p.key == key)
+    })
+}
+
 /// Does a `when` on `node` that the flip on `who` (`NO_NODE` = the view:
 /// an arrangement or screen word) turns on or off write `channel`?
 fn when_writes(page: &Page, node: NodeId, channel: Channel, who: NodeId) -> bool {
@@ -2057,6 +2209,9 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
     if !changes.is_empty() && !rt.held.is_empty() {
         rt.held.retain(|(node, channel, _)| !changes.iter().any(|(who, _, _)| when_writes(page, *node, *channel, *who)));
     }
+    if !changes.is_empty() && !rt.held_props.is_empty() {
+        rt.held_props.retain(|(node, key, _)| !changes.iter().any(|(who, _, _)| when_writes_key(page, *node, *key, *who)));
+    }
     // `transition … anim=<name>` (GPAR109): entering the rule's `to`
     // condition plays the named anim; leaving the condition ends it and
     // restores what it displaced (gogo_states.gd _play_state_anim).
@@ -2074,7 +2229,8 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
                     rt.end_state_anims(*who, to.unwrap());
                     rt.play(page, rule.anim, Finish::Nothing);
                     let displaced = rt.players.last().map(|p| p.owned_bases()).unwrap_or_default();
-                    rt.state_anims.push((*who, to.unwrap(), rule.anim, displaced));
+                    let displaced_props = rt.players.last().map(|p| p.owned_bases_props()).unwrap_or_default();
+                    rt.state_anims.push((*who, to.unwrap(), rule.anim, displaced, displaced_props));
                 }
             }
         }
@@ -2188,6 +2344,13 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
             let id = i as NodeId;
             let _ = node;
             for key in ANIMATABLE {
+                // GP40, user call: anim beats transition — a lane a
+                // player owns (or a held pose keeps) spawns no tween.
+                // Asked of the runtime: the resolved here is the ladder
+                // only, `compose_anim` lands the anim layer later.
+                if rt.anim_owns_prop_now(id, *key) {
+                    continue;
+                }
                 let target = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key)) };
                 let Some(target) = target else { continue };
                 let current = rt.tweens.iter().find(|t| t.node == id && t.key == *key).map(|t| t.value()).or_else(|| rt.last.iter().find(|(n, p)| *n == id && p.key == *key).map(|(_, p)| p.value)).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key));
@@ -2354,14 +2517,16 @@ mod tests {
         assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([0, 0, 0, 255])), "starts from the current value");
         rt.tick(&mut page, 0.5);
         let r = resolve_animated(&page, &mut rt);
-        assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([128, 128, 128, 255])));
-        // Releasing mid-flight: the leaving change mirrors the entering rule and retargets from 128.
+        // Half-way black->white under the one mixing law (premultiplied
+        // Oklab): the perceptual middle, 99, not the byte middle.
+        assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([99, 99, 99, 255])));
+        // Releasing mid-flight: the leaving change mirrors the entering rule and retargets from 99.
         rt.set_state(b, HELD, false);
         let r = resolve_animated(&page, &mut rt);
-        assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([128, 128, 128, 255])));
+        assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([99, 99, 99, 255])));
         rt.tick(&mut page, 0.5);
         let r = resolve_animated(&page, &mut rt);
-        assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([64, 64, 64, 255])));
+        assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([33, 33, 33, 255])));
         rt.tick(&mut page, 0.6);
         assert!(!rt.animating());
     }

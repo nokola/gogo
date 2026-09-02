@@ -1,8 +1,10 @@
 //! Motion: WPF-exact easing math, property tweens for `transition`
-//! rules, and players for `anim` tracks on the motion channels
-//! (`translate.x/.y`, `scale`, `rotate`, `opacity`). Layout is declared,
-//! motion is transformed: a player never touches a rect in the arena; the
-//! draw walk applies the channels.
+//! rules, and players for `anim` tracks — the motion channels
+//! (`translate.x/.y`, `scale`, `rotate`, `opacity`) plus PROP lanes
+//! (GP40: any word a `transition` rule can move — `b.background`,
+//! `card.corner_radius`, `g.stop_1_color.a`). Layout is declared, motion
+//! is transformed: a player never touches a rect in the arena; the draw
+//! walk applies the channels, and prop lanes land as resolve overrides.
 
 use crate::page::*;
 
@@ -233,13 +235,9 @@ pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
 pub fn lerp_value(a: Value, b: Value, t: f32) -> Value {
     match (a, b) {
         (Value::VNum(x), Value::VNum(y)) => Value::VNum(lerp(x, y, t)),
-        (Value::VColor(x), Value::VColor(y)) => {
-            let mut c = [0u8; 4];
-            for i in 0..4 {
-                c[i] = lerp(x.0[i] as f32, y.0[i] as f32, t).round().clamp(0.0, 255.0) as u8;
-            }
-            Value::VColor(Rgba(c))
-        }
+        // Authored colors mix in premultiplied Oklab (the one law,
+        // `crate::color`) — the same math the gradient shader runs.
+        (Value::VColor(x), Value::VColor(y)) => Value::VColor(crate::color::mix_rgba(x, y, t)),
         (Value::VSize(aw, ah), Value::VSize(bw, bh)) => Value::VSize(match (aw, bw) {
             (Some(x), Some(y)) => Some(lerp(x, y, t)),
             _ => bw,
@@ -368,6 +366,33 @@ impl Motion {
     }
 }
 
+/// Splits an anim target word into a prop lane (GP40): `background` →
+/// the key, `background.a` → the key + alpha-only. Motion words are
+/// `Channel::parse`'s — callers try that first. The compiler checks
+/// legality (animatable word, `.a` on colors only, the target kind's
+/// words); here is just the spelling.
+pub fn prop_lane(word: &str) -> Option<(PropKey, bool)> {
+    let (w, alpha_only) = match word.strip_suffix(".a") {
+        Some(w) => (w, true),
+        None => (word, false),
+    };
+    PropKey::from_word(w).map(|k| (k, alpha_only))
+}
+
+/// Writes one prop-lane layer entry (find-or-push) — the prop analog of
+/// `Motion::set`.
+pub fn set_pval(vals: &mut Vec<(NodeId, PropKey, Value)>, node: NodeId, key: PropKey, v: Value) {
+    match vals.iter_mut().find(|(n, k, _)| *n == node && *k == key) {
+        Some(e) => e.2 = v,
+        None => vals.push((node, key, v)),
+    }
+}
+
+/// Reads one prop-lane layer entry.
+pub fn get_pval(vals: &[(NodeId, PropKey, Value)], node: NodeId, key: PropKey) -> Option<Value> {
+    vals.iter().find(|(n, k, _)| *n == node && *k == key).map(|(_, _, v)| *v)
+}
+
 /// One track of a playing anim, bound to a node and channel.
 #[derive(Clone, Copy, Debug)]
 struct Track {
@@ -405,6 +430,32 @@ impl Track {
     }
 }
 
+/// One PROP lane of a playing anim (GP40): `node.key` goes `from` → `to`
+/// through `lerp_value`, so colors mix under the one law (`crate::color`).
+/// An alpha-only lane (`background.a`) carries `VNum` alphas end to end —
+/// the layer stores the number and `compose_anim` puts it on the ladder's
+/// hue. The fields mirror `Track`'s, value-typed.
+#[derive(Clone, Copy, Debug)]
+struct PropTrack {
+    node: NodeId,
+    key: PropKey,
+    from: Option<Value>,
+    to: Value,
+    start: f32,
+    duration: f32,
+    easing: Easing,
+    autoreverse: bool,
+    base: Value,
+    base_held: bool,
+    lead_in_from: Option<Value>,
+}
+
+impl PropTrack {
+    fn end(&self) -> f32 {
+        self.start + if self.autoreverse { 2.0 * self.duration } else { self.duration }
+    }
+}
+
 /// What a finished player does (`on:hide=play(x)` hides on finish).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Finish {
@@ -424,11 +475,14 @@ pub enum Finish {
 pub struct Player {
     pub anim: StrId,
     tracks: Vec<Track>,
+    ptracks: Vec<PropTrack>,
     /// Anim seconds (already multiplied by `speed`).
     pub elapsed: f32,
     pub finish: Finish,
     /// Channels this player owns (a newer player takes them over — WPF SnapshotAndReplace).
     pub owns: Vec<(NodeId, Channel)>,
+    /// Prop lanes this player owns — the same take-over law, per (node, key).
+    pub owns_props: Vec<(NodeId, PropKey)>,
     /// The chain's length at play start. Kept apart from the tracks so a
     /// player whose channels a newer one took still finishes ON TIME (a
     /// deferred hide hides when the file said, not the moment it lost its
@@ -454,13 +508,48 @@ impl Player {
     /// each channel SHOWS right now (the ladder, or an anim that owns it)
     /// and `held` the finished anims' end poses still standing — the base a
     /// later `stop(restore)` returns to.
-    pub fn new(page: &Page, anim: StrId, layer: &mut [Motion], live: &[Motion], held: &[(NodeId, Channel, f32)], finish: Finish) -> Player {
+    /// `pvals`/`plive`/`pheld` are the prop-lane analogs of
+    /// `layer`/`live`/`held` (GP40); `variant` derefs a `to=` written as a
+    /// mode-flipping palette word at PLAY start (a variant flip mid-play
+    /// keeps the play's colors — the next play reads the new mode).
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(page: &Page, anim: StrId, layer: &mut [Motion], live: &[Motion], held: &[(NodeId, Channel, f32)], pvals: &mut Vec<(NodeId, PropKey, Value)>, plive: &[(NodeId, PropKey, Value)], pheld: &[(NodeId, PropKey, Value)], variant: StrId, finish: Finish) -> Player {
         let mut tracks: Vec<Track> = Vec::new();
+        let mut ptracks: Vec<PropTrack> = Vec::new();
         let mut owns = Vec::new();
+        let mut owns_props: Vec<(NodeId, PropKey)> = Vec::new();
         let head = page.anim_heads.iter().find(|h| h.anim == anim);
         for t in page.anims.iter().filter(|t| t.anim == anim) {
             let easing = if t.easing == NO_STR { Easing::LINEAR } else { Easing::parse(page.str(t.easing)).unwrap_or(Easing::LINEAR) };
-            let Some(channels) = Channel::parse(page.str(t.channel)) else { continue };
+            let word = page.str(t.channel);
+            let Some(channels) = Channel::parse(word) else {
+                let Some((key, _)) = prop_lane(word) else { continue };
+                let dv = |v: Value| crate::runtime::deref(page, variant, v);
+                let shown = get_pval(plive, t.node, key).unwrap_or(if key.is_color() && !word.ends_with(".a") { Value::VColor(Rgba::TRANSPARENT) } else { Value::VNum(0.0) });
+                let base_held = pheld.iter().any(|h| h.0 == t.node && h.1 == key);
+                let first = !ptracks.iter().any(|x| x.node == t.node && x.key == key);
+                let t_from = t.from.map(dv);
+                let t_to = dv(t.to);
+                let from = if t.current {
+                    Some(shown)
+                } else if first {
+                    // The lane is this player's from now on: the layer
+                    // starts at the pinned `from=`, else at what shows,
+                    // so taking ownership never jumps the picture.
+                    set_pval(pvals, t.node, key, t_from.unwrap_or(shown));
+                    t_from
+                } else {
+                    None
+                };
+                let lead_in_from = if first { Some(if t.current { shown } else { t_from.unwrap_or(shown) }) } else { None };
+                ptracks.push(PropTrack { node: t.node, key, from, to: t_to, start: t.start, duration: t.duration, easing, autoreverse: t.autoreverse, base: shown, base_held, lead_in_from });
+                if !owns_props.contains(&(t.node, key)) {
+                    owns_props.push((t.node, key));
+                }
+                continue;
+            };
+            let track_from = t.from.and_then(Value::as_num);
+            let track_to = t.to.as_num().unwrap_or(0.0);
             for channel in channels {
                 let shown = live.get(t.node as usize).map(|m| m.get(channel)).unwrap_or(Motion::IDENTITY.get(channel));
                 let base_held = held.iter().any(|h| h.0 == t.node && h.1 == channel);
@@ -471,20 +560,20 @@ impl Player {
                     // The channel is this player's from now on: the layer
                     // starts at the pinned `from=`, else at what shows, so
                     // taking ownership never jumps the picture.
-                    layer[t.node as usize].set(channel, t.from.unwrap_or(shown));
-                    t.from
+                    layer[t.node as usize].set(channel, track_from.unwrap_or(shown));
+                    track_from
                 } else {
                     None
                 };
-                let lead_in_from = if first_on_channel { Some(if t.current { shown } else { t.from.unwrap_or(shown) }) } else { None };
-                tracks.push(Track { node: t.node, channel, from, to: t.to, start: t.start, duration: t.duration, easing, autoreverse: t.autoreverse, base: shown, base_held, lead_in_from });
+                let lead_in_from = if first_on_channel { Some(if t.current { shown } else { track_from.unwrap_or(shown) }) } else { None };
+                tracks.push(Track { node: t.node, channel, from, to: track_to, start: t.start, duration: t.duration, easing, autoreverse: t.autoreverse, base: shown, base_held, lead_in_from });
                 if !owns.contains(&(t.node, channel)) {
                     owns.push((t.node, channel));
                 }
             }
         }
-        let total = tracks.iter().map(Track::end).fold(0.0, f32::max);
-        Player { anim, tracks, elapsed: 0.0, finish, owns, total, repeat: head.map(|h| h.repeat).unwrap_or(false), speed: head.map(|h| h.speed).unwrap_or(1.0).max(0.001), stopped: false }
+        let total = tracks.iter().map(Track::end).chain(ptracks.iter().map(PropTrack::end)).fold(0.0, f32::max);
+        Player { anim, tracks, ptracks, elapsed: 0.0, finish, owns, owns_props, total, repeat: head.map(|h| h.repeat).unwrap_or(false), speed: head.map(|h| h.speed).unwrap_or(1.0).max(0.001), stopped: false }
     }
 
     pub fn length(&self) -> f32 {
@@ -509,6 +598,26 @@ impl Player {
         }
     }
 
+    /// `hand_over`, for a prop lane (GP40): the taker inherits the true base.
+    pub fn hand_over_prop(&mut self, node: NodeId, key: PropKey) -> Option<(Value, bool)> {
+        let base = self.ptracks.iter().find(|t| t.node == node && t.key == key).map(|t| (t.base, t.base_held));
+        self.ptracks.retain(|t| !(t.node == node && t.key == key));
+        self.owns_props.retain(|o| *o != (node, key));
+        base
+    }
+
+    pub fn inherit_base_prop(&mut self, node: NodeId, key: PropKey, base: (Value, bool)) {
+        for t in self.ptracks.iter_mut().filter(|t| t.node == node && t.key == key) {
+            t.base = base.0;
+            t.base_held = base.1;
+        }
+    }
+
+    /// `owned_bases`, for the prop lanes.
+    pub fn owned_bases_props(&self) -> Vec<(NodeId, PropKey, Value, bool)> {
+        self.owns_props.iter().filter_map(|(n, k)| self.ptracks.iter().find(|t| t.node == *n && t.key == *k).map(|t| (*n, *k, t.base, t.base_held))).collect()
+    }
+
     /// Per owned channel: the value it had before this play and whether
     /// that value was a held end pose (see `Track::base_held`).
     pub fn owned_bases(&self) -> Vec<(NodeId, Channel, f32, bool)> {
@@ -517,7 +626,29 @@ impl Player {
 
     /// Writes every channel for anim time `t` (idempotent, so a repeat
     /// wrap replays the chain from its start).
-    fn apply_at(&mut self, t: f32, motion: &mut [Motion]) {
+    fn apply_at(&mut self, t: f32, motion: &mut [Motion], pvals: &mut Vec<(NodeId, PropKey, Value)>) {
+        for track in &mut self.ptracks {
+            if t < track.start {
+                if let Some(f) = track.lead_in_from {
+                    set_pval(pvals, track.node, track.key, f);
+                }
+                continue;
+            }
+            if track.from.is_none() {
+                track.from = get_pval(pvals, track.node, track.key).or(Some(track.to));
+            }
+            let from = track.from.unwrap_or(track.to);
+            let local = t - track.start;
+            let value = if track.duration <= 0.0 {
+                track.to
+            } else if track.autoreverse && local > track.duration {
+                let back = ((local - track.duration) / track.duration).min(1.0);
+                lerp_value(track.to, from, track.easing.apply(back))
+            } else {
+                lerp_value(from, track.to, track.easing.apply((local / track.duration).min(1.0)))
+            };
+            set_pval(pvals, track.node, track.key, value);
+        }
         for track in &mut self.tracks {
             if t < track.start {
                 if let Some(f) = track.lead_in_from {
@@ -543,7 +674,7 @@ impl Player {
     }
 
     /// Advances and writes the channels; true while still playing.
-    pub fn tick(&mut self, dt: f32, motion: &mut [Motion]) -> bool {
+    pub fn tick(&mut self, dt: f32, motion: &mut [Motion], pvals: &mut Vec<(NodeId, PropKey, Value)>) -> bool {
         if self.stopped {
             return false;
         }
@@ -551,11 +682,11 @@ impl Player {
         let total = self.length();
         if self.repeat && total > 0.0 {
             let t = self.elapsed % total;
-            self.apply_at(t, motion);
+            self.apply_at(t, motion, pvals);
             return true;
         }
         let t = self.elapsed.min(total);
-        self.apply_at(t, motion);
+        self.apply_at(t, motion, pvals);
         self.elapsed < total
     }
 
@@ -564,12 +695,17 @@ impl Player {
     /// a channel a newer player took over is that player's to restore.
     /// The layer value only matters while something owns the channel; the
     /// runtime decides what stays owned (`Runtime::stop`).
-    pub fn stop(&mut self, restore: bool, layer: &mut [Motion]) {
+    pub fn stop(&mut self, restore: bool, layer: &mut [Motion], pvals: &mut Vec<(NodeId, PropKey, Value)>) {
         self.stopped = true;
         if restore {
             for track in &self.tracks {
                 if self.owns.contains(&(track.node, track.channel)) {
                     layer[track.node as usize].set(track.channel, track.base);
+                }
+            }
+            for track in &self.ptracks {
+                if self.owns_props.contains(&(track.node, track.key)) {
+                    set_pval(pvals, track.node, track.key, track.base);
                 }
             }
         }
@@ -622,7 +758,9 @@ mod tests {
         let mut t = Tween { node: 0, key: PropKey::Opacity, from: Value::VNum(0.0), to: Value::VNum(1.0), elapsed: 0.0, duration: 1.0, easing: Easing::LINEAR };
         t.elapsed = 0.25;
         assert_eq!(t.value(), Value::VNum(0.25));
+        // Colors mix under the one law (premultiplied Oklab, crate::color)
+        // — the midpoint is the perceptual middle, not the byte middle.
         let c = lerp_value(Value::VColor(Rgba([0, 0, 0, 255])), Value::VColor(Rgba([200, 100, 0, 255])), 0.5);
-        assert_eq!(c, Value::VColor(Rgba([100, 50, 0, 255])));
+        assert_eq!(c, Value::VColor(Rgba([76, 34, 0, 255])));
     }
 }
