@@ -1077,7 +1077,7 @@ pub fn palette_color(word: &str) -> Option<Rgba> {
 /// nor listed here.
 pub const UNREAD_BY_DESIGN: &[(PropKey, &str)] = &[
     (PropKey::Loading, "host-read: `loading=lazy` asks the host to defer that image's decode to its first draw"),
-    (PropKey::TouchTarget, "host-read: an enlarged touch plate the host may honor; hit testing here uses the node's own rect"),
+    (PropKey::TouchTarget, "accepted: `touch_target=off` silences the 44-epx finger-target lint; the lint is not built here yet (GP41), and hit testing always uses the node's own rect"),
     (PropKey::TapPulse, "host-read: the press feedback pulse is drawn by the host; not built here yet"),
     (PropKey::AccessibilityName, "host-read: no screen-reader bridge here yet"),
     (PropKey::KeyboardTarget, "host-read: no keyboard focus routing here yet"),
