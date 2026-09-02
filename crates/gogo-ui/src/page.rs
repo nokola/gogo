@@ -1062,6 +1062,11 @@ pub struct Node {
     pub initial_states: u8,
     /// A Radio's `choice` group (index into `Page::choices`); `NO_CHOICE` = none.
     pub choice: u32,
+    /// Keyboard-reachable (GP26), baked at compile: a press surface,
+    /// Slider or Input, or a control root whose contract declares
+    /// `state_builtin focused`; `keyboard_target=off` opts out.
+    /// Disabled/hidden are runtime facts, checked at traversal.
+    pub focusable: bool,
     pub line: u32,
 }
 
@@ -1131,6 +1136,7 @@ impl Node {
         auto: Auto::NoAuto,
         initial_states: 0,
         choice: NO_CHOICE,
+        focusable: false,
         line: 0,
     };
 }

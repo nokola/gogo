@@ -399,6 +399,29 @@ fn placement_guard_errors_refuse() {
     assert!(codes("View v { Button b halign=center, size_flags_horizontal=3 }").contains(&"G0041".to_string()));
 }
 
+/// Enum words fold ASCII case (the addon's `_enum_fold`): `halign=Center`,
+/// `width=FILL`, `visibility=SPACE_ONLY` mean their lowercase words, and
+/// the page stores the CANONICAL spelling so every later reader stays an
+/// exact compare. A wrong word stays wrong in any case. DEVIATION: the
+/// addon also stripped punctuation (`spaceonly` matched) — that matched
+/// Godot editor labels ("Word (Smart)"), a surface Rust doesn't have;
+/// underscores are part of the word here.
+#[test]
+fn enum_words_fold_ascii_case() {
+    let b = build("View v { Panel p width=FILL, height=40, valign=Top
+ Button ok text=\"OK\", halign=Center, valign=Top, width=80 }", 200.0, 400.0);
+    assert!(close(b.rect("p").w, 200.0), "{:?}", b.rect("p"));
+    assert!(close(b.rect("ok").x, 60.0), "{:?}", b.rect("ok"));
+    let g = build("View v { Column c spacing=0 { Rectangle a 40x10, color=red
+ Rectangle spacer 40x10, color=red, visibility=SPACE_ONLY
+ Rectangle b2 40x10, color=red } }", 200.0, 400.0);
+    assert!(close(g.rect("b2").y, g.rect("a").y + 20.0), "space held: {:?}", g.rect("b2"));
+    let hidden = g.rect("spacer");
+    assert!(!g.draws().iter().any(|d| matches!(d, Draw::Quad { rect, .. } if *rect == hidden)), "the seat-holder doesn't paint");
+    assert!(codes("View v { Button b halign=Stretch }").contains(&"G0057".to_string()));
+    assert!(refused("View v { Button b visibility=SPACEONLY }"), "punctuation stripping is NOT ported");
+}
+
 /// `_placement_tests` 1719-1720 (`place.err-cross-axis`): `halign=top` is
 /// a cross-axis word and a build error pointing at `valign`.
 #[test]

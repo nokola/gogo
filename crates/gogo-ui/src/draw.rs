@@ -342,7 +342,14 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
         }
         Kind::Circle => {
             let c = color(PropKey::Color).unwrap_or(Rgba::TRANSPARENT);
-            out.push(Draw::Circle { rect, color: c, border, border_color });
+            // A Circle in a non-square box is a CENTERED DISC — bounding
+            // square min(width, height), centered both axes (shipped
+            // semantics, gogo_circle.gd `_draw`). Needed because the
+            // renderer paints a Circle as a max-rounded rect over its
+            // whole quad — handed the full rect it would paint a pill.
+            let d = rect.w.min(rect.h);
+            let disc = Rect::new(rect.x + (rect.w - d) / 2.0, rect.y + (rect.h - d) / 2.0, d, d);
+            out.push(Draw::Circle { rect: disc, color: c, border, border_color });
         }
         Kind::Arc => {
             let c = color(PropKey::Color).unwrap_or(Rgba::TRANSPARENT);
@@ -818,6 +825,27 @@ mod tests {
         assert!(list.iter().any(|d| matches!(d, Draw::Quad { color, corner, .. } if *color == accent && *corner == TOGGLE_PILL.1 / 2.0)), "the on pill");
         assert!(!list.iter().any(|d| matches!(d, Draw::Quad { color, .. } if *color == DEFAULT_BUTTON_BACKGROUND)), "no plate under a mark; the undo plate is dimmed");
         assert!(list.iter().any(|d| matches!(d, Draw::Text { color, .. } if color.0[3] == (255.0 * DISABLED_OPACITY) as u8 + 1 || color.0[3] == (255.0 * DISABLED_OPACITY).round() as u8)), "undo text dimmed: {list:#?}");
+    }
+
+    /// A Circle in a non-square box draws a CENTERED DISC — the bounding
+    /// square is min(width, height), centered both axes (shipped
+    /// semantics, gogo_circle.gd `_draw`: radius = min(size)/2 around
+    /// size/2) — never a pill stretched to the box.
+    #[test]
+    fn circle_in_a_non_square_box_is_a_centered_disc() {
+        let src = "View v { Circle c width=100, height=40, color=#FF0000FF, halign=left, valign=top }";
+        let c = compile(src, &|_| None);
+        assert!(!crate::diag::has_errors(&c.diags), "{:#?}", c.diags);
+        let rt = Runtime::new(&c.page);
+        let res = resolve(&c.page, &rt);
+        let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+        let own = rects[c.page.find("c").unwrap() as usize];
+        assert_eq!((own.w, own.h), (100.0, 40.0), "{own:?}");
+        let list = draw(&c.page, &res, &rects);
+        let disc = list.iter().find_map(|d| if let Draw::Circle { rect, .. } = d { Some(*rect) } else { None }).unwrap();
+        assert_eq!((disc.w, disc.h), (own.h, own.h), "{list:#?}");
+        assert_eq!(disc.x, own.x + (own.w - own.h) / 2.0);
+        assert_eq!(disc.y, own.y);
     }
 }
 

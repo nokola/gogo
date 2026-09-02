@@ -12,7 +12,9 @@
 //! inside a Scroll cancels the child's press and pans, pulling past the
 //! edges with a diminishing give, releasing into a fling that `tick`
 //! decays and springs back. `disabled` cascades: nothing under a disabled
-//! ancestor takes input. Coordinates are epx.
+//! ancestor takes input. Tab and the arrows move keyboard focus between
+//! reachable boxes (GP26): file order for Tab, nearest-in-direction for
+//! arrows, unless the focused control claims the key. Coordinates are epx.
 
 use crate::draw::hit;
 use crate::layout::{Rect, SLIDER_KNOB_EPX, TOGGLE_PILL};
@@ -185,6 +187,14 @@ pub enum Key {
     Home,
     End,
     Enter,
+    /// Focus traversal (GP26): file order, wrapping; `TabBack` is
+    /// Shift-Tab.
+    Tab,
+    TabBack,
+    /// Up/Down traverse by direction (Left/Right too, off a text
+    /// field — an Input's caret claims those).
+    Up,
+    Down,
 }
 
 /// The field's text as shown: the last code write, else the file's word.
@@ -207,9 +217,14 @@ pub struct Input {
     /// The offset this machine last wrote for `fling.scroll`: a different
     /// value means code moved the scroll — adopt it and stand down.
     expected: Option<(NodeId, [f32; 2])>,
-    /// The focused `Input` control — keystrokes go to it; a tap anywhere
-    /// else is the focus-loss commit door (GPAR112).
+    /// The keyboard focus owner — any reachable box (GP26); keystrokes
+    /// edit it when it's an Input, and a tap off every reachable box is
+    /// the focus-loss commit door (GPAR112).
     focus: Option<NodeId>,
+    /// D129 visible focus: the ring (the FOCUSED bit) shows when focus
+    /// arrived BY KEY — a tap parks focus without ring residue; caret
+    /// controls (Input) always warrant one.
+    focus_visible: bool,
     /// The caret, in CHARS into the field's text.
     caret: usize,
     /// The text at focus (or the last commit): `change` fires once per
@@ -221,6 +236,26 @@ fn event_action(page: &Page, node: NodeId, event: &str) -> Option<Action> {
     let n = &page.nodes[node as usize];
     let id = page.intern_lookup(event);
     page.handlers[n.handlers.0 as usize..(n.handlers.0 + n.handlers.1) as usize].iter().find(|h| h.event == id).map(|h| h.action)
+}
+
+/// Keyboard-reachable RIGHT NOW: the compile-baked `focusable` flag
+/// minus the runtime facts — disabled (an ancestor's counts) and hidden
+/// (own or an ancestor's `gone`/`space_only`).
+fn reachable(page: &Page, rt: &Runtime, res: &Resolved, node: NodeId) -> bool {
+    if !page.nodes[node as usize].focusable || rt.disabled(page, node) {
+        return false;
+    }
+    let mut n = node;
+    loop {
+        if matches!(res.ident(page, n, PropKey::Visibility), Some("gone") | Some("space_only")) {
+            return false;
+        }
+        let p = page.nodes[n as usize].parent;
+        if p == NO_NODE {
+            return true;
+        }
+        n = p;
+    }
 }
 
 fn scroll_ancestor(page: &Page, node: NodeId) -> Option<NodeId> {
@@ -454,18 +489,48 @@ impl Input {
         if let Some(f) = self.focus.take() {
             rt.set_state(f, FOCUSED, false);
         }
+        self.focus_visible = false;
         rt.caret = None;
         self.caret = 0;
         self.committed.clear();
     }
 
-    /// One keyboard event to the focused Input (GPAR112): characters
-    /// edit at the caret and stream `edit`, Enter commits `change` once
-    /// per genuine change (the shipped changed-means-CHANGED law),
-    /// arrows/Home/End move the caret. Nothing focused = nothing happens.
-    pub fn key(&mut self, page: &mut Page, rt: &mut Runtime, k: Key) -> Vec<Event> {
+    /// One keyboard event (GPAR112 + GP26). Tab/Shift-Tab walk the
+    /// reachable boxes in FILE order, wrapping; an arrow moves to the
+    /// nearest reachable box in its direction — unless the focused
+    /// control claims the key (an Input's caret claims Left/Right;
+    /// control value steps come with the §5.5 round). To a focused
+    /// Input, characters edit at the caret and stream `edit`, Enter
+    /// commits `change` once per genuine change (the shipped
+    /// changed-means-CHANGED law), Home/End move the caret.
+    pub fn key(&mut self, page: &mut Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], k: Key) -> Vec<Event> {
         let mut events = Vec::new();
-        let Some(f) = self.focus else { return events };
+        let in_field = self.focus.is_some_and(|f| page.nodes[f as usize].kind == Kind::Input);
+        match k {
+            Key::Tab | Key::TabBack => {
+                let target = self.tab_target(page, rt, res, k == Key::TabBack);
+                self.grant(page, rt, target.or(self.focus), true, &mut events);
+                return events;
+            }
+            Key::Up | Key::Down | Key::Left | Key::Right if !(in_field && matches!(k, Key::Left | Key::Right)) => {
+                if self.focus.is_none() {
+                    return events;
+                }
+                let (dx, dy) = match k {
+                    Key::Left => (-1.0, 0.0),
+                    Key::Right => (1.0, 0.0),
+                    Key::Up => (0.0, -1.0),
+                    _ => (0.0, 1.0),
+                };
+                // No box that way keeps focus put — the ring still
+                // upgrades in place (D129: a key press shows focus).
+                let target = self.arrow_target(page, rt, res, rects, dx, dy).or(self.focus);
+                self.grant(page, rt, target, true, &mut events);
+                return events;
+            }
+            _ => {}
+        }
+        let Some(f) = self.focus.filter(|_| in_field) else { return events };
         let mut text: Vec<char> = input_text(page, rt, f).chars().collect();
         self.caret = self.caret.min(text.len());
         match k {
@@ -513,17 +578,95 @@ impl Input {
         events
     }
 
-    /// Focus leaves the field: commit once when the text CHANGED since
-    /// focus, and the caret goes away.
+    /// Focus leaves: the ring and caret go away; an Input commits once
+    /// when its text CHANGED since focus (the focus-loss commit door).
     fn blur(&mut self, page: &Page, rt: &mut Runtime, events: &mut Vec<Event>) {
         let Some(f) = self.focus.take() else { return };
+        self.focus_visible = false;
         rt.set_state(f, FOCUSED, false);
         rt.caret = None;
-        let now = input_text(page, rt, f);
-        if now != self.committed {
-            self.push_event(rt, events, f, EventKind::Change(text_value(page, rt, f)), event_action(page, f, "change"));
+        if page.nodes[f as usize].kind == Kind::Input {
+            let now = input_text(page, rt, f);
+            if now != self.committed {
+                self.push_event(rt, events, f, EventKind::Change(text_value(page, rt, f)), event_action(page, f, "change"));
+            }
         }
         self.committed.clear();
+    }
+
+    /// The keyboard focus owner, if any.
+    pub fn focused(&self) -> Option<NodeId> {
+        self.focus
+    }
+
+    /// Hands focus over (None = just blur). The old owner blurs (an
+    /// Input's pending text commits), the new one takes the FOCUSED bit
+    /// by the D129 visible-focus rule: a key grant always shows the
+    /// ring, a tap shows it only on caret controls — a tapped Button
+    /// parks focus with no ring residue.
+    fn grant(&mut self, page: &Page, rt: &mut Runtime, node: Option<NodeId>, by_key: bool, events: &mut Vec<Event>) {
+        let moved = self.focus != node;
+        if moved {
+            self.blur(page, rt, events);
+        }
+        let Some(n) = node else { return };
+        self.focus = Some(n);
+        if by_key {
+            self.focus_visible = true;
+        }
+        let in_field = page.nodes[n as usize].kind == Kind::Input;
+        if in_field {
+            if moved {
+                self.committed = input_text(page, rt, n);
+            }
+            self.caret = input_text(page, rt, n).chars().count();
+            rt.caret = Some((n, self.caret as u32));
+        }
+        if self.focus_visible || in_field {
+            rt.set_state(n, FOCUSED, true);
+        }
+        rt.dirty = true;
+    }
+
+    /// Tab's next stop: the reachable boxes in FILE order, wrapping;
+    /// nothing focused enters at the first (Shift-Tab at the last).
+    fn tab_target(&self, page: &Page, rt: &Runtime, res: &Resolved, back: bool) -> Option<NodeId> {
+        let list: Vec<NodeId> = (0..page.nodes.len() as NodeId).filter(|n| reachable(page, rt, res, *n)).collect();
+        let pos = self.focus.and_then(|f| list.iter().position(|n| *n == f));
+        match (pos, back) {
+            (Some(i), false) => Some(list[(i + 1) % list.len()]),
+            (Some(i), true) => Some(list[(i + list.len() - 1) % list.len()]),
+            (None, false) => list.first().copied(),
+            (None, true) => list.last().copied(),
+        }
+    }
+
+    /// An arrow's next stop: the nearest reachable box whose center lies
+    /// past the focused box's center in the arrow's direction, scored by
+    /// the distance along the arrow plus DOUBLE the sideways offset — an
+    /// aligned neighbor beats a nearer diagonal one, so columns stay
+    /// columns.
+    fn arrow_target(&self, page: &Page, rt: &Runtime, res: &Resolved, rects: &[Rect], dx: f32, dy: f32) -> Option<NodeId> {
+        let f = self.focus?;
+        let fr = rects[f as usize];
+        let (cx, cy) = (fr.x + fr.w / 2.0, fr.y + fr.h / 2.0);
+        let mut best: Option<(f32, NodeId)> = None;
+        for n in 0..page.nodes.len() as NodeId {
+            if n == f || !reachable(page, rt, res, n) {
+                continue;
+            }
+            let r = rects[n as usize];
+            let (ex, ey) = (r.x + r.w / 2.0 - cx, r.y + r.h / 2.0 - cy);
+            let ahead = ex * dx + ey * dy;
+            if ahead <= 0.5 {
+                continue;
+            }
+            let score = ahead + 2.0 * ((ex * dy).abs() + (ey * dx).abs());
+            if best.map_or(true, |(b, _)| score < b) {
+                best = Some((score, n));
+            }
+        }
+        best.map(|(_, n)| n)
     }
 
     /// Feeds one touch sample; returns the events it completed.
@@ -572,22 +715,12 @@ impl Input {
                 if rt.disabled(page, node) {
                     return events;
                 }
-                // A tap on an Input takes the caret; a tap on anything
-                // else commits-and-blurs (GPAR112 — the shipped doors:
-                // Enter, blur; once per genuine change).
-                if kind == Kind::Input {
-                    if self.focus != Some(node) {
-                        self.blur(page, rt, &mut events);
-                        self.focus = Some(node);
-                        self.committed = input_text(page, rt, node);
-                        rt.set_state(node, FOCUSED, true);
-                    }
-                    self.caret = input_text(page, rt, node).chars().count();
-                    rt.caret = Some((node, self.caret as u32));
-                    rt.dirty = true;
-                } else {
-                    self.blur(page, rt, &mut events);
-                }
+                // A tap moves focus: onto the tapped box when it's
+                // keyboard-reachable (an Input also takes the caret;
+                // D129 — only caret controls warrant a tap ring), off
+                // to nothing otherwise (GPAR112 — the focus-loss commit
+                // door: Enter, blur; once per genuine change).
+                self.grant(page, rt, Some(node).filter(|n| page.nodes[*n as usize].focusable), false, &mut events);
                 let raw = event_action(page, node, "pointer");
                 if let Some(action) = raw {
                     let r = rects[node as usize];

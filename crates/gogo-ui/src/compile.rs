@@ -1429,9 +1429,9 @@ impl<'a> Compiler<'a> {
     fn track_spec(&mut self, v: &AstValue, line: u32, key: &str) -> Option<Len> {
         match v {
             AstValue::Num { value, .. } => Some(Len::Exact(*value)),
-            AstValue::Ident { word, .. } if word == "hug" => Some(Len::Hug(1.0)),
-            AstValue::Ident { word, .. } if word == "fill" => Some(Len::Fill(1.0)),
-            AstValue::Ident { word, .. } if word == "auto" => {
+            AstValue::Ident { word, .. } if word.eq_ignore_ascii_case("hug") => Some(Len::Hug(1.0)),
+            AstValue::Ident { word, .. } if word.eq_ignore_ascii_case("fill") => Some(Len::Fill(1.0)),
+            AstValue::Ident { word, .. } if word.eq_ignore_ascii_case("auto") => {
                 self.error("G1002", line, format!("`auto` is WPF's word — gogo tracks say `hug` (content-sized); {key} takes epx numbers, `hug`, or `fill(n)`"));
                 None
             }
@@ -1506,7 +1506,7 @@ impl<'a> Compiler<'a> {
         // track takes the leftover parks dead space after the last
         // row/column.
         let clean = !crate::diag::has_errors(&self.diags);
-        let says_fill = |key: &str| n.props.iter().any(|p| p.key == key && matches!(&p.value, AstValue::Ident { word, .. } if word == "fill"));
+        let says_fill = |key: &str| n.props.iter().any(|p| p.key == key && matches!(&p.value, AstValue::Ident { word, .. } if word.eq_ignore_ascii_case("fill")));
         if clean && says_fill("height") && !row_specs.iter().any(|l| matches!(l, Len::Fill(_))) {
             self.warning("G1010", n.line, "`height=fill` but no row takes the leftover — the space under the last row is dead; give one row `: fill` / `row height=fill { }`, or size the grid `height=hug`");
         }
@@ -1842,7 +1842,7 @@ impl<'a> Compiler<'a> {
             };
             return self.track_spec(&AstValue::Call { name: "fill".to_string(), args: vec![AstValue::Num { value: w, unit: String::new() }] }, line, "areas");
         }
-        match tok {
+        match tok.to_ascii_lowercase().as_str() {
             "hug" => Some(Len::Hug(1.0)),
             "fill" => Some(Len::Fill(1.0)),
             "auto" => {
@@ -3168,7 +3168,22 @@ impl<'a> Compiler<'a> {
         };
         if let Some(words) = closed_words {
             let ok = match value {
-                Value::VIdent(id) => words.contains(&self.page.str(id)),
+                Value::VIdent(id) => {
+                    // Words compare case-folded (the addon's `_enum_fold`:
+                    // `halign=Center` means center) and the CANONICAL
+                    // spelling is what gets stored, so every later reader
+                    // stays an exact compare. The addon's punctuation
+                    // stripping is not ported — it matched Godot editor
+                    // labels ("Word (Smart)"), a surface Rust doesn't
+                    // have; underscores are part of the word.
+                    let canon = words.iter().copied().find(|w| w.eq_ignore_ascii_case(self.page.str(id)));
+                    if let Some(w) = canon {
+                        if w != self.page.str(id) {
+                            value = Value::VIdent(self.intern(w));
+                        }
+                    }
+                    canon.is_some()
+                }
                 Value::VRef { .. } => true,
                 _ => false,
             };
@@ -3268,7 +3283,7 @@ impl<'a> Compiler<'a> {
         if find("stops").is_none() {
             self.error("G2005", n.line, "Gradient needs `stops=` — the colors it paints; `stops=[white, black]` fades white to black; one color is a `Rectangle`");
         }
-        let fill = find("fill").and_then(|p| p.value.as_ident()).unwrap_or("linear").to_string();
+        let fill = find("fill").and_then(|p| p.value.as_ident()).unwrap_or("linear").to_ascii_lowercase();
         if !matches!(fill.as_str(), "linear" | "radial" | "conic") {
             self.error("G2005", n.line, format!("`fill={fill}`: want linear, radial or conic"));
         }
@@ -3525,6 +3540,12 @@ impl<'a> Compiler<'a> {
             if def.control && !def.states.is_empty() {
                 t.custom_states = def.states.iter().map(|w| self.intern(w)).collect();
             }
+            // The contract's `state_builtin focused` line is the opt-in
+            // that makes the instance root keyboard-reachable (GP26);
+            // push_slot folds in the `keyboard_target=off` opt-out.
+            if def.control && def.state_builtins.iter().any(|w| w == "focused") {
+                t.node.focusable = true;
+            }
             self.prefix.pop();
             self.fills.pop();
             self.scopes.pop();
@@ -3632,7 +3653,7 @@ impl<'a> Compiler<'a> {
         }
         // `overlay=true` cuts the box's upward size contribution;
         // `space_only` exists to HOLD a slot — the two contradict.
-        if n.props.iter().any(|p| p.key == "overlay" && matches!(p.value, AstValue::Bool(true))) && n.props.iter().any(|p| p.key == "visibility" && p.value.as_ident() == Some("space_only")) {
+        if n.props.iter().any(|p| p.key == "overlay" && matches!(p.value, AstValue::Bool(true))) && n.props.iter().any(|p| p.key == "visibility" && p.value.as_ident().is_some_and(|w| w.eq_ignore_ascii_case("space_only"))) {
             self.error("G0078", n.line, "`overlay=true` with `visibility=space_only` — a seat-holder is not an overlay; a hidden overlay is `gone`");
         }
         // A bodied Radio/Check IS its body — the body replaces every
@@ -3901,7 +3922,7 @@ impl<'a> Compiler<'a> {
             // vanish silently (the addon's user-caught thumb). The slot
             // line sizing itself keeps the form legal.
             if matches!(tmp.node.auto, Auto::Position(_)) && !all_props.iter().any(|p| p.key == "width") {
-                let fill_child = n.children.iter().any(|c| matches!(c, AstItem::Node(k) if k.props.iter().any(|p| p.key == "width" && matches!(&p.value, AstValue::Ident { word, .. } if word == "fill"))));
+                let fill_child = n.children.iter().any(|c| matches!(c, AstItem::Node(k) if k.props.iter().any(|p| p.key == "width" && matches!(&p.value, AstValue::Ident { word, .. } if word.eq_ignore_ascii_case("fill")))));
                 if fill_child {
                     self.error("G5106", n.line, "an `automatic=position` slot takes its width from its content — `width=fill` there has nothing to fill; size the slot line (`slot thumb width=20`) or the content");
                 }
@@ -4571,6 +4592,12 @@ impl<'a> Compiler<'a> {
     }
 
     fn push_slot(&mut self, mut node: Node, props: Vec<Prop>, handlers: Vec<OnHandler>, whens: Vec<WhenTmp>, transitions: Vec<Transition>, custom_states: Vec<StrId>, wearing: Vec<String>, driver: Option<(String, f32, f32, String)>, live: Option<(String, f32)>, parent: NodeId) -> NodeId {
+        // Keyboard reach bakes here (GP26): the kinds that answer a tap
+        // answer the keyboard — plus a control root whose contract said
+        // so (above); `keyboard_target=off` is the deliberate opt-out
+        // (the addon's focus_mode=none + lint pair).
+        node.focusable = (node.focusable || matches!(node.kind, Kind::Button | Kind::Check | Kind::Toggle | Kind::Radio | Kind::ListItem | Kind::Slider | Kind::Input))
+            && !props.iter().any(|p| p.key == PropKey::KeyboardTarget && matches!(p.value, Value::VIdent(w) if self.page.str(w) == "off"));
         let id = self.page.nodes.len() as NodeId;
         if let Some((root, min, max, state)) = driver {
             self.pending_drivers.push((id, root, min, max, state));
@@ -4631,7 +4658,7 @@ impl<'a> Compiler<'a> {
         }
         match n.args.first() {
             Some(AstValue::Num { value, .. }) => node.gap = *value,
-            Some(AstValue::Ident { word, .. }) if word == "fill" => {
+            Some(AstValue::Ident { word, .. }) if word.eq_ignore_ascii_case("fill") => {
                 node.gap_fill = true;
                 node.gap = 1.0;
             }
@@ -4878,7 +4905,10 @@ impl<'a> Compiler<'a> {
     fn len(&mut self, v: Value, line: u32, key: &str) -> Len {
         match v {
             Value::VNum(n) => Len::Exact(n),
-            Value::VIdent(id) => match self.page.str(id) {
+            Value::VIdent(id) => match self.page.str(id).to_ascii_lowercase().as_str() {
+                // Size words fold case like every enum word (`width=FILL`);
+                // width/height skip the closed-words fence, so the fold
+                // lives here.
                 "fill" => Len::Fill(1.0),
                 // Weight 0 = plain hug (content-sized, no slot share);
                 // `hug(n)` is the weighted SLOT around a hugged box (GP34).
@@ -4956,7 +4986,7 @@ impl<'a> Compiler<'a> {
     /// that edge, read at layout time).
     fn edge(&mut self, v: Value, line: u32, key: &str, p: &mut Placement, i: usize, margin: bool) {
         if let Value::VIdent(id) = v {
-            if self.page.str(id) == "safe" {
+            if self.page.str(id).eq_ignore_ascii_case("safe") {
                 if margin {
                     p.margin[i] = Some(0.0);
                     p.margin_safe[i] = true;
@@ -4984,11 +5014,11 @@ impl<'a> Compiler<'a> {
                 PropKey::MinWidth => p.min_width = self.num(v, line, "min_width"),
                 PropKey::MinHeight => p.min_height = self.num(v, line, "min_height"),
                 PropKey::MaxWidth => match v {
-                    Value::VIdent(id) if self.page.str(id) == "fill" => p.max_width_fill = true,
+                    Value::VIdent(id) if self.page.str(id).eq_ignore_ascii_case("fill") => p.max_width_fill = true,
                     _ => p.max_width = Some(self.num(v, line, "max_width")),
                 },
                 PropKey::MaxHeight => match v {
-                    Value::VIdent(id) if self.page.str(id) == "fill" => p.max_height_fill = true,
+                    Value::VIdent(id) if self.page.str(id).eq_ignore_ascii_case("fill") => p.max_height_fill = true,
                     _ => p.max_height = Some(self.num(v, line, "max_height")),
                 },
                 PropKey::Halign => p.halign = self.align(v, line, "halign"),
@@ -4998,7 +5028,7 @@ impl<'a> Compiler<'a> {
                 PropKey::MarginRight => self.edge(v, line, "margin_right", &mut p, 2, true),
                 PropKey::MarginBottom => self.edge(v, line, "margin_bottom", &mut p, 3, true),
                 PropKey::Margin => match v {
-                    Value::VIdent(id) if self.page.str(id) == "safe" => {
+                    Value::VIdent(id) if self.page.str(id).eq_ignore_ascii_case("safe") => {
                         p.margin = [Some(0.0); 4];
                         p.margin_safe = [true; 4];
                     }
@@ -5012,7 +5042,7 @@ impl<'a> Compiler<'a> {
                 PropKey::PaddingRight => self.edge(v, line, "padding_right", &mut p, 2, false),
                 PropKey::PaddingBottom => self.edge(v, line, "padding_bottom", &mut p, 3, false),
                 PropKey::Padding => match v {
-                    Value::VIdent(id) if self.page.str(id) == "safe" => p.padding_safe = [true; 4],
+                    Value::VIdent(id) if self.page.str(id).eq_ignore_ascii_case("safe") => p.padding_safe = [true; 4],
                     _ => p.padding = [self.num(v, line, "padding"); 4],
                 },
                 PropKey::Size => {

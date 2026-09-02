@@ -37,7 +37,9 @@ impl Fx {
         ev
     }
     fn key(&mut self, k: Key) -> Vec<Event> {
-        self.input.key(&mut self.page, &mut self.rt, k)
+        let res = resolve(&self.page, &self.rt);
+        let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        self.input.key(&mut self.page, &mut self.rt, &res, &rects, k)
     }
     fn text(&self, node: NodeId) -> String {
         let res = resolve(&self.page, &self.rt);
@@ -119,7 +121,9 @@ fn placeholder_shows_while_empty_and_max_length_caps_typing() {
         input.touch(&page, &mut rt, &res, &rects, Touch { phase: Phase::Up, x, y, t: 0.1, id: 1 });
     }
     for ch in ['a', 'b', 'c', 'd'] {
-        input.key(&mut page, &mut rt, Key::Char(ch));
+        let res = resolve(&page, &rt);
+        let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        input.key(&mut page, &mut rt, &res, &rects, Key::Char(ch));
     }
     let res = resolve(&page, &rt);
     let text = match res.prop(&page, field, PropKey::Text) {
