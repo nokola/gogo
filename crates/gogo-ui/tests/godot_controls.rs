@@ -138,6 +138,7 @@ fn trace(events: &[Event]) -> Vec<String> {
             EventKind::Edit(Value::VNum(v)) => format!("edit:{v}"),
             EventKind::Edit(_) => "edit".to_string(),
             EventKind::Pointer { phase, .. } => format!("pointer:{phase:?}"),
+            EventKind::Key { key, .. } => format!("key:{key:?}"),
         })
         .collect()
 }

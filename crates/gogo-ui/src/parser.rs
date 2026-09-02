@@ -9,7 +9,7 @@ use crate::lexer::{Tok, Token, lex};
 const FLAGS: &[&str] = &["signals"];
 /// Line heads that carry a NAME LIST, never a single node name
 /// (`state_builtin hovered, focused`): every bare word is an entry.
-const LIST_HEADS: &[&str] = &["state", "state_builtin", "signal"];
+const LIST_HEADS: &[&str] = &["state", "state_builtin", "signal", "keys"];
 
 pub fn parse(source: &str, diags: &mut Vec<Diagnostic>) -> Document {
     let tokens = lex(source, diags);

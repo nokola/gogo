@@ -153,6 +153,9 @@ pub enum EventKind {
     /// in the node's own epx space (0,0 = its top-left), captured until up.
     /// A mouse is one pointer — the shell feeds it as one fixed finger.
     Pointer { phase: Phase, x: f32, y: f32 },
+    /// A key a focused `control` instance claimed (GP26 `keys` line):
+    /// the code-behind steps its model — traversal never saw the key.
+    Key { key: Key, mods: Mods },
 }
 
 /// What happened, on which node, and the `on:` action the file names for
@@ -700,6 +703,29 @@ impl Input {
         }
         let focus_kind = self.focus.map(|f| page.nodes[f as usize].kind);
         let in_field = focus_kind == Some(Kind::Input);
+        // GP26: a `control` claims key GROUPS by contract (`keys arrows,
+        // home_end` — the built-ins' static-claim law, §5.5, extended to
+        // user controls): a claimed key reaches the code-behind as a
+        // `Key` event on the instance root and never traverses. Tab has
+        // no claim bit — always the way off. The claim rides the
+        // INSTANCE ROOT id (an instance wears its body root's kind, so
+        // there is no kind to test).
+        if let Some(f) = self.focus {
+            if !rt.disabled(page, f) {
+                let mask = page.key_claim(f);
+                let claimed = match k {
+                    Key::Left | Key::Right | Key::Up | Key::Down => mask & crate::page::KEYS_ARROWS != 0,
+                    Key::Home | Key::End => mask & crate::page::KEYS_HOME_END != 0,
+                    Key::Enter => mask & crate::page::KEYS_ENTER != 0,
+                    Key::Char(' ') => mask & crate::page::KEYS_SPACE != 0,
+                    _ => false,
+                };
+                if claimed {
+                    self.push_event(rt, &mut events, f, EventKind::Key { key: k, mods }, event_action(page, f, "key"));
+                    return events;
+                }
+            }
+        }
         match k {
             Key::Tab | Key::TabBack => {
                 let target = self.tab_target(page, rt, res, k == Key::TabBack);

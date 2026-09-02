@@ -1275,6 +1275,11 @@ pub struct StaticPage {
     /// Control instance roots and the states their `state` lines declare
     /// — the `Runtime::set_custom` gate (GPAR116).
     pub custom_states: &'static [(NodeId, StrId)],
+    /// Control instance roots and the key groups their contract's
+    /// `keys` line claims (GP26) — `KEYS_*` bits. A focused instance
+    /// takes a claimed key as a `Key` event for its code-behind;
+    /// traversal never sees it.
+    pub key_claims: &'static [(NodeId, u8)],
     pub drivers: &'static [AutoDriver],
     pub live_texts: &'static [LiveText],
 }
@@ -1298,11 +1303,27 @@ pub struct Page {
     pub bind_sites: Vec<BindSite>,
     /// See `StaticPage::custom_states`.
     pub custom_states: Vec<(NodeId, StrId)>,
+    /// See `StaticPage::key_claims`.
+    pub key_claims: Vec<(NodeId, u8)>,
     pub drivers: Vec<AutoDriver>,
     pub live_texts: Vec<LiveText>,
 }
 
+/// The claimable key GROUPS of a `control`'s `keys` line (GP26) —
+/// semantic groups, never raw key names, so a future remap or gamepad
+/// layer leaves the claims standing. Tab has no bit: it is the way OFF
+/// a control (the shipped router's law), never claimable.
+pub const KEYS_ARROWS: u8 = 1;
+pub const KEYS_HOME_END: u8 = 2;
+pub const KEYS_ENTER: u8 = 4;
+pub const KEYS_SPACE: u8 = 8;
+
 impl Page {
+    /// The `keys` claim on an instance root — 0 when nothing claims.
+    pub fn key_claim(&self, node: NodeId) -> u8 {
+        self.key_claims.iter().find(|(n, _)| *n == node).map(|(_, m)| *m).unwrap_or(0)
+    }
+
     pub fn from_static(s: &StaticPage) -> Page {
         Page {
             nodes: s.nodes.to_vec(),
@@ -1321,6 +1342,7 @@ impl Page {
             repeats: s.repeats.to_vec(),
             bind_sites: s.bind_sites.to_vec(),
             custom_states: s.custom_states.to_vec(),
+            key_claims: s.key_claims.to_vec(),
             drivers: s.drivers.to_vec(),
             live_texts: s.live_texts.to_vec(),
         }
@@ -1360,6 +1382,8 @@ impl Page {
         // (a control inside a repeat row keeps its `set_custom` gate).
         let declared: Vec<(NodeId, StrId)> = self.custom_states.iter().filter(|(n, _)| *n >= src && *n < end).map(|(n, s)| (*n + delta, *s)).collect();
         self.custom_states.extend(declared);
+        let claims: Vec<(NodeId, u8)> = self.key_claims.iter().filter(|(n, _)| *n >= src && *n < end).map(|(n, m)| (*n + delta, *m)).collect();
+        self.key_claims.extend(claims);
         base
     }
 

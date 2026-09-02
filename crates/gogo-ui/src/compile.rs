@@ -98,6 +98,9 @@ struct WidgetDef {
     /// script raises; an instance `when` may name only these and
     /// `states` (GP37, the shipped contract-state fence).
     state_builtins: Vec<String>,
+    /// The `keys` line's claim (GP26, `KEYS_*` bits) — stamped onto
+    /// every instance root at build.
+    keys: u8,
     /// A `control` declaration (vs a `widget`): its own scoped anims may
     /// drive `slot.<name>.<motion word>` lanes.
     control: bool,
@@ -140,6 +143,9 @@ struct TmpNode {
     /// A control instance root's declared states (GPAR116) — recorded
     /// into `Page::custom_states` once the arena id exists.
     custom_states: Vec<StrId>,
+    /// The contract's `keys` claim (GP26) — recorded into
+    /// `Page::key_claims` once the arena id exists.
+    key_claim: u8,
     /// The styles this node wears — recorded into `style_wearers` once
     /// the arena id exists (`each .Style` fan-outs and self-anim binding
     /// need the wearer list, GP40).
@@ -1928,10 +1934,38 @@ impl<'a> Compiler<'a> {
         // with no code-behind here they carry nothing for the picture. A
         // `widget` has no script to raise or read them, so there they are
         // refused, not skipped; `state_builtin` names must be built-ins.
+        let mut keys_mask = 0u8;
         for b in n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }) {
             match b.type_word.as_str() {
-                "script" | "state" | "state_builtin" | "signal" if n.type_word == "widget" => {
+                "script" | "state" | "state_builtin" | "signal" | "keys" if n.type_word == "widget" => {
                     self.error("G0077", b.line, format!("`{}` lines belong to a `control` body (they describe its script) — a `widget` has none", b.type_word));
+                }
+                // GP26: `keys arrows, home_end` — the control CLAIMS key
+                // groups for its code-behind, the built-ins' static-claim
+                // law (a Slider owns its arrows) made declarable. A
+                // claimed key reaches the instance root as a `Key` event
+                // and never traverses.
+                "keys" => {
+                    let words: Vec<&str> = b.args.iter().filter_map(|a| a.as_ident()).collect();
+                    if words.is_empty() {
+                        self.error("G0077", b.line, "`keys` names its claim — `keys arrows, home_end, enter, space` (any subset)");
+                    }
+                    for word in words {
+                        keys_mask |= match word {
+                            "arrows" => KEYS_ARROWS,
+                            "home_end" => KEYS_HOME_END,
+                            "enter" => KEYS_ENTER,
+                            "space" => KEYS_SPACE,
+                            "tab" => {
+                                self.error("G0077", b.line, "`keys tab` — Tab is the way OFF a control (the router's law), never claimable");
+                                0
+                            }
+                            _ => {
+                                self.error("G0077", b.line, format!("`keys {word}`: the claimable groups are arrows, home_end, enter, space"));
+                                0
+                            }
+                        };
+                    }
                 }
                 "state_builtin" => {
                     for word in b.args.iter().filter_map(|a| a.as_ident()) {
@@ -1954,7 +1988,7 @@ impl<'a> Compiler<'a> {
                 _ => {}
             }
         }
-        let bodies: Vec<&AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| !matches!(b.type_word.as_str(), "script" | "state" | "state_builtin" | "signal" | "transition" | "when" | "anim" | "style")).collect();
+        let bodies: Vec<&AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| !matches!(b.type_word.as_str(), "script" | "state" | "state_builtin" | "signal" | "keys" | "transition" | "when" | "anim" | "style")).collect();
         if bodies.len() != 1 {
             self.error("G0028", n.line, format!("widget `{name}` needs exactly one root node in its body"));
             return;
@@ -2001,7 +2035,7 @@ impl<'a> Compiler<'a> {
         }
         let states: Vec<String> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "state").flat_map(|b| b.args.iter().filter_map(|a| a.as_ident()).map(str::to_string)).collect();
         let state_builtins: Vec<String> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "state_builtin").flat_map(|b| b.args.iter().filter_map(|a| a.as_ident()).map(str::to_string)).collect();
-        self.widgets.insert(name, WidgetDef { params: n.params.clone(), body: bodies[0].clone(), anims, host, props, whens, transitions, styles, states, state_builtins, control: n.type_word == "control", line: n.line });
+        self.widgets.insert(name, WidgetDef { params: n.params.clone(), body: bodies[0].clone(), anims, host, props, whens, transitions, styles, states, state_builtins, keys: keys_mask, control: n.type_word == "control", line: n.line });
     }
 
     /// `easing=name` plus its parameter words on the same line
@@ -3453,7 +3487,7 @@ impl<'a> Compiler<'a> {
             if self.widget_stack.iter().any(|w| w == &n.type_word) {
                 let path = self.widget_stack.join(" -> ");
                 self.error("G5003", n.line, format!("widget cycle: {path} -> {} — a widget cannot contain itself", n.type_word));
-                return TmpNode { node: Node { kind: Kind::Layers, line: n.line, ..Node::EMPTY }, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new(), wearing: Vec::new(), driver: None, live: None };
+                return TmpNode { node: Node { kind: Kind::Layers, line: n.line, ..Node::EMPTY }, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new(), key_claim: 0, wearing: Vec::new(), driver: None, live: None };
             }
             // A `for=` widget fills its host's body and nothing else —
             // anywhere else its `when` lines would answer the wrong node.
@@ -3626,6 +3660,9 @@ impl<'a> Compiler<'a> {
             if def.control && !def.states.is_empty() {
                 t.custom_states = def.states.iter().map(|w| self.intern(w)).collect();
             }
+            if def.control {
+                t.key_claim = def.keys;
+            }
             // The contract's `state_builtin focused` line is the opt-in
             // that makes the instance root keyboard-reachable (GP26);
             // push_slot folds in the `keyboard_target=off` opt-out.
@@ -3768,7 +3805,7 @@ impl<'a> Compiler<'a> {
             self.names.insert(name.clone());
             node.name = self.intern(name);
         }
-        let mut tmp = TmpNode { node, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new(), wearing: n.styles.iter().cloned().chain(instance.iter().flat_map(|i| i.styles.iter().cloned())).collect(), driver: None, live: None };
+        let mut tmp = TmpNode { node, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new(), key_claim: 0, wearing: n.styles.iter().cloned().chain(instance.iter().flat_map(|i| i.styles.iter().cloned())).collect(), driver: None, live: None };
 
         if kind == Kind::Gap {
             self.gap(&mut tmp.node, n, parent_kind);
@@ -4673,11 +4710,12 @@ impl<'a> Compiler<'a> {
     /// children (contiguous), then each child's own children — so
     /// `children` is a range and `subtree_end` bounds the descendants.
     fn flatten(&mut self, root: TmpNode) {
-        let id = self.push_slot(root.node, root.props, root.handlers, root.whens, root.transitions, root.custom_states, root.wearing, root.driver, root.live, NO_NODE);
+        let id = self.push_slot(root.node, root.props, root.handlers, root.whens, root.transitions, root.custom_states, root.key_claim, root.wearing, root.driver, root.live, NO_NODE);
         self.place_children(id, root.children);
     }
 
-    fn push_slot(&mut self, mut node: Node, props: Vec<Prop>, handlers: Vec<OnHandler>, whens: Vec<WhenTmp>, transitions: Vec<Transition>, custom_states: Vec<StrId>, wearing: Vec<String>, driver: Option<(String, f32, f32, String)>, live: Option<(String, f32)>, parent: NodeId) -> NodeId {
+    #[allow(clippy::too_many_arguments)]
+    fn push_slot(&mut self, mut node: Node, props: Vec<Prop>, handlers: Vec<OnHandler>, whens: Vec<WhenTmp>, transitions: Vec<Transition>, custom_states: Vec<StrId>, key_claim: u8, wearing: Vec<String>, driver: Option<(String, f32, f32, String)>, live: Option<(String, f32)>, parent: NodeId) -> NodeId {
         // Keyboard reach bakes here (GP26): the kinds that answer a tap
         // answer the keyboard — plus a control root whose contract said
         // so (above); `keyboard_target=off` is the deliberate opt-out
@@ -4693,6 +4731,9 @@ impl<'a> Compiler<'a> {
         }
         for cs in custom_states {
             self.page.custom_states.push((id, cs));
+        }
+        if key_claim != 0 {
+            self.page.key_claims.push((id, key_claim));
         }
         for s in wearing {
             self.style_wearers.entry(s).or_default().push(id);
@@ -4728,7 +4769,7 @@ impl<'a> Compiler<'a> {
         let count = children.len() as u32;
         let mut slots: Vec<(NodeId, Vec<TmpNode>)> = Vec::new();
         for child in children {
-            let cid = self.push_slot(child.node, child.props, child.handlers, child.whens, child.transitions, child.custom_states, child.wearing, child.driver, child.live, id);
+            let cid = self.push_slot(child.node, child.props, child.handlers, child.whens, child.transitions, child.custom_states, child.key_claim, child.wearing, child.driver, child.live, id);
             slots.push((cid, child.children));
         }
         self.page.nodes[id as usize].children = (first, count);

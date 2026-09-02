@@ -133,6 +133,7 @@ pub fn emit_rust(page: &Page, module: &str) -> String {
     out.push_str(&format!("        kind_defaults: {},\n", slice(&page.kind_defaults)));
     out.push_str(&format!("        arrangements: {},\n", slice(&page.arrangements)));
     out.push_str(&format!("        custom_states: {},\n", slice(&page.custom_states)));
+    out.push_str(&format!("        key_claims: {},\n", slice(&page.key_claims)));
     out.push_str(&format!("        transitions: {},\n", slice(&page.transitions)));
     out.push_str(&format!("        anims: {},\n", slice(&page.anims)));
     out.push_str(&format!("        anim_heads: {},\n", slice(&page.anim_heads)));
