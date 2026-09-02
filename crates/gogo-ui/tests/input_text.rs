@@ -134,6 +134,25 @@ fn placeholder_shows_while_empty_and_max_length_caps_typing() {
     assert!(!shows_placeholder(&page, &rt), "a filled field hides the placeholder");
 }
 
+/// GPAR112, the GameActivity door: the soft IME hands WHOLE text states
+/// (autocorrect/swipe rewrite spans, not keys). `ime_replace` writes the
+/// state into the focused field — max_length applies like typing, `edit`
+/// streams once per genuine change, and the focus-loss door still
+/// commits once.
+#[test]
+fn ime_updates_write_the_focused_field() {
+    let mut fx = Fx::new();
+    let field = fx.page.find("field").unwrap();
+    fx.tap("field", 0.0);
+    let ev = fx.input.ime_replace(&mut fx.page, &mut fx.rt, "hey", 3);
+    assert!(ev.iter().any(|e| matches!(e.kind, EventKind::Edit(_))), "{ev:?}");
+    assert_eq!(fx.text(field), "hey");
+    assert_eq!(fx.rt.caret, Some((field, 3)));
+    assert!(fx.input.ime_replace(&mut fx.page, &mut fx.rt, "hey", 3).is_empty(), "same state, no event");
+    let ev = fx.tap("b", 1.0);
+    assert!(ev.iter().any(|e| e.node == field && matches!(e.kind, EventKind::Change(_))), "blur commits: {ev:?}");
+}
+
 #[test]
 fn an_unfocused_page_ignores_keys_and_reset_forgets_without_committing() {
     let mut fx = Fx::new();

@@ -872,6 +872,38 @@ impl Input {
         events
     }
 
+    /// The focused Input's text + caret for seeding an IME (GPAR112):
+    /// `None` when no Input holds the caret.
+    pub fn ime_seed(&self, page: &Page, rt: &Runtime) -> Option<(String, usize)> {
+        let f = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input)?;
+        Some((input_text(page, rt, f), self.caret))
+    }
+
+    /// One whole-text update FROM an IME (GPAR112, the GameActivity
+    /// path): an Android soft keyboard owns the text while a field is
+    /// focused — autocorrect and swipe typing rewrite spans, so its
+    /// edits arrive as the full text + cursor, never as keys. Applies
+    /// `max_length` like typing, moves the caret, streams `edit` once
+    /// per genuine change; the commit law is untouched (Enter and the
+    /// focus-loss doors still commit once per genuine change).
+    pub fn ime_replace(&mut self, page: &mut Page, rt: &mut Runtime, text: &str, cursor: usize) -> Vec<Event> {
+        let mut events = Vec::new();
+        let Some(f) = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input) else { return events };
+        let cap = match page.prop(f, PropKey::MaxLength) {
+            Some(Value::VNum(n)) if n > 0.0 => n as usize,
+            _ => usize::MAX,
+        };
+        let new: String = text.chars().take(cap).collect();
+        self.caret = cursor.min(new.chars().count());
+        rt.caret = Some((f, self.caret as u32));
+        rt.dirty = true;
+        if new != input_text(page, rt, f) {
+            rt.set_text(page, f, &new);
+            self.push_event(rt, &mut events, f, EventKind::Edit(text_value(page, rt, f)), event_action(page, f, "edit"));
+        }
+        events
+    }
+
     /// One mouse-motion sample — the shell calls this for a REAL mouse
     /// only (D75: touch never hovers). The topmost input-taking box
     /// under the cursor and EVERY ancestor hold `hovered` (the chain
