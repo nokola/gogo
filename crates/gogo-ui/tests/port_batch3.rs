@@ -50,6 +50,8 @@ fn hug_wrap_label_stays_one_line_until_a_width_binds() {
     let (p, r) = lay(&format!("View v {{\n Column c width=100, halign=left, valign=top {{\n  Label a text=\"{text}\", font_size=10, wrap=true, halign=left\n  Label b text=\"{text}\", font_size=10, wrap=true, halign=left, max_width=fill\n  Label d text=\"{text}\", font_size=10, wrap=true, width=fill\n }}\n}}\n"), 400.0, 400.0);
     let a = rect(&p, &r, "a");
     assert_eq!((a.w, a.h), (text.chars().count() as f32 * 5.5, 12.5), "hug: one line, wider than the column: {a:?}");
+    // The direct form — the cap law (2026-09-01): a capped hug is legal
+    // under any parent; `max_width=fill` binds at the Column's width.
     let b = rect(&p, &r, "b");
     assert!(b.w <= 100.0 && b.h > 12.5, "capped hug wraps in the column: {b:?}");
     let d = rect(&p, &r, "d");

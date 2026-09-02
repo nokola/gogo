@@ -261,13 +261,17 @@ fn within(page: &Page, node: NodeId, root: NodeId) -> bool {
 }
 
 /// The innermost Scroll around `node` (`node` itself counts) that scrolls
-/// the way the finger committed to; `None` = nothing here scrolls that way.
-fn scroll_taker(page: &Page, res: &Resolved, node: NodeId, vertical: bool) -> Option<NodeId> {
+/// the way the finger committed to AND has somewhere to go on that axis
+/// (an enabled axis with nothing overflowing can't take a drag — GP36:
+/// axis inference enables every non-hug axis, so a fitting axis must not
+/// steal the press); `None` = nothing here scrolls that way.
+fn scroll_taker(page: &Page, res: &Resolved, rects: &[Rect], node: NodeId, vertical: bool) -> Option<NodeId> {
     let mut n = node;
     while n != NO_NODE {
         if matches!(page.nodes[n as usize].kind, Kind::Scroll | Kind::List) {
             let axes = scroll_axes(page, res, n);
-            if if vertical { axes.1 } else { axes.0 } {
+            let range = scroll_range(page, res, rects, n);
+            if (if vertical { axes.1 } else { axes.0 }) && (if vertical { range[1] } else { range[0] }) > 0.0 {
                 return Some(n);
             }
         }
@@ -673,7 +677,7 @@ impl Input {
                         // scrolls that way: the child keeps the finger for good.
                         let vertical = dy > dx;
                         let child_keeps = (p.kind == Kind::Slider && !vertical) || (p.kind == Kind::Toggle && p.toggle_moved);
-                        let taker = if child_keeps { None } else { scroll_taker(page, res, p.node, vertical) };
+                        let taker = if child_keeps { None } else { scroll_taker(page, res, rects, p.node, vertical) };
                         match taker {
                             Some(scroll) => {
                                 p.scroll = Some(scroll);
@@ -705,6 +709,10 @@ impl Input {
                     if let Some(scroll) = p.scroll {
                         let axes = scroll_axes(page, res, scroll);
                         let range = scroll_range(page, res, rects, scroll);
+                        // An enabled axis with no travel takes no pan
+                        // (GP36): a diagonal drag on a vertical list must
+                        // not rubber-band sideways.
+                        let axes = (axes.0 && range[0] > 0.0, axes.1 && range[1] > 0.0);
                         if axes.0 {
                             p.accum[0] -= delta.0;
                         }
@@ -743,6 +751,8 @@ impl Input {
                     if let Some(scroll) = p.scroll {
                         let axes = scroll_axes(page, res, scroll);
                         let range = scroll_range(page, res, rects, scroll);
+                        // An enabled axis with no travel glides nothing (GP36).
+                        let axes = (axes.0 && range[0] > 0.0, axes.1 && range[1] > 0.0);
                         // Velocity from the trailing window; a finger that
                         // rested before lifting gives no glide. Masked to
                         // the enabled axes BEFORE anything else, so a

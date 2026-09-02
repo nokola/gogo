@@ -267,6 +267,11 @@ pub enum Channel {
     /// The fill's alpha (`x.color.a`): the color keeps its hue, alpha
     /// alone moves — the node's opacity is untouched.
     ColorA,
+    /// How much of the box shows along an axis (GP40 reveal): layout
+    /// space grows with the fraction, so these compose as overrides the
+    /// layout reads, not as draw transforms.
+    RevealX,
+    RevealY,
 }
 
 impl Channel {
@@ -283,6 +288,8 @@ impl Channel {
             "rotate" => vec![Channel::Rotate],
             "opacity" => vec![Channel::Opacity],
             "color.a" => vec![Channel::ColorA],
+            "reveal_x" => vec![Channel::RevealX],
+            "reveal_y" => vec![Channel::RevealY],
             _ => return None,
         })
     }
@@ -299,13 +306,15 @@ impl Channel {
             PropKey::Rotate => &[Channel::Rotate],
             PropKey::Opacity => &[Channel::Opacity],
             PropKey::ColorA | PropKey::Color => &[Channel::ColorA],
+            PropKey::RevealX => &[Channel::RevealX],
+            PropKey::RevealY => &[Channel::RevealY],
             _ => &[],
         }
     }
 
     /// The channel's bit in `Resolved::anim_owned`.
-    pub fn bit(self) -> u8 {
-        1 << (self as u8)
+    pub fn bit(self) -> u16 {
+        1 << (self as u16)
     }
 }
 
@@ -323,10 +332,12 @@ pub struct Motion {
     pub opacity: f32,
     /// The fill's alpha (0..1).
     pub color_a: f32,
+    /// Shown fraction per axis (GP40 reveal), 1 = whole.
+    pub reveal: [f32; 2],
 }
 
 impl Motion {
-    pub const IDENTITY: Motion = Motion { translate: [0.0, 0.0], scale: [1.0, 1.0], rotate: 0.0, opacity: 1.0, color_a: 1.0 };
+    pub const IDENTITY: Motion = Motion { translate: [0.0, 0.0], scale: [1.0, 1.0], rotate: 0.0, opacity: 1.0, color_a: 1.0, reveal: [1.0, 1.0] };
 
     pub fn get(&self, c: Channel) -> f32 {
         match c {
@@ -337,6 +348,8 @@ impl Motion {
             Channel::Rotate => self.rotate,
             Channel::Opacity => self.opacity,
             Channel::ColorA => self.color_a,
+            Channel::RevealX => self.reveal[0],
+            Channel::RevealY => self.reveal[1],
         }
     }
 
@@ -349,6 +362,8 @@ impl Motion {
             Channel::Rotate => self.rotate = v,
             Channel::Opacity => self.opacity = v,
             Channel::ColorA => self.color_a = v,
+            Channel::RevealX => self.reveal[0] = v,
+            Channel::RevealY => self.reveal[1] = v,
         }
     }
 }

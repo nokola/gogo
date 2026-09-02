@@ -89,6 +89,10 @@ struct WidgetDef {
     /// The `state a, b` lines' names — the control's own state
     /// vocabulary; `when <name>` in the control binds to them (GPAR116).
     states: Vec<String>,
+    /// The `state_builtin` line's names — the built-ins the control's
+    /// script raises; an instance `when` may name only these and
+    /// `states` (GP37, the shipped contract-state fence).
+    state_builtins: Vec<String>,
     /// A `control` declaration (vs a `widget`): its own scoped anims may
     /// drive `slot.<name>.<motion word>` lanes.
     control: bool,
@@ -131,6 +135,42 @@ struct TmpNode {
     /// A control instance root's declared states (GPAR116) — recorded
     /// into `Page::custom_states` once the arena id exists.
     custom_states: Vec<StrId>,
+    /// The styles this node wears — recorded into `style_wearers` once
+    /// the arena id exists (`each .Style` fan-outs and self-anim binding
+    /// need the wearer list, GP40).
+    wearing: Vec<String>,
+    /// An `automatic=` coupling's driver half (GP33): the control root's
+    /// PATH plus min/max (value couplings) or the state word (presence),
+    /// resolved to `Page::drivers` once the arena ids exist.
+    driver: Option<(String, f32, f32, String)>,
+    /// A `text=live($value)` label: (control root path, display step) —
+    /// resolved to `Page::live_texts` once the arena ids exist.
+    live: Option<(String, f32)>,
+}
+
+/// The slot names in a control body whose `automatic=` is a radial kind
+/// (`arc(...)`/`angle(...)`) — their aperture belongs to the driver, so a
+/// `for=` style may not restyle it (G3002).
+fn radial_slot_names(body: &AstNode) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![body];
+    while let Some(n) = stack.pop() {
+        if n.type_word == "slot" {
+            if let Some(p) = n.props.iter().find(|p| p.key == "automatic") {
+                if matches!(&p.value, AstValue::Call { name, .. } if name == "arc" || name == "angle") {
+                    if let Some(name) = &n.name {
+                        out.push(name.clone());
+                    }
+                }
+            }
+        }
+        for c in &n.children {
+            if let AstItem::Node(k) = c {
+                stack.push(k);
+            }
+        }
+    }
+    out
 }
 
 /// A node-level transition's node before flattening assigns the real id.
@@ -138,29 +178,26 @@ const PENDING_NODE: NodeId = u32::MAX - 1;
 /// A `for=` widget response whose host is found once the tree exists.
 const HOST_PENDING: NodeId = u32::MAX - 2;
 
-/// The shown form of a `live()` number in a text position: snapped to
-/// the display step (0.1 unless `round($v, step)` picked one), trailing
-/// zeros trimmed — "10.2", "11", "80" (the addon's display rounding,
-/// user-caught when a drag printed the raw float).
-fn live_text(v: f32, step: f32) -> String {
-    let snapped = if step > 0.0 { (v / step).round() * step } else { v };
-    let mut d = 0usize;
-    let mut s = step;
-    while d < 4 && (s - s.round()).abs() > 1e-4 {
-        s *= 10.0;
-        d += 1;
-    }
-    let mut out = format!("{snapped:.d$}");
-    if out.contains('.') {
-        while out.ends_with('0') {
-            out.pop();
-        }
-        if out.ends_with('.') {
-            out.pop();
-        }
-    }
-    out
+/// Per-anim compile state threaded through `anim_chain` (D136): the decl
+/// table (so a `play` step can pull a later decl in early), the shared
+/// compiled/cycle bookkeeping, and the current namespace of named groups
+/// (`after=` anchors are anim-flat; an `each` body is its own namespace
+/// per wearer).
+struct AnimSt<'d, 'x> {
+    decls: &'d [(String, AstNode)],
+    compiled: &'x mut Vec<bool>,
+    stack: &'x mut Vec<String>,
+    /// Named groups seen (the duplicate fence, and unknown-vs-cycle calls).
+    names: HashSet<String>,
+    /// Named group -> its end time, once emitted.
+    ends: HashMap<String, f32>,
+    /// `after=` groups parked until their anchor has an end: (the group
+    /// step, the scope chain to compile it under, the anchor, the offset).
+    deferred: Vec<(&'d AstNode, Vec<&'d AstNode>, String, f32)>,
+    /// Inside an `each` body: the wearer bare paths target.
+    each_of: Option<NodeId>,
 }
+
 
 /// Joins a `uses` path onto the including file's directory, folding
 /// `.` and `..` — the include chain's one path shape (GPAR35).
@@ -334,7 +371,10 @@ fn wrong_kind(key: PropKey, kind: Kind) -> String {
         PropKey::Spacing => format!("`spacing=` separates a stack's children (Column, Row, Flow, Grid, Tiles, List) — a {name} stacks nothing"),
         PropKey::Text | PropKey::FontSize | PropKey::FontColor | PropKey::Wrap | PropKey::ClipText | PropKey::TextHalign | PropKey::TextValign => format!("`{word}=` belongs to a box that shows text (Label, Button, Check, Toggle, Radio, Input) — a {name} shows none"),
         PropKey::Source | PropKey::Fit | PropKey::Loading => format!("`{word}=` is an Image word — a {name} shows no picture"),
-        PropKey::Stops | PropKey::GradientFill | PropKey::Angle => format!("`{word}=` is a Gradient word — a {name}'s one color is `background=`"),
+        PropKey::Stops | PropKey::GradientFill | PropKey::Angle | PropKey::GradientRepeat => format!("`{word}=` is a Gradient word — a {name}'s one color is `background=`"),
+        PropKey::From | PropKey::Sweep if kind == Kind::Slot => format!("`{word}=` is a radial kind's config — it goes inside the kind: `automatic=arc(from=-225, sweep=270) by $value in $min..$max`, in a `control`"),
+        PropKey::From | PropKey::To => format!("`{word}=` aims a Gradient (0..1 box points) or an Arc (degrees) — a {name} takes neither"),
+        PropKey::Sweep | PropKey::Thickness => format!("`{word}=` is an Arc word — a {name} sweeps nothing"),
         PropKey::Value | PropKey::Min | PropKey::Max | PropKey::Step => format!("`{word}=` belongs to a Slider, Input, Toggle or choice — a {name} holds no value"),
         PropKey::SelectedProp | PropKey::ToggleMode | PropKey::TapPulse | PropKey::IconSrc => format!("`{word}=` belongs to a press surface (Button, Check, Toggle, Radio, ListItem) — a {name} is not pressed"),
         PropKey::Select => format!("`select=` is a List word — a {name} selects nothing"),
@@ -399,6 +439,14 @@ pub struct Compiler<'a> {
     /// nodes): (the widget-instance scope they were declared in — `""` at
     /// the top of the file — and the declaration).
     anim_decls: Vec<(String, AstNode)>,
+    /// style name -> the nodes wearing it (file order): `each .Style`
+    /// fan-outs and per-wearer `self` anim binding read it (GP40).
+    style_wearers: HashMap<String, Vec<NodeId>>,
+    /// Anim lanes whose written target was `self`: (anim, index into
+    /// `page.anims`). A style's `transition anim=` re-binds these to each
+    /// wearer (the shipped rule: `self` targets the node a style is
+    /// applied to); everywhere else `self` stays the scope root.
+    self_lanes: Vec<(StrId, u32)>,
     root_seen: bool,
     names: std::collections::HashSet<String>,
     /// `uses` paths already brought in (a diamond import is one import).
@@ -417,6 +465,15 @@ pub struct Compiler<'a> {
     /// (GPAR69). Slot-fill content is written one scope out (`outer`),
     /// so a widget CAN fill its own slot from an instance site.
     widget_stack: Vec<String>,
+    /// Set by `automatic()` for the slot being compiled; `node()` moves it
+    /// onto the TmpNode (GP33).
+    pending_driver: Option<(String, f32, f32, String)>,
+    /// Set by `value()` when a `live($value)` bakes into a text prop
+    /// inside a control scope; `node()` moves it onto the TmpNode.
+    pending_live: Option<(String, f32)>,
+    /// (node, root path, min, max, state) rows awaiting arena lookups.
+    pending_drivers: Vec<(NodeId, String, f32, f32, String)>,
+    pending_lives: Vec<(NodeId, String, f32)>,
     fills: Vec<Fills>,
     /// Per widget instance being expanded: the instance's `on:` props still
     /// waiting for the body's `signals` node (`None` = the root took them).
@@ -510,12 +567,18 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         local_keys: Keys::default(),
         deferred_whens: Vec::new(),
         anim_decls: Vec::new(),
+        style_wearers: HashMap::new(),
+        self_lanes: Vec::new(),
         root_seen: false,
         names: std::collections::HashSet::new(),
         used: std::collections::HashSet::new(),
         prefix: Vec::new(),
         unnamed_instances: 0,
         widget_stack: Vec::new(),
+        pending_driver: None,
+        pending_live: None,
+        pending_drivers: Vec::new(),
+        pending_lives: Vec::new(),
         choice_depth: 0,
         fills: Vec::new(),
         instance_on: Vec::new(),
@@ -865,6 +928,19 @@ impl<'a> Compiler<'a> {
                         self.error("G3006", kn.line, format!("duplicate theme entry for {} — one prototype per type per block; fold the props into it", kn.type_word));
                         continue;
                     }
+                    // A style named on the entry must dress this kind
+                    // (its `for=` says which) — the mismatch would default
+                    // one control with another's slot words. Applying the
+                    // style as the kind's default is GP40's theme-entry
+                    // `.Style` tail.
+                    for sname in &kn.styles {
+                        let target = self.find_style(sname).and_then(|sd| sd.for_target.clone());
+                        if let Some(t) = target {
+                            if t != kn.type_word {
+                                self.error("G3006", kn.line, format!("style `{sname}` is for {t} — this entry defaults {}", kn.type_word));
+                            }
+                        }
+                    }
                     self.theme_entry_kinds.push((kind, variant));
                     let first = self.page.props.len() as u32;
                     for p in &kn.props {
@@ -903,6 +979,24 @@ impl<'a> Compiler<'a> {
             let fp = props.remove(i);
             match fp.value.as_ident() {
                 Some(word) if Kind::from_word(word).is_some() => for_target = Some(word.to_string()),
+                // A declared `control` is a legal `for=` target — its
+                // contract is checkable, unlike a plain widget's body.
+                Some(word) if self.widgets.get(word).map_or(false, |d| d.control) => {
+                    for_target = Some(word.to_string());
+                    // A driven radial's aperture has ONE writer — the kind's
+                    // config (§4.5): a `slot.<name>.from/sweep=` restyle
+                    // would fight the driver (the shipped G3002).
+                    let radial_slots = self.widgets.get(word).map(|d| radial_slot_names(&d.body)).unwrap_or_default();
+                    for p in &props {
+                        if let Some(rest) = p.key.strip_prefix("slot.") {
+                            if let Some((slot_name, prop_word)) = rest.split_once('.') {
+                                if matches!(prop_word, "from" | "sweep") && radial_slots.iter().any(|r| r == slot_name) {
+                                    self.error("G3002", p.line, format!("slot '{slot_name}' moves by itself — `{prop_word}=` is the driver's to write"));
+                                }
+                            }
+                        }
+                    }
+                }
                 Some(word) if self.widgets.contains_key(word) => {
                     self.error("G3006", fp.line, format!("`{word}` is a widget — widgets are styled through their own body's nodes, not `for=`"));
                 }
@@ -1573,7 +1667,8 @@ impl<'a> Compiler<'a> {
             }
         }
         let states: Vec<String> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "state").flat_map(|b| b.args.iter().filter_map(|a| a.as_ident()).map(str::to_string)).collect();
-        self.widgets.insert(name, WidgetDef { params: n.params.clone(), body: bodies[0].clone(), anims, host, props, whens, transitions, styles, states, control: n.type_word == "control", line: n.line });
+        let state_builtins: Vec<String> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "state_builtin").flat_map(|b| b.args.iter().filter_map(|a| a.as_ident()).map(str::to_string)).collect();
+        self.widgets.insert(name, WidgetDef { params: n.params.clone(), body: bodies[0].clone(), anims, host, props, whens, transitions, styles, states, state_builtins, control: n.type_word == "control", line: n.line });
     }
 
     /// `easing=name` plus its parameter words on the same line
@@ -1642,10 +1737,167 @@ impl<'a> Compiler<'a> {
     /// chain. `scope` = the widget instance the anim belongs to (`""` for a
     /// page anim): `rope.opacity` means that instance's `rope`, `self.`
     /// the instance's root.
-    fn anim_chain(&mut self, anim: StrId, scope: &str, items: &[AstItem], scopes: &[&AstNode], chain_start: f32) -> f32 {
+    /// Compiles one `anim` declaration — header words, then the step
+    /// chain, then the parked `after=` groups, then the double-pin fence.
+    /// `compiled`/`stack` are shared across the whole decl table so a
+    /// `play` can pull a later decl in early exactly once.
+    fn compile_anim_decl(&mut self, i: usize, decls: &[(String, AstNode)], compiled: &mut Vec<bool>, stack: &mut Vec<String>) {
+        if compiled[i] {
+            return;
+        }
+        compiled[i] = true;
+        let (scope, n) = &decls[i];
+        let name = n.name.clone().unwrap_or_default();
+        let full = if scope.is_empty() { name.clone() } else { format!("{scope}/{name}") };
+        let anim = self.intern(&full);
+        let mut head = AnimHead { anim, repeat: false, speed: 1.0 };
+        for p in &n.props {
+            match p.key.as_str() {
+                "repeat" => match p.value.as_ident() {
+                    Some("forever") => head.repeat = true,
+                    _ => self.error("G0066", p.line, "`repeat=` takes `forever` — a one-shot anim just omits it"),
+                },
+                "speed" => match p.value.as_num() {
+                    Some(v) if v > 0.0 => head.speed = v,
+                    _ => self.error("G0066", p.line, "`speed=` takes a number above 0"),
+                },
+                "duration" => self.error("G0066", p.line, "`duration=` on an anim header reads as the chain's total — write `duration_each=`"),
+                "delay" => self.error("G0066", p.line, "`delay=` was retired — a pause in the chain is its own step (`then delay=0.3`), a shift is `offset=`"),
+                "duration_each" | "easing" | "autoreverse" => {}
+                other if EASING_PARAM_KEYS.contains(&other) => {}
+                other => self.error("G0066", p.line, format!("an anim header takes `repeat=forever`, `speed=`, `duration_each=`, `easing=` (+ its parameters), `autoreverse=` — not `{other}`")),
+            }
+        }
+        if n.props.iter().any(|p| p.key == "easing") {
+            let props = n.props.clone();
+            self.easing_spec(&props, n.line);
+        }
+        self.page.anim_heads.push(head);
+        stack.push(full);
+        {
+            let mut st = AnimSt { decls, compiled: &mut *compiled, stack: &mut *stack, names: HashSet::new(), ends: HashMap::new(), deferred: Vec::new(), each_of: None };
+            let scopes = vec![n];
+            self.anim_chain(anim, scope, &n.children, &scopes, 0.0, &mut st);
+            self.flush_deferred(anim, scope, &mut st);
+        }
+        stack.pop();
+        self.double_pin_check(anim, n.line);
+    }
+
+    /// Emits the parked `after=` groups once their anchors have ends,
+    /// iterating — an anchored group can itself be an anchor. What never
+    /// resolves is a cycle (groups waiting on each other) or a name no
+    /// group carries.
+    fn flush_deferred(&mut self, anim: StrId, scope: &str, st: &mut AnimSt<'_, '_>) -> f32 {
+        let mut end = 0.0f32;
+        loop {
+            if st.deferred.is_empty() {
+                return end;
+            }
+            let pending = std::mem::take(&mut st.deferred);
+            let mut progressed = false;
+            for (step, sc, anchor, offset) in pending {
+                match st.ends.get(&anchor).copied() {
+                    Some(anchor_end) => {
+                        progressed = true;
+                        let mut scopes = sc.clone();
+                        scopes.push(step);
+                        let e = self.anim_chain(anim, scope, &step.children, &scopes, (anchor_end + offset).max(0.0), st);
+                        if let Some(nm) = &step.name {
+                            st.ends.insert(nm.clone(), e);
+                        }
+                        end = end.max(e);
+                    }
+                    None => st.deferred.push((step, sc, anchor, offset)),
+                }
+            }
+            if !progressed {
+                let stuck = std::mem::take(&mut st.deferred);
+                for (step, _, anchor, _) in stuck {
+                    if st.names.contains(&anchor) {
+                        self.error("G0062", step.line, format!("`after={anchor}` cycle — groups waiting on each other never start; a group can't wait on itself, however indirectly"));
+                    } else {
+                        self.error("G0062", step.line, format!("`after={anchor}` names no group — `after=` anchors on a NAMED `group` in this anim"));
+                    }
+                }
+                return end;
+            }
+        }
+    }
+
+    /// Two steps that both pin `from=` on one property hold two different
+    /// start values from play start (the capture rule holds a pin through
+    /// its wait) — they'd fight from frame one. Load-time error, as
+    /// shipped.
+    fn double_pin_check(&mut self, anim: StrId, line: u32) {
+        let mut seen: Vec<(NodeId, StrId)> = Vec::new();
+        let mut errs: Vec<String> = Vec::new();
+        for t in self.page.anims.iter().filter(|t| t.anim == anim) {
+            if t.from.is_none() {
+                continue;
+            }
+            if seen.contains(&(t.node, t.channel)) {
+                let nm = self.page.str(self.page.nodes[t.node as usize].name).to_string();
+                let ch = self.page.str(t.channel).to_string();
+                errs.push(format!("two steps pin `from=` on {nm}.{ch} — both hold from play start and would fight from frame one"));
+            } else {
+                seen.push((t.node, t.channel));
+            }
+        }
+        for e in errs {
+            self.error("G0064", line, e);
+        }
+    }
+
+    /// The shipped rule: `self` in an anim targets the node a style is
+    /// applied to. A `transition … anim=X` carried to a wearer by a style
+    /// (or written on the node) gets a per-wearer copy of X with the
+    /// `self` lanes re-bound to that wearer; the original X keeps `self` =
+    /// the file's root for code plays (GPAR86). Needed so the G4003
+    /// two-writers fence — and the play itself — see the real target.
+    fn bind_self_anims(&mut self) {
+        if self.self_lanes.is_empty() {
+            return;
+        }
+        let mut made: HashMap<(StrId, NodeId), StrId> = HashMap::new();
+        for ti in 0..self.page.transitions.len() {
+            let t = self.page.transitions[ti];
+            if t.anim == NO_STR || t.node == NO_NODE || t.node >= self.page.nodes.len() as NodeId {
+                continue;
+            }
+            if !self.self_lanes.iter().any(|(a, _)| *a == t.anim) {
+                continue;
+            }
+            let node = t.node;
+            let new_id = match made.get(&(t.anim, node)) {
+                Some(id) => *id,
+                None => {
+                    let wearer = self.page.str(self.page.nodes[node as usize].name).to_string();
+                    let full = format!("{wearer}/{}", self.page.str(t.anim));
+                    let new_id = self.intern(&full);
+                    if let Some(h) = self.page.anim_heads.iter().find(|h| h.anim == t.anim).copied() {
+                        self.page.anim_heads.push(AnimHead { anim: new_id, ..h });
+                    }
+                    let src: Vec<(u32, AnimTrack)> = self.page.anims.iter().enumerate().filter(|(_, a)| a.anim == t.anim).map(|(i, a)| (i as u32, *a)).collect();
+                    for (si, tr) in src {
+                        let bound = if self.self_lanes.iter().any(|(a, i)| *a == t.anim && *i == si) { node } else { tr.node };
+                        self.page.anims.push(AnimTrack { anim: new_id, node: bound, ..tr });
+                    }
+                    made.insert((t.anim, node), new_id);
+                    new_id
+                }
+            };
+            self.page.transitions[ti].anim = new_id;
+        }
+    }
+
+    fn anim_chain<'d>(&mut self, anim: StrId, scope: &str, items: &'d [AstItem], scopes: &[&'d AstNode], chain_start: f32, st: &mut AnimSt<'d, '_>) -> f32 {
         // `and` joins the previous step; `then` starts after the whole and-cluster.
         let mut cluster_start = chain_start;
         let mut cluster_end = chain_start;
+        // A staggered `each` in this cluster: its length only exists at
+        // play time, so a `then` waiting on the cluster is refused.
+        let mut cluster_unwaitable = false;
         let mut first = true;
         for item in items {
             let AstItem::Node(step) = item else {
@@ -1664,37 +1916,183 @@ impl<'a> Compiler<'a> {
                 }
                 other => (other.to_string(), "", step.name.clone()),
             };
-            if !first && connective.is_empty() {
+            // `after=<group>` places a step by REFERENCE — instead of a
+            // connective, never beside one (one placement per step).
+            let has_after = step.props.iter().any(|p| p.key == "after");
+            if !first && connective.is_empty() && !has_after {
                 self.error("G0061", step.line, "every step after the first says when it runs: `and` or `then`");
             }
             if first && !connective.is_empty() {
                 self.error("G0061", step.line, "the first step stands alone — no `and`/`then`");
             }
             if connective == "then" {
+                if cluster_unwaitable {
+                    self.error("G0062", step.line, "`then` here waits on a play-time length — an `each … stagger_by=` has no end until it plays, so nothing sequences after it (`and` beside it is fine: that shares its start)");
+                }
                 cluster_start = cluster_end;
+                cluster_unwaitable = false;
             }
-            first = false;
-            if step.props.iter().any(|p| p.key == "after") {
-                self.error("G0062", step.line, "`after=` is not supported yet — use `and`/`then`");
+            if !has_after {
+                first = false;
             }
             let mut scopes: Vec<&AstNode> = scopes.to_vec();
             let end = match word.as_str() {
                 "group" => {
-                    scopes.push(step);
-                    let e = self.anim_chain(anim, scope, &step.children, &scopes, cluster_start);
-                    let _ = target;
-                    e
+                    for p in &step.props {
+                        match p.key.as_str() {
+                            "duration" => self.error("G0066", p.line, "`duration=` on a group reads as the chain's total — write `duration_each=` (each step's default)"),
+                            "delay" => self.error("G0066", p.line, "`delay=` was retired — a pause is its own step (`then delay=0.3`), a shift is `offset=`"),
+                            _ => {}
+                        }
+                    }
+                    if step.children.is_empty() {
+                        self.error("G0062", step.line, "a group with no steps plays nothing — give it lanes or delete it");
+                    }
+                    // Group names are `after=` anchors: anim-flat, unique.
+                    if let Some(name) = &target {
+                        if !st.names.insert(name.clone()) {
+                            self.error("G0062", step.line, format!("two groups named `{name}` — group names are `after=` anchors, unique within an anim"));
+                        }
+                    }
+                    let offset = step.props.iter().find(|p| p.key == "offset").and_then(|p| p.value.as_num()).unwrap_or(0.0);
+                    if let Some(anchor) = step.props.iter().find(|p| p.key == "after").and_then(|p| p.value.as_ident()).map(str::to_string) {
+                        if !connective.is_empty() {
+                            self.error("G0062", step.line, "a step is positional (`and`/`then`) or referenced (`after=<group>`) — never both; one placement per step");
+                        }
+                        // Anchors resolve after the whole chain (forward
+                        // references are legal) — park it; the positional
+                        // flow doesn't see referenced steps.
+                        st.deferred.push((step, scopes.clone(), anchor, offset));
+                        cluster_start
+                    } else {
+                        scopes.push(step);
+                        let e = self.anim_chain(anim, scope, &step.children, &scopes, (cluster_start + offset).max(0.0), st);
+                        if let Some(name) = &target {
+                            st.ends.insert(name.clone(), e);
+                        }
+                        e
+                    }
                 }
                 "delay" => {
                     let d = step.props.iter().find(|p| p.key == "delay").and_then(|p| p.value.as_num()).unwrap_or(0.0);
-                    cluster_start + d
+                    if d < 0.0 {
+                        self.error("G0062", step.line, "a pause can't be negative — overlapping a start is `offset=` on the shifted step");
+                    }
+                    cluster_start + d.max(0.0)
                 }
                 "each" => {
-                    self.warning("G0062", step.line, "`each` steps are not supported yet — skipped");
-                    cluster_start
+                    if st.each_of.is_some() {
+                        self.error("G0062", step.line, "eaches don't nest — one fan-out names the wearers, its body stays bare");
+                        cluster_start
+                    } else {
+                        let stagger = step.props.iter().find(|p| p.key == "stagger_by").and_then(|p| p.value.as_num()).unwrap_or(0.0);
+                        // The wearers: one node, `self`, or everyone
+                        // wearing `.Style` (file order — the shipped
+                        // tree order).
+                        let wearers: Vec<NodeId> = if let Some(style) = step.styles.first() {
+                            match self.style_wearers.get(style) {
+                                Some(w) if !w.is_empty() => w.clone(),
+                                _ => {
+                                    self.error("G0060", step.line, format!("`each .{style}`: no node wears that style — the fan-out would drive nothing"));
+                                    Vec::new()
+                                }
+                            }
+                        } else if let Some(nm) = &target {
+                            let found = if nm == "self" {
+                                if scope.is_empty() { if self.page.nodes.is_empty() { None } else { Some(0) } } else { self.page.find(scope) }
+                            } else if scope.is_empty() {
+                                self.page.find(nm).or_else(|| self.root_aliases.get(nm.as_str()).and_then(|t| self.page.find(t)))
+                            } else {
+                                let scoped = format!("{scope}/{nm}");
+                                self.page.find(&scoped).or_else(|| self.root_aliases.get(&scoped).and_then(|t| self.page.find(t))).or_else(|| self.page.find(nm))
+                            };
+                            match found {
+                                Some(id) => vec![id],
+                                None => {
+                                    self.error("G0060", step.line, format!("`each {nm}`: no node named `{nm}`"));
+                                    Vec::new()
+                                }
+                            }
+                        } else {
+                            self.error("G0062", step.line, "`each` names its wearers — `each <node>` or `each .Style`");
+                            Vec::new()
+                        };
+                        scopes.push(step);
+                        let mut end = cluster_start;
+                        for (k, w) in wearers.iter().enumerate() {
+                            // Each wearer's copy is its own little world:
+                            // bare paths target the wearer, group names
+                            // don't leak in or out.
+                            let mut sub = AnimSt { decls: st.decls, compiled: &mut *st.compiled, stack: &mut *st.stack, names: HashSet::new(), ends: HashMap::new(), deferred: Vec::new(), each_of: Some(*w) };
+                            let e = self.anim_chain(anim, scope, &step.children, &scopes, cluster_start + k as f32 * stagger, &mut sub);
+                            let e2 = self.flush_deferred(anim, scope, &mut sub);
+                            end = end.max(e).max(e2);
+                        }
+                        if stagger > 0.0 {
+                            cluster_unwaitable = true;
+                        }
+                        end
+                    }
                 }
-                "play" | "key" => {
-                    self.error("G0062", step.line, format!("`{word}` steps are not supported yet"));
+                "play" => {
+                    if st.each_of.is_some() {
+                        self.error("G0062", step.line, "`play` doesn't go inside an each — its body is bare property lines for the wearers");
+                        cluster_start
+                    } else if let Some(pname) = &target {
+                        // The decl table resolves the name (the widget
+                        // scope's copy first); a not-yet-compiled target
+                        // compiles on demand — forward references are
+                        // legal, the stack breaks cycles.
+                        let idx = st.decls.iter().position(|(sc, d)| sc == scope && d.name.as_deref() == Some(pname.as_str())).or_else(|| st.decls.iter().position(|(sc, d)| sc.is_empty() && d.name.as_deref() == Some(pname.as_str())));
+                        match idx {
+                            None => {
+                                self.error("G0062", step.line, format!("`play {pname}`: unknown anim"));
+                                cluster_start
+                            }
+                            Some(idx) => {
+                                let (dscope, dnode) = &st.decls[idx];
+                                let dname = dnode.name.clone().unwrap_or_default();
+                                let full = if dscope.is_empty() { dname } else { format!("{dscope}/{dname}") };
+                                if st.stack.contains(&full) {
+                                    self.error("G0062", step.line, format!("play cycle: {} -> {full} — an anim can't wait on itself, however indirectly", st.stack.join(" -> ")));
+                                    cluster_start
+                                } else {
+                                    if !st.compiled[idx] {
+                                        self.compile_anim_decl(idx, st.decls, st.compiled, st.stack);
+                                    }
+                                    let played = self.intern(&full);
+                                    let head = self.page.anim_heads.iter().find(|h| h.anim == played).map(|h| (h.repeat, h.speed));
+                                    if head.map(|(r, _)| r).unwrap_or(false) {
+                                        self.error("G0062", step.line, format!("`play {pname}`: a `repeat=forever` anim never completes — it can't be a step in a chain"));
+                                        cluster_start
+                                    } else {
+                                        // Inline the played anim's tracks at
+                                        // this step's start, its `speed=`
+                                        // folded in; internal group names
+                                        // stay private (only lanes copy).
+                                        let speed = head.map(|(_, sp)| sp).unwrap_or(1.0).max(0.001);
+                                        let src: Vec<(u32, AnimTrack)> = self.page.anims.iter().enumerate().filter(|(_, t)| t.anim == played).map(|(i, t)| (i as u32, *t)).collect();
+                                        let mut total = 0.0f32;
+                                        for (si, t) in &src {
+                                            total = total.max(t.start + t.duration * if t.autoreverse { 2.0 } else { 1.0 });
+                                            let idx_new = self.page.anims.len() as u32;
+                                            self.page.anims.push(AnimTrack { anim, start: cluster_start + t.start / speed, duration: t.duration / speed, ..*t });
+                                            if self.self_lanes.iter().any(|(a, i)| *a == played && i == si) {
+                                                self.self_lanes.push((anim, idx_new));
+                                            }
+                                        }
+                                        cluster_start + total / speed
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        self.error("G0062", step.line, "`play` names an anim — `play <name>`");
+                        cluster_start
+                    }
+                }
+                "key" => {
+                    self.error("G0062", step.line, "`key` frames are children of a property line — `box.opacity { key t=0, v=0 }`");
                     cluster_start
                 }
                 path => {
@@ -1735,7 +2133,16 @@ impl<'a> Compiler<'a> {
                         sl
                     } else {
                         match path.split_once('.') {
-                        Some((n, rest)) if Channel::parse(rest).is_some() => (n.to_string(), rest.to_string()),
+                        // Inside an `each` the fan-out names the target:
+                        // paths stay BARE, a prefix is refused.
+                        _ if st.each_of.is_some() && Channel::parse(path).is_some() => (String::new(), path.to_string()),
+                        Some((n, rest)) if Channel::parse(rest).is_some() => {
+                            if st.each_of.is_some() {
+                                self.error("G0062", step.line, format!("`{path}`: the `each` already names the target — write the property bare (`{rest}`)"));
+                                continue;
+                            }
+                            (n.to_string(), rest.to_string())
+                        }
                         _ => {
                             if path.ends_with(".modulate.a") || path == "modulate.a" {
                                 self.error("G0075", step.line, "`modulate.a` is a Godot engine word — write `opacity`");
@@ -1748,7 +2155,9 @@ impl<'a> Compiler<'a> {
                         }
                         }
                     };
-                    let found = if node_name == "self" {
+                    let found = if node_name.is_empty() {
+                        st.each_of
+                    } else if node_name == "self" {
                         if scope.is_empty() {
                             // Page scope: `self` is the file's root
                             // (GPAR86, the addon's reading).
@@ -1767,11 +2176,28 @@ impl<'a> Compiler<'a> {
                         continue;
                     };
                     let num = |key: &str| step.props.iter().find(|p| p.key == key).and_then(|p| p.value.as_num());
+                    if step.props.iter().any(|p| p.key == "delay") {
+                        self.error("G0066", step.line, "`delay=` on a property line was retired — a pause is its own step (`then delay=0.3`), a shift is `offset=`");
+                    }
+                    if has_after {
+                        self.error("G0062", step.line, "`after=` goes on `group` lines — wrap the step: `group <name> after=<anchor> { … }`");
+                    }
+                    // A style transition's `anim=` re-binds `self` lanes to
+                    // each wearer (`bind_self_anims`) — remember which
+                    // tracks were written as `self`.
+                    let self_target = node_name == "self" && scope.is_empty();
+                    let lane_mark = self.page.anims.len();
                     let channel_id = self.intern(&channel);
                     let keys: Vec<&AstNode> = step.children.iter().filter_map(|i| if let AstItem::Node(k) = i { Some(k) } else { None }).filter(|k| k.type_word == "key").collect();
                     scopes.push(step);
                     let autoreverse = scopes.iter().rev().find_map(|s| s.props.iter().find(|p| p.key == "autoreverse").map(|p| p.value == AstValue::Bool(true))).unwrap_or(false);
                     if !keys.is_empty() {
+                        if num("duration").is_some() {
+                            self.error("G0064", step.line, "`duration=` beside `key` children — the keys own the timeline; the last key's `t` is the length");
+                        }
+                        if step.props.iter().any(|p| p.key == "to") {
+                            self.error("G0064", step.line, "`to=` beside `key` children — the keys own the values");
+                        }
                         // `key t=, v=, easing=, jump=true` children own the
                         // timeline: one track per segment between keys. A
                         // `jump` key HOLDS the previous value until its own
@@ -1814,6 +2240,11 @@ impl<'a> Compiler<'a> {
                                 end = end.max(start + duration);
                             }
                         }
+                        if self_target {
+                            for i in lane_mark..self.page.anims.len() {
+                                self.self_lanes.push((anim, i as u32));
+                            }
+                        }
                         cluster_end = cluster_end.max(end);
                         continue;
                     }
@@ -1826,7 +2257,10 @@ impl<'a> Compiler<'a> {
                         self.error("G0064", step.line, format!("`{path}` needs `to=`"));
                         continue;
                     };
-                    let duration = num("duration").or_else(|| Self::anim_num(&scopes, "duration_each")).unwrap_or(0.0);
+                    let Some(duration) = num("duration").or_else(|| Self::anim_num(&scopes, "duration_each")) else {
+                        self.error("G0064", step.line, format!("`{path}` has no length — write `duration=` on the line or `duration_each=` on an enclosing group or the anim header"));
+                        continue;
+                    };
                     // The nearest scope that names an easing supplies it, with
                     // the parameter words written beside it there.
                     let easing = match scopes.iter().rev().find(|s| s.props.iter().any(|p| p.key == "easing")) {
@@ -1839,6 +2273,11 @@ impl<'a> Compiler<'a> {
                     let offset = num("offset").unwrap_or(0.0);
                     let start = (cluster_start + offset).max(0.0);
                     self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from, to, start, duration, easing, current, autoreverse });
+                    if self_target {
+                        for i in lane_mark..self.page.anims.len() {
+                            self.self_lanes.push((anim, i as u32));
+                        }
+                    }
                     start + if autoreverse { 2.0 * duration } else { duration }
                 }
             };
@@ -2225,8 +2664,13 @@ impl<'a> Compiler<'a> {
                 };
                 if key == Some(PropKey::Text) {
                     if let Value::VNum(x) = crate::runtime::deref(&self.page, NO_STR, inner) {
-                        let text = live_text(x, step);
+                        let text = crate::page::live_text(x, step);
                         let id = self.intern(&text);
+                        // A later code write of the control's value
+                        // rewrites this label (GP33 live-label follow).
+                        if let Some(root) = self.control_root_path() {
+                            self.pending_live = Some((root, step));
+                        }
                         return Value::VText { text: id, key: NO_KEY };
                     }
                 }
@@ -2375,7 +2819,9 @@ impl<'a> Compiler<'a> {
             PropKey::Orientation => Some(&["horizontal", "vertical"]),
             PropKey::Select => Some(&["one", "many", "off"]),
             PropKey::TouchTarget | PropKey::KeyboardTarget => Some(&["off"]),
-            PropKey::GradientFill => Some(&["linear", "radial"]),
+            PropKey::GradientFill => Some(&["linear", "radial", "conic"]),
+            PropKey::GradientRepeat => Some(&["mirror"]),
+            PropKey::Loading => Some(&["lazy", "eager"]),
             _ => None,
         };
         if let Some(words) = closed_words {
@@ -2395,6 +2841,20 @@ impl<'a> Compiler<'a> {
         if is_bool && !matches!(value, Value::VBool(_) | Value::VRef { .. } | Value::VCall { .. }) {
             self.error("G0078", p.line, format!("`{}=` is true or false — got `{}`", p.key, spell(&p.value)));
             return None;
+        }
+        if matches!(key, PropKey::RevealX | PropKey::RevealY) {
+            match value {
+                Value::VNum(v) if (0.0..=1.0).contains(&v) => {}
+                Value::VRef { .. } | Value::VCall { .. } => {}
+                Value::VNum(_) => {
+                    self.error("G0078", p.line, format!("`{}=` is the SHOWN fraction — 0..1 (0 concealed, 1 whole)", p.key));
+                    return None;
+                }
+                _ => {
+                    self.error("G0078", p.line, format!("`{}=` takes a 0..1 number — got `{}`", p.key, spell(&p.value)));
+                    return None;
+                }
+            }
         }
         // `text=25` / `text=live($value)` with a number: the digits, so a
         // value label needs no code to show its number.
@@ -2467,11 +2927,46 @@ impl<'a> Compiler<'a> {
             self.error("G2005", n.line, "Gradient needs `stops=` — the colors it paints; `stops=[white, black]` fades white to black; one color is a `Rectangle`");
         }
         let fill = find("fill").and_then(|p| p.value.as_ident()).unwrap_or("linear").to_string();
-        if !matches!(fill.as_str(), "linear" | "radial") {
-            self.error("G2005", n.line, format!("`fill={fill}`: want linear or radial (Godot's square|conic are not drawn by this runtime)"));
+        if !matches!(fill.as_str(), "linear" | "radial" | "conic") {
+            self.error("G2005", n.line, format!("`fill={fill}`: want linear, radial or conic"));
         }
         if find("angle").is_some() && fill != "linear" {
             self.error("G2005", n.line, "`angle=` only aims LINEAR gradients — a round fill (radial) has no direction");
+        }
+        // `from=`/`to=` place the ramp as 0..1 box points; `angle=` aims
+        // it — the two say the same thing two ways, so spell one.
+        let fromto = find("from").or_else(|| find("to"));
+        if find("angle").is_some() && fromto.is_some() {
+            self.error("G2005", n.line, "`angle=` next to `from=`/`to=` — both aim the ramp; spell one");
+        }
+        for key in ["from", "to"] {
+            if let Some(p) = find(key) {
+                match &p.value {
+                    AstValue::Size { w: Some(x), h: Some(y) } if (0.0..=1.0).contains(x) && (0.0..=1.0).contains(y) => {}
+                    AstValue::Size { .. } => self.error("G2005", p.line, format!("`{key}=` parts are 0..1 fractions of the box — `{key}=0.25x0.75`")),
+                    _ => self.error("G2005", p.line, format!("`{key}=` on a Gradient is a 0..1 box point — `{key}=0.25x0.75`")),
+                }
+            }
+        }
+        // With `repeat=mirror` the ramp folds at the middle: stop
+        // positions live in 0..0.5, the mirror paints the way back.
+        if find("repeat").and_then(|p| p.value.as_ident()) == Some("mirror") {
+            if let Some(sp) = find("stops") {
+                if let AstValue::List(items) = &sp.value {
+                    for it in items {
+                        let pos = match it {
+                            AstValue::Ref { pos, .. } => *pos,
+                            AstValue::Ident { pos, .. } => *pos,
+                            AstValue::Color { pos, .. } => *pos,
+                            _ => None,
+                        };
+                        if pos.map(|p| p > 0.5).unwrap_or(false) {
+                            self.error("G2005", sp.line, "`repeat=mirror` folds the ramp at the middle — stop positions stop at 0.5 (the mirror paints the way back)");
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -2515,7 +3010,7 @@ impl<'a> Compiler<'a> {
             if self.widget_stack.iter().any(|w| w == &n.type_word) {
                 let path = self.widget_stack.join(" -> ");
                 self.error("G5003", n.line, format!("widget cycle: {path} -> {} — a widget cannot contain itself", n.type_word));
-                return TmpNode { node: Node { kind: Kind::Layers, line: n.line, ..Node::EMPTY }, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new() };
+                return TmpNode { node: Node { kind: Kind::Layers, line: n.line, ..Node::EMPTY }, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new(), wearing: Vec::new(), driver: None, live: None };
             }
             // A `for=` widget fills its host's body and nothing else —
             // anywhere else its `when` lines would answer the wrong node.
@@ -2606,6 +3101,30 @@ impl<'a> Compiler<'a> {
             // the root; GPAR68) — they were dropped without a word.
             for k in &inst_states {
                 if k.type_word == "when" {
+                    // GP37: a control's contract lists its states — a
+                    // `when held` on an instance whose script never
+                    // raises `held` would wait forever; refused naming
+                    // what IS available (the shipped
+                    // err-undeclared-contract-state).
+                    if def.control {
+                        let mut bad = false;
+                        for word in k.name.iter().map(String::as_str).chain(k.args.iter().filter_map(|a| a.as_ident())) {
+                            let control_word = matches!(word, "held" | "hovered" | "focused" | "focus_within" | "selected" | "disabled");
+                            let declared = def.states.iter().any(|w| w == word) || def.state_builtins.iter().any(|w| w == word);
+                            let view_word = word.starts_with("screen.") || self.page.arrangements.iter().any(|a| self.page.str(*a) == word);
+                            if (control_word || !view_word) && !declared {
+                                let mut avail: Vec<String> = def.state_builtins.iter().chain(def.states.iter()).map(|w| format!("`{w}`")).collect();
+                                if avail.is_empty() {
+                                    avail.push("none".to_string());
+                                }
+                                self.error("G0036", k.line, format!("'{word}' isn't available on `{}` — its contract raises {}", n.type_word, avail.join(", ")));
+                                bad = true;
+                            }
+                        }
+                        if bad {
+                            continue;
+                        }
+                    }
                     let before = self.diags.len();
                     if let Some(tw) = self.when(k, t.node.kind) {
                         t.whens.push(tw);
@@ -2787,7 +3306,7 @@ impl<'a> Compiler<'a> {
             self.names.insert(name.clone());
             node.name = self.intern(name);
         }
-        let mut tmp = TmpNode { node, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new() };
+        let mut tmp = TmpNode { node, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new(), wearing: n.styles.iter().cloned().chain(instance.iter().flat_map(|i| i.styles.iter().cloned())).collect(), driver: None, live: None };
 
         if kind == Kind::Gap {
             self.gap(&mut tmp.node, n, parent_kind);
@@ -2942,6 +3461,15 @@ impl<'a> Compiler<'a> {
                     }
                 }
             }
+            if p.key == "reveal_x" || p.key == "reveal_y" {
+                // Reveal grows/collapses the space a CONTAINER hands out
+                // — under a free parent nothing closes up, the fraction
+                // would read as a working disclosure and do nothing.
+                let container = matches!(parent_kind, Some(k) if k.is_stack() || matches!(k, Kind::Flow | Kind::Grid | Kind::GridRow | Kind::Tiles | Kind::List));
+                if !container {
+                    self.error("G1017", p.line, format!("`{}=` needs a container parent (Column, Row, Flow, Grid, Tiles, List) — the reveal collapses the space the parent hands out", p.key));
+                }
+            }
             if p.key == "seat" {
                 // Re-parenting is view geometry, not a node's own look
                 // (GPAR73, the shipped rule).
@@ -3002,6 +3530,9 @@ impl<'a> Compiler<'a> {
             }
         }
         tmp.node.placement = self.placement(&placement_props, n.line, parent_kind, kind);
+        tmp.driver = self.pending_driver.take();
+        tmp.live = self.pending_live.take();
+        self.container_child_guard(n, &tmp.node.placement, parent_kind, kind);
         if kind == Kind::List {
             // The List self-scrolls on its layout's axis (D121/D128): a
             // `layout Row` strip pans sideways, everything else scrolls
@@ -3235,8 +3766,12 @@ impl<'a> Compiler<'a> {
         format!("{}/{name}", self.prefix[..depth].join("/"))
     }
 
-    /// `automatic=<kind> by $value in $min..$max` on a slot line, solved
-    /// to a fraction now: nothing writes `$value` at runtime here.
+    /// `automatic=<kind> by $value in $min..$max` on a slot line (D134,
+    /// spec 4.5/4.6): everything is spelled -- the kind (config in parens
+    /// for the radial kinds `arc`/`angle`), the driver after `by`, the
+    /// range after `in`. The fraction baked here is the REST start; a code
+    /// write of the control's value re-derives it live and glides it by
+    /// the control's default feel (`Page::drivers`, GP33).
     fn automatic(&mut self, n: &AstNode, parent_kind: Option<Kind>) -> Auto {
         let by = n.clauses.iter().find(|(k, _)| k == "by").map(|(_, v)| v.clone());
         let range = n.clauses.iter().find(|(k, _)| k == "in").map(|(_, v)| v.clone());
@@ -3246,7 +3781,75 @@ impl<'a> Compiler<'a> {
             }
             return Auto::NoAuto;
         };
-        let kind = kind_prop.value.as_ident().unwrap_or("").to_string();
+        // Only a `control` has a value to drive the geometry (the shipped
+        // needs-a-control fence): in a plain widget the coupling would
+        // read as working and drive nothing.
+        if let Some(w) = self.widget_stack.last() {
+            if self.widgets.get(w).map_or(false, |d| !d.control) {
+                self.error("G5107", kind_prop.line, "`automatic=` is automatic geometry — it needs a `control` (a value to drive it); widgets have no value");
+                return Auto::NoAuto;
+            }
+        }
+        // The kind word, with the radial kinds' parenthesized config.
+        let (kind, cfg): (String, Vec<(String, AstValue)>) = match &kind_prop.value {
+            AstValue::Ident { word, .. } => (word.clone(), Vec::new()),
+            AstValue::Call { name, args } => {
+                let mut cfg = Vec::new();
+                let mut positional = false;
+                for a in args {
+                    match a {
+                        AstValue::Named { name: an, value } => cfg.push((an.clone(), (**value).clone())),
+                        _ => positional = true,
+                    }
+                }
+                if positional {
+                    if name == "presence" {
+                        self.error("G5107", kind_prop.line, "presence takes no config — `by` picks the driver (`automatic=presence by selected`)");
+                    } else {
+                        self.error("G5107", kind_prop.line, "config arguments are named — they say what they set (`automatic=arc(from=-225, sweep=270) by $value in $min..$max`)");
+                    }
+                    return Auto::NoAuto;
+                }
+                (name.clone(), cfg)
+            }
+            other => {
+                self.error("G5107", kind_prop.line, format!("`automatic=` names a kind — got `{}`", spell(other)));
+                return Auto::NoAuto;
+            }
+        };
+        if !matches!(kind.as_str(), "length" | "position" | "presence" | "arc" | "angle") {
+            self.error("G5107", n.line, format!("unknown automatic kind '{kind}' — the set is closed: length, position, presence, arc, angle"));
+            return Auto::NoAuto;
+        }
+        let is_radial = kind == "arc" || kind == "angle";
+        if !is_radial && !cfg.is_empty() {
+            self.error("G5107", n.line, format!("only the radial kinds take config — `{kind}` has none (`automatic=length by $value in $min..$max`)"));
+            return Auto::NoAuto;
+        }
+        // The aperture (spec 4.6): REQUIRED on a radial — nothing defaults
+        // invisibly (D134); declared once, inside the kind\'s parens.
+        let mut aperture = [0.0f32; 2];
+        if is_radial {
+            for (key, _) in &cfg {
+                if key != "from" && key != "sweep" {
+                    self.error("G5107", n.line, format!("`{kind}` config is `from=`/`sweep=` — not '{key}' (`automatic={kind}(from=-225, sweep=270) by $value in $min..$max`)"));
+                    return Auto::NoAuto;
+                }
+            }
+            for (i, key) in ["from", "sweep"].iter().enumerate() {
+                match cfg.iter().find(|(k, _)| k == key) {
+                    None => {
+                        self.error("G5107", n.line, format!("`{kind}` spells its aperture — `{key}=` is missing (`automatic={kind}(from=-225, sweep=270) by $value in $min..$max`)"));
+                        return Auto::NoAuto;
+                    }
+                    Some((_, AstValue::Num { value, unit })) if unit.is_empty() => aperture[i] = *value,
+                    Some(_) => {
+                        self.error("G5107", n.line, format!("`{key}=` takes degrees (a bare number; Godot's screen convention: 0° = right, clockwise positive)"));
+                        return Auto::NoAuto;
+                    }
+                }
+            }
+        }
         let num = |c: &mut Self, v: &AstValue| -> f32 {
             match c.value(v, n.line, None) {
                 Value::VNum(x) => x,
@@ -3256,19 +3859,21 @@ impl<'a> Compiler<'a> {
         // The coupling is fully spelled and type-checked (D134): v1 drives
         // from `$value` over `$min..$max`, a presence driver is a state word.
         match kind.as_str() {
-            "length" | "position" => {
-                // Driven geometry must stay relayout-local: a measuring
-                // host would re-lay out the whole page every frame
-                // (G5105, the shipped fence).
-                if matches!(parent_kind, Some(Kind::Column | Kind::Row | Kind::Flow | Kind::Grid | Kind::Tiles | Kind::Scroll)) {
-                    self.error("G5105", n.line, format!("'{}' geometry is automatic — it can't live in a {:?}, which measures children on that axis; seat the slot in a free host (a named slot region, Layers, Circle)", n.name.clone().unwrap_or_default(), parent_kind.unwrap_or(Kind::Column)));
-                }
-                // The driven aspect has ONE writer — the driver (§4.5,
-                // the shipped G3002): the slot line must not place it.
-                let fenced: &[&str] = if kind == "length" { &["width", "height"] } else { &["margin_left", "margin_top", "margin_right", "margin_bottom", "x", "y"] };
-                for fp in &n.props {
-                    if fenced.contains(&fp.key.as_str()) {
-                        self.error("G3002", fp.line, format!("slot '{}' moves by itself — `{}=` is the driver's to write", n.name.clone().unwrap_or_default(), fp.key));
+            "length" | "position" | "arc" | "angle" => {
+                if kind == "length" || kind == "position" {
+                    // Driven geometry must stay relayout-local: a measuring
+                    // host would re-lay out the whole page every frame
+                    // (G5105, the shipped fence).
+                    if matches!(parent_kind, Some(Kind::Column | Kind::Row | Kind::Flow | Kind::Grid | Kind::Tiles | Kind::Scroll)) {
+                        self.error("G5105", n.line, format!("'{}' geometry is automatic — it can't live in a {:?}, which measures children on that axis; seat the slot in a free host (a named slot region, Layers, Circle)", n.name.clone().unwrap_or_default(), parent_kind.unwrap_or(Kind::Column)));
+                    }
+                    // The driven aspect has ONE writer — the driver (§4.5,
+                    // the shipped G3002): the slot line must not place it.
+                    let fenced: &[&str] = if kind == "length" { &["width", "height"] } else { &["margin_left", "margin_top", "margin_right", "margin_bottom", "x", "y"] };
+                    for fp in &n.props {
+                        if fenced.contains(&fp.key.as_str()) {
+                            self.error("G3002", fp.line, format!("slot '{}' moves by itself — `{}=` is the driver's to write", n.name.clone().unwrap_or_default(), fp.key));
+                        }
                     }
                 }
                 let Some(by) = by else {
@@ -3298,22 +3903,99 @@ impl<'a> Compiler<'a> {
                 let lo = num(self, &lo);
                 let hi = num(self, &hi);
                 let f = if hi > lo { ((v - lo) / (hi - lo)).clamp(0.0, 1.0) } else { 0.0 };
-                if kind == "length" { Auto::Length(f) } else { Auto::Position(f) }
+                if let Some(root) = self.control_root_path() {
+                    self.pending_driver = Some((root, lo, hi, String::new()));
+                }
+                match kind.as_str() {
+                    "length" => Auto::Length(f),
+                    "position" => Auto::Position(f),
+                    "arc" => Auto::Arc { from: aperture[0], sweep: aperture[1], frac: f },
+                    _ => Auto::Angle { from: aperture[0], sweep: aperture[1], frac: f },
+                }
             }
             "presence" => {
                 if range.is_some() {
                     self.error("G5107", n.line, "`automatic=presence`: a bool has no range — drop the `in` clause");
                 }
                 match &by {
-                    Some(AstValue::Ident { .. }) => {}
+                    Some(AstValue::Ident { word, .. }) => {
+                        if let Some(root) = self.control_root_path() {
+                            self.pending_driver = Some((root, 0.0, 0.0, word.clone()));
+                        }
+                    }
                     Some(other) => self.error("G5107", n.line, format!("a presence driver is a state word — `by` names one (no `$`): `by selected` (got `{}`)", spell(other))),
                     None => self.error("G5107", n.line, "`automatic=presence` wants `by <state>` (`by selected`)"),
                 }
                 Auto::Presence(false)
             }
-            other => {
-                self.error("G5107", n.line, format!("`automatic={other}`: want length, position or presence"));
-                Auto::NoAuto
+            _ => unreachable!(),
+        }
+    }
+
+    /// The innermost enclosing `control` instance's path ("a/b") — the
+    /// node whose `$value` and states drive this scope's couplings.
+    fn control_root_path(&self) -> Option<String> {
+        for k in (1..=self.prefix.len()).rev() {
+            let p = self.prefix[..k].join("/");
+            if self.control_scopes.contains(&p) {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// The shipped container-child fences (GP34, resolver
+    /// _validate_layout_parents + the D139/D144 cap rules): under a parent
+    /// that seats its children, margins are provably dead, an overlay
+    /// can't refuse its seat, and a size cap works only where the box
+    /// reports its own minimum (a Layers) or scrolls past it.
+    fn container_child_guard(&mut self, n: &AstNode, p: &Placement, parent_kind: Option<Kind>, kind: Kind) {
+        let container = matches!(parent_kind, Some(k) if matches!(k, Kind::Column | Kind::Row | Kind::Flow | Kind::Grid | Kind::GridRow | Kind::Tiles | Kind::List | Kind::Scroll));
+        if !container || kind == Kind::Gap {
+            return;
+        }
+        let pname = parent_name(parent_kind);
+        // Margins under a seating parent never move anything — the seat
+        // is the parent's to hand out (uniform rhythm is `spacing=`, one
+        // divergent gap is a `gap N` line).
+        if let Some(mp) = n.props.iter().find(|q| matches!(q.key.as_str(), "margin" | "margin_left" | "margin_top" | "margin_right" | "margin_bottom")) {
+            self.error("G1002", mp.line, format!("a {pname} lays out its children — margins only apply under a plain box (Layers, Panel, View); uniform rhythm is the parent's `spacing=`, a single divergent gap is a `gap N` line at the break"));
+        }
+        // D139: an overlay can't refuse a seat it was dealt — `Column {{
+        // Layers {{ content; badge overlay=true }} }}` already spells the
+        // flowing case.
+        if n.props.iter().any(|q| q.key == "overlay" && matches!(q.value, AstValue::Bool(true))) {
+            self.error("G1002", n.line, format!("a {pname} seats its children — an overlay can't refuse a seat it was dealt; overlay= needs a free parent: wrap the flowed content in `Layers {{ … }}` and declare the overlay beside it inside"));
+        }
+        // The cap law (decided with the user 2026-09-01, REPLACING the
+        // shipped D144 Layers special case): a box never reports more
+        // than its cap — ANY box, under any parent — and `max_*=fill`
+        // caps at the parent's inner space. The measure already clamps
+        // (`size_at`), so no wrapper ceremony is needed. What's left
+        // refused is the one shape with nothing separate to bind
+        // against: on a stack's OWN stacking axis, the slot IS the
+        // frame, so a cap that reads the parent's space (`max_*=fill`,
+        // or any cap on a `fill` slot) is circular — cap the stack
+        // itself. A Scroll scrolls past its cap and a List hugs then
+        // scrolls (their own doctrines).
+        if parent_kind == Some(Kind::Scroll) || matches!(kind, Kind::Scroll | Kind::List) {
+            return;
+        }
+        let main: Option<usize> = match parent_kind {
+            Some(Kind::Column) | Some(Kind::List) => Some(1),
+            Some(Kind::Row) => Some(0),
+            _ => None,
+        };
+        for (axis, axis_word, len, cap, cap_fill) in [(0, "width", p.width, p.max_width, p.max_width_fill), (1, "height", p.height, p.max_height, p.max_height_fill)] {
+            if cap.is_none() && !cap_fill {
+                continue;
+            }
+            if Some(axis) == main && (matches!(len, Len::Fill(_)) || cap_fill) {
+                self.error("G1002", n.line, format!("`max_{axis_word}=` on a {pname}'s stacking axis can't read the parent's space — the slot IS the frame there; a number caps a hugging box (`{axis_word}=hug, max_{axis_word}=60`), or cap the {pname} itself"));
+            } else if parent_kind == Some(Kind::Flow) && cap_fill {
+                // A Flow line is packed from measures, not a frame the
+                // child can read back (v1) — a number still caps.
+                self.error("G1002", n.line, format!("`max_{axis_word}=fill` has no frame to read inside a Flow (v1) — cap at a number, or move the box under a free parent"));
             }
         }
     }
@@ -3362,10 +4044,10 @@ impl<'a> Compiler<'a> {
                             // spec's D71 exemption, GPAR97): a sizeless
                             // box there keeps its content size.
                             if child.node.placement.width == Len::Unset {
-                                child.node.placement.width = Len::Hug(1.0);
+                                child.node.placement.width = Len::Hug(0.0);
                             }
                             if child.node.placement.height == Len::Unset {
-                                child.node.placement.height = Len::Hug(1.0);
+                                child.node.placement.height = Len::Hug(0.0);
                             }
                             out.push(child);
                         }
@@ -3416,14 +4098,23 @@ impl<'a> Compiler<'a> {
     /// children (contiguous), then each child's own children — so
     /// `children` is a range and `subtree_end` bounds the descendants.
     fn flatten(&mut self, root: TmpNode) {
-        let id = self.push_slot(root.node, root.props, root.handlers, root.whens, root.transitions, root.custom_states, NO_NODE);
+        let id = self.push_slot(root.node, root.props, root.handlers, root.whens, root.transitions, root.custom_states, root.wearing, root.driver, root.live, NO_NODE);
         self.place_children(id, root.children);
     }
 
-    fn push_slot(&mut self, mut node: Node, props: Vec<Prop>, handlers: Vec<OnHandler>, whens: Vec<WhenTmp>, transitions: Vec<Transition>, custom_states: Vec<StrId>, parent: NodeId) -> NodeId {
+    fn push_slot(&mut self, mut node: Node, props: Vec<Prop>, handlers: Vec<OnHandler>, whens: Vec<WhenTmp>, transitions: Vec<Transition>, custom_states: Vec<StrId>, wearing: Vec<String>, driver: Option<(String, f32, f32, String)>, live: Option<(String, f32)>, parent: NodeId) -> NodeId {
         let id = self.page.nodes.len() as NodeId;
+        if let Some((root, min, max, state)) = driver {
+            self.pending_drivers.push((id, root, min, max, state));
+        }
+        if let Some((root, step)) = live {
+            self.pending_lives.push((id, root, step));
+        }
         for cs in custom_states {
             self.page.custom_states.push((id, cs));
+        }
+        for s in wearing {
+            self.style_wearers.entry(s).or_default().push(id);
         }
         node.parent = parent;
         let pf = self.page.props.len() as u32;
@@ -3456,7 +4147,7 @@ impl<'a> Compiler<'a> {
         let count = children.len() as u32;
         let mut slots: Vec<(NodeId, Vec<TmpNode>)> = Vec::new();
         for child in children {
-            let cid = self.push_slot(child.node, child.props, child.handlers, child.whens, child.transitions, child.custom_states, id);
+            let cid = self.push_slot(child.node, child.props, child.handlers, child.whens, child.transitions, child.custom_states, child.wearing, child.driver, child.live, id);
             slots.push((cid, child.children));
         }
         self.page.nodes[id as usize].children = (first, count);
@@ -3701,7 +4392,9 @@ impl<'a> Compiler<'a> {
             Value::VNum(n) => Len::Exact(n),
             Value::VIdent(id) => match self.page.str(id) {
                 "fill" => Len::Fill(1.0),
-                "hug" => Len::Hug(1.0),
+                // Weight 0 = plain hug (content-sized, no slot share);
+                // `hug(n)` is the weighted SLOT around a hugged box (GP34).
+                "hug" => Len::Hug(0.0),
                 "host" => {
                     self.error("G0055", line, format!("`{key}=host` is gone — a pure layout needs no host axis (§7)"));
                     Len::Unset
@@ -3953,38 +4646,17 @@ impl<'a> Compiler<'a> {
                 self.error("G0069", line, "exclusivity needs a choice scope — Radio lives inside `choice { }` (`choice size value=medium { Radio small text=\"Small\"; … }`); an independent toggle is `Check`");
             }
         }
-        // Anims: flat tracks with start times.
+        // Anims: flat tracks with start times. A `play` step inlines
+        // another anim's tracks, so a decl compiles ON DEMAND when a play
+        // names it before its turn (forward references; the shared stack
+        // breaks cycles).
         let decls = std::mem::take(&mut self.anim_decls);
-        for (scope, n) in &decls {
-            let name = n.name.clone().unwrap_or_default();
-            let full = if scope.is_empty() { name.clone() } else { format!("{scope}/{name}") };
-            let anim = self.intern(&full);
-            let mut head = AnimHead { anim, repeat: false, speed: 1.0 };
-            for p in &n.props {
-                match p.key.as_str() {
-                    "repeat" => match p.value.as_ident() {
-                        Some("forever") => head.repeat = true,
-                        _ => self.error("G0066", p.line, "`repeat=` takes `forever` — a one-shot anim just omits it"),
-                    },
-                    "speed" => match p.value.as_num() {
-                        Some(v) if v > 0.0 => head.speed = v,
-                        _ => self.error("G0066", p.line, "`speed=` takes a number above 0"),
-                    },
-                    "duration" => self.error("G0066", p.line, "`duration=` on an anim header reads as the chain's total — write `duration_each=`"),
-                    "delay" => self.error("G0066", p.line, "`delay=` was retired — a pause in the chain is its own step (`then delay=0.3`), a shift is `offset=`"),
-                    "duration_each" | "easing" | "autoreverse" => {}
-                    other if EASING_PARAM_KEYS.contains(&other) => {}
-                    other => self.error("G0066", p.line, format!("an anim header takes `repeat=forever`, `speed=`, `duration_each=`, `easing=` (+ its parameters), `autoreverse=` — not `{other}`")),
-                }
-            }
-            if n.props.iter().any(|p| p.key == "easing") {
-                let props = n.props.clone();
-                self.easing_spec(&props, n.line);
-            }
-            self.page.anim_heads.push(head);
-            let scopes = vec![n];
-            self.anim_chain(anim, scope, &n.children, &scopes, 0.0);
+        let mut anim_compiled: Vec<bool> = vec![false; decls.len()];
+        let mut anim_stack: Vec<String> = Vec::new();
+        for i in 0..decls.len() {
+            self.compile_anim_decl(i, &decls, &mut anim_compiled, &mut anim_stack);
         }
+        self.bind_self_anims();
         // Top-level `when <arrangement> { node.prop = value }`.
         let deferred = std::mem::take(&mut self.deferred_whens);
         let mut seat_claims: Vec<(NodeId, StrId, State, u32)> = Vec::new();
@@ -4507,7 +5179,57 @@ impl<'a> Compiler<'a> {
             let count = self.page.whens.len() as u32 - n0;
             self.page.nodes[i].whens = (n0, count);
         }
+        // GP33: the automatic couplings' driver rows — the control roots
+        // exist now, so the recorded paths resolve to arena ids.
+        for (node, root, min, max, state) in std::mem::take(&mut self.pending_drivers) {
+            if let Some(rid) = self.page.find(&root) {
+                let sid = if state.is_empty() { NO_STR } else { self.intern(&state) };
+                self.page.drivers.push(AutoDriver { node, root: rid, min, max, state: sid });
+            }
+        }
+        for (node, root, step) in std::mem::take(&mut self.pending_lives) {
+            if let Some(rid) = self.page.find(&root) {
+                self.page.live_texts.push(LiveText { node, root: rid, step });
+            }
+        }
+        self.transition_scope_guard();
         self.one_writer_guard();
+        self.reveal_channel_guard();
+    }
+
+    /// A `when` response or an anim lane may drive `reveal_x`/`reveal_y`
+    /// only where the node DECLARES the channel (a static `reveal_*=` on
+    /// its line) — the shipped rule: an undeclared reveal driven from a
+    /// pose would conjure a disclosure the resting layout never shows.
+    fn reveal_channel_guard(&mut self) {
+        let declared = |page: &Page, node: NodeId, key: PropKey| {
+            let n = &page.nodes[node as usize];
+            page.props[n.props.0 as usize..(n.props.0 + n.props.1) as usize].iter().any(|p| p.key == key)
+        };
+        let mut errs: Vec<(u32, String)> = Vec::new();
+        for (i, n) in self.page.nodes.iter().enumerate() {
+            for w in &self.page.whens[n.whens.0 as usize..(n.whens.0 + n.whens.1) as usize] {
+                for p in &self.page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize] {
+                    if matches!(p.key, PropKey::RevealX | PropKey::RevealY) && !declared(&self.page, i as NodeId, p.key) {
+                        errs.push((n.line, format!("a `when` drives `{}` only where the node declares it — give the node a resting `{}=` first", p.key.word(), p.key.word())));
+                    }
+                }
+            }
+        }
+        for t in &self.page.anims {
+            let ch = self.page.str(t.channel);
+            let key = match ch {
+                "reveal_x" => PropKey::RevealX,
+                "reveal_y" => PropKey::RevealY,
+                _ => continue,
+            };
+            if !declared(&self.page, t.node, key) {
+                errs.push((0, format!("an anim drives `{ch}` only where the node declares it — give the node a resting `{ch}=` first")));
+            }
+        }
+        for (line, msg) in errs {
+            self.error("G1017", line, msg);
+        }
     }
 
     /// D63's one-writer guard (Godot G4003): a `when` in a scope holds a
@@ -4535,17 +5257,76 @@ impl<'a> Compiler<'a> {
                     }
                     let holds = self.page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize].iter().any(|p| Channel::of_key(p.key).iter().any(|c| channels.contains(c)));
                     if holds {
-                        let word = self.page.str(lane.channel);
+                        // The channel's head word, the way the file spells
+                        // the property ('scale', not 'scale.x').
+                        let word = self.page.str(lane.channel).split('.').next().unwrap_or_default().to_string();
                         let tname = if target.name == NO_STR { format!("{:?}", target.kind) } else { self.page.str(target.name).to_string() };
-                        let aname = self.page.str(t.anim);
+                        // A per-wearer self-bound copy shows its author name.
+                        let aname = self.page.str(t.anim).rsplit('/').next().unwrap_or_default().to_string();
                         let state = state_word(&self.page, w.state);
-                        found.push((t.line, format!("`{word}` on `{tname}` is held by its `when {state}` AND driven by anim `{aname}` from this transition — two writers would fight on every flip; the loser flickers")));
+                        found.push((t.line, format!("'{word}' on {tname} is held by its `when {state}` AND driven by anim '{aname}' — two writers would fight on every flip; the loser flickers")));
                     }
                 }
             }
         }
         for (line, msg) in found {
             self.error("G4003", line, msg);
+        }
+    }
+
+    /// GP31's scope rules and the duplicate fence (the shipped
+    /// _bake_view_transitions / _validate_control_transition): a view
+    /// rule's endpoints are arrangements only — a control state's
+    /// transitions live inside the style/node block; a node rule takes an
+    /// arrangement change only as an exact pair; control states stack, so
+    /// a node rule times one side at a time; and two rules covering one
+    /// pair in one scope would pick silently — refused.
+    fn transition_scope_guard(&mut self) {
+        let is_state = |st: &State| matches!(st, State::Held | State::Hovered | State::Focused | State::FocusWithin | State::Selected | State::StateDisabled | State::Custom(_));
+        // `base` (Arrangement(u32::MAX)) is exempt from the one-sided
+        // fence: it doubles as the rest end of a built-in state flip
+        // (GPAR9 — `transition base -> held` on a node is a decided Rust
+        // form), so only a DECLARED arrangement flags one-sided.
+        let is_arr = |st: &State| matches!(st, State::Arrangement(_));
+        let is_named_arr = |st: &State| matches!(st, State::Arrangement(i) if *i != u32::MAX);
+        let mut errs: Vec<(u32, String)> = Vec::new();
+        let mut seen: Vec<(NodeId, Option<State>, Option<State>)> = Vec::new();
+        for t in &self.page.transitions {
+            let live_node = t.node != NO_NODE && (t.node as usize) < self.page.nodes.len();
+            if t.node == NO_NODE {
+                for e in [t.from, t.to].into_iter().flatten() {
+                    if is_state(&e) {
+                        errs.push((t.line, format!("'{}' is a control state — its transitions live inside the style/node block", state_word(&self.page, e))));
+                    }
+                }
+            } else if live_node {
+                match (t.from, t.to) {
+                    // The endpoint-less rule is the scope's default feel.
+                    (None, None) => {}
+                    (Some(a), Some(b)) if is_arr(&a) && is_arr(&b) => {}
+                    (Some(a), Some(b)) if is_state(&a) && is_state(&b) => {
+                        errs.push((t.line, format!("control states stack — time them one side at a time (`any -> {}` enters, `{}` -> any` leaves)", state_word(&self.page, b), state_word(&self.page, a))));
+                    }
+                    (a, b) => {
+                        let one_arr = a.map(|x| is_named_arr(&x)).unwrap_or(false) != b.map(|x| is_named_arr(&x)).unwrap_or(false);
+                        if one_arr {
+                            errs.push((t.line, "a node times an arrangement change only as an exact pair — one-sided arrangement rules live at the top level".to_string()));
+                        }
+                    }
+                }
+            }
+            if t.node == NO_NODE || live_node {
+                let key = (t.node, t.from, t.to);
+                if seen.contains(&key) {
+                    let w = |e: Option<State>| e.map(|x| state_word(&self.page, x)).unwrap_or_else(|| "any".to_string());
+                    errs.push((t.line, format!("two transitions cover {} -> {}", w(t.from), w(t.to))));
+                } else {
+                    seen.push(key);
+                }
+            }
+        }
+        for (line, msg) in errs {
+            self.error("G0034", line, msg);
         }
     }
 }
@@ -4698,7 +5479,7 @@ mod tests {
         assert_eq!(a.halign, Align::Center);
         assert_eq!(a.margin, [None, None, None, Some(16.0)]);
         assert_eq!(a.max_width, Some(380.0));
-        assert_eq!(a.height, Len::Hug(1.0));
+        assert_eq!(a.height, Len::Hug(0.0));
         let b = p.nodes[p.find("b").unwrap() as usize].placement;
         assert_eq!(b.width, Len::Exact(44.0));
         assert_eq!(b.margin[0], Some(-10.0));

@@ -586,7 +586,6 @@ fn natural_label_height() -> f32 {
 /// parent, take a fraction 0..1, and a `when`/`anim` may only drive a
 /// declared channel.
 #[test]
-#[ignore = "GP40: not ported: reveal_x/reveal_y (Rust warns G2001 unknown property)"]
 fn reveal_load_rules() {
     let a = accepted(&[
         ("root", "Panel root reveal_y=0 { Label a text=\"x\" }"),
@@ -609,7 +608,6 @@ fn reveal_load_rules() {
 /// natural height with opacity 1); `base` conceals again; the disclosure
 /// button's `toggle(open)` drives the pose; a gone child earns nothing.
 #[test]
-#[ignore = "GP40: not ported: reveal_x/reveal_y (Rust lays the label out at full height)"]
 fn reveal_pose_tweens_the_layout_space() {
     let nat = natural_label_height();
     let c = ok(REVEAL_VIEW);
@@ -656,7 +654,6 @@ fn reveal_pose_tweens_the_layout_space() {
 /// the label to its 100. (Godot pins the label's extent at ≥ 99 wide
 /// behind a 0-wide window; Rust has no window, so the shown rect is pinned.)
 #[test]
-#[ignore = "GP40: not ported: reveal_x/reveal_y (Rust shows the label 100 wide at full height)"]
 fn reveal_on_a_stretched_axis_clips_to_the_extent() {
     let nat = natural_label_height();
     let fx = Fx::new("Panel border_color=red, border_thickness=1, padding=5, corner_radius=9 {

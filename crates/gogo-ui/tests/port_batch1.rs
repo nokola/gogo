@@ -126,8 +126,10 @@ fn easing_parameters_travel_with_the_easing() {
     assert_eq!(word, "bounce_out(1,2.4)");
     assert!(codes("View v { Rectangle a width=10, height=10 }\nanim show { a.opacity to=1, duration=1, easing=cubic_out, bounces=1 }\n").contains(&"G0065".to_string()));
     assert!(codes("View v { Rectangle a width=10, height=10 }\nanim show { a.opacity to=1, duration=1, easing=nope }\n").contains(&"G0065".to_string()));
-    // Transitions take the same words.
-    let c = ok("View v { Rectangle a width=10, height=10 { when held opacity=0.5 } }\ntransition any -> held duration=0.3, easing=elastic_out, oscillations=2, springiness=4\n");
+    // Transitions take the same words. (The rule sits on the node — a
+    // control state's transitions live inside the style/node block, the
+    // GP31 scope fence.)
+    let c = ok("View v { Rectangle a width=10, height=10 { when held opacity=0.5\n transition any -> held duration=0.3, easing=elastic_out, oscillations=2, springiness=4 } }\n");
     assert_eq!(c.page.str(c.page.transitions[0].easing), "elastic_out(2,4)");
     assert!(codes("View v { Rectangle a width=10, height=10 }\nanim x repeat=twice { a.opacity to=1, duration=1 }\n").contains(&"G0066".to_string()));
 }

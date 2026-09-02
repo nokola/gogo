@@ -785,3 +785,28 @@ fn explain_facts_input_provenance() {
     assert_eq!(hit(&fx.page, &res, &rects, 396.0, 4.0, false), Some(catcher), "interactive=true claims input");
     assert_eq!(hit(&fx.page, &res, &rects, 396.0, 396.0, false), None, "interactive=false: hit-invisible");
 }
+
+/// GP31 (the shipped _bake_view_transitions / _validate_control_transition
+/// scope rules): a view rule's endpoints are arrangements — a control
+/// state's transitions live inside the style/node block; a node takes an
+/// arrangement change only as an exact pair; control states stack, so a
+/// node rule times one side at a time; two rules covering one pair in one
+/// scope would pick silently and are refused. The legal forms stay legal:
+/// an exact pose pair on a node (GPAR72), `base -> held` (GPAR9), and the
+/// endpoint-less default feel.
+#[test]
+fn transition_scope_and_duplicate_rules_are_fenced() {
+    let mentions = |src: &str, needle: &str| compile(src, &|_| None).diags.iter().any(|d| d.message.contains(needle));
+    // View scope: control-state endpoints refused.
+    assert!(mentions("View v { Button b text=\"x\" }\ntransition any -> held duration=0.2", "its transitions live inside the style/node block"));
+    // Node scope: a one-sided arrangement rule is refused…
+    assert!(mentions("arrangement wide\nView v { Button b text=\"x\" { transition any -> wide duration=0.2 } }", "exact pair"));
+    // …but an exact pose pair, `base -> held`, and the default feel build.
+    assert!(!fails("arrangement wide\nView v { Button b text=\"x\" { transition base -> wide duration=0.2 } }"));
+    assert!(!fails("View v { Button b text=\"x\" { transition base -> held duration=0.2\n when held scale=0.9 } }"));
+    // Node scope: two concrete states stack — timed one side at a time.
+    assert!(mentions("View v { Button b text=\"x\" { transition held -> selected duration=0.2 } }", "control states stack"));
+    // Duplicates: two rules covering one pair, per scope.
+    assert!(mentions("arrangement wide\ntransition base -> wide duration=0.2\ntransition base -> wide duration=0.4\nView v { Button b text=\"x\" }", "two transitions cover"));
+    assert!(mentions("View v { Button b text=\"x\" { transition any -> held duration=0.2\n transition any -> held duration=0.4\n when held scale=0.9 } }", "two transitions cover"));
+}

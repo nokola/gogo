@@ -157,6 +157,21 @@ fn assign_key(k: &mut ItemKey, leaf: &ItemValue) {
 }
 
 #[derive(Clone, Debug)]
+/// One automatic slot's fraction glide (GP33, the addon's GogoDriver):
+/// a value flip travels in FRACTION space by the control's default feel;
+/// landing writes the rest truth (disarm HOLDS — the driven layout keeps
+/// its last value, because it is truth, not displacement).
+struct AutoGlide {
+    node: NodeId,
+    from: f32,
+    to: f32,
+    elapsed: f32,
+    duration: f32,
+    easing: Easing,
+    /// The eased value this frame — what layout shows mid-flight.
+    shown: f32,
+}
+
 pub struct Runtime {
     pub arrangement: u32,
     pub variant: StrId,
@@ -179,6 +194,13 @@ pub struct Runtime {
     /// State changes since the last `resolve_animated`: (node or NO_NODE
     /// for the view, from, to) — what `transition` rules match against.
     pub changes: Vec<(NodeId, Option<State>, Option<State>)>,
+    /// Time ticked since a change was recorded and before its resolve — a
+    /// tween born at that resolve starts this far in, so a flip that
+    /// happened between frames animates from the FLIP, not the resolve.
+    pending_change_dt: f32,
+    /// The same flip-time credit for rect glides: `glide` seeds its rect
+    /// tweens this far in (set beside `glide_start`).
+    glide_late: f32,
     pub tweens: Vec<Tween>,
     pub players: Vec<Player>,
     /// The ANIM LAYER: per node, what players wrote. Only the channels a
@@ -247,6 +269,21 @@ pub struct Runtime {
     /// raise) — higher paints later (on top), lower earlier (below);
     /// absent = 0, the file's order. Layout never moves.
     pub raised: Vec<(NodeId, i32)>,
+    /// GP33: each value-driven automatic slot's fraction at REST (the
+    /// last landed or snapped value; glides start from it).
+    auto_rest: Vec<(NodeId, f32)>,
+    auto_glides: Vec<AutoGlide>,
+    /// Per node: a Radio's `choice` group (`NO_CHOICE` elsewhere) — a
+    /// code write of `selected` clears the group like a tap (GP37).
+    radio_choice: Vec<u32>,
+    /// Per node: is it a Toggle — its `selected` and value derive from
+    /// each other on code writes (GP37).
+    toggle: Vec<bool>,
+    /// Arrangements flipped by `go_instant` whose changes have not yet
+    /// resolved — their flip arms no tweens, glides or rule anims.
+    instant_flips: Vec<u32>,
+    /// The flip awaiting `arrangement_settled` (the shipped signal).
+    pending_settle: Option<u32>,
     /// Per node: the string slot a code `set_text` owns (`NO_STR` = none
     /// yet). Needed so a label that changes every few frames (a stats
     /// line) rewrites ONE string in place instead of interning a new one
@@ -268,11 +305,21 @@ impl Runtime {
             // `choice`'s `value=`).
             states: page.nodes.iter().map(|n| n.initial_states).collect(),
             scroll: vec![[0.0; 2]; page.nodes.len()],
+            // GP33: each driven slot's fraction at rest starts at the
+            // baked value; drivers move it.
+            auto_rest: page.drivers.iter().filter(|d| d.state == NO_STR).map(|d| (d.node, baked_frac(page, d.node))).collect(),
+            auto_glides: Vec::new(),
+            radio_choice: page.nodes.iter().map(|n| if n.kind == Kind::Radio { n.choice } else { NO_CHOICE }).collect(),
+            toggle: page.nodes.iter().map(|n| n.kind == Kind::Toggle).collect(),
+            instant_flips: Vec::new(),
+            pending_settle: None,
             dirty: true,
             locale: None,
             safe: [0.0; 4],
             writes: Vec::new(),
             changes: Vec::new(),
+            pending_change_dt: 0.0,
+            glide_late: 0.0,
             tweens: Vec::new(),
             held: Vec::new(),
             shown: vec![Motion::IDENTITY; page.nodes.len()],
@@ -298,7 +345,7 @@ impl Runtime {
 
     /// Something is moving: keep redrawing.
     pub fn animating(&self) -> bool {
-        !self.tweens.is_empty() || !self.players.is_empty() || !self.rect_tweens.is_empty()
+        !self.tweens.is_empty() || !self.players.is_empty() || !self.rect_tweens.is_empty() || !self.auto_glides.is_empty()
     }
 
     /// The rects to SHOW this frame: the laid-out ones, except boxes still
@@ -316,7 +363,7 @@ impl Runtime {
                         let (d, e) = self.glide_node_rules.iter().find(|(n, _, _)| *n == i as NodeId).map(|(_, d, e)| (*d, *e)).unwrap_or((duration, easing));
                         self.rect_tweens.retain(|t| t.0 != i as NodeId);
                         if d > 0.0 {
-                            self.rect_tweens.push((i as NodeId, self.last_rects[i], rects[i], 0.0, d, e));
+                            self.rect_tweens.push((i as NodeId, self.last_rects[i], rects[i], self.glide_late.min(d), d, e));
                         }
                     }
                 }
@@ -329,6 +376,7 @@ impl Runtime {
             let lerp = |a: f32, b: f32| a + (b - a) * t;
             shown[*node as usize] = Rect::new(lerp(from.x, to.x), lerp(from.y, to.y), lerp(from.w, to.w), lerp(from.h, to.h));
         }
+        self.glide_late = 0.0;
         self.rect_tweens.retain(|t| t.3 < t.4);
         self.last_rects = shown.clone();
         shown
@@ -959,13 +1007,32 @@ impl Runtime {
     /// Advances tweens and players by `dt` seconds; true while anything moves.
     pub fn tick(&mut self, page: &mut Page, dt: f32) -> bool {
         let mut moving = false;
+        if !self.changes.is_empty() {
+            // A flip already recorded but not yet resolved: this frame's
+            // time belongs to its tweens-to-be.
+            self.pending_change_dt += dt;
+        }
         for t in &mut self.tweens {
             t.elapsed += dt;
         }
         for t in &mut self.rect_tweens {
             t.3 += dt;
         }
-        moving |= !self.rect_tweens.is_empty();
+        moving |= !self.rect_tweens.is_empty() || !self.auto_glides.is_empty();
+        let glides = std::mem::take(&mut self.auto_glides);
+        for mut g in glides {
+            g.elapsed += dt;
+            let raw = if g.duration <= 0.0 { 1.0 } else { (g.elapsed / g.duration).clamp(0.0, 1.0) };
+            g.shown = g.from + (g.to - g.from) * g.easing.apply(raw);
+            if g.elapsed >= g.duration {
+                // Landed: the written fraction HOLDS (disarm-holds, §4.5).
+                if let Some(e) = self.auto_rest.iter_mut().find(|(n, _)| *n == g.node) {
+                    e.1 = g.to;
+                }
+            } else {
+                self.auto_glides.push(g);
+            }
+        }
         let before = self.tweens.len();
         self.tweens.retain(|t| t.elapsed < t.duration);
         moving |= before > 0;
@@ -1022,6 +1089,19 @@ impl Runtime {
     /// A code write: `text=`, `visibility=`, `value=`… Replaces an earlier
     /// write of the same key; a same-value write changes nothing.
     pub fn set_prop(&mut self, node: NodeId, key: PropKey, value: Value) {
+        // GP37: `selected` DERIVES from a Toggle's value — a code write
+        // of `value=1` selects (the shipped tgl.derive-on).
+        if key == PropKey::Value && self.toggle.get(node as usize).copied().unwrap_or(false) {
+            if let Value::VNum(v) = value {
+                let on = v >= 0.5;
+                if self.has(node, SELECTED) != on {
+                    let s = &mut self.states[node as usize];
+                    if on { *s |= SELECTED } else { *s &= !SELECTED }
+                    self.dirty = true;
+                    self.changes.push(if on { (node, None, Some(State::Selected)) } else { (node, Some(State::Selected), None) });
+                }
+            }
+        }
         // A code write is the next writer: a held anim end on that
         // property yields to it.
         let channels: &[Channel] = Channel::of_key(key);
@@ -1120,6 +1200,26 @@ impl Runtime {
         Ok(())
     }
 
+    /// Reads a declared custom state back (`set_custom` is the write).
+    pub fn custom(&self, page: &Page, root: NodeId, state: &str) -> bool {
+        let sid = page.intern_lookup(state);
+        sid != NO_STR && self.customs.iter().any(|e| *e == (root, sid))
+    }
+
+    /// The control seam behind a code write of `$value` (GP33, the
+    /// addon's behavior -> driver pipeline): the value prop lands (reads
+    /// and `when` conditions see it), every `live($value)` label inside
+    /// the control rewrites at its baked display step, and the automatic
+    /// slots' fractions re-derive on the next `resolve_animated`, gliding
+    /// by the control's default feel.
+    pub fn set_value(&mut self, page: &mut Page, root: NodeId, v: f32) {
+        self.set_prop(root, PropKey::Value, Value::VNum(v));
+        let labels: Vec<LiveText> = page.live_texts.iter().filter(|lt| lt.root == root).copied().collect();
+        for lt in labels {
+            self.set_text(page, lt.node, &crate::page::live_text(v, lt.step));
+        }
+    }
+
     pub fn set_state(&mut self, node: NodeId, bit: u8, on: bool) {
         let s = &mut self.states[node as usize];
         let before = *s;
@@ -1130,6 +1230,31 @@ impl Runtime {
         }
         if *s != before {
             self.dirty = true;
+            if bit == SELECTED {
+                // GP37: a Radio picked from code behaves like a tap — the
+                // old pick clears, silently (this pick's flip is the one
+                // genuine transition, the shipped code-write-reports read).
+                if on {
+                    let choice = self.radio_choice.get(node as usize).copied().unwrap_or(NO_CHOICE);
+                    if choice != NO_CHOICE {
+                        for i in 0..self.states.len() {
+                            if i as NodeId != node && self.radio_choice[i] == choice {
+                                self.states[i] &= !SELECTED;
+                            }
+                        }
+                    }
+                }
+                // GP37: a Toggle's value derives from the bool — a code
+                // `selected=false` puts the value back to 0. Only a
+                // wrong-side code-written value is rewritten, so a live
+                // drag's fraction (already on the right side) keeps.
+                if self.toggle.get(node as usize).copied().unwrap_or(false) {
+                    let wrong_side = self.writes.iter().any(|(n, p)| *n == node && p.key == PropKey::Value && matches!(p.value, Value::VNum(v) if (v >= 0.5) != on));
+                    if wrong_side {
+                        self.set_prop(node, PropKey::Value, Value::VNum(if on { 1.0 } else { 0.0 }));
+                    }
+                }
+            }
             let state = match bit {
                 HELD => State::Held,
                 HOVERED => State::Hovered,
@@ -1196,7 +1321,50 @@ impl Runtime {
             self.arrangement = arrangement;
             self.dirty = true;
             self.changes.push((NO_NODE, Some(State::Arrangement(from)), Some(State::Arrangement(arrangement))));
+            // The awaitable for hosts sequencing work after a pose change.
+            self.pending_settle = Some(arrangement);
         }
+    }
+
+    /// Selects the active theme variant (the shipped
+    /// `gogo.set_theme_variant`): `theme <variant> { … }` overrides win
+    /// over the defaults — tokens, color-pair halves and kind entries all
+    /// pick by it on the next resolve. `""` = defaults only; a variant no
+    /// file defines simply keeps the defaults.
+    pub fn set_theme_variant(&mut self, page: &Page, variant: &str) {
+        let v = if variant.is_empty() { NO_STR } else { page.intern_lookup(variant) };
+        if self.variant != v {
+            self.variant = v;
+            self.dirty = true;
+        }
+    }
+
+    /// `go` without the motion (the shipped `set_arrangement(name, true)`):
+    /// the pose flips and every `when <arrangement>` restyles, but no
+    /// transition rule times it — no tweens, no rect glides, no rule anim.
+    pub fn go_instant<A: ArrangementName>(&mut self, arrangement: A) {
+        self.go_instant_id(arrangement.id());
+    }
+
+    /// `go_instant` by index, for a runtime-compiled page.
+    pub fn go_instant_id(&mut self, arrangement: u32) {
+        let before = self.arrangement;
+        self.go_id(arrangement);
+        if self.arrangement != before {
+            self.instant_flips.push(arrangement);
+        }
+    }
+
+    /// The settled flip, once (the shipped `arrangement_settled` signal,
+    /// polled): `Some(arrangement)` on the first call after the flip's
+    /// tweens and glides have all landed — an instant flip settles on the
+    /// first call after its resolve. `None` while motion is still going
+    /// (or nothing flipped).
+    pub fn arrangement_settled(&mut self) -> Option<u32> {
+        if self.pending_settle.is_some() && self.changes.is_empty() && !self.animating() {
+            return self.pending_settle.take();
+        }
+        None
     }
 
     /// `go`-or-back-to-base on the typed handle (the addon's toggle).
@@ -1263,7 +1431,7 @@ pub struct Resolved {
     /// Per node: the channels an anim owns right now (`Channel::bit`) —
     /// playing, or a finished anim's held end. Draw reads it to let an anim
     /// outrank the built-in disabled dim on opacity.
-    pub anim_owned: Vec<u8>,
+    pub anim_owned: Vec<u16>,
     pub placement: Vec<Placement>,
     /// (node, prop) — later entries win.
     pub overrides: Vec<(NodeId, Prop)>,
@@ -1287,6 +1455,11 @@ pub struct Resolved {
     /// their `on:hide` anim still plays — layout, draw and input keep them
     /// until the player finishes (`gone`/`hidden` answer false for them).
     pub hiding: Vec<NodeId>,
+    /// GP33: each value-driven automatic slot's SHOWN fraction this
+    /// frame (rest, re-derived target, or a glide's eased value).
+    pub auto: Vec<(NodeId, f32)>,
+    /// GP33: each presence slot and whether its driving state holds.
+    pub presence: Vec<(NodeId, bool)>,
     /// The focused Input's caret (copied from the Runtime).
     pub caret: Option<(NodeId, u32)>,
     /// The language keyed text shows (copied from the Runtime; one Arc
@@ -1421,8 +1594,13 @@ impl Resolved {
         if page.repeats.iter().any(|r| r.template == node) {
             return true;
         }
-        if page.nodes[node as usize].auto == Auto::Presence(false) {
-            return true;
+        if let Auto::Presence(baked) = page.nodes[node as usize].auto {
+            // GP33: the mark exists iff its driving state holds — live,
+            // through `set_custom` on the control root.
+            let on = self.presence.iter().find(|(n, _)| *n == node).map(|(_, b)| *b).unwrap_or(baked);
+            if !on {
+                return true;
+            }
         }
         // Mid deferred hide (GP19): the `when` already says gone but the
         // `on:hide` anim still plays — the node stays until it finishes.
@@ -1518,6 +1696,8 @@ fn compose_anim(page: &Page, rt: &Runtime, r: &mut Resolved) {
         match channel {
             Channel::Opacity => r.overrides.push((node, Prop { key: PropKey::Opacity, value: Value::VNum(v) })),
             Channel::ColorA => r.overrides.push((node, Prop { key: PropKey::ColorA, value: Value::VNum(v) })),
+            Channel::RevealX => r.overrides.push((node, Prop { key: PropKey::RevealX, value: Value::VNum(v) })),
+            Channel::RevealY => r.overrides.push((node, Prop { key: PropKey::RevealY, value: Value::VNum(v) })),
             _ => r.motion[node as usize].set(channel, v),
         }
         r.anim_owned[node as usize] |= channel.bit();
@@ -1537,10 +1717,22 @@ impl Resolved {
     pub fn anim_owns(&self, node: NodeId, channel: Channel) -> bool {
         self.anim_owned.get(node as usize).is_some_and(|b| b & channel.bit() != 0)
     }
+
+    /// An automatic slot's SHOWN fraction (GP33): the driver's value this
+    /// frame, or the compile-baked rest where nothing drives it.
+    pub fn auto_frac(&self, page: &Page, node: NodeId) -> f32 {
+        if let Some((_, f)) = self.auto.iter().find(|(n, _)| *n == node) {
+            return *f;
+        }
+        match page.nodes[node as usize].auto {
+            Auto::Length(f) | Auto::Position(f) | Auto::Arc { frac: f, .. } | Auto::Angle { frac: f, .. } => f,
+            _ => 1.0,
+        }
+    }
 }
 
 fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
-    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), caret: rt.caret };
+    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), auto: Vec::new(), presence: Vec::new(), caret: rt.caret };
     for (i, node) in page.nodes.iter().enumerate() {
         let id = i as NodeId;
         let mut placement = node.placement;
@@ -1573,6 +1765,25 @@ fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
             r.overrides.push((*id, *p));
         }
     }
+    // GP33: the driver — each control's live value maps onto its
+    // automatic slots' shown fraction (a glide in flight shows its eased
+    // value); a presence slot follows its custom state on the control.
+    let mut auto: Vec<(NodeId, f32)> = Vec::new();
+    for d in &page.drivers {
+        if d.state != NO_STR {
+            r.presence.push((d.node, rt.customs.iter().any(|e| *e == (d.root, d.state))));
+            continue;
+        }
+        let shown = if let Some(g) = rt.auto_glides.iter().find(|g| g.node == d.node) {
+            g.shown
+        } else if let Some(v) = r.num(page, d.root, PropKey::Value) {
+            if d.max > d.min { ((v - d.min) / (d.max - d.min)).clamp(0.0, 1.0) } else { 0.0 }
+        } else {
+            rt.auto_rest.iter().find(|(n, _)| *n == d.node).map(|(_, f)| *f).unwrap_or_else(|| baked_frac(page, d.node))
+        };
+        auto.push((d.node, shown));
+    }
+    r.auto = auto;
     fold_seats_and_motion(page, &mut r);
     r
 }
@@ -1628,6 +1839,7 @@ fn motion_default(key: PropKey) -> Option<Value> {
     match key {
         PropKey::Scale | PropKey::ScaleX | PropKey::ScaleY => Some(Value::VNum(1.0)),
         PropKey::TranslateX | PropKey::TranslateY | PropKey::Rotate => Some(Value::VNum(0.0)),
+        PropKey::RevealX | PropKey::RevealY => Some(Value::VNum(1.0)),
         _ => None,
     }
 }
@@ -1637,7 +1849,7 @@ fn apply_placement(p: &mut Placement, page: &Page, prop: Prop) {
     let len = |v: Value| match v {
         Value::VNum(n) => Len::Exact(n),
         Value::VIdent(id) if page.str(id) == "fill" => Len::Fill(1.0),
-        Value::VIdent(id) if page.str(id) == "hug" => Len::Hug(1.0),
+        Value::VIdent(id) if page.str(id) == "hug" => Len::Hug(0.0),
         _ => Len::Unset,
     };
     let num = |v: Value| if let Value::VNum(n) = v { n } else { 0.0 };
@@ -1710,6 +1922,8 @@ const ANIMATABLE: &[PropKey] = &[
     PropKey::MarginLeft,
     PropKey::MarginTop,
     PropKey::MarginRight,
+    PropKey::RevealX,
+    PropKey::RevealY,
     PropKey::MarginBottom,
     PropKey::PaddingLeft,
     PropKey::PaddingTop,
@@ -1746,6 +1960,14 @@ fn placement_value(p: &Placement, key: PropKey) -> Option<Value> {
         PropKey::PaddingRight => Some(Value::VNum(p.padding[2])),
         PropKey::PaddingBottom => Some(Value::VNum(p.padding[3])),
         _ => None,
+    }
+}
+
+/// An automatic slot's compile-baked rest fraction (GP33).
+fn baked_frac(page: &Page, node: NodeId) -> f32 {
+    match page.nodes[node as usize].auto {
+        Auto::Length(f) | Auto::Position(f) | Auto::Arc { frac: f, .. } | Auto::Angle { frac: f, .. } => f,
+        _ => 0.0,
     }
 }
 
@@ -1808,6 +2030,9 @@ fn when_writes(page: &Page, node: NodeId, channel: Channel, who: NodeId) -> bool
 /// in-flight tween values. Call once per frame after `tick`.
 pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
     let changes = std::mem::take(&mut rt.changes);
+    // Tweens born this resolve start at the FLIP's time, not the
+    // resolve's (the ticks in between counted toward them).
+    let late = std::mem::take(&mut rt.pending_change_dt);
     // A state flip whose `when` writes a property is that property's next
     // writer: a held anim end on it yields (a faded-out box that is then
     // pressed shows its `when held` look).
@@ -1820,6 +2045,10 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
     for (who, from, to) in &changes {
         if let Some(f) = from {
             rt.end_state_anims(*who, *f);
+        }
+        // `go_instant` (GP37): an instant flip's rule plays no anim.
+        if *who == NO_NODE && matches!(to, Some(State::Arrangement(a)) if rt.instant_flips.contains(a)) {
+            continue;
         }
         if to.is_some() {
             if let Some(rule) = find_rule(page, *who, *from, *to) {
@@ -1849,7 +2078,11 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
         let own: Vec<bool> = (0..n).map(|i| {
             let id = i as NodeId;
             !page.repeats.iter().any(|rp| rp.template == id)
-                && page.nodes[i].auto != Auto::Presence(false)
+                && match page.nodes[i].auto {
+                    // GP33: presence follows its live state, not the bake.
+                    Auto::Presence(baked) => r.presence.iter().find(|(n, _)| *n == id).map(|(_, b)| *b).unwrap_or(baked),
+                    _ => true,
+                }
                 && !matches!(r.ident(page, id, PropKey::Visibility), Some("gone") | Some("space_only"))
         }).collect();
         let baselined = rt.vis_seen.len().min(n);
@@ -1904,9 +2137,16 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
         // ladder's copy predates it.
         r.hiding = rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(h) => Some(h), _ => None }).collect();
     }
+    // `go_instant` (GP37): the flip restyles but times nothing — its
+    // change never meets a rule.
+    let instant_flips = std::mem::take(&mut rt.instant_flips);
+    let instant_view = |who: NodeId, to: &Option<State>| who == NO_NODE && matches!(to, Some(State::Arrangement(a)) if instant_flips.contains(a));
     // An arrangement flip with a timed view rule: the boxes it re-poses
     // glide to their new rects (`Runtime::glide`).
     for (who, from, to) in &changes {
+        if *who == NO_NODE && instant_view(*who, to) {
+            continue;
+        }
         if *who == NO_NODE {
             let ease_of = |t: &Transition| if t.easing == NO_STR { Easing::LINEAR } else { Easing::parse(page.str(t.easing)).unwrap_or(Easing::LINEAR) };
             // A node's own EXACT pose-pair rule times that node's share
@@ -1921,6 +2161,7 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
             let (vd, ve) = view.map(|r| (r.duration, ease_of(&r))).unwrap_or((0.0, Easing::LINEAR));
             if vd > 0.0 || !rt.glide_node_rules.is_empty() {
                 rt.glide_start = Some((vd, ve));
+                rt.glide_late = late;
             }
         }
     }
@@ -1939,6 +2180,9 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
                 // Which change moved this node: its own state, a watched owner's, or the view's.
                 let mut rule: Option<Transition> = None;
                 for (who, from, to) in &changes {
+                    if instant_view(*who, to) {
+                        continue;
+                    }
                     let scope = if *who == NO_NODE { NO_NODE } else { *who };
                     let watches = *who == NO_NODE
                         || *who == id
@@ -1962,7 +2206,47 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
                 }
                 let easing = if rule.easing == NO_STR { Easing::LINEAR } else { Easing::parse(page.str(rule.easing)).unwrap_or(Easing::LINEAR) };
                 rt.tweens.retain(|t| !(t.node == id && t.key == *key));
-                rt.tweens.push(Tween { node: id, key: *key, from: current, to: target, elapsed: 0.0, duration: rule.duration, easing });
+                rt.tweens.push(Tween { node: id, key: *key, from: current, to: target, elapsed: late.min(rule.duration), duration: rule.duration, easing });
+            }
+        }
+    }
+    // GP33: a driver target that moved re-arms the fraction glide by the
+    // control's default feel (the endpoint-less `transition` on the
+    // instance root); no rule or duration 0 snaps. A glide already
+    // flying retargets from its shown value.
+    for d in &page.drivers {
+        if d.state != NO_STR {
+            continue;
+        }
+        let Some(v) = r.num(page, d.root, PropKey::Value) else { continue };
+        let target = if d.max > d.min { ((v - d.min) / (d.max - d.min)).clamp(0.0, 1.0) } else { 0.0 };
+        if let Some(g) = rt.auto_glides.iter_mut().find(|g| g.node == d.node) {
+            if (g.to - target).abs() > 1e-6 {
+                g.from = g.shown;
+                g.to = target;
+                g.elapsed = 0.0;
+            }
+            continue;
+        }
+        let rest = rt.auto_rest.iter().find(|(n, _)| *n == d.node).map(|(_, f)| *f).unwrap_or_else(|| baked_frac(page, d.node));
+        if (target - rest).abs() <= 1e-6 {
+            continue;
+        }
+        let feel = page.transitions.iter().find(|t| t.node == d.root && t.from.is_none() && t.to.is_none());
+        match feel {
+            Some(rule) if rule.duration > 0.0 => {
+                let easing = if rule.easing == NO_STR { Easing::LINEAR } else { Easing::parse(page.str(rule.easing)).unwrap_or(Easing::LINEAR) };
+                rt.auto_glides.push(AutoGlide { node: d.node, from: rest, to: target, elapsed: 0.0, duration: rule.duration, easing, shown: rest });
+                // This frame still shows the rest value — the glide owns
+                // the travel from here.
+                if let Some(e) = r.auto.iter_mut().find(|(n, _)| *n == d.node) {
+                    e.1 = rest;
+                }
+            }
+            _ => {
+                if let Some(e) = rt.auto_rest.iter_mut().find(|(n, _)| *n == d.node) {
+                    e.1 = target;
+                }
             }
         }
     }

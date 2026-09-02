@@ -46,6 +46,9 @@ pub enum Kind {
     Image,
     Rectangle,
     Circle,
+    /// A circular stroke segment: `from=` (degrees, compass), `sweep=`
+    /// (degrees, clockwise), `thickness=` (the stroke — not `width`).
+    Arc,
     Gradient,
     Slider,
     Input,
@@ -85,6 +88,61 @@ pub enum Auto {
     Position(f32),
     /// Content exists iff the named state holds.
     Presence(bool),
+    /// The region's angular wedge [from, from + frac x sweep] reveals its
+    /// content -- drawing and hits agree (spec 4.6). Degrees, Godot's
+    /// screen convention: 0 = right, clockwise positive.
+    Arc { from: f32, sweep: f32, frac: f32 },
+    /// The region SEATS on the circle centered in its host, at
+    /// from + frac x sweep (an angular position, never a rotation).
+    Angle { from: f32, sweep: f32, frac: f32 },
+}
+
+/// The shown form of a `live()` number in a text position: snapped to
+/// the display step (0.1 unless `round($v, step)` picked one), trailing
+/// zeros trimmed — "10.2", "11", "80" (the addon's display rounding,
+/// user-caught when a drag printed the raw float).
+pub(crate) fn live_text(v: f32, step: f32) -> String {
+    let snapped = if step > 0.0 { (v / step).round() * step } else { v };
+    let mut d = 0usize;
+    let mut s = step;
+    while d < 4 && (s - s.round()).abs() > 1e-4 {
+        s *= 10.0;
+        d += 1;
+    }
+    let mut out = format!("{snapped:.d$}");
+    if out.contains('.') {
+        while out.ends_with('0') {
+            out.pop();
+        }
+        if out.ends_with('.') {
+            out.pop();
+        }
+    }
+    out
+}
+
+/// One `automatic=` coupling, baked so the runtime can re-derive the
+/// fraction when code writes the control's value (GP33 -- the addon's
+/// GogoDriver). `state != NO_STR` = a presence coupling following that
+/// custom state; else the value coupling normalizes over min..max.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AutoDriver {
+    pub node: NodeId,
+    /// The control instance root whose `$value` (or state) drives it.
+    pub root: NodeId,
+    pub min: f32,
+    pub max: f32,
+    pub state: StrId,
+}
+
+/// A `text=live($value)` label inside a control body: a code write of the
+/// control's value rewrites the shown string at the baked display step
+/// (`Runtime::set_value` -- the addon's live-label follow).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LiveText {
+    pub node: NodeId,
+    pub root: NodeId,
+    pub step: f32,
 }
 
 /// Every node-type word and its kind, in the order the docs list them.
@@ -104,6 +162,7 @@ pub const KIND_WORDS: &[(&str, Kind)] = &[
     ("Image", Kind::Image),
     ("Rectangle", Kind::Rectangle),
     ("Circle", Kind::Circle),
+    ("Arc", Kind::Arc),
     ("Gradient", Kind::Gradient),
     ("Slider", Kind::Slider),
     ("Input", Kind::Input),
@@ -227,6 +286,24 @@ pub enum PropKey {
     FontSize,
     Spacing,
     CornerRadius,
+    /// Per-corner radii — they join the plate family; the uniform
+    /// `corner_radius=` writes all four, later on the line wins.
+    CornerRadiusTopLeft,
+    CornerRadiusTopRight,
+    CornerRadiusBottomRight,
+    CornerRadiusBottomLeft,
+    /// Gradient `repeat=mirror`: the ramp runs 0..0.5 and mirrors back.
+    GradientRepeat,
+    /// `from=` / `to=`: a Gradient's 0..1 box points, or an Arc's degrees.
+    From,
+    To,
+    /// Arc words: the swept angle (degrees, clockwise) and the stroke.
+    Sweep,
+    Thickness,
+    /// How much of the box shows along an axis (0..1): layout space
+    /// grows with the fraction — a disclosure reveal, not a clip mask.
+    RevealX,
+    RevealY,
     BorderThickness,
     BorderColor,
     Opacity,
@@ -344,6 +421,17 @@ pub const WORDS: &[(&str, PropKey)] = &[
     ("font_size", PropKey::FontSize),
     ("spacing", PropKey::Spacing),
     ("corner_radius", PropKey::CornerRadius),
+    ("corner_radius_top_left", PropKey::CornerRadiusTopLeft),
+    ("corner_radius_top_right", PropKey::CornerRadiusTopRight),
+    ("corner_radius_bottom_right", PropKey::CornerRadiusBottomRight),
+    ("corner_radius_bottom_left", PropKey::CornerRadiusBottomLeft),
+    ("repeat", PropKey::GradientRepeat),
+    ("from", PropKey::From),
+    ("to", PropKey::To),
+    ("sweep", PropKey::Sweep),
+    ("thickness", PropKey::Thickness),
+    ("reveal_x", PropKey::RevealX),
+    ("reveal_y", PropKey::RevealY),
     ("border_thickness", PropKey::BorderThickness),
     ("border_color", PropKey::BorderColor),
     ("opacity", PropKey::Opacity),
@@ -536,6 +624,8 @@ const BOX: &[PropKey] = &[
     PropKey::SeatOf,
     PropKey::Disabled,
     PropKey::TouchTarget,
+    PropKey::RevealX,
+    PropKey::RevealY,
     PropKey::AccessibilityName,
     PropKey::KeyboardTarget,
     PropKey::Render,
@@ -543,7 +633,7 @@ const BOX: &[PropKey] = &[
 /// The plate behind a box's content. Any box has one (E8): a Label with
 /// `background=` gets a plate under its text, padding included, the same
 /// as a Panel — no wrapping Panel needed.
-const PLATE: &[PropKey] = &[PropKey::Background, PropKey::CornerRadius, PropKey::BorderThickness, PropKey::BorderColor, PropKey::ClipContents];
+const PLATE: &[PropKey] = &[PropKey::Background, PropKey::CornerRadius, PropKey::CornerRadiusTopLeft, PropKey::CornerRadiusTopRight, PropKey::CornerRadiusBottomRight, PropKey::CornerRadiusBottomLeft, PropKey::BorderThickness, PropKey::BorderColor, PropKey::ClipContents];
 /// Air inside the box around its children or text.
 const PADDING: &[PropKey] = &[PropKey::Padding, PropKey::PaddingLeft, PropKey::PaddingTop, PropKey::PaddingRight, PropKey::PaddingBottom];
 /// The words of a box that shows text of its own.
@@ -574,9 +664,10 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
         Kind::Label => &[BOX, PLATE, PADDING, TEXT],
         Kind::Button => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::ToggleMode, PropKey::SelectedProp, PropKey::IconSrc, PropKey::IconSize]],
         Kind::Image => &[BOX, PLATE, &[PropKey::Source, PropKey::Fit, PropKey::Loading]],
-        Kind::Rectangle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::CornerRadius, PropKey::BorderThickness, PropKey::BorderColor]],
+        Kind::Rectangle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::CornerRadius, PropKey::CornerRadiusTopLeft, PropKey::CornerRadiusTopRight, PropKey::CornerRadiusBottomRight, PropKey::CornerRadiusBottomLeft, PropKey::BorderThickness, PropKey::BorderColor]],
         Kind::Circle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::BorderThickness, PropKey::BorderColor]],
-        Kind::Gradient => &[BOX, &[PropKey::Stops, PropKey::GradientFill, PropKey::Angle]],
+        Kind::Gradient => &[BOX, &[PropKey::Stops, PropKey::GradientFill, PropKey::Angle, PropKey::GradientRepeat, PropKey::From, PropKey::To]],
+        Kind::Arc => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::From, PropKey::Sweep, PropKey::Thickness]],
         // A Slider's `background=` is its track, `color=` the filled part.
         Kind::Slider => &[BOX, &[PropKey::Background, PropKey::Color, PropKey::Value, PropKey::Min, PropKey::Max, PropKey::Step]],
         Kind::Input => &[BOX, PLATE, PADDING, TEXT, &[PropKey::Value, PropKey::PlaceholderText, PropKey::MaxLength]],
@@ -1109,6 +1200,8 @@ pub struct StaticPage {
     /// Control instance roots and the states their `state` lines declare
     /// — the `Runtime::set_custom` gate (GPAR116).
     pub custom_states: &'static [(NodeId, StrId)],
+    pub drivers: &'static [AutoDriver],
+    pub live_texts: &'static [LiveText],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1130,6 +1223,8 @@ pub struct Page {
     pub bind_sites: Vec<BindSite>,
     /// See `StaticPage::custom_states`.
     pub custom_states: Vec<(NodeId, StrId)>,
+    pub drivers: Vec<AutoDriver>,
+    pub live_texts: Vec<LiveText>,
 }
 
 impl Page {
@@ -1151,6 +1246,8 @@ impl Page {
             repeats: s.repeats.to_vec(),
             bind_sites: s.bind_sites.to_vec(),
             custom_states: s.custom_states.to_vec(),
+            drivers: s.drivers.to_vec(),
+            live_texts: s.live_texts.to_vec(),
         }
     }
 

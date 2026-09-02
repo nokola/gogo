@@ -248,7 +248,6 @@ fn bars_reserve_builds() {
 /// mode, the lane is held even with nothing overflowing, and the minimum
 /// counts it.
 #[test]
-#[ignore = "GP36: not ported: axis inference without allow= is vertical-only here and bars= reads `never` only (no reserve/always lane)"]
 fn bars_reserve_holds_the_lane_on_both_inferred_axes() {
     let fx = Fx::new("View v { Scroll s width=100, height=100, bars=reserve, halign=left, valign=top { Column c { Rectangle r 40x40, color=red } } }");
     assert_eq!(fx.axes("s"), (true, true), "no hug, no allow=: both axes scroll");

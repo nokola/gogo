@@ -459,7 +459,7 @@ fn render_theme_entry_props_default_under_instance_overrides() {
 /// `theme dark { Slider .FatSlider }` entry overrides the look half in the
 /// dark variant — the track corner is 9 there.
 #[test]
-#[ignore = "GP38: not ported: theme variant activation for kind entries (and GP40 `.Style` on an entry)"]
+#[ignore = "GP40 contract tail: variant-gated kind entries with PROPS work (GPAR88) and the host seam landed (set_theme_variant, GP38 2026-09-01); this pin also needs `.Style` ON a theme entry + static `slot.` paths — the contract subsystem"]
 fn render_theme_variant_entry_look() {
     let mut fx = Fx::new("style ThinSlider for=Slider\nstyle FatSlider for=Slider, slot.track.corner_radius=9\ntheme {\n    Slider .ThinSlider render=gogo\n}\ntheme dark {\n    Slider .FatSlider\n}\nView v { Slider s value=30, width=200 }");
     fx.rt.variant = fx.page.intern("dark");
@@ -638,7 +638,6 @@ fn toggle_min_height_is_a_finger_target() {
 /// a code write of `value=1` selects (and reports once), a code write of
 /// `selected=false` puts the value back to 0 (and reports).
 #[test]
-#[ignore = "GP37: not ported: Radio/Toggle code writes report and re-derive selected (a value write leaves `selected` alone)"]
 fn toggle_code_writes_derive_selected_and_value() {
     let mut fx = toggle_fx();
     let mute = fx.node("mute");

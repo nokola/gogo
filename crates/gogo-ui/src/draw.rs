@@ -26,11 +26,19 @@ pub enum Fit {
 pub enum GradientKind {
     Linear,
     Radial,
+    /// A sweep around the box center (`fill=conic`).
+    Conic,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Draw {
     Quad { rect: Rect, color: Rgba, corner: f32, border: f32, border_color: Rgba },
+    /// A plate whose corners differ (`corner_radius_top_left=` …): radii
+    /// clockwise from top-left. The uniform case stays `Quad`.
+    QuadCorners { rect: Rect, color: Rgba, corners: [f32; 4], border: f32, border_color: Rgba },
+    /// A circular stroke: `from` degrees on the compass (0 = up,
+    /// clockwise), `sweep` degrees, `thickness` the stroke width in epx.
+    Arc { rect: Rect, color: Rgba, from: f32, sweep: f32, thickness: f32 },
     Circle { rect: Rect, color: Rgba, border: f32, border_color: Rgba },
     /// `image` is the `src` string id; the renderer maps it to a texture.
     Image { rect: Rect, image: StrId, tint: Rgba, fit: Fit },
@@ -50,6 +58,12 @@ pub enum Draw {
     Caret { rect: Rect, text: StrId, key: KeyId, font_size: f32, font: StrId, index: u32, color: Rgba },
     ClipPush(Rect),
     ClipPop,
+    /// GP33 `automatic=arc`: everything until the pop shows only inside
+    /// the angular wedge [from, from + span] about (cx, cy) — the fan
+    /// mask behind a Knob's progress ring. Degrees, Godot's screen
+    /// convention (0 = right, clockwise positive); span <= 0 hides all.
+    WedgePush { cx: f32, cy: f32, from: f32, span: f32 },
+    WedgePop,
     /// Everything until the matching `RotatePop` turns `angle` degrees
     /// clockwise about (`cx`, `cy`) epx — a node's `rotate` and its subtree.
     RotatePush { angle: f32, cx: f32, cy: f32 },
@@ -185,6 +199,18 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     let opacity = opacity * own.clamp(0.0, 1.0);
     let color = |key: PropKey| res.color(page, id, key).map(|c| mul_alpha(c, opacity));
     let corner = res.num(page, id, PropKey::CornerRadius).unwrap_or(0.0);
+    // Per-corner radii: the file-order walk decides — the uniform
+    // `corner_radius=` writes all four, a per-corner key after it wins
+    // that corner, a uniform after a per-corner key stomps it back.
+    let corners = corner_set(page, res, id);
+    let uniform = corners[0] == corners[1] && corners[1] == corners[2] && corners[2] == corners[3];
+    let plate_quad = |out: &mut Vec<Draw>, rect: Rect, color: Rgba, border: f32, border_color: Rgba| {
+        if uniform {
+            out.push(Draw::Quad { rect, color, corner: corners[0], border, border_color });
+        } else {
+            out.push(Draw::QuadCorners { rect, color, corners, border, border_color });
+        }
+    };
     let border = res.num(page, id, PropKey::BorderThickness).unwrap_or(0.0);
     let border_color = color(PropKey::BorderColor).unwrap_or(Rgba::TRANSPARENT);
     // Text color is `font_color=` alone — `color=` on a text box is refused
@@ -200,6 +226,21 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     if clip {
         out.push(Draw::ClipPush(rect));
     }
+    // GP33 `automatic=arc`: the wedge [from, from + fraction x sweep] is
+    // the mask this slot's content shows through — content-independent
+    // (a Gradient ring under it reveals by value the same way), and hits
+    // agree (`wedge_contains`). A full span needs no mask.
+    let wedge = if let crate::page::Auto::Arc { from, sweep, .. } = node.auto {
+        let span = sweep * res.auto_frac(page, id);
+        if span < 360.0 {
+            out.push(Draw::WedgePush { cx: rect.x + rect.w / 2.0, cy: rect.y + rect.h / 2.0, from, span });
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
     let rotated = motion.rotate != 0.0;
     if rotated {
         out.push(Draw::RotatePush { angle: motion.rotate, cx: rect.x + rect.w / 2.0, cy: rect.y + rect.h / 2.0 });
@@ -215,9 +256,9 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     let paints_own_plate = matches!(node.kind, Kind::View | Kind::Panel | Kind::ListItem | Kind::Slot | Kind::Button | Kind::Check | Kind::Toggle | Kind::Radio | Kind::Rectangle | Kind::Circle | Kind::Gradient | Kind::Slider | Kind::Input);
     if !paints_own_plate {
         if let Some(bg) = color(PropKey::Background) {
-            out.push(Draw::Quad { rect, color: bg, corner, border, border_color });
+            plate_quad(out, rect, bg, border, border_color);
         } else if border > 0.0 {
-            out.push(Draw::Quad { rect, color: Rgba::TRANSPARENT, corner, border, border_color });
+            plate_quad(out, rect, Rgba::TRANSPARENT, border, border_color);
         }
     }
 
@@ -226,9 +267,9 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             // The plate: View/Panel start on the blank slate — transparent
             // unless the file speaks `background=`.
             if let Some(bg) = color(PropKey::Background) {
-                out.push(Draw::Quad { rect, color: bg, corner, border, border_color });
+                plate_quad(out, rect, bg, border, border_color);
             } else if border > 0.0 {
-                out.push(Draw::Quad { rect, color: Rgba::TRANSPARENT, corner, border, border_color });
+                plate_quad(out, rect, Rgba::TRANSPARENT, border, border_color);
             }
         }
         Kind::Button | Kind::Check | Kind::Toggle | Kind::Radio => {
@@ -297,21 +338,54 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             // the swatch squares in new_painting rely on it). A Circle with
             // none draws nothing (gogo_circle.gd).
             let c = color(PropKey::Color).unwrap_or(mul_alpha(DEFAULT_TEXT_COLOR, opacity));
-            out.push(Draw::Quad { rect, color: c, corner, border, border_color });
+            plate_quad(out, rect, c, border, border_color);
         }
         Kind::Circle => {
             let c = color(PropKey::Color).unwrap_or(Rgba::TRANSPARENT);
             out.push(Draw::Circle { rect, color: c, border, border_color });
         }
+        Kind::Arc => {
+            let c = color(PropKey::Color).unwrap_or(Rgba::TRANSPARENT);
+            let from = res.num(page, id, PropKey::From).unwrap_or(0.0);
+            let sweep = res.num(page, id, PropKey::Sweep).unwrap_or(360.0);
+            let thickness = res.num(page, id, PropKey::Thickness).unwrap_or(1.0);
+            out.push(Draw::Arc { rect, color: c, from, sweep, thickness });
+        }
         Kind::Gradient => {
             let stops = res.prop(page, id, PropKey::Stops).map(|v| page.list(v).to_vec()).unwrap_or_default();
             let kind = match res.ident(page, id, PropKey::GradientFill) {
                 Some("radial") => GradientKind::Radial,
+                Some("conic") => GradientKind::Conic,
                 _ => GradientKind::Linear,
             };
+            let mirror = res.ident(page, id, PropKey::GradientRepeat) == Some("mirror");
             // No `angle=`: left → right (Godot's fill_from (0,0) → fill_to
             // (1,0)), which is 90 on the compass.
-            let angle = res.num(page, id, PropKey::Angle).unwrap_or(90.0);
+            let mut angle = res.num(page, id, PropKey::Angle).unwrap_or(90.0);
+            // `from=`/`to=` place the ramp inside the box (0..1 points).
+            // For a LINEAR fill both fold exactly into the angle (the
+            // from→to direction) and a band remap along the crossing;
+            // for radial/conic the compile accepts them but the renderer
+            // still centers — a recorded render follow-up (GP40).
+            let point = |key: PropKey| match res.prop(page, id, key) {
+                Some(Value::VSize(Some(x), Some(y))) => Some((x, y)),
+                _ => None,
+            };
+            let span = match (point(PropKey::From), point(PropKey::To)) {
+                (Some(f), Some(t)) if kind == GradientKind::Linear && (f != t) => {
+                    let d = ((t.0 - f.0) * rect.w, (t.1 - f.1) * rect.h);
+                    let len = (d.0 * d.0 + d.1 * d.1).sqrt();
+                    let dn = (d.0 / len, d.1 / len);
+                    angle = dn.0.atan2(-dn.1).to_degrees();
+                    let dot = |x: f32, y: f32| x * dn.0 + y * dn.1;
+                    let projs = [dot(0.0, 0.0), dot(rect.w, 0.0), dot(0.0, rect.h), dot(rect.w, rect.h)];
+                    let lo = projs.iter().cloned().fold(f32::INFINITY, f32::min);
+                    let hi = projs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                    let norm = |p: (f32, f32)| (dot(p.0 * rect.w, p.1 * rect.h) - lo) / (hi - lo).max(1e-6);
+                    Some((norm(f), norm(t)))
+                }
+                _ => None,
+            };
             // (color, position): `@pos` as written, else spread evenly —
             // the compiler holds `@` to all-or-none (G2005), so a list is
             // wholly pinned or wholly even, never a mix.
@@ -326,24 +400,45 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                     *pos = Some(if n <= 1 { 0.0 } else { i as f32 / (n - 1) as f32 });
                 }
             }
-            let at = |i: usize| colored[i].1.unwrap_or(0.0).clamp(0.0, 1.0);
+            // With `repeat=mirror` the ramp runs 0..0.5 and mirrors back
+            // (unpinned stops spread over the half); the fold and its
+            // mirror are emitted as two band runs.
+            if mirror {
+                for (i, (_, pos)) in colored.iter_mut().enumerate() {
+                    *pos = Some(pos.unwrap_or(if n <= 1 { 0.0 } else { i as f32 / (n - 1) as f32 * 0.5 }).min(0.5));
+                }
+            }
+            let fold = if mirror { 0.5 } else { 1.0 };
+            let remap = |t: f32| match span {
+                Some((a, b)) => (a + t * (b - a)).clamp(0.0, 1.0),
+                None => t,
+            };
+            let at = |i: usize| remap(colored[i].1.unwrap_or(0.0).clamp(0.0, 1.0));
+            let mut bands: Vec<(Rgba, Rgba, (f32, f32))> = Vec::new();
             match n {
                 0 => {}
-                1 => out.push(Draw::Gradient { rect, kind, from: colored[0].0, to: colored[0].0, angle, band: (0.0, 1.0) }),
+                1 => bands.push((colored[0].0, colored[0].0, (0.0, fold))),
                 _ => {
                     // Before the first stop and after the last, the edge color holds.
                     if at(0) > 0.0 {
-                        out.push(Draw::Gradient { rect, kind, from: colored[0].0, to: colored[0].0, angle, band: (0.0, at(0)) });
+                        bands.push((colored[0].0, colored[0].0, (0.0, at(0))));
                     }
                     for i in 0..n - 1 {
                         if at(i + 1) > at(i) {
-                            out.push(Draw::Gradient { rect, kind, from: colored[i].0, to: colored[i + 1].0, angle, band: (at(i), at(i + 1)) });
+                            bands.push((colored[i].0, colored[i + 1].0, (at(i), at(i + 1))));
                         }
                     }
-                    if at(n - 1) < 1.0 {
-                        out.push(Draw::Gradient { rect, kind, from: colored[n - 1].0, to: colored[n - 1].0, angle, band: (at(n - 1), 1.0) });
+                    if at(n - 1) < fold {
+                        bands.push((colored[n - 1].0, colored[n - 1].0, (at(n - 1), fold)));
                     }
                 }
+            }
+            if mirror {
+                let back: Vec<(Rgba, Rgba, (f32, f32))> = bands.iter().map(|(f, t, (a, b))| (*t, *f, (1.0 - b, 1.0 - a))).collect();
+                bands.extend(back);
+            }
+            for (f, t, band) in bands {
+                out.push(Draw::Gradient { rect, kind, from: f, to: t, angle, band });
             }
         }
         Kind::Image => {
@@ -484,6 +579,9 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     if rotated {
         out.push(Draw::RotatePop);
     }
+    if wedge {
+        out.push(Draw::WedgePop);
+    }
     if clip {
         out.push(Draw::ClipPop);
     }
@@ -559,6 +657,19 @@ fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option<Vec<Rect>>
     Some(out)
 }
 
+/// The shared wedge formula (drawing and hits agree by construction): is
+/// the point's angle within [from_deg, from_deg + span_deg]? Degrees,
+/// Godot's screen convention (0 = right, clockwise positive).
+pub(crate) fn wedge_contains(dx: f32, dy: f32, from_deg: f32, span_deg: f32) -> bool {
+    if span_deg <= 0.0 {
+        return false;
+    }
+    if span_deg >= 360.0 || dx * dx + dy * dy < 1e-6 {
+        return true;
+    }
+    (dy.atan2(dx).to_degrees() - from_deg).rem_euclid(360.0) <= span_deg
+}
+
 pub fn hit(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: bool) -> Option<NodeId> {
     // The finger lands on the DRAWN picture: while an anim moves a box,
     // the un-moved layout rects would take taps where controls WILL be,
@@ -594,6 +705,15 @@ fn hit_laid(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: bo
             if res.gone(page, a) || res.hidden(page, a) {
                 ok = false;
                 break;
+            }
+            // GP33: an arc wedge cuts input the way it cuts pixels — the
+            // hit area is what's visible (§4.5).
+            if let crate::page::Auto::Arc { from, sweep, .. } = page.nodes[a as usize].auto {
+                let ra = rects[a as usize];
+                if !wedge_contains(x - (ra.x + ra.w / 2.0), y - (ra.y + ra.h / 2.0), from, sweep * res.auto_frac(page, a)) {
+                    ok = false;
+                    break;
+                }
             }
             let parent = page.nodes[a as usize].parent;
             if parent == NO_NODE {
@@ -670,4 +790,35 @@ mod tests {
         assert!(!list.iter().any(|d| matches!(d, Draw::Quad { color, .. } if *color == DEFAULT_BUTTON_BACKGROUND)), "no plate under a mark; the undo plate is dimmed");
         assert!(list.iter().any(|d| matches!(d, Draw::Text { color, .. } if color.0[3] == (255.0 * DISABLED_OPACITY) as u8 + 1 || color.0[3] == (255.0 * DISABLED_OPACITY).round() as u8)), "undo text dimmed: {list:#?}");
     }
+}
+
+/// The four corner radii after the file-order walk (static props, then
+/// `when` overrides): the uniform key writes all four, a per-corner key
+/// writes its one, later wins. Values follow `$refs` through the theme.
+fn corner_set(page: &Page, res: &Resolved, id: NodeId) -> [f32; 4] {
+    let mut c = [0.0f32; 4];
+    let node = &page.nodes[id as usize];
+    let apply = |c: &mut [f32; 4], key: PropKey, value: Value| {
+        let v = match crate::runtime::deref(page, res.variant, value) {
+            Value::VNum(v) => v,
+            _ => return,
+        };
+        match key {
+            PropKey::CornerRadius => *c = [v; 4],
+            PropKey::CornerRadiusTopLeft => c[0] = v,
+            PropKey::CornerRadiusTopRight => c[1] = v,
+            PropKey::CornerRadiusBottomRight => c[2] = v,
+            PropKey::CornerRadiusBottomLeft => c[3] = v,
+            _ => {}
+        }
+    };
+    for p in &page.props[node.props.0 as usize..(node.props.0 + node.props.1) as usize] {
+        apply(&mut c, p.key, p.value);
+    }
+    for (nid, p) in &res.overrides {
+        if *nid == id {
+            apply(&mut c, p.key, p.value);
+        }
+    }
+    c
 }

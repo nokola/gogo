@@ -278,7 +278,6 @@ fn bodied_radio_when_and_tap() {
 /// selecting a Radio from code behaves like a tap — the old pick clears and
 /// the change is reported once; writing the same value again is quiet.
 #[test]
-#[ignore = "GP37: not ported: Radio code writes report like a tap and clear the group (set_state leaves the old pick selected)"]
 fn bodied_radio_code_write_reports_like_a_tap() {
     let mut fx = Fx::new(RADIO_BODY_SRC);
     fx.tap("c", 0.0);

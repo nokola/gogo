@@ -110,7 +110,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G0059", "a top-level `when` writes `node.prop = value`"),
     ("G0060", "no slot/node of that name"),
     ("G0061", "an anim step says when it runs — `and` / `then`"),
-    ("G0062", "`after=` is not supported yet"),
+    ("G0062", "anim step edges — `after=`/`play`/`each`/`group` misuse"),
     ("G0063", "`slot.` anim lanes — a control's OWN scoped anims, motion words only"),
     ("G0064", "an anim lane needs `to=`"),
     ("G0065", "`easing=` takes a name"),

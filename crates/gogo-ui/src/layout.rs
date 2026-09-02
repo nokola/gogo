@@ -156,6 +156,22 @@ pub fn layout(page: &Page, res: &Resolved, viewport: Rect, text: &dyn TextMeasur
         // The viewport is not a number the author wrote.
         lay.place(0, viewport, [false, false]);
     }
+    // GP40 reveal on a STRETCHED axis: the shown extent is factor × the
+    // node's OWN extent, never the parent's grant (the shipped D93 rule) —
+    // hug axes already carry the scaled measure, a stretch clamps back.
+    for i in 0..page.nodes.len() {
+        let id = i as NodeId;
+        let fx = res.num(page, id, PropKey::RevealX).map(|f| f.clamp(0.0, 1.0));
+        let fy = res.num(page, id, PropKey::RevealY).map(|f| f.clamp(0.0, 1.0));
+        if fx.map(|f| f < 1.0).unwrap_or(false) {
+            let (sw, _) = lay.size_at(id, Some(lay.rects[i].w));
+            lay.rects[i].w = lay.rects[i].w.min(sw);
+        }
+        if fy.map(|f| f < 1.0).unwrap_or(false) {
+            let (_, sh) = lay.size_at(id, Some(lay.rects[i].w));
+            lay.rects[i].h = lay.rects[i].h.min(sh);
+        }
+    }
     lay.rects
 }
 
@@ -283,10 +299,11 @@ impl<'a> Lay<'a> {
     /// (a Label in a Column is as tall as its text); an aligned axis hugs.
     fn main_len(&self, id: NodeId, axis: Axis) -> Len {
         let p = self.placement(id);
-        let (len, align) = if axis == Axis::X { (p.width, p.halign) } else { (p.height, p.valign) };
+        let (len, _) = if axis == Axis::X { (p.width, p.halign) } else { (p.height, p.valign) };
         match len {
-            Len::Unset if align != Align::AlignUnset => Len::Hug(1.0),
-            Len::Unset => Len::Hug(1.0),
+            // Plain hug carries no slot weight (0) — `hug(n)` alone is
+            // the weighted slot (GP34).
+            Len::Unset => Len::Hug(0.0),
             other => other,
         }
     }
@@ -314,6 +331,9 @@ impl<'a> Lay<'a> {
     fn fill_weight(&self, id: NodeId, axis: Axis) -> f32 {
         match self.main_len(id, axis) {
             Len::Fill(n) => n,
+            // `hug(n)` (GP34): a weighted SLOT sharing the leftover like
+            // `fill(n)`, holding a box that hugs its content.
+            Len::Hug(n) => n,
             _ => 0.0,
         }
     }
@@ -372,7 +392,12 @@ impl<'a> Lay<'a> {
                 h
             }
         };
-        (w, h)
+        // GP40 reveal: a revealed axis takes only its shown fraction of
+        // space — siblings close up (a disclosure collapse, not a clip
+        // mask). Scaled LAST so mins and caps shape the whole box first.
+        let fx = self.res.num(self.page, id, PropKey::RevealX).map(|f| f.clamp(0.0, 1.0)).unwrap_or(1.0);
+        let fy = self.res.num(self.page, id, PropKey::RevealY).map(|f| f.clamp(0.0, 1.0)).unwrap_or(1.0);
+        (w * fx, h * fy)
     }
 
     /// A child's contribution to a free parent's minimum: its minimum plus
@@ -550,7 +575,7 @@ impl<'a> Lay<'a> {
             Kind::GridRow => (0.0, 0.0),
             Kind::Gap | Kind::Skip => (0.0, 0.0),
             Kind::Image => self.image_min(id, avail_w),
-            Kind::Rectangle | Kind::Circle | Kind::Gradient => (0.0, 0.0),
+            Kind::Rectangle | Kind::Circle | Kind::Arc | Kind::Gradient => (0.0, 0.0),
             Kind::Slider => (0.0, SLIDER_HEIGHT),
             Kind::Input => (0.0, INPUT_HEIGHT),
         };
@@ -608,6 +633,12 @@ impl<'a> Lay<'a> {
             let (m, x) = if node.kind == Kind::Gap {
                 (if node.gap_fill { 0.0 } else { node.gap }, 0.0)
             } else {
+                // Whole-px stack minimums are NOT ported (E10, user-
+                // approved 2026-09-01): Godot's _box_min truncation only mirrors
+                // its integer text metrics (Label ceils its measure), so
+                // it is a no-op there; Rust measures fractionally end to
+                // end, and truncating here made wrap labels wrap a line
+                // early — behavior Godot never shows.
                 let (w, h) = self.size_at(*c, if axis == Axis::Y { inner_w } else { None });
                 if axis == Axis::Y { (h, w) } else { (w, h) }
             };
@@ -651,11 +682,29 @@ impl<'a> Lay<'a> {
         // An `automatic=` slot: the value picks its extent or its seat
         // along the host's width (the sliders here are horizontal).
         let frame = match self.node(id).auto {
-            Auto::Length(f) => Rect::new(frame.x, frame.y, frame.w * f, frame.h),
-            Auto::Position(f) => {
+            Auto::Length(_) => {
+                let f = self.res.auto_frac(self.page, id);
+                Rect::new(frame.x, frame.y, frame.w * f, frame.h)
+            }
+            Auto::Position(_) => {
+                let f = self.res.auto_frac(self.page, id);
                 let (own_w, _) = self.size_at(id, Some(frame.w));
-                p.width = Len::Hug(1.0);
+                p.width = Len::Hug(0.0);
                 Rect::new(frame.x + (frame.w - own_w) * f, frame.y, own_w, frame.h)
+            }
+            // GP33 `automatic=angle` (the knob-thumb seat): the slot's
+            // CENTER sits on the circle centered in its host, inside the
+            // rim by half the slot's own extent, at from + fraction x
+            // sweep (degrees, Godot's screen convention: 0 = right,
+            // clockwise positive).
+            Auto::Angle { from, sweep, .. } => {
+                let f = self.res.auto_frac(self.page, id);
+                let (ow, oh) = self.size_at(id, Some(frame.w));
+                let radius = (frame.w.min(frame.h) / 2.0 - ow.max(oh) / 2.0).max(0.0);
+                let theta = (from + f * sweep).to_radians();
+                p.width = Len::Hug(0.0);
+                p.height = Len::Hug(0.0);
+                Rect::new(frame.x + frame.w / 2.0 + theta.cos() * radius - ow / 2.0, frame.y + frame.h / 2.0 + theta.sin() * radius - oh / 2.0, ow, oh)
             }
             _ => frame,
         };
@@ -776,14 +825,29 @@ impl<'a> Lay<'a> {
             }
             // The cross axis is a free axis; the main axis is the slot. The
             // cross measure is taken at the width the child got.
+            // `hug(n)` (GP34): the slot shares the leftover, the BOX
+            // inside it hugs its content, seated per the main-axis align.
+            let hug_w = matches!(if axis == Axis::Y { p.height } else { p.width }, Len::Hug(n) if n > 0.0);
+            let (main_pos, main_size) = if hug_w {
+                let m = slots[i].0.min(size);
+                let a = if axis == Axis::Y { p.valign } else { p.halign };
+                let off = match a {
+                    Align::Center => (size - m) / 2.0,
+                    Align::End => size - m,
+                    _ => 0.0,
+                };
+                (cursor + off, m)
+            } else {
+                (cursor, size)
+            };
             let rect = if axis == Axis::Y {
                 let (min_w, _) = self.size_at(*c, Some(inner.w));
                 let (x, w) = free_axis(inner.x, inner.w, p.width, p.halign, None, None, min_w, p.min_width, p.max_width, p.max_width_fill, self.written[id as usize][0]);
-                Rect::new(x, cursor, w, size)
+                Rect::new(x, main_pos, w, main_size)
             } else {
-                let (_, min_h) = self.size_final(*c, size);
+                let (_, min_h) = self.size_final(*c, main_size);
                 let (y, h) = free_axis(inner.y, inner.h, p.height, p.valign, None, None, min_h, p.min_height, p.max_height, p.max_height_fill, self.written[id as usize][1]);
-                Rect::new(cursor, y, size, h)
+                Rect::new(main_pos, y, main_size, h)
             };
             self.rects[*c as usize] = rect;
             self.place_children(*c, rect);
@@ -803,11 +867,23 @@ impl<'a> Lay<'a> {
             let cols = flow_rows(&swapped, inner.h, spacing);
             let mut x = inner.x;
             for col in cols {
+                // The transposed stretch: `height=fill` takes the
+                // column's leftover (GP34).
+                let count = col.end - col.first;
+                let used: f32 = sizes[col.first..col.end].iter().map(|s| s.1).sum::<f32>() + spacing * count.saturating_sub(1) as f32;
+                let weights: f32 = (col.first..col.end).map(|i| if let Len::Fill(n) = self.placement(children[i]).height { n } else { 0.0 }).sum();
+                let extra = (inner.h - used).max(0.0);
                 let mut y = inner.y;
                 for i in col.first..col.end {
                     let c = children[i];
                     let (w, h) = sizes[i];
                     let p = *self.placement(c);
+                    let h = if let Len::Fill(n) = p.height {
+                        let stretched = if weights > 0.0 { h + extra * n / weights } else { h };
+                        p.max_height.map_or(stretched, |c| stretched.min(c))
+                    } else {
+                        h
+                    };
                     let (cx, cw) = free_axis(x, col.height, p.width, p.halign, None, None, w, p.min_width, p.max_width, false, false);
                     let rect = Rect::new(cx, y, cw, h);
                     self.rects[c as usize] = rect;
@@ -821,11 +897,26 @@ impl<'a> Lay<'a> {
         let rows = flow_rows(&sizes, inner.w, spacing);
         let mut y = inner.y;
         for row in rows {
+            // `width=fill` in a Flow stretches across its LINE (GP34, the
+            // shipped expand flag): the row's leftover is shared by the
+            // fill children by weight; everyone else keeps their measure.
+            let count = row.end - row.first;
+            let used: f32 = sizes[row.first..row.end].iter().map(|s| s.0).sum::<f32>() + spacing * count.saturating_sub(1) as f32;
+            let weights: f32 = (row.first..row.end).map(|i| if let Len::Fill(n) = self.placement(children[i]).width { n } else { 0.0 }).sum();
+            let extra = (inner.w - used).max(0.0);
             let mut x = inner.x;
             for i in row.first..row.end {
                 let c = children[i];
                 let (w, h) = sizes[i];
                 let p = *self.placement(c);
+                let w = if let Len::Fill(n) = p.width {
+                    // The stretch stops at a numeric cap (the cap law:
+                    // a box never grows past its cap).
+                    let stretched = if weights > 0.0 { w + extra * n / weights } else { w };
+                    p.max_width.map_or(stretched, |c| stretched.min(c))
+                } else {
+                    w
+                };
                 let (cy, ch) = free_axis(y, row.height, p.height, p.valign, None, None, h, p.min_height, p.max_height, false, false);
                 let rect = Rect::new(x, cy, w, ch);
                 self.rects[c as usize] = rect;
@@ -924,10 +1015,17 @@ impl<'a> Lay<'a> {
     /// content overflows that axis and `bars=` is not `never` — 8 device
     /// px on the phone theme, 4 epx here.
     fn scroll_bars(&self, id: NodeId, inner: Rect) -> (f32, f32) {
-        if self.res.ident(self.page, id, PropKey::Bars) == Some("never") {
+        let mode = self.res.ident(self.page, id, PropKey::Bars);
+        if mode == Some("never") {
             return (0.0, 0.0);
         }
         let (sx, sy) = self.scroll_axes(id);
+        // `always`/`reserve` hold the lane on every scrolling axis even
+        // with nothing overflowing (GP36) — content never shifts when the
+        // bar appears.
+        if matches!(mode, Some("always") | Some("reserve")) {
+            return (if sx { SCROLL_BAR_EPX } else { 0.0 }, if sy { SCROLL_BAR_EPX } else { 0.0 });
+        }
         let (mut content_w, mut content_h) = (0.0f32, 0.0f32);
         for c in self.visible_children(id) {
             let (w, h) = self.size_at(c, if sx { None } else { Some(inner.w) });
@@ -1029,7 +1127,7 @@ impl<'a> Lay<'a> {
             // here or the track silently lays out as `fill` (GPAR114).
             .map(|v| match crate::runtime::deref(self.page, self.res.variant, *v) {
                 Value::VNum(n) => Len::Exact(n),
-                Value::VIdent(w) if self.page.str(w) == "hug" => Len::Hug(1.0),
+                Value::VIdent(w) if self.page.str(w) == "hug" => Len::Hug(0.0),
                 Value::VIdent(_) => Len::Fill(1.0),
                 Value::VCall { name, args } => {
                     let weight = self.page.values.get(args.0 as usize).and_then(|a| if let Value::VNum(n) = a { Some(*n) } else { None }).unwrap_or(1.0);
@@ -1281,7 +1379,7 @@ fn free_axis(start: f32, extent: f32, len: Len, align: Align, m_near: Option<f32
     let far = m_far.unwrap_or(0.0);
     let filled = extent - near - far;
     // An aligned axis with no size key hugs: alignment carves the default fill.
-    let len = if len == Len::Unset && align != Align::AlignUnset { Len::Hug(1.0) } else { len };
+    let len = if len == Len::Unset && align != Align::AlignUnset { Len::Hug(0.0) } else { len };
     // Both edges named on an unaligned axis with NO size word: the box
     // spans them. A written size is never stretched by margins — an exact
     // number IS the box, and a hug box is as wide as its content; margins
@@ -1362,14 +1460,13 @@ pub fn scroll_axes_of(page: &Page, res: &Resolved, id: NodeId) -> (bool, bool) {
                 _ => (false, true),
             };
         }
+        // D138: no `allow=` — the sizing triad infers. A hug axis is
+        // content-sized, nothing left to scroll (disabled); a capped hug
+        // scrolls past its cap; every other mode scrolls (GP36).
         let p = &res.placement[id as usize];
         let sx = !matches!(p.width, Len::Hug(_)) || p.max_width.is_some();
         let sy = !matches!(p.height, Len::Hug(_)) || p.max_height.is_some();
-        // Default (no allow=, no hug): vertical only, the WPF ScrollViewer reading.
-        if sx && sy && !matches!(p.width, Len::Exact(_) | Len::Fill(_)) {
-            return (false, true);
-        }
-        (sx && matches!(p.width, Len::Exact(_) | Len::Fill(_)) && matches!(p.height, Len::Hug(_)), sy)
+        (sx, sy)
 }
 
 #[cfg(test)]

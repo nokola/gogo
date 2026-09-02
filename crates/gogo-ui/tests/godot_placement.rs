@@ -127,7 +127,7 @@ fn column_children_encode_alignment_and_the_triad() {
     assert_eq!(b.placement("t").valign, Align::Start);
     assert_eq!(b.placement("m").valign, Align::Center);
     assert_eq!(b.placement("b").valign, Align::End);
-    assert_eq!(b.placement("hg").width, Len::Hug(1.0));
+    assert_eq!(b.placement("hg").width, Len::Hug(0.0));
     assert_eq!(b.placement("fx").width, Len::Exact(120.0));
     assert_eq!(b.placement("fl").width, Len::Fill(1.0));
     assert_eq!(b.placement("f2").width, Len::Fill(2.5));
@@ -153,11 +153,36 @@ fn column_children_encode_alignment_and_the_triad() {
 /// Row, `fill` + `hug(2)` → the hug slot is 200 wide, its 40-wide box
 /// sits at x=180.
 #[test]
-#[ignore = "GP34: not ported: `hug(n)` weighted natural slot — Rust treats hug(2) as a fixed content-sized slot"]
 fn hug_weight_shares_the_leftover_and_centers_its_box() {
     let b = build("View v {\n Row row height=20 {\n  Rectangle a width=fill\n  Panel b width=hug(2), halign=center { Rectangle inner 40x10 }\n }\n}\n", 300.0, 100.0);
     assert_eq!(b.rect("a").w, 100.0, "{:?}", b.rect("a"));
     assert_eq!((b.rect("b").x, b.rect("b").w), (180.0, 40.0), "{:?}", b.rect("b"));
+}
+
+/// `_flow_tests` (resolver 5770, the expand flag): `width=fill` in a
+/// Flow stretches across its LINE — the row's leftover goes to the fill
+/// child; the other rows pack as measured (GP34).
+#[test]
+fn flow_fill_stretches_across_its_line() {
+    let b = build("View v {\n Flow f width=200, halign=left, valign=top {\n  Rectangle a 60x10\n  Rectangle bb width=fill, height=10\n  Rectangle c 150x10\n }\n}\n", 200.0, 100.0);
+    let a = b.rect("a");
+    let fillc = b.rect("bb");
+    let c = b.rect("c");
+    assert_eq!((a.x, a.w), (0.0, 60.0), "{a:?}");
+    assert_eq!((fillc.x, fillc.w), (60.0, 140.0), "the fill child takes the line's leftover: {fillc:?}");
+    assert!(c.y > a.y, "the 150-wide box wrapped to the next line: {c:?}");
+}
+
+/// The container-child margin fence (GP34, resolver
+/// _validate_layout_parents): margins under a parent that seats its
+/// children are provably dead — refused naming the fix (`spacing=` for
+/// rhythm, a `gap N` line for one divergent break).
+#[test]
+fn margins_under_a_container_are_refused() {
+    let c = gogo::compile::compile("View v { Column c { Rectangle r 40x10, margin_left=8 } }", &|_| None);
+    assert!(c.diags.iter().any(|d| d.message.contains("margins only apply under a plain box")), "{:#?}", c.diags);
+    let free = gogo::compile::compile("View v { Layers l { Rectangle r 40x10, margin_left=8 } }", &|_| None);
+    assert!(free.diags.is_empty(), "a free parent keeps margins: {:#?}", free.diags);
 }
 
 /// `_placement_tests` 1474-1506 (`place.free-ok` … `place.free-fixed-
@@ -291,7 +316,7 @@ fn signals_flag_needs_no_comma_before_a_key() {
 fn styles_carry_placement_and_the_node_overrides() {
     let b = build("style Grow width=fill\nwidget RowBtn $label=\"\" {\n Button signals, text=$label\n}\nView v {\n Column col {\n  RowBtn a .Grow\n  RowBtn b .Grow width=hug\n  Button c .Grow width=fill(3)\n }\n}\n", 400.0, 400.0);
     assert_eq!(b.placement("a").width, Len::Fill(1.0));
-    assert_eq!(b.placement("b").width, Len::Hug(1.0));
+    assert_eq!(b.placement("b").width, Len::Hug(0.0));
     assert_eq!(b.placement("c").width, Len::Fill(3.0));
     assert_eq!(b.rect("a").w, 400.0, "{:?}", b.rect("a"));
     assert!(b.rect("b").w < 400.0, "hug: {:?}", b.rect("b"));

@@ -347,9 +347,9 @@ fn empty_when_block_is_refused() {
 }
 
 /// `arr.err-transition-dup` (6772): two bare view-level `transition`
-/// rules cover the same change and are refused. Rust keeps both.
+/// rules cover the same change and are refused — two rules for one pair
+/// would pick silently (GP31's duplicate fence, 2026-09-01).
 #[test]
-#[ignore = "GP31: not ported: duplicate transition rules are a build error"]
 fn two_bare_transitions_are_refused() {
     let src = "arrangement s\ntransition duration=0.1\ntransition duration=0.2\nView v { Rectangle bar }";
     assert!(refused(src), "{:#?}", diags(src));
@@ -454,6 +454,49 @@ fn arrangement_flip_poses_tweens_and_comes_home() {
     let (res, rects) = frame(&mut page, &mut rt, 0.3);
     let b = rects[bar as usize];
     assert!(near(b.bottom(), H) && near(opacity(&page, &res, scrim), 1.0) && near(opacity(&page, &res, dot), 1.0), "back to base: {b:?} scrim={} dot={}", opacity(&page, &res, scrim), opacity(&page, &res, dot));
+}
+
+/// `set_arrangement(name, instant := true)` (gogo_states.gd:717-731,
+/// GP37): the pose flips and every `when <arrangement>` restyles, but the
+/// timed view rule is skipped — no glide, nothing animating; the SAME
+/// flip through plain `go` glides.
+#[test]
+fn go_instant_flips_without_the_motion() {
+    let c = ok(STATE_VIEW);
+    let mut page = c.page;
+    let bar = page.find("bar").unwrap();
+    let collapsed = page.arrangements.iter().position(|a| page.str(*a) == "collapsed").unwrap() as u32;
+    let mut rt = Runtime::new(&page);
+    frame(&mut page, &mut rt, 0.0);
+    rt.go_instant_id(collapsed);
+    let (_, rects) = frame(&mut page, &mut rt, 0.0);
+    assert!(!rt.animating(), "an instant flip arms nothing");
+    let b = rects[bar as usize];
+    assert!(near(b.bottom(), H + 40.0) && near(b.y, H - 50.0), "the pose is already applied: {b:?}");
+}
+
+/// `arrangement_settled` (gogo_states.gd:646,778, GP37): the awaitable
+/// for hosts sequencing work after a pose change — fires once when the
+/// flip's motion has landed; an instant flip settles right after its
+/// resolve; nothing re-fires later.
+#[test]
+fn arrangement_settled_fires_once_after_the_motion() {
+    let c = ok(STATE_VIEW);
+    let mut page = c.page;
+    let collapsed = page.arrangements.iter().position(|a| page.str(*a) == "collapsed").unwrap() as u32;
+    let mut rt = Runtime::new(&page);
+    frame(&mut page, &mut rt, 0.0);
+    rt.go_id(collapsed);
+    assert_eq!(rt.arrangement_settled(), None, "not before the flip resolves");
+    frame(&mut page, &mut rt, 0.0);
+    frame(&mut page, &mut rt, 0.05);
+    assert_eq!(rt.arrangement_settled(), None, "mid-glide is not settled");
+    frame(&mut page, &mut rt, 0.3);
+    assert_eq!(rt.arrangement_settled(), Some(collapsed), "landed = settled");
+    assert_eq!(rt.arrangement_settled(), None, "fires once");
+    rt.go_instant_id(BASE);
+    frame(&mut page, &mut rt, 0.0);
+    assert_eq!(rt.arrangement_settled(), Some(BASE), "an instant flip settles right after its resolve");
 }
 
 /// `arr.go-flips` 6880, `arr.toggle-home` 6888, `arr.toggle-flips` 6891,

@@ -142,6 +142,22 @@ fn fill_tracks_share_by_weight_fractions_too() {
     assert!((a.w - 161.8).abs() < 0.01, "{a:?}");
 }
 
+/// `gogo_grid.gd` 58-108 (GP34, the span-deficit rule): a spanning
+/// cell wider than its spanned tracks' sum spreads the deficit over the
+/// HUG tracks equally — a fixed track is fixed. Here the 100-wide
+/// spanner sits over [30 fixed + hug + hug]: the two hug tracks (10
+/// each from their own cells) split the 100-30-20=50 deficit, 25 each.
+#[test]
+fn span_deficit_spreads_over_the_hug_tracks() {
+    let (p, r) = lay("View v {\n Grid g cols=[30, hug, hug], halign=left, valign=top {\n  row { Rectangle a min_size=10x10; Rectangle b min_size=10x10; Rectangle c min_size=10x10 }\n  row { Rectangle d min_size=100x10, col_span=3 }\n }\n}\n", 400.0, 400.0);
+    let b = rect(&p, &r, "b");
+    let c = rect(&p, &r, "c");
+    assert_eq!(b.x, 30.0, "{b:?}");
+    assert_eq!(c.x, 65.0, "the first hug track grew to 35 (10 + half the 50 deficit): {c:?}");
+    let d = rect(&p, &r, "d");
+    assert_eq!(d.w, 100.0, "the spanner gets its need: {d:?}");
+}
+
 const ROW_SPAN: &str = "View v {\n Grid g cols=[hug, hug], width=40, height=50, halign=left, valign=top {\n  row { Rectangle a min_size=20x20; Rectangle e min_size=20x20, row_span=2 }\n  row { Rectangle b min_size=20x30; skip }\n }\n}\n";
 
 /// `_grid_tests` 11204, 11214: the `skip` under a `row_span=2` cell keeps

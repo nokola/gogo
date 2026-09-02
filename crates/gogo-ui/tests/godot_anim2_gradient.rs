@@ -145,7 +145,6 @@ fn rect_of(page: &Page, rects: &[Rect], name: &str) -> Rect {
 /// channel is back to identity. Godot measured with epx×2, so its 80 is
 /// this file's 40.
 #[test]
-#[ignore = "GP40: not ported: each stagger_by= / after= steps (Rust skips the each with a G0062 warning)"]
 fn each_staggers_its_wearers_and_disarms_at_the_end() {
     let src = "style Cell min_width=6, min_height=6\nanim fancy {\n    each .Cell stagger_by=0.1 {\n        group slide duration_each=0.2 {\n            translate.y from=40, to=0\n            and opacity from=0, to=1\n        }\n        group pop after=slide { scale.x to=1.1, duration=0.1, autoreverse=true }\n    }\n}\nView host { Rectangle a .Cell; Rectangle b .Cell }\n";
     let c = ok(src);
@@ -217,7 +216,6 @@ fn bare_paths_and_stagger_on_the_header_are_refused() {
 /// group, two groups waiting on each other, and `each .Nope` are build
 /// errors that say why.
 #[test]
-#[ignore = "GP40: not ported: each / after= steps (Rust skips the each, refuses after= as unsupported)"]
 fn after_and_each_references_are_checked() {
     assert!(fails("anim a { each box {\n    group t { opacity to=1, duration=0.1 }\n    group after=nope { rotate to=1, duration=0.1 }\n} }\nView v { Rectangle box }\n"), "after=nope names no group");
     assert!(mentions("anim a {\n    group t after=u { box.opacity to=1, duration=0.1 }\n    group u after=t { box.rotate to=1, duration=0.1 }\n}\nView v { Rectangle box }\n", "cycle"));
@@ -247,7 +245,6 @@ fn header_envelope_distributes_per_line() {
 /// group is a retired word; a group's `duration=` reads as a total and
 /// must be `duration_each=`. Godot refuses all three at load.
 #[test]
-#[ignore = "GP41: not ported: anim step lints (two pinned steps, retired/plain words on a group line) — Rust builds all three clean"]
 fn double_pin_and_group_line_words_are_refused() {
     assert!(fails("anim a {\n    box.opacity from=0, to=1, duration=0.1\n    and box.opacity from=0.5, to=1, duration=0.1\n}\nView v { Rectangle box }\n"), "two pinned steps on box.opacity");
     assert!(fails("anim a { group delay=0.1 { box.opacity to=1, duration=0.1 } }\nView v { Rectangle box }\n"), "delay= on a group is retired");
@@ -261,7 +258,6 @@ fn double_pin_and_group_line_words_are_refused() {
 /// drop group when dim ends, and a line's own `duration=` beats the
 /// group's `duration_each=`.
 #[test]
-#[ignore = "GP40: not ported: after= steps (Rust refuses `after=` with G0062)"]
 fn anim_level_groups_with_after_order_cross_node_choreography() {
     let c = ok("anim open {\n    group dim duration_each=0.2 { backA.opacity to=0.6 }\n    group drop duration_each=0.3, after=dim {\n        menuA.translate.y from=-40, to=0\n        and menuA.opacity from=0, to=1, duration=0.5\n    }\n}\nView v { Column c {\n    Rectangle backA\n    Rectangle menuA\n} }\n");
     let all = lanes(&c.page, "open");
@@ -288,7 +284,6 @@ fn page_level_self_names_the_root() {
 /// grammar — a lane, an `each`, and another lane mix freely in one chain,
 /// and the `each` really drives its wearer (a track for `c` exists).
 #[test]
-#[ignore = "GP40: not ported: each steps (Rust warns G0062 and drops the each's lane)"]
 fn lanes_eaches_and_groups_mix_in_one_chain() {
     let c = ok("anim a {\n    box.opacity to=1, duration=0.1\n    and each c { opacity to=1, duration=0.1 }\n    then box.rotate to=90, duration=0.1\n}\nView host { Rectangle box; Rectangle c }\n");
     let all = lanes(&c.page, "a");
@@ -301,7 +296,6 @@ fn lanes_eaches_and_groups_mix_in_one_chain() {
 /// are unique within an anim (they are `after=` anchors); a line inside
 /// `each box` / `each self` must not repeat the target.
 #[test]
-#[ignore = "GP40: not ported: each steps and after= anchors (group names are not tracked, the each is skipped)"]
 fn group_names_are_unique_and_each_lines_stay_bare() {
     assert!(fails("anim a {\n    group t duration_each=0.1 { box.opacity to=1 }\n    and group t duration_each=0.1 { box.rotate to=1 }\n}\nView v { Rectangle box }\n"), "duplicate group name");
     assert!(fails("anim a { each box { group t duration_each=0.1 { box.opacity to=1 } } }\nView v { Rectangle box }\n"), "each already names the target");
@@ -324,7 +318,6 @@ fn assignments_inside_an_anim_are_refused() {
 /// the error names whose `when` holds it even when the anim sits on the
 /// style and the `when` on the node.
 #[test]
-#[ignore = "GP40: the group-form anim body and the holder-naming message; the plain G4003 fence is live (GPAR62 — godot_controls::diag_two_writers_on_one_property_is_refused)"]
 fn two_writers_on_one_property_are_refused_naming_the_holder() {
     assert!(mentions("style S {\n    when held scale=0.9\n    transition any -> held anim=pop\n}\nanim pop {\n    group t duration_each=0.1 { self.scale to=1.1 }\n}\nView v { Button b .S }\n", "two writers"));
     assert!(mentions("style S {\n    transition any -> held anim=pop\n}\nanim pop { self.scale to=1.1, duration=0.1 }\nView v { Button menuBtn .S {\n    when held scale=0.9\n} }\n", "'scale' on menuBtn is held by its `when held`"));
@@ -335,9 +328,8 @@ fn two_writers_on_one_property_are_refused_naming_the_holder() {
 /// `_step_anim_tests` 8005-8007 (step.first-at-zero, step.and-shares-start,
 /// step.then-waits-cluster): the first step starts at 0, `and` shares its
 /// start, `then` waits for the whole and-cluster (0.6, the longer of the
-/// two). The Godot fixture also has a `group d after=b` line — dropped
-/// here because Rust refuses `after=` (that line is
-/// `crossing_edge_with_after`).
+/// two). The Godot fixture's `group d after=b` line is asserted in
+/// `crossing_edge_with_after`.
 #[test]
 fn and_shares_a_start_and_then_waits_the_cluster() {
     let c = ok("anim dash {\n    group a { tiles.opacity to=1, duration=0.6 }\n    and group b { hdr.translate.y from=-20, to=0, duration=0.2 }\n    then chart.scale to=1.1, duration=0.2\n}\nView host { Rectangle tiles; Rectangle hdr; Rectangle chart }\n");
@@ -351,7 +343,6 @@ fn and_shares_a_start_and_then_waits_the_cluster() {
 /// the crossing-edge shape — `group d after=b` anchors on ONE member of
 /// the and-cluster (b ends at 0.2) and overlaps the join.
 #[test]
-#[ignore = "GP40: not ported: after= steps (Rust refuses `after=` with G0062)"]
 fn crossing_edge_with_after() {
     let c = ok("anim dash {\n    group a { tiles.opacity to=1, duration=0.6 }\n    and group b { hdr.translate.y from=-20, to=0, duration=0.2 }\n    then chart.scale to=1.1, duration=0.2\n    group d after=b { hdr.opacity to=0.5, duration=0.3 }\n}\nView host { Rectangle tiles; Rectangle hdr; Rectangle chart }\n");
     let all = lanes(&c.page, "dash");
@@ -387,7 +378,6 @@ fn offset_shifts_a_start_and_clamps_at_zero() {
 /// step's start; `then` waits its full length — autoreverse's way back
 /// included (0.15 + 2×0.3 = 0.75).
 #[test]
-#[ignore = "GP40: not ported: play steps (Rust refuses `play` inside an anim with G0062)"]
 fn play_inlines_and_then_waits_its_full_length() {
     let c = ok("anim badge {\n    badge.translate.y from=-10, to=0, duration=0.15\n    then badge.scale to=1.2, duration=0.3, autoreverse=true\n}\nanim open {\n    panel.opacity from=0, to=1, duration=0.3\n    and play badge\n    then panel.scale to=1.0, duration=0.1\n}\nView host { Rectangle panel; Rectangle badge }\n");
     let all = lanes(&c.page, "open");
@@ -415,7 +405,6 @@ fn step_words_resolve_from_the_nearest_scope_and_autoreverse_doubles() {
 /// reach out of its wrapper (names are anim-flat) — c starts when `late`
 /// ends (0.3).
 #[test]
-#[ignore = "GP40: not ported: after= steps (Rust refuses `after=` with G0062)"]
 fn after_may_reference_a_later_group() {
     let c = ok("anim f {\n    group a {\n        box.opacity to=1, duration=0.2\n        group c after=late { box.scale to=1.1, duration=0.1 }\n    }\n    and group late { box.rotate to=90, duration=0.3 }\n}\nView v { Rectangle box }\n");
     let all = lanes(&c.page, "f");
@@ -426,7 +415,6 @@ fn after_may_reference_a_later_group() {
 /// step.each-static-then-start): an `each` with no stagger has a static
 /// length, so a `then` after it is fine and starts when it ends (0.1).
 #[test]
-#[ignore = "GP40: not ported: each steps (Rust skips the each, so the then starts at 0)"]
 fn a_static_each_can_be_waited_on() {
     let c = ok("anim a {\n    each c { opacity to=1, duration=0.1 }\n    then box.opacity to=1, duration=0.2\n}\nView host { Rectangle box; Rectangle c }\n");
     let all = lanes(&c.page, "a");
@@ -451,7 +439,6 @@ fn the_connective_law_and_its_edges() {
 /// step.err-after-on-line): a step is positional (`then`) or referenced
 /// (`after=`), never both; `after=` goes on `group` lines only.
 #[test]
-#[ignore = "GP40: not ported: after= steps (Rust refuses every `after=` as unsupported, so neither rule is checked)"]
 fn after_is_exclusive_with_then_and_lives_on_groups() {
     assert!(mentions("anim a {\n    group b { box.opacity to=1, duration=0.1 }\n    then group c after=b { box.rotate to=1, duration=0.1 }\n}\nView v { Rectangle box }\n", "positional"));
     assert!(mentions("anim a {\n    group b { box.opacity to=1, duration=0.1 }\n    box.rotate to=1, duration=0.1, after=b\n}\nView v { Rectangle box }\n", "group"));
@@ -462,7 +449,6 @@ fn after_is_exclusive_with_then_and_lives_on_groups() {
 /// after a staggered each is refused naming `stagger_by`; eaches don't
 /// nest.
 #[test]
-#[ignore = "GP40: not ported: each steps (Rust skips the each with a warning, refuses nothing)"]
 fn staggered_each_cannot_be_waited_on_and_eaches_do_not_nest() {
     assert!(mentions("style M min_width=4\nanim a {\n    each .M stagger_by=0.1 { opacity to=1, duration=0.1 }\n    then box.opacity to=1, duration=0.1\n}\nView v { Rectangle box .M }\n", "stagger_by"));
     assert!(fails("anim a { each box { each box { opacity to=1, duration=0.1 } } }\nView v { Rectangle box }\n"));
@@ -473,7 +459,6 @@ fn staggered_each_cannot_be_waited_on_and_eaches_do_not_nest() {
 /// play edges — an unknown anim, a `repeat=forever` anim (never completes,
 /// so it can't be a step), a play cycle, and `play` inside an `each`.
 #[test]
-#[ignore = "GP40: not ported: play steps (Rust refuses every `play` step as unsupported, so none of the edges is checked)"]
 fn play_edges_are_refused_by_name() {
     assert!(mentions("anim a { play nope }\nView v { Rectangle box }\n", "unknown anim"));
     assert!(mentions("anim spin repeat=forever { box.opacity { key t=0, v=0; key t=1, v=1 } }\nanim a { play spin }\nView v { Rectangle box }\n", "never completes"));
@@ -485,7 +470,6 @@ fn play_edges_are_refused_by_name() {
 /// step.err-group-empty): a pause can't be negative; a group with no
 /// steps is refused.
 #[test]
-#[ignore = "GP41: not ported: anim step lints (negative delay, empty group) — Rust builds both clean"]
 fn negative_delay_and_empty_group_are_refused() {
     assert!(fails("anim a {\n    box.opacity to=1, duration=0.1\n    then delay=-1\n}\nView v { Rectangle box }\n"), "a pause can't be negative");
     assert!(fails("anim a { group { } }\nView v { Rectangle box }\n"), "group has no steps");
@@ -561,7 +545,6 @@ fn loading_lazy_builds_in_any_key_order_and_shared_paths_intern_once() {
 /// `_lazy_image_tests` 8260 (lazy.bad-value): `loading=` takes `lazy` or
 /// `eager` — `fast` is refused.
 #[test]
-#[ignore = "GP41: not ported: enum-value lint for loading= (Rust accepts `loading=fast` clean)"]
 fn loading_takes_lazy_or_eager_only() {
     let src = "View v { Image a source=\"res://gogo_lazy_test.png\", loading=fast }";
     assert!(fails(src), "{:#?}", diags(src));
@@ -646,7 +629,6 @@ fn a_stop_entry_takes_an_opacity_suffix() {
 /// that mirrors the ramp; with mirror the positions stop at 0.5; an
 /// unknown repeat word is refused naming `mirror`.
 #[test]
-#[ignore = "GP40: not ported: Gradient repeat= (Rust warns G2001 unknown property and draws nothing of it)"]
 fn repeat_mirror_is_a_gradient_word_with_its_fences() {
     let src = "View v { Gradient g repeat=mirror, stops=[white@0, black@0.5] }";
     assert!(diags(src).is_empty(), "{:#?}", diags(src));
@@ -671,7 +653,6 @@ fn angle_is_the_compass() {
 /// `from=`/`to=` are 0..1 box points that survive a later `fill=`; `angle=`
 /// next to them is refused ("spell one"); a part outside 0..1 is refused.
 #[test]
-#[ignore = "GP40: not ported: Gradient from=/to= (Rust warns G2001 unknown property; the draw list carries no end points)"]
 fn from_and_to_are_box_points_with_their_fences() {
     let src = "View v { Gradient g from=0.25x0.25, fill=radial, to=0.75x0.75, stops=[white, black] }";
     assert!(diags(src).is_empty(), "{:#?}", diags(src));
@@ -682,7 +663,6 @@ fn from_and_to_are_box_points_with_their_fences() {
 /// `_gradient_tests` 8352-8359 (gradient.conic-ok, gradient.conic-native):
 /// `fill=conic` builds and draws a conic sweep, not a linear ramp.
 #[test]
-#[ignore = "GP40: not ported: Gradient fill=conic (Rust's GradientKind is Linear|Radial; conic silently draws linear)"]
 fn conic_fill_is_its_own_kind() {
     let (_, _, draws) = scene("View v { Gradient g width=100, height=100, fill=conic, stops=[red, yellow, red] }");
     let g = gradients(&draws);
@@ -695,7 +675,7 @@ fn conic_fill_is_its_own_kind() {
 /// (`stop_1_color`, `stop_2_offset`, listed on the node) that whens and
 /// anims drive — `g.stop_1_color.a to=0.42` is a legal anim line.
 #[test]
-#[ignore = "GP40: not ported: Gradient stop_N_color/offset properties (Rust has no such prop key; the anim channel is G0063)"]
+#[ignore = "GP40: per-stop live properties (stop_1_color…) need parametric prop keys — a design round against the static PropKey/Channel model; parked with the contract-subsystem tail"]
 fn stops_are_live_per_stop_properties() {
     let src = "anim glow { g.stop_1_color.a to=0.42, duration=0.1 }\nView v { Gradient g stops=[white, black], on:show=play(glow) }";
     assert!(!fails(src), "{:#?}", diags(src));

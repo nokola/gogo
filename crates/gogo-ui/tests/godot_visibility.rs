@@ -169,7 +169,6 @@ fn hidden_keeps_its_seat_and_gone_releases_it() {
 /// `overlay=true` under a Column/Row ("free parent") — a stack has no
 /// place for a box that claims no slot. Rust compiles it.
 #[test]
-#[ignore = "GP34: overlay under a container refused and slot-less in Godot; Rust compiles it"]
 fn overlay_is_refused_under_a_stack() {
     let src = "View v { Column c { Panel p overlay=true, width=64, height=24 } }";
     assert!(fails(src), "{:?}", codes(src));

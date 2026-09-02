@@ -181,6 +181,24 @@ fn variant_blocks_override_only_while_active() {
     assert_eq!(defblock.color("swatch", PropKey::Color), rgb(0x00FF00));
 }
 
+/// `gogo.set_theme_variant` (gogo.gd:237-248, GP38): the host seam that
+/// flips the active variant live — the next resolve reads the new values;
+/// `""` goes back to the defaults; a variant no file defines keeps them.
+#[test]
+fn set_theme_variant_is_the_host_seam() {
+    let vsrc = "$accent = #E51400FF\ntheme dark {\n    $accent = #00FF00FF\n}\nView v { Rectangle swatch color=$accent }\n";
+    let mut fx = Fx::new(vsrc);
+    fx.rt.set_theme_variant(&fx.page, "dark");
+    fx.res = resolve(&fx.page, &fx.rt);
+    assert_eq!(fx.color("swatch", PropKey::Color), rgb(0x00FF00), "the flip reads dark");
+    fx.rt.set_theme_variant(&fx.page, "");
+    fx.res = resolve(&fx.page, &fx.rt);
+    assert_eq!(fx.color("swatch", PropKey::Color), rgb(0xE51400), "empty = defaults only");
+    fx.rt.set_theme_variant(&fx.page, "sepia");
+    fx.res = resolve(&fx.page, &fx.rt);
+    assert_eq!(fx.color("swatch", PropKey::Color), rgb(0xE51400), "an undefined variant keeps the defaults");
+}
+
 /// `_theme_and_styles` 2494-2498 (`variant.bare-entry-errors`,
 /// `variant.nested-set-errors`): a theme-block entry without `=` is refused
 /// (Rust reads `accent #FFFFFFFF` as a node line: G3006 "not a control
@@ -887,7 +905,6 @@ fn with_knob(tail: &str) -> String {
 /// is a primitive with `from`, `sweep`, `thickness` (the stroke — not
 /// `width`) and `color`; it builds clean and keeps its numbers.
 #[test]
-#[ignore = "GP40: `Arc` kind not ported (G7011 unknown node type)"]
 fn arc_primitive_builds_with_its_props() {
     let arc = build("View v { Arc a 48x48, from=-90, sweep=180, thickness=3, color=#FF0000FF }\n");
     assert!(arc.diags.is_empty(), "{:#?}", arc.diags);
@@ -903,7 +920,6 @@ fn arc_primitive_builds_with_its_props() {
 /// wedge yet; the body pins the precondition (an `automatic=arc` slot
 /// compiles) and the four cases wait for the helper's name.
 #[test]
-#[ignore = "GP33: automatic=arc wedge (clip + hit) not ported (arc(from=…) is G0021 named-arg parse error GPAR32 + G5107 unknown automatic kind)"]
 fn wedge_formula_serves_draw_and_hit() {
     let c = build(&with_knob("Knob k 48x48, value=0.5"));
     assert!(c.diags.is_empty(), "{:#?}", c.diags);
@@ -914,10 +930,9 @@ fn wedge_formula_serves_draw_and_hit() {
 /// with fraction 0 (the first driver write lands) and a point on the arc
 /// (24, 4 in a 48 box — the -90° point) hits nothing.
 #[test]
-#[ignore = "GP33: automatic=arc slots not ported (G0021 GPAR32 + G5107 today; wedge fraction and wedge hit)"]
 fn knob_at_zero_reveals_nothing() {
     let fx = Fx::new(&with_knob("Knob z 48x48, value=0, halign=left, valign=top"));
-    let progress = fx.id("progress");
+    let progress = fx.id("z/progress");
     assert_ne!(gogo::draw::hit(&fx.page, &fx.res, &fx.rects, 24.0, 4.0, true), Some(progress), "the empty wedge hits nothing");
 }
 
@@ -928,12 +943,11 @@ fn knob_at_zero_reveals_nothing() {
 /// thumb on the host circle at -90° (center (24, 4), box at (20, 0)); the
 /// live label shows "0.5".
 #[test]
-#[ignore = "GP33: automatic=arc/angle slots not ported (G0021 GPAR32 + G5107 today; aperture, wedge, angle seat)"]
 fn knob_mid_value_geometry() {
     let fx = Fx::new(&with_knob("Knob k 48x48, value=0.5, halign=left, valign=top"));
-    let thumb = fx.rect("thumb");
+    let thumb = fx.rect("k/thumb");
     assert!((thumb.x + thumb.w / 2.0 - 24.0).abs() < 1.0 && (thumb.y + thumb.h / 2.0 - 4.0).abs() < 1.0, "{thumb:?}");
-    let progress = fx.rect("progress");
+    let progress = fx.rect("k/progress");
     assert!(fx.draws.contains(&Draw::ClipPush(progress)), "the wedge clips its children: {:#?}", fx.draws);
     assert_eq!(fx.drawn_text("0.5").0, "0.5");
 }
@@ -941,7 +955,6 @@ fn knob_mid_value_geometry() {
 /// `_radial_tests` 4073-4081 (`radial.real-input-ok`): a Knob instance
 /// line with its own size (`Knob k 96x96`) builds clean.
 #[test]
-#[ignore = "GP33: automatic=arc/angle slots not ported (the Knob body is G0021 GPAR32 + G5107)"]
 fn knob_instance_line_builds() {
     let c = build(&with_knob("Knob k 96x96, value=0"));
     assert!(c.diags.is_empty(), "{:#?}", c.diags);
@@ -965,7 +978,6 @@ fn instance_line_size_arg_sizes_the_instance() {
 /// config"); a driven radial prop restyled from a `for=` style is G3002;
 /// an aperture on a widget slot teaches `control`.
 #[test]
-#[ignore = "GP33: automatic=arc/angle and their fences not ported (the Knob body is G0021 GPAR32 + G5107)"]
 fn radial_error_family() {
     let off = errors(&with_knob("Knob k 48x48").replace("automatic=arc(from=-225, sweep=270)", "automatic=length(from=-225)"));
     assert!(off.iter().any(|d| d.message.contains("radial")), "{off:#?}");

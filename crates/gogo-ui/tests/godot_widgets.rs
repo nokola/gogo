@@ -334,12 +334,9 @@ fn content_prop_on_a_slot_line_is_refused() {
 }
 
 /// `slotn.automatic-needs-control` 3254-3257: `automatic=` belongs to a
-/// `control` body, not a plain `widget`. Rust treats `control` as a
-/// synonym of `widget` and accepts a complete coupling in either (the
-/// Godot snippet's `automatic=length` alone is refused here too, but for
-/// the missing `by … in …` — G5107 — so the fixture spells the clauses).
+/// `control` body, not a plain `widget` — a widget has no value to drive
+/// the geometry, so the coupling would read as working and do nothing.
 #[test]
-#[ignore = "GP41: not ported: `automatic=` on a widget (not a control) is accepted (Rust does not distinguish the two words)"]
 fn automatic_needs_a_control() {
     let text = err_text("widget W4 $v=1, $lo=0, $hi=2 { Column { slot p automatic=length by $v in $lo..$hi { Rectangle 10x10 } } }\nW4 w\n");
     assert!(text.contains("needs a `control`"), "{text}");
@@ -480,10 +477,9 @@ fn value_param_reaches_the_label_and_the_slot_fractions() {
 /// `ctl.live-immediate` 3462, `ctl.glide-arms` 3463, `ctl.glide-lands`
 /// 3465: a write of `$value` moves the couplings — the label at once, the
 /// fractions gliding by the control's default feel (0.12 s) and landing.
-/// Written against the closest Rust surface (`Runtime::set_prop` on the
-/// instance root); the fraction is solved once at compile time today.
+/// The Rust seam is `Runtime::set_value` (the addon's behavior -> driver
+/// pipeline): the prop lands, live labels rewrite, the fractions glide.
 #[test]
-#[ignore = "GP33: not ported: `automatic=` slots driven live by a value write (fraction is compile-time)"]
 fn value_write_moves_the_couplings_with_a_glide() {
     let c = ok(&format!("{}Fader gain 200x24, value=25\n", fader_static()));
     let mut page = c.page;
@@ -491,7 +487,7 @@ fn value_write_moves_the_couplings_with_a_glide() {
     let progress = find(&page, "gain/progress");
     let thumb = find(&page, "gain/thumb");
     let mut rt = Runtime::new(&page);
-    rt.set_prop(root, PropKey::Value, Value::VNum(75.0));
+    rt.set_value(&mut page, root, 75.0);
     let res = resolve_animated(&page, &mut rt);
     let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
     let texts: Vec<String> = draw(&page, &res, &rects).iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(page.str(*text).to_string()) } else { None }).collect();
@@ -579,11 +575,22 @@ fn presence_slot_is_gone_while_its_state_is_off() {
 /// raising the `marked` state shows the mark, the state reads back, and
 /// clearing it hides the mark again. Rust has no custom-state write.
 #[test]
-#[ignore = "GP33: not ported: `automatic=presence` driven by a state at runtime (and GP37: no custom state write/read)"]
 fn presence_follows_the_state() {
     let c = ok("control Marker $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n state marked\n Layers {\n  slot track height=10 {\n   slot mark automatic=presence by marked { Circle 6x6, color=#FFFFFFFF }\n  }\n }\n}\nMarker m 100x10\n");
-    let _ = c;
-    panic!("GP33/GP37: no custom-state write — Godot: behavior_set_state(marked, true) → mark visible, read back true; false → hidden");
+    let p = &c.page;
+    let m = find(p, "m");
+    let mark = find(p, "m/mark");
+    let mut rt = Runtime::new(p);
+    rt.set_custom(p, m, "marked", true).unwrap();
+    assert!(rt.custom(p, m, "marked"), "the raised state reads back");
+    let (res, rects) = lay(p, &rt);
+    assert!(!res.gone(p, mark), "the mark exists while the state holds");
+    assert!(draw(p, &res, &rects).iter().any(|d| matches!(d, Draw::Circle { .. })), "the mark draws");
+    rt.set_custom(p, m, "marked", false).unwrap();
+    assert!(!rt.custom(p, m, "marked"), "cleared reads back false");
+    let (res, rects) = lay(p, &rt);
+    assert!(res.gone(p, mark), "the mark is gone again");
+    assert!(!draw(p, &res, &rects).iter().any(|d| matches!(d, Draw::Circle { .. })), "{:#?}", draw(p, &res, &rects));
 }
 
 /// `ctl.live-default-round` 3542, `ctl.live-round-step` 3548 (PORT: both
@@ -823,7 +830,6 @@ fn slot_lanes_outside_motion_or_outside_a_control_are_refused() {
 /// state list (and drops instance-line whens — see
 /// `instance_line_when_disabled_applies`).
 #[test]
-#[ignore = "GP37: not ported: control contract states (`when held` on a Fader instance builds silently)"]
 fn undeclared_contract_state_is_refused_listing_the_available_ones() {
     let text = err_text(&format!("{}View v {{ Fader f 100x24 {{ when held opacity=0.5 }} }}\n", fader_static()));
     assert!(text.contains("isn't available") && text.contains("`dragging`"), "{text}");

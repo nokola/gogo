@@ -367,13 +367,20 @@ fn a_cap_next_to_an_exact_width_or_a_negative_cap_is_refused() {
     assert!(errs("View v { Layers { Panel p width=hug, max_width=-5 } }"), "negative cap built");
 }
 
-/// `_max_size_tests` 840-841 (cap.container-refused). Godot v1 refuses a
-/// hug cap on a non-Layers child of a container ("free parent"); Rust
-/// accepts it and binds it.
+/// `_max_size_tests` 840-841 (cap.container-refused) — FLIP (E10, the
+/// cap law, 2026-09-01): Godot refused a hug cap on a non-Layers child
+/// of a container (its Containers can't shrink a child's minimum — an
+/// engine limit promoted to a rule). Here a box never reports more than
+/// its cap, under ANY parent: the capped Panel binds with no Layers
+/// wrapper, its wide content drawing past (the unclipped-overflow read).
 #[test]
-#[ignore = "GP34: not ported: D144 cap only on Layers/Scroll/List under a container"]
-fn a_hug_cap_on_a_panel_under_a_column_is_refused() {
-    assert!(errs("View v { Column { Panel p width=hug, max_width=100 } }"));
+fn a_hug_cap_binds_under_a_column() {
+    let c = ok("View v { Column col width=300, halign=left, valign=top { Panel p width=hug, max_width=100, halign=left { Rectangle r 200x10, color=red } } }");
+    let page = c.page;
+    let rt = Runtime::new(&page);
+    let (_, rects) = lay(&page, &rt, 300.0, 200.0);
+    let p = rect(&page, &rects, "p");
+    assert!(near(p.w, 100.0), "the cap binds: {p:?}");
 }
 
 /// `_max_size_tests` 843-905 (cap.build-ok, cap.hug-under, cap.centered,
@@ -476,7 +483,7 @@ fn an_uncapped_hug_box_follows_hides_and_text_both_ways() {
 /// corner. Rust knows only `corner_radius` (the per-corner key is an
 /// unknown-property warning and `Draw::Quad` carries one radius).
 #[test]
-#[ignore = "GP40: not ported: per-corner corner_radius keys and slot.<name>.<prop> style paths"]
+#[ignore = "GP40: the four per-corner keys landed (draw pins in kind_words/doc + QuadCorners); this pin also demands the `slot.<name>.<prop>` STYLE path — the contract-subsystem tail"]
 fn per_corner_radius_keys_are_known() {
     let src = "View v {\n Column {\n  Panel sheet background=#223344FF, corner_radius=8, corner_radius_top_left=2 { Label a text=\"x\" }\n  Panel stomp corner_radius_top_left=2, corner_radius=8 { Label b text=\"y\" }\n }\n}\n";
     let c = compile(src, &|_| None);
@@ -713,12 +720,18 @@ fn a_capped_fill_needs_a_side_and_no_scroll() {
     assert!(errs("View v { Layers { Scroll s width=fill, max_width=100, halign=center, height=100 { Column c { Rectangle r 40x40, color=red } } } }"), "capped Scroll built");
 }
 
-/// `_capped_fill_tests` 1217-1220 (fcap.container-refused): a capped fill
-/// under a Column is refused in Godot ("Layers"); Rust accepts it.
+/// `_capped_fill_tests` 1217-1220 (fcap.container-refused) — FLIP (E10,
+/// the cap law, 2026-09-01): on a stack's CROSS axis the D245 capped
+/// fill runs exactly as under a free parent — fills a narrow frame, and
+/// when the cap binds the stated side places the box.
 #[test]
-#[ignore = "GP34: not ported: D144 cap only on Layers/Scroll/List under a container"]
-fn a_capped_fill_under_a_column_is_refused() {
-    assert!(errs("View v { Column { Rectangle p width=fill, max_width=100, halign=center, color=red } }"));
+fn a_capped_fill_centers_on_a_columns_cross_axis() {
+    let c = ok("View v { Column col width=300, halign=left, valign=top { Rectangle p width=fill, max_width=100, height=10, halign=center, color=red } }");
+    let page = c.page;
+    let rt = Runtime::new(&page);
+    let (_, rects) = lay(&page, &rt, 300.0, 200.0);
+    let p = rect(&page, &rects, "p");
+    assert!(near(p.w, 100.0) && near(p.x, 100.0), "capped, centered: {p:?}");
 }
 
 /// `_capped_fill_tests` 1225-1278 (fcap.build-ok, fcap.fills-narrow,
@@ -813,14 +826,22 @@ fn content_past_a_container_cap_is_clipped_not_overdrawn() {
 }
 
 /// `_container_cap_tests` 1363-1371 (ccap.err-non-layers,
-/// ccap.err-fill-cap): under a container only a Layers may carry a hug
-/// cap, and `max_*=fill` has no frame there — both refuse in Godot; Rust
-/// builds both.
+/// ccap.err-fill-cap) — FLIP (E10, the cap law, 2026-09-01): a NUMBER
+/// caps any hugging box, the stacking axis included — the Panel's tall
+/// content stops reporting at 60 and the next sibling stacks right
+/// below. The one refusal kept: `max_*=fill` ON the stacking axis (the
+/// slot IS the frame there — nothing separate to read).
 #[test]
-#[ignore = "GP34: not ported: D144 cap only on Layers/Scroll/List under a container; no fill cap there"]
-fn container_cap_shapes_that_godot_refuses() {
-    assert!(errs("View v { Column { Panel p height=hug, max_height=60 { Label text=\"x\", font_size=12 } } }"), "non-Layers cap built");
-    assert!(errs("View v { Column { Layers l height=hug, max_height=fill { Rectangle q 10x10 } } }"), "fill cap under a Column built");
+fn stacking_axis_number_cap_binds_and_fill_cap_refuses() {
+    let c = ok("View v { Column col width=100, halign=left, valign=top { Panel p height=hug, max_height=60 { Rectangle r 10x200, color=red }; Rectangle after 10x10, color=red } }");
+    let page = c.page;
+    let rt = Runtime::new(&page);
+    let (_, rects) = lay(&page, &rt, 100.0, 400.0);
+    let p = rect(&page, &rects, "p");
+    let after = rect(&page, &rects, "after");
+    assert!(near(p.h, 60.0), "the number binds on the stacking axis: {p:?}");
+    assert!(near(after.y, 60.0), "the sibling stacks below the cap: {after:?}");
+    assert!(errs("View v { Column { Layers l height=hug, max_height=fill { Rectangle q 10x10 } } }"), "a fill cap on the stacking axis is circular");
 }
 
 // ------------------------------------------------------- container seat

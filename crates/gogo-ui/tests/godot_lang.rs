@@ -918,9 +918,9 @@ fn nested_uses_resolve_against_the_including_files_dir() {
 
 /// GPAR32 (round 6, 2026-08-31): named call arguments are GRAMMAR —
 /// `arc(from=-225, sweep=270)` parses (it was a G0021 "expected a
-/// value" parse error), so the real complaint shows instead: the
-/// `automatic=` set is closed (G5107). Which calls READ the names is
-/// each site's own feature (GP33 owns `arc`).
+/// value" parse error), so the real complaint shows instead — here the
+/// needs-a-control fence (G5107): the coupling sits in a plain widget
+/// (GP33 landed `arc` itself, 2026-09-01).
 #[test]
 fn named_call_arguments_parse() {
     let src = "widget W { Layers l { slot p automatic=arc(from=-225, sweep=270) { Circle 6x6 } } }\nView v { W w }";

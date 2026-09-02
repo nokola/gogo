@@ -131,7 +131,6 @@ fn line_duration_overrides_the_groups_duration_each() {
 /// was retired (a pause is its own `then delay=` step) — the build refuses
 /// it. Godot's message says "retired".
 #[test]
-#[ignore = "GP41: not ported: anim step validation — a line-level delay= is silently ignored"]
 fn line_level_delay_is_refused() {
     assert!(fails("anim a { box.opacity to=0, duration=0.2, delay=0.1 }\nView v { Rectangle box }"), "{}", messages("anim a { box.opacity to=0, duration=0.2, delay=0.1 }\nView v { Rectangle box }"));
 }
@@ -139,7 +138,6 @@ fn line_level_delay_is_refused() {
 /// `_anim_tests` 5099-5101 (anim.err-duration-with-keys): a keyed line
 /// owns its timeline — `duration=` beside `key` children is refused.
 #[test]
-#[ignore = "GP41: not ported: anim step validation — duration= beside key children is silently ignored"]
 fn duration_beside_keys_is_refused() {
     let src = "anim a { box.opacity duration=0.4 { key t=0.4, v=0 } }\nView v { Rectangle box }";
     assert!(fails(src), "{}", messages(src));
@@ -157,7 +155,6 @@ fn assignment_inside_anim_is_refused() {
 /// `_anim_tests` 5106-5119 (anim.err-assign-each, anim.err-assign-group):
 /// the same assignment inside `each` / `each { group }` is refused.
 #[test]
-#[ignore = "GP40: not ported: `each` steps (G0062 warning, skipped)"]
 fn assignment_inside_each_is_refused() {
     let a = "anim a {\n each box { opacity = 0 }\n}\nView v { Rectangle box }\n";
     assert!(fails(a), "{}", messages(a));
@@ -180,7 +177,6 @@ fn rotation_word_is_refused_naming_rotate() {
 /// longest-lane): `group second after=main` starts when the anchor
 /// group's LONGEST lane ends (0.6 s here, a per-line duration included).
 #[test]
-#[ignore = "GP40: not ported: `after=` (G0062 error)"]
 fn after_waits_for_the_anchor_groups_longest_lane() {
     let src = "anim a {\n group main duration_each=0.2 {\n  box.opacity to=0\n  and box.translate.x to=10, duration=0.6\n }\n group second after=main { box.scale to=1, duration=0.1 }\n}\nView v { Rectangle box }\n";
     let c = ok(src);
@@ -224,7 +220,6 @@ fn unknown_target_and_unknown_easing_are_refused() {
 /// `_anim_tests` 5176-5177 (anim.err-to-with-keys): `to=` beside `key`
 /// children is refused — the keys own the values.
 #[test]
-#[ignore = "GP41: not ported: anim step validation — to= beside key children is silently ignored"]
 fn to_beside_keys_is_refused() {
     let src = "anim a { box.translate.x to=5 { key t=0, v=1 } }\nView v { Rectangle box }";
     assert!(fails(src), "{}", messages(src));
@@ -233,7 +228,6 @@ fn to_beside_keys_is_refused() {
 /// `_anim_tests` 5178-5179 (anim.err-no-duration): a line with no
 /// `duration=` and no `duration_each=` in scope is refused.
 #[test]
-#[ignore = "GP41: not ported: anim step validation — no duration in scope builds a 0 s track"]
 fn no_duration_in_scope_is_refused() {
     let src = "anim a { box.translate.x to=5 }\nView v { Rectangle box }";
     assert!(fails(src), "{}", messages(src));
