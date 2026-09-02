@@ -15,7 +15,7 @@
 use gogo::draw::{Draw, draw};
 use gogo::input::{Event, EventKind, Input, Key, Mods, Phase, Touch};
 use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::{BUTTON_FOCUS_RING, BUTTON_FOCUS_RING_EPX, NodeId, PropKey, Rgba, Value};
+use gogo::page::{BUTTON_FOCUS_RING, BUTTON_FOCUS_RING_EPX, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
 use gogo::runtime::{DISABLED, FOCUS_WITHIN, FOCUSED, HOVERED, Runtime, SELECTED, resolve};
 use gogo::{Page, compile};
 
@@ -219,7 +219,7 @@ fn the_button_family_ships_a_default_focus_ring() {
     own.key(Key::Tab);
     let list = own.draws();
     assert!(!ringed(&list), "an authored `when focused` replaces the default ring");
-    assert!(list.iter().any(|d| matches!(d, Draw::Quad { color, .. } if *color == Rgba([0x00, 0xFF, 0x00, 0xFF]))), "the author's response shows: {list:#?}");
+    assert!(list.iter().any(|d| matches!(d, Draw::Quad { color, .. } if *color == Color_Straight_Srgb_4xU8_RGBA([0x00, 0xFF, 0x00, 0xFF]))), "the author's response shows: {list:#?}");
 }
 
 /// `disabled` beats everything, always — a control's own state implies
@@ -233,7 +233,7 @@ fn disabled_beats_a_controls_own_state() {
     fx.rt.set_custom(&fx.page, root, "glowing", true).unwrap();
     fx.rt.set_state(root, DISABLED, true);
     let res = resolve(&fx.page, &fx.rt);
-    assert_eq!(res.prop(&fx.page, root, PropKey::Background), Some(Value::VColor(Rgba([0x44, 0x55, 0x66, 0xFF]))), "disabled wins the conflict");
+    assert_eq!(res.prop(&fx.page, root, PropKey::Background), Some(Value::VColor(Color_Straight_Srgb_4xU8_RGBA([0x44, 0x55, 0x66, 0xFF]))), "disabled wins the conflict");
 }
 
 /// Section 5.5: Enter/Space on the focused control run the completions

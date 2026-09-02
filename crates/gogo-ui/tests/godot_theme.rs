@@ -23,7 +23,7 @@ use gogo::layout::{FixedAdvance, Rect, layout};
 use std::sync::Arc;
 
 use gogo::locale::{Keys, Locale, display};
-use gogo::page::{NO_KEY, NodeId, PropKey, Rgba, Value};
+use gogo::page::{NO_KEY, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
 use gogo::runtime::{Resolved, Runtime, deref, resolve};
 use gogo::{Compiled, Diagnostic, Page, Severity, compile};
 
@@ -46,13 +46,13 @@ fn codes(src: &str) -> Vec<String> {
 }
 
 /// `#RRGGBB` opaque.
-fn rgb(hex: u32) -> Rgba {
-    Rgba([(hex >> 16) as u8, (hex >> 8) as u8, hex as u8, 0xFF])
+fn rgb(hex: u32) -> Color_Straight_Srgb_4xU8_RGBA {
+    Color_Straight_Srgb_4xU8_RGBA([(hex >> 16) as u8, (hex >> 8) as u8, hex as u8, 0xFF])
 }
 
 /// `#RRGGBB` at an alpha byte.
-fn rgb_a(hex: u32, a: u8) -> Rgba {
-    Rgba([(hex >> 16) as u8, (hex >> 8) as u8, hex as u8, a])
+fn rgb_a(hex: u32, a: u8) -> Color_Straight_Srgb_4xU8_RGBA {
+    Color_Straight_Srgb_4xU8_RGBA([(hex >> 16) as u8, (hex >> 8) as u8, hex as u8, a])
 }
 
 /// Godot's `is_equal_approx` on a Color: the Rust side rounds to bytes.
@@ -110,7 +110,7 @@ impl Fx {
         self.page.find(name).unwrap_or_else(|| panic!("no node {name:?}"))
     }
 
-    fn color(&self, name: &str, key: PropKey) -> Rgba {
+    fn color(&self, name: &str, key: PropKey) -> Color_Straight_Srgb_4xU8_RGBA {
         let id = self.id(name);
         self.res.color(&self.page, id, key).unwrap_or_else(|| panic!("{name} has no {key:?}: {:?}", self.page.node_props(id)))
     }
@@ -483,7 +483,7 @@ fn dark_variant_keeps_literal_words() {
 #[test]
 fn transparent_and_the_opacity_suffix() {
     let fx = Fx::new("$brand = #00FF00FF\ntheme {\n    danger = red/0.5\n}\nView v { Row r {\n    Rectangle a color=transparent\n    Rectangle b color=black/0.5\n    Rectangle c color=#FF6347/0.25\n    Rectangle d color=$brand/0.5\n    Rectangle e color=danger\n    Rectangle f color=danger/0.8\n    Button g text=\"x\" {\n        when held background=white/0.2\n    }\n} }\n");
-    assert_eq!(fx.color("a", PropKey::Color), Rgba([0, 0, 0, 0]));
+    assert_eq!(fx.color("a", PropKey::Color), Color_Straight_Srgb_4xU8_RGBA([0, 0, 0, 0]));
     assert_eq!(fx.color("b", PropKey::Color), rgb_a(0x000000, alpha_of(0.5)));
     assert_eq!(fx.color("c", PropKey::Color), rgb_a(0xFF6347, alpha_of(0.25)));
     assert_eq!(fx.color("d", PropKey::Color), rgb_a(0x00FF00, alpha_of(0.5)));

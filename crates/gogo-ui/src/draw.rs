@@ -32,39 +32,39 @@ pub enum GradientKind {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Draw {
-    Quad { rect: Rect, color: Rgba, corner: f32, border: f32, border_color: Rgba },
+    Quad { rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, corner: f32, border: f32, border_color: Color_Straight_Srgb_4xU8_RGBA },
     /// A plate whose corners differ (`corner_radius_top_left=` …): radii
     /// clockwise from top-left. The uniform case stays `Quad`.
-    QuadCorners { rect: Rect, color: Rgba, corners: [f32; 4], border: f32, border_color: Rgba },
+    QuadCorners { rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, corners: [f32; 4], border: f32, border_color: Color_Straight_Srgb_4xU8_RGBA },
     /// A circular stroke: `from` degrees on the compass (0 = up,
     /// clockwise), `sweep` degrees, `thickness` the stroke width in epx.
-    Arc { rect: Rect, color: Rgba, from: f32, sweep: f32, thickness: f32 },
-    Circle { rect: Rect, color: Rgba, border: f32, border_color: Rgba },
+    Arc { rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, from: f32, sweep: f32, thickness: f32 },
+    Circle { rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, border: f32, border_color: Color_Straight_Srgb_4xU8_RGBA },
     /// `image` is the `src` string id; the renderer maps it to a texture.
-    Image { rect: Rect, image: StrId, tint: Rgba, fit: Fit },
+    Image { rect: Rect, image: StrId, tint: Color_Straight_Srgb_4xU8_RGBA, fit: Fit },
     /// One segment of a gradient over the whole `rect`: `from` → `to`
     /// across the `band` (0..1 along the gradient's run; `(0, 1)` is the
     /// whole run), nothing painted outside it. A gradient with N stops is
     /// N−1 of these. `angle` is the CSS compass: 0 = to top, 90 = to
     /// right, clockwise.
-    Gradient { rect: Rect, kind: GradientKind, from: Rgba, to: Rgba, angle: f32, band: (f32, f32) },
+    Gradient { rect: Rect, kind: GradientKind, from: Color_Straight_Srgb_4xU8_RGBA, to: Color_Straight_Srgb_4xU8_RGBA, angle: f32, band: (f32, f32) },
     /// `text`/`key`: the literal as the file wrote it and its translation
     /// key (`NO_KEY` = none). The renderer shows `locale::display(page,
     /// locale, text, key)` — the same string layout measured.
-    Text { rect: Rect, text: StrId, key: KeyId, font_size: f32, color: Rgba, halign: TextAlign, valign: TextAlign, wrap: bool, font: StrId },
+    Text { rect: Rect, text: StrId, key: KeyId, font_size: f32, color: Color_Straight_Srgb_4xU8_RGBA, halign: TextAlign, valign: TextAlign, wrap: bool, font: StrId },
     /// The focused Input's caret. The renderer shapes the first `index`
     /// chars of the text to place it — glyph positions live where glyphs
     /// live, never in this layout-space list (GPAR112).
-    Caret { rect: Rect, text: StrId, key: KeyId, font_size: f32, font: StrId, index: u32, color: Rgba },
+    Caret { rect: Rect, text: StrId, key: KeyId, font_size: f32, font: StrId, index: u32, color: Color_Straight_Srgb_4xU8_RGBA },
     /// The focused Input's selected span: the renderer measures the two
     /// prefixes (`lo`, `hi` in chars) and fills between them — pushed
     /// BEFORE the text so the glyphs draw over the highlight.
-    Selection { rect: Rect, text: StrId, key: KeyId, font_size: f32, font: StrId, lo: u32, hi: u32, color: Rgba },
+    Selection { rect: Rect, text: StrId, key: KeyId, font_size: f32, font: StrId, lo: u32, hi: u32, color: Color_Straight_Srgb_4xU8_RGBA },
     /// The two drag circles below a touch-born selection (`lo`/`hi`
     /// char indices — the renderer measures the prefixes, glyph
     /// positions live there). The input machine grab-checks the same
     /// `input::sel_handle_rect`, so the picture and the finger agree.
-    SelHandles { rect: Rect, text: StrId, key: KeyId, font_size: f32, font: StrId, lo: u32, hi: u32, color: Rgba },
+    SelHandles { rect: Rect, text: StrId, key: KeyId, font_size: f32, font: StrId, lo: u32, hi: u32, color: Color_Straight_Srgb_4xU8_RGBA },
     ClipPush(Rect),
     ClipPop,
     /// GP33 `automatic=arc`: everything until the pop shows only inside
@@ -79,13 +79,13 @@ pub enum Draw {
     RotatePop,
 }
 
-pub const DEFAULT_TEXT_COLOR: Rgba = Rgba([0xFF, 0xFF, 0xFF, 0xFF]);
+pub const DEFAULT_TEXT_COLOR: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([0xFF, 0xFF, 0xFF, 0xFF]);
 
 // The default look of the native kinds (spec "Default look"): the same
 // numbers on every engine, so a bare `Button text="OK"` is one picture
 // everywhere. A file restyles any of it with the ordinary words.
 /// A text-only Button's plate: gray 0.1 at 0.6 (Godot's default theme).
-pub const DEFAULT_BUTTON_BACKGROUND: Rgba = Rgba([0x1A, 0x1A, 0x1A, 0x99]);
+pub const DEFAULT_BUTTON_BACKGROUND: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([0x1A, 0x1A, 0x1A, 0x99]);
 /// The Check box / Radio ring outline.
 pub const MARK_BORDER_EPX: f32 = 1.5;
 /// The Radio's inner dot when selected.
@@ -95,16 +95,16 @@ pub const CHECK_DOT_EPX: f32 = 10.0;
 /// The Toggle's knob, inset 2 in the pill.
 pub const TOGGLE_KNOB_EPX: f32 = 18.0;
 /// The Toggle pill when off (`gray`); on = `accent`.
-pub const TOGGLE_OFF: Rgba = Rgba([0x70, 0x80, 0x90, 0xFF]);
+pub const TOGGLE_OFF: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([0x70, 0x80, 0x90, 0xFF]);
 /// The Slider's track: 4 epx, gray, with the filled part white at 0.6,
 /// and a white 16-epx knob.
 pub const SLIDER_TRACK_EPX: f32 = 4.0;
 pub const SLIDER_KNOB_EPX: f32 = 16.0;
-pub const SLIDER_TRACK: Rgba = Rgba([0x5A, 0x5A, 0x5A, 0xFF]);
-pub const SLIDER_FILL: Rgba = Rgba([0xFF, 0xFF, 0xFF, 0x99]);
+pub const SLIDER_TRACK: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([0x5A, 0x5A, 0x5A, 0xFF]);
+pub const SLIDER_FILL: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([0xFF, 0xFF, 0xFF, 0x99]);
 pub use crate::page::DISABLED_OPACITY;
 /// The auto scroll bar's grabber (Godot's default theme, measured #737373).
-pub const SCROLL_GRABBER: Rgba = Rgba([0x73, 0x73, 0x73, 0xFF]);
+pub const SCROLL_GRABBER: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([0x73, 0x73, 0x73, 0xFF]);
 
 pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
     let mut out = Vec::new();
@@ -115,7 +115,7 @@ pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
     out
 }
 
-fn mul_alpha(c: Rgba, opacity: f32) -> Rgba {
+fn mul_alpha(c: Color_Straight_Srgb_4xU8_RGBA, opacity: f32) -> Color_Straight_Srgb_4xU8_RGBA {
     let mut c = c;
     c.0[3] = (c.0[3] as f32 * opacity).round().clamp(0.0, 255.0) as u8;
     c
@@ -213,7 +213,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     // that corner, a uniform after a per-corner key stomps it back.
     let corners = corner_set(page, res, id);
     let uniform = corners[0] == corners[1] && corners[1] == corners[2] && corners[2] == corners[3];
-    let plate_quad = |out: &mut Vec<Draw>, rect: Rect, color: Rgba, border: f32, border_color: Rgba| {
+    let plate_quad = |out: &mut Vec<Draw>, rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, border: f32, border_color: Color_Straight_Srgb_4xU8_RGBA| {
         if uniform {
             out.push(Draw::Quad { rect, color, corner: corners[0], border, border_color });
         } else {
@@ -221,7 +221,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
         }
     };
     let border = res.num(page, id, PropKey::BorderThickness).unwrap_or(0.0);
-    let border_color = color(PropKey::BorderColor).unwrap_or(Rgba::TRANSPARENT);
+    let border_color = color(PropKey::BorderColor).unwrap_or(Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT);
     // Text color is `font_color=` alone — `color=` on a text box is refused
     // at build (G2002), so no fallback reads it.
     let text_color = || res.font_color(page, id).map(|c| mul_alpha(c, opacity)).unwrap_or(mul_alpha(DEFAULT_TEXT_COLOR, opacity));
@@ -267,7 +267,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
         if let Some(bg) = color(PropKey::Background) {
             plate_quad(out, rect, bg, border, border_color);
         } else if border > 0.0 {
-            plate_quad(out, rect, Rgba::TRANSPARENT, border, border_color);
+            plate_quad(out, rect, Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT, border, border_color);
         }
     }
 
@@ -278,7 +278,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             if let Some(bg) = color(PropKey::Background) {
                 plate_quad(out, rect, bg, border, border_color);
             } else if border > 0.0 {
-                plate_quad(out, rect, Rgba::TRANSPARENT, border, border_color);
+                plate_quad(out, rect, Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT, border, border_color);
             }
         }
         Kind::Button | Kind::Check | Kind::Toggle | Kind::Radio => {
@@ -289,7 +289,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             if let Some(bg) = bg {
                 out.push(Draw::Quad { rect, color: bg, corner, border, border_color });
             } else if border > 0.0 {
-                out.push(Draw::Quad { rect, color: Rgba::TRANSPARENT, corner, border, border_color });
+                out.push(Draw::Quad { rect, color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT, corner, border, border_color });
             }
             let mut text_rect = text_rect;
             let mut halign_default = TextAlign::Center;
@@ -301,28 +301,28 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                 let mark = Rect::new(text_rect.x, text_rect.y + (text_rect.h - mh) / 2.0, mw, mh);
                 match node.kind {
                     Kind::Check => {
-                        out.push(Draw::Quad { rect: mark, color: if selected { accent } else { Rgba::TRANSPARENT }, corner: 2.0, border: MARK_BORDER_EPX, border_color: white });
+                        out.push(Draw::Quad { rect: mark, color: if selected { accent } else { Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT }, corner: 2.0, border: MARK_BORDER_EPX, border_color: white });
                         if selected {
                             let inset = (CHECK_BOX_EPX - CHECK_DOT_EPX) / 2.0;
-                            out.push(Draw::Quad { rect: mark.inset(inset, inset, inset, inset), color: white, corner: 1.0, border: 0.0, border_color: Rgba::TRANSPARENT });
+                            out.push(Draw::Quad { rect: mark.inset(inset, inset, inset, inset), color: white, corner: 1.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
                         }
                     }
                     Kind::Radio => {
-                        out.push(Draw::Circle { rect: mark, color: Rgba::TRANSPARENT, border: MARK_BORDER_EPX, border_color: white });
+                        out.push(Draw::Circle { rect: mark, color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT, border: MARK_BORDER_EPX, border_color: white });
                         if selected {
                             let inset = (CHECK_BOX_EPX - RADIO_DOT_EPX) / 2.0;
-                            out.push(Draw::Circle { rect: mark.inset(inset, inset, inset, inset), color: accent, border: 0.0, border_color: Rgba::TRANSPARENT });
+                            out.push(Draw::Circle { rect: mark.inset(inset, inset, inset, inset), color: accent, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
                         }
                     }
                     _ => {
                         let pill = if selected { accent } else { mul_alpha(TOGGLE_OFF, opacity) };
-                        out.push(Draw::Quad { rect: mark, color: pill, corner: mh / 2.0, border: 0.0, border_color: Rgba::TRANSPARENT });
+                        out.push(Draw::Quad { rect: mark, color: pill, corner: mh / 2.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
                         let inset = (mh - TOGGLE_KNOB_EPX) / 2.0;
                         // The knob sits where the finger left it (`value=` 0..1,
                         // written by a drag); with no value, at the selected end.
                         let fraction = res.num(page, id, PropKey::Value).map(|v| v.clamp(0.0, 1.0)).unwrap_or(if selected { 1.0 } else { 0.0 });
                         let x = mark.x + inset + (mark.right() - inset - TOGGLE_KNOB_EPX - (mark.x + inset)) * fraction;
-                        out.push(Draw::Circle { rect: Rect::new(x, mark.y + inset, TOGGLE_KNOB_EPX, TOGGLE_KNOB_EPX), color: white, border: 0.0, border_color: Rgba::TRANSPARENT });
+                        out.push(Draw::Circle { rect: Rect::new(x, mark.y + inset, TOGGLE_KNOB_EPX, TOGGLE_KNOB_EPX), color: white, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
                     }
                 }
                 text_rect = text_rect.inset(mw + MARK_TEXT_GAP, 0.0, 0.0, 0.0);
@@ -350,7 +350,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             plate_quad(out, rect, c, border, border_color);
         }
         Kind::Circle => {
-            let c = color(PropKey::Color).unwrap_or(Rgba::TRANSPARENT);
+            let c = color(PropKey::Color).unwrap_or(Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT);
             // A Circle in a non-square box is a CENTERED DISC — bounding
             // square min(width, height), centered both axes (shipped
             // semantics, gogo_circle.gd `_draw`). Needed because the
@@ -361,7 +361,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             out.push(Draw::Circle { rect: disc, color: c, border, border_color });
         }
         Kind::Arc => {
-            let c = color(PropKey::Color).unwrap_or(Rgba::TRANSPARENT);
+            let c = color(PropKey::Color).unwrap_or(Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT);
             let from = res.num(page, id, PropKey::From).unwrap_or(0.0);
             let sweep = res.num(page, id, PropKey::Sweep).unwrap_or(360.0);
             let thickness = res.num(page, id, PropKey::Thickness).unwrap_or(1.0);
@@ -405,7 +405,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             // (color, position): `@pos` as written, else spread evenly —
             // the compiler holds `@` to all-or-none (G2005), so a list is
             // wholly pinned or wholly even, never a mix.
-            let mut colored: Vec<(Rgba, Option<f32>)> = stops.iter().filter_map(|v| match v {
+            let mut colored: Vec<(Color_Straight_Srgb_4xU8_RGBA, Option<f32>)> = stops.iter().filter_map(|v| match v {
                 Value::VStop { color, pos } => Some((mul_alpha(*color, opacity), *pos)),
                 Value::VColor(c) => Some((mul_alpha(*c, opacity), None)),
                 _ => None,
@@ -456,7 +456,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                 None => t,
             };
             let at = |i: usize| remap(colored[i].1.unwrap_or(0.0).clamp(0.0, 1.0));
-            let mut bands: Vec<(Rgba, Rgba, (f32, f32))> = Vec::new();
+            let mut bands: Vec<(Color_Straight_Srgb_4xU8_RGBA, Color_Straight_Srgb_4xU8_RGBA, (f32, f32))> = Vec::new();
             match n {
                 0 => {}
                 1 => bands.push((colored[0].0, colored[0].0, (0.0, fold))),
@@ -476,7 +476,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                 }
             }
             if mirror {
-                let back: Vec<(Rgba, Rgba, (f32, f32))> = bands.iter().map(|(f, t, (a, b))| (*t, *f, (1.0 - b, 1.0 - a))).collect();
+                let back: Vec<(Color_Straight_Srgb_4xU8_RGBA, Color_Straight_Srgb_4xU8_RGBA, (f32, f32))> = bands.iter().map(|(f, t, (a, b))| (*t, *f, (1.0 - b, 1.0 - a))).collect();
                 bands.extend(back);
             }
             for (f, t, band) in bands {
@@ -490,7 +490,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                 _ => NO_STR,
             };
             if src != NO_STR {
-                let tint = color(PropKey::Color).unwrap_or(mul_alpha(Rgba([255, 255, 255, 255]), opacity));
+                let tint = color(PropKey::Color).unwrap_or(mul_alpha(Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 255]), opacity));
                 let fit = match res.ident(page, id, PropKey::Fit) {
                     Some("cover") => Fit::Cover,
                     Some("distort") => Fit::Distort,
@@ -526,14 +526,14 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             // `slot.track.corner_radius=` (a for= style) lands on the
             // node's corner word; unset keeps the stadium end.
             let track_corner = if corner > 0.0 { corner } else { SLIDER_TRACK_EPX / 2.0 };
-            out.push(Draw::Quad { rect: track, color: track_color, corner: track_corner, border: 0.0, border_color: Rgba::TRANSPARENT });
-            out.push(Draw::Quad { rect: Rect::new(track.x, track.y, track.w * t, track.h), color: fill, corner: track_corner, border: 0.0, border_color: Rgba::TRANSPARENT });
+            out.push(Draw::Quad { rect: track, color: track_color, corner: track_corner, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+            out.push(Draw::Quad { rect: Rect::new(track.x, track.y, track.w * t, track.h), color: fill, corner: track_corner, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
             let knob = SLIDER_KNOB_EPX;
-            out.push(Draw::Circle { rect: Rect::new(rect.x + (rect.w - knob) * t, rect.y + (rect.h - knob) / 2.0, knob, knob), color: mul_alpha(DEFAULT_TEXT_COLOR, opacity), border: 0.0, border_color: Rgba::TRANSPARENT });
+            out.push(Draw::Circle { rect: Rect::new(rect.x + (rect.w - knob) * t, rect.y + (rect.h - knob) / 2.0, knob, knob), color: mul_alpha(DEFAULT_TEXT_COLOR, opacity), border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
         }
         Kind::Input => {
             // Godot's default LineEdit plate: (0.1, 0.1, 0.1) at 0.6, no border.
-            let bg = color(PropKey::Background).unwrap_or(mul_alpha(Rgba([0x1A, 0x1A, 0x1A, 0x99]), opacity));
+            let bg = color(PropKey::Background).unwrap_or(mul_alpha(Color_Straight_Srgb_4xU8_RGBA([0x1A, 0x1A, 0x1A, 0x99]), opacity));
             out.push(Draw::Quad { rect, color: bg, corner, border, border_color });
             // The selection highlight, under the glyphs
             // (`selection_color=`; unset = white at 25% over the dark
@@ -544,7 +544,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                         Some(Value::VText { text, key }) => (text, key),
                         _ => (0, NO_KEY),
                     };
-                    let sel_color = color(PropKey::SelectionColor).unwrap_or(mul_alpha(Rgba([255, 255, 255, 64]), opacity));
+                    let sel_color = color(PropKey::SelectionColor).unwrap_or(mul_alpha(Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 64]), opacity));
                     out.push(Draw::Selection { rect: text_rect.inset(8.0, 0.0, 8.0, 0.0), text: stext, key: skey, font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE), font: res.font(page, id).unwrap_or(NO_STR), lo, hi, color: sel_color });
                     // Touch-born selections get drag circles, in the
                     // highlight's color made opaque (a faint wash works
@@ -634,12 +634,12 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
         if content_h > rect.h {
             let len = (rect.h * rect.h / content_h).max(8.0);
             let y = rect.y + (rect.h - len) * (offset[1] / (content_h - rect.h)).clamp(0.0, 1.0);
-            out.push(Draw::Quad { rect: Rect::new(rect.right() - SCROLL_BAR_EPX, y + 1.0, SCROLL_BAR_EPX, len - 1.0), color: grabber, corner: 0.0, border: 0.0, border_color: Rgba::TRANSPARENT });
+            out.push(Draw::Quad { rect: Rect::new(rect.right() - SCROLL_BAR_EPX, y + 1.0, SCROLL_BAR_EPX, len - 1.0), color: grabber, corner: 0.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
         }
         if content_w > rect.w {
             let len = (rect.w * rect.w / content_w).max(8.0);
             let x = rect.x + (rect.w - len) * (offset[0] / (content_w - rect.w)).clamp(0.0, 1.0);
-            out.push(Draw::Quad { rect: Rect::new(x + 1.0, rect.bottom() - SCROLL_BAR_EPX, len - 1.0, SCROLL_BAR_EPX), color: grabber, corner: 0.0, border: 0.0, border_color: Rgba::TRANSPARENT });
+            out.push(Draw::Quad { rect: Rect::new(x + 1.0, rect.bottom() - SCROLL_BAR_EPX, len - 1.0, SCROLL_BAR_EPX), color: grabber, corner: 0.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
         }
     }
     if rotated {
@@ -828,7 +828,7 @@ mod tests {
         rt.set_state(clear, HELD, true);
         let res = resolve(&c.page, &rt);
         let list = draw(&c.page, &res, &rects);
-        assert!(matches!(list[2], Draw::Quad { color, .. } if color == Rgba([255, 255, 255, 128])), "{:?}", list[2]);
+        assert!(matches!(list[2], Draw::Quad { color, .. } if color == Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 128])), "{:?}", list[2]);
     }
 
     /// PR3 + PR8: the file's start states draw — a selected Radio shows

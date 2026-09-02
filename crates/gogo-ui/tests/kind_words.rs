@@ -6,7 +6,7 @@
 
 use gogo::draw::{Draw, draw};
 use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::{Kind, PropKey, Rgba, legal};
+use gogo::page::{Kind, PropKey, Color_Straight_Srgb_4xU8_RGBA, legal};
 use gogo::runtime::{Runtime, resolve};
 use gogo::{CompileOptions, Compiled, Diagnostic, Page, compile, compile_with};
 
@@ -40,7 +40,7 @@ fn rect_of(page: &Page, rects: &[Rect], name: &str) -> Rect {
     rects[page.find(name).unwrap_or_else(|| panic!("no node {name}")) as usize]
 }
 
-fn quads(draws: &[Draw]) -> Vec<(Rect, Rgba, f32)> {
+fn quads(draws: &[Draw]) -> Vec<(Rect, Color_Straight_Srgb_4xU8_RGBA, f32)> {
     draws.iter().filter_map(|d| if let Draw::Quad { rect, color, corner, .. } = d { Some((*rect, *color, *corner)) } else { None }).collect()
 }
 
@@ -162,7 +162,7 @@ fn a_label_plate_covers_its_padding() {
     let q = quads(&draws);
     assert_eq!(q.len(), 1, "{draws:#?}");
     assert_eq!(q[0].0, chip, "the plate is the Label's own rectangle: {q:?} vs {chip:?}");
-    assert_eq!(q[0].1, Rgba([0xFF, 0, 0, 0xFF]));
+    assert_eq!(q[0].1, Color_Straight_Srgb_4xU8_RGBA([0xFF, 0, 0, 0xFF]));
     assert_eq!(q[0].2, 6.0);
     let text = draws.iter().find_map(|d| if let Draw::Text { rect, .. } = d { Some(*rect) } else { None }).expect("text");
     assert_eq!(text, chip.inset(4.0, 4.0, 4.0, 4.0), "text inside the padding: {text:?}");
@@ -181,10 +181,10 @@ fn layers_stacks_and_images_take_a_plate() {
     let (page, rects, draws) = scene("View v { Layers l background=#00FF00FF, size=50x50, halign=left, valign=top { Rectangle r 10x10, color=blue } }");
     let q = quads(&draws);
     assert_eq!(q[0].0, rect_of(&page, &rects, "l"), "{q:?}");
-    assert_eq!(q[0].1, Rgba([0, 0xFF, 0, 0xFF]));
+    assert_eq!(q[0].1, Color_Straight_Srgb_4xU8_RGBA([0, 0xFF, 0, 0xFF]));
     let (page, rects, draws) = scene("View v { Column c border_thickness=2, border_color=white, size=50x50, halign=left, valign=top { Rectangle r 10x10, color=blue } }");
     let plate = draws.iter().find_map(|d| if let Draw::Quad { rect, color, border, .. } = d { if *rect == rect_of(&page, &rects, "c") { Some((*color, *border)) } else { None } } else { None }).expect("a bordered plate");
-    assert_eq!(plate, (Rgba::TRANSPARENT, 2.0));
+    assert_eq!(plate, (Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT, 2.0));
     ok("View v { Image i source=\"res://icon.png\", background=black, corner_radius=4, size=20x20 }");
 }
 
@@ -198,8 +198,8 @@ fn layers_stacks_and_images_take_a_plate() {
 #[test]
 fn theme_text_defaults_inside_a_block_reach_the_text_under_it() {
     let (_, _, draws) = scene("View v {\n theme font_size=22\n theme font_color=#123456FF\n Column c {\n  Label a text=\"a\"\n  Label b text=\"b\", font_size=9\n }\n}");
-    let texts: Vec<(f32, Rgba)> = draws.iter().filter_map(|d| if let Draw::Text { font_size, color, .. } = d { Some((*font_size, *color)) } else { None }).collect();
-    assert_eq!(texts, vec![(22.0, Rgba([0x12, 0x34, 0x56, 0xFF])), (9.0, Rgba([0x12, 0x34, 0x56, 0xFF]))], "{texts:?}");
+    let texts: Vec<(f32, Color_Straight_Srgb_4xU8_RGBA)> = draws.iter().filter_map(|d| if let Draw::Text { font_size, color, .. } = d { Some((*font_size, *color)) } else { None }).collect();
+    assert_eq!(texts, vec![(22.0, Color_Straight_Srgb_4xU8_RGBA([0x12, 0x34, 0x56, 0xFF])), (9.0, Color_Straight_Srgb_4xU8_RGBA([0x12, 0x34, 0x56, 0xFF]))], "{texts:?}");
     // The words are the text defaults only.
     let (code, msg) = error("View v {\n theme background=red\n Label a text=\"a\"\n}");
     assert_eq!(code, "G3006");

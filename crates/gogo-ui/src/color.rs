@@ -14,7 +14,7 @@
 //! blends (the 1-px antialias ramps in the shader) are not color design
 //! and stay as they are.
 
-use crate::page::Rgba;
+use crate::page::Color_Straight_Srgb_4xU8_RGBA;
 
 /// A premultiplied-Oklab color: `[L·α, a·α, b·α, α]`. The mixing
 /// representation — values lerp componentwise and nothing else; make one
@@ -37,7 +37,7 @@ fn srgb_from_linear(c: f32) -> u8 {
 
 /// An sRGB color into the mixing representation (Björn Ottosson's Oklab,
 /// the L/a/b each premultiplied by alpha).
-pub fn oklab_pm_from_rgba(c: Rgba) -> OklabPm {
+pub fn oklab_pm_from_rgba(c: Color_Straight_Srgb_4xU8_RGBA) -> OklabPm {
     let (r, g, b) = (linear_from_srgb(c.0[0]), linear_from_srgb(c.0[1]), linear_from_srgb(c.0[2]));
     let l = (0.412_221_47 * r + 0.536_332_54 * g + 0.051_445_995 * b).cbrt();
     let m = (0.211_903_5 * r + 0.680_699_55 * g + 0.107_396_96 * b).cbrt();
@@ -54,16 +54,16 @@ pub fn oklab_pm_from_rgba(c: Rgba) -> OklabPm {
 /// The mixing representation back to sRGB bytes. Out-of-gamut mixes (a
 /// saturated pair can leave [0,1] linear) clamp per channel; zero alpha
 /// has no hue left to divide out and returns transparent black.
-pub fn rgba_from_oklab_pm(c: OklabPm) -> Rgba {
+pub fn rgba_from_oklab_pm(c: OklabPm) -> Color_Straight_Srgb_4xU8_RGBA {
     let alpha = c.0[3];
     if alpha <= 0.0 {
-        return Rgba::TRANSPARENT;
+        return Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT;
     }
     let (lv, av, bv) = (c.0[0] / alpha, c.0[1] / alpha, c.0[2] / alpha);
     let l = (lv + 0.396_337_78 * av + 0.215_803_76 * bv).powi(3);
     let m = (lv - 0.105_561_346 * av - 0.063_854_17 * bv).powi(3);
     let s = (lv - 0.089_484_18 * av - 1.291_485_5 * bv).powi(3);
-    Rgba([
+    Color_Straight_Srgb_4xU8_RGBA([
         srgb_from_linear(4.076_741_7 * l - 3.307_711_6 * m + 0.230_969_93 * s),
         srgb_from_linear(-1.268_438 * l + 2.609_757_4 * m - 0.341_319_4 * s),
         srgb_from_linear(-0.004_196_086 * l - 0.703_418_6 * m + 1.707_614_7 * s),
@@ -74,7 +74,7 @@ pub fn rgba_from_oklab_pm(c: OklabPm) -> Rgba {
 /// Mixes two authored colors at `t` (0 = `a`, 1 = `b`) — the law, in one
 /// call. Endpoints return the input byte-exact so a finished tween or a
 /// held anim end pose never drifts by a rounding step.
-pub fn mix_rgba(a: Rgba, b: Rgba, t: f32) -> Rgba {
+pub fn mix_rgba(a: Color_Straight_Srgb_4xU8_RGBA, b: Color_Straight_Srgb_4xU8_RGBA, t: f32) -> Color_Straight_Srgb_4xU8_RGBA {
     if t <= 0.0 {
         return a;
     }
@@ -97,12 +97,12 @@ mod tests {
     /// step, and `mix_rgba`'s endpoints are byte-exact by construction.
     #[test]
     fn round_trips_and_exact_endpoints() {
-        for &c in &[Rgba([0, 0, 0, 255]), Rgba([255, 255, 255, 255]), Rgba([255, 0, 0, 255]), Rgba([0, 255, 0, 255]), Rgba([0, 0, 255, 255]), Rgba([200, 0, 0, 255]), Rgba([37, 141, 250, 128]), Rgba([255, 128, 0, 3])] {
+        for &c in &[Color_Straight_Srgb_4xU8_RGBA([0, 0, 0, 255]), Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 255]), Color_Straight_Srgb_4xU8_RGBA([255, 0, 0, 255]), Color_Straight_Srgb_4xU8_RGBA([0, 255, 0, 255]), Color_Straight_Srgb_4xU8_RGBA([0, 0, 255, 255]), Color_Straight_Srgb_4xU8_RGBA([200, 0, 0, 255]), Color_Straight_Srgb_4xU8_RGBA([37, 141, 250, 128]), Color_Straight_Srgb_4xU8_RGBA([255, 128, 0, 3])] {
             let back = rgba_from_oklab_pm(oklab_pm_from_rgba(c));
             for i in 0..4 {
                 assert!((back.0[i] as i32 - c.0[i] as i32).abs() <= 1, "{c:?} -> {back:?}");
             }
-            let other = Rgba([10, 200, 30, 200]);
+            let other = Color_Straight_Srgb_4xU8_RGBA([10, 200, 30, 200]);
             assert_eq!(mix_rgba(c, other, 0.0), c);
             assert_eq!(mix_rgba(c, other, 1.0), other);
         }
@@ -114,14 +114,14 @@ mod tests {
     /// (99: Oklab L=0.5), not the sRGB byte middle.
     #[test]
     fn premultiplied_fades_and_even_midpoints() {
-        let mid = mix_rgba(Rgba([255, 80, 0, 255]), Rgba::TRANSPARENT, 0.5);
-        assert_eq!(mid, Rgba([255, 80, 0, 128]), "hue held through a fade-out");
-        let gray = mix_rgba(Rgba([0, 0, 0, 255]), Rgba([255, 255, 255, 255]), 0.5);
-        assert_eq!(gray, Rgba([99, 99, 99, 255]));
+        let mid = mix_rgba(Color_Straight_Srgb_4xU8_RGBA([255, 80, 0, 255]), Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT, 0.5);
+        assert_eq!(mid, Color_Straight_Srgb_4xU8_RGBA([255, 80, 0, 128]), "hue held through a fade-out");
+        let gray = mix_rgba(Color_Straight_Srgb_4xU8_RGBA([0, 0, 0, 255]), Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 255]), 0.5);
+        assert_eq!(gray, Color_Straight_Srgb_4xU8_RGBA([99, 99, 99, 255]));
         // Splitting a mix at its own sample changes nothing: the sample
         // lies ON the Lab line, so a stop inserted with the sampled color
         // leaves a gradient's picture untouched.
-        let (a, b) = (Rgba([200, 0, 0, 255]), Rgba([0, 0, 200, 255]));
+        let (a, b) = (Color_Straight_Srgb_4xU8_RGBA([200, 0, 0, 255]), Color_Straight_Srgb_4xU8_RGBA([0, 0, 200, 255]));
         let q = mix_rgba(a, mix_rgba(a, b, 0.5), 0.5);
         let direct = mix_rgba(a, b, 0.25);
         for i in 0..4 {

@@ -463,15 +463,15 @@ pub struct Compiler<'a> {
     options: CompileOptions<'a>,
     styles: HashMap<String, StyleDef>,
     widgets: HashMap<String, WidgetDef>,
-    palette: HashMap<String, Rgba>,
+    palette: HashMap<String, Color_Straight_Srgb_4xU8_RGBA>,
     /// The variant-flipping words, (light, dark) — `page::MODE_COLORS`.
     /// Overrides live in `palette`/`palette_dark`, which `palette_lookup`
     /// checks first, so a plain-block override replaces both halves and a
     /// `theme dark { }` one the dark half (REFERENCE.md).
-    mode_palette: HashMap<String, (Rgba, Rgba)>,
+    mode_palette: HashMap<String, (Color_Straight_Srgb_4xU8_RGBA, Color_Straight_Srgb_4xU8_RGBA)>,
     /// `theme dark { red = … }` overrides — read only while the active
     /// variant is `dark` (GPAR88).
-    palette_dark: HashMap<String, Rgba>,
+    palette_dark: HashMap<String, Color_Straight_Srgb_4xU8_RGBA>,
     /// Word-to-word overrides in a `theme dark { }` block.
     palette_links_dark: HashMap<String, String>,
     /// Widget param scopes, innermost last.
@@ -639,7 +639,7 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         styles: HashMap::new(),
         widgets: HashMap::new(),
         palette: default_palette(),
-        mode_palette: MODE_COLORS.iter().map(|(w, l, d)| ((*w).to_string(), (Rgba::opaque(*l), Rgba::opaque(*d)))).collect(),
+        mode_palette: MODE_COLORS.iter().map(|(w, l, d)| ((*w).to_string(), (Color_Straight_Srgb_4xU8_RGBA::opaque(*l), Color_Straight_Srgb_4xU8_RGBA::opaque(*d)))).collect(),
         palette_dark: HashMap::new(),
         palette_links_dark: HashMap::new(),
         scopes: Vec::new(),
@@ -691,12 +691,12 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
 /// The bare color words: `page::PALETTE` plus `transparent`. Aliases are
 /// NOT baked in — `palette_lookup` follows them at every use, so an
 /// override of `red` moves `danger` too (GPAR88).
-fn default_palette() -> HashMap<String, Rgba> {
+fn default_palette() -> HashMap<String, Color_Straight_Srgb_4xU8_RGBA> {
     let mut p = HashMap::new();
     for (name, _) in PALETTE {
         p.insert(name.to_string(), palette_color(name).expect("palette word"));
     }
-    p.insert("transparent".to_string(), Rgba::TRANSPARENT);
+    p.insert("transparent".to_string(), Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT);
     p
 }
 
@@ -2874,7 +2874,7 @@ impl<'a> Compiler<'a> {
     /// (GPAR88). Dark reads the `theme dark { }` overrides first and falls
     /// back to the light chain; `text_muted`'s light half is the alias
     /// `gray` (the addon's rule), its dark half the mode table's.
-    fn palette_lookup(&self, word: &str, dark: bool) -> Option<Rgba> {
+    fn palette_lookup(&self, word: &str, dark: bool) -> Option<Color_Straight_Srgb_4xU8_RGBA> {
         let mut cur = word;
         for _ in 0..16 {
             if dark {
@@ -2910,10 +2910,10 @@ impl<'a> Compiler<'a> {
     }
 
     /// A color from a hex, palette word or `$ref` (the ref stays live).
-    fn color_value(&mut self, v: &AstValue, line: u32) -> Option<Rgba> {
+    fn color_value(&mut self, v: &AstValue, line: u32) -> Option<Color_Straight_Srgb_4xU8_RGBA> {
         match v {
             AstValue::Color { rgba, opacity, .. } => {
-                let c = Rgba(*rgba);
+                let c = Color_Straight_Srgb_4xU8_RGBA(*rgba);
                 Some(opacity.map_or(c, |o| c.with_opacity(o)))
             }
             AstValue::Ident { word, opacity, .. } => {
@@ -2931,7 +2931,7 @@ impl<'a> Compiler<'a> {
     /// A color where it lands: a `stops=` entry (with its `@pos`), else a
     /// plain color — an `@pos` anywhere else is refused (G0040) instead of
     /// being thrown away.
-    fn stop_value(&mut self, c: Rgba, pos: Option<f32>, key: Option<PropKey>, line: u32) -> Value {
+    fn stop_value(&mut self, c: Color_Straight_Srgb_4xU8_RGBA, pos: Option<f32>, key: Option<PropKey>, line: u32) -> Value {
         if key == Some(PropKey::Stops) {
             return Value::VStop { color: c, pos };
         }
@@ -2968,7 +2968,7 @@ impl<'a> Compiler<'a> {
                 Value::VNum(*value)
             }
             AstValue::Color { rgba, opacity, pos } => {
-                let c = Rgba(*rgba);
+                let c = Color_Straight_Srgb_4xU8_RGBA(*rgba);
                 let c = opacity.map_or(c, |o| c.with_opacity(o));
                 self.stop_value(c, *pos, key, line)
             }
@@ -5818,7 +5818,7 @@ impl<'a> Compiler<'a> {
             }
             let (w0, wc) = self.page.nodes[i].whens;
             let styled = |st: State| self.page.whens[w0 as usize..(w0 + wc) as usize].iter().any(|w| w.state == st);
-            let mut add: Vec<(State, Rgba)> = Vec::new();
+            let mut add: Vec<(State, Color_Straight_Srgb_4xU8_RGBA)> = Vec::new();
             // Priority comes from `State::priority` (focused < selected <
             // held), so the injection order carries no weight.
             if !styled(State::Focused) {
@@ -6079,7 +6079,7 @@ mod tests {
         let p = ok("$accent = #E51400FF\ntheme dark { $accent = #FF6B4AFF }\ntheme { Button font_size=15 }\nstyle Item background=charcoal, min_height=36 { when selected background=$accent }\nView v {\n Button b .Item text=\"x\", background=#112233FF { when held background=white/0.5 }\n}\n");
         let b = p.find("b").unwrap();
         // Node prop wins over style base on lookup (later in the range).
-        assert_eq!(p.prop(b, PropKey::Background), Some(Value::VColor(Rgba([0x11, 0x22, 0x33, 0xFF]))));
+        assert_eq!(p.prop(b, PropKey::Background), Some(Value::VColor(Color_Straight_Srgb_4xU8_RGBA([0x11, 0x22, 0x33, 0xFF]))));
         assert_eq!(p.nodes[b as usize].placement.min_height, 36.0);
         let whens: Vec<State> = p.whens[p.nodes[b as usize].whens.0 as usize..].iter().map(|w| w.state).collect();
         // The trailing Focused is the injected default focus ring (D129,
@@ -6088,9 +6088,9 @@ mod tests {
         assert_eq!(whens, vec![State::Selected, State::Held, State::Focused]);
         assert!(p.whens.iter().all(|w| w.of == NO_NODE));
         let held_props = &p.props[p.whens[1].props.0 as usize..];
-        assert_eq!(held_props[0].value, Value::VColor(Rgba([255, 255, 255, 128])));
+        assert_eq!(held_props[0].value, Value::VColor(Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 128])));
         let accent = p.intern_lookup("accent");
-        assert_eq!(p.theme_value(accent, p.intern_lookup("dark")), Some(Value::VColor(Rgba([0xFF, 0x6B, 0x4A, 0xFF]))));
+        assert_eq!(p.theme_value(accent, p.intern_lookup("dark")), Some(Value::VColor(Color_Straight_Srgb_4xU8_RGBA([0xFF, 0x6B, 0x4A, 0xFF]))));
         assert_eq!(p.kind_default(Kind::Button, PropKey::FontSize, NO_STR), Some(Value::VNum(15.0)));
     }
 

@@ -26,7 +26,7 @@
 use gogo::draw::{DEFAULT_BUTTON_BACKGROUND, DEFAULT_TEXT_COLOR, Draw, draw, hit};
 use gogo::input::{Input, Phase, Touch};
 use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::{Align, PropKey, Rgba, State};
+use gogo::page::{Align, PropKey, Color_Straight_Srgb_4xU8_RGBA, State};
 use gogo::runtime::{DISABLED, HELD, HOVERED, Resolved, Runtime, SELECTED, resolve, resolve_animated};
 use gogo::{Compiled, Page, Severity, compile};
 
@@ -95,7 +95,7 @@ impl Fx {
         let (res, rects) = self.lay();
         self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase, x, y, t, id: 1 });
     }
-    fn background(&mut self, name: &str) -> Option<Rgba> {
+    fn background(&mut self, name: &str) -> Option<Color_Straight_Srgb_4xU8_RGBA> {
         let id = self.id(name);
         self.res().color(&self.page, id, PropKey::Background)
     }
@@ -110,8 +110,8 @@ impl Fx {
     }
 }
 
-fn rgba(hex: u32) -> Option<Rgba> {
-    Some(Rgba(hex.to_be_bytes()))
+fn rgba(hex: u32) -> Option<Color_Straight_Srgb_4xU8_RGBA> {
+    Some(Color_Straight_Srgb_4xU8_RGBA(hex.to_be_bytes()))
 }
 
 // ------------------------------------------------------------ _state_tests
@@ -365,7 +365,7 @@ fn padded_button_keeps_its_padding_through_a_press() {
 fn font_color_response_hands_back_to_the_default() {
     let mut fx = Fx::new("style Ink width=100, height=48 { when held font_color=#FF0000FF }\nView v { Button ink .Ink text=\"d\" }");
     let ink = fx.id("ink");
-    let text_color = |fx: &mut Fx| -> Option<Rgba> {
+    let text_color = |fx: &mut Fx| -> Option<Color_Straight_Srgb_4xU8_RGBA> {
         fx.draws().iter().find_map(|d| match d {
             Draw::Text { color, .. } => Some(*color),
             _ => None,

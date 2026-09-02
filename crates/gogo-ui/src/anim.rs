@@ -525,7 +525,7 @@ impl Player {
             let Some(channels) = Channel::parse(word) else {
                 let Some((key, _)) = prop_lane(word) else { continue };
                 let dv = |v: Value| crate::runtime::deref(page, variant, v);
-                let shown = get_pval(plive, t.node, key).unwrap_or(if key.is_color() && !word.ends_with(".a") { Value::VColor(Rgba::TRANSPARENT) } else { Value::VNum(0.0) });
+                let shown = get_pval(plive, t.node, key).unwrap_or(if key.is_color() && !word.ends_with(".a") { Value::VColor(Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT) } else { Value::VNum(0.0) });
                 let base_held = pheld.iter().any(|h| h.0 == t.node && h.1 == key);
                 let first = !ptracks.iter().any(|x| x.node == t.node && x.key == key);
                 let t_from = t.from.map(dv);
@@ -760,7 +760,7 @@ mod tests {
         assert_eq!(t.value(), Value::VNum(0.25));
         // Colors mix under the one law (premultiplied Oklab, crate::color)
         // — the midpoint is the perceptual middle, not the byte middle.
-        let c = lerp_value(Value::VColor(Rgba([0, 0, 0, 255])), Value::VColor(Rgba([200, 100, 0, 255])), 0.5);
-        assert_eq!(c, Value::VColor(Rgba([76, 34, 0, 255])));
+        let c = lerp_value(Value::VColor(Color_Straight_Srgb_4xU8_RGBA([0, 0, 0, 255])), Value::VColor(Color_Straight_Srgb_4xU8_RGBA([200, 100, 0, 255])), 0.5);
+        assert_eq!(c, Value::VColor(Color_Straight_Srgb_4xU8_RGBA([76, 34, 0, 255])));
     }
 }

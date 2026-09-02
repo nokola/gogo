@@ -25,7 +25,7 @@
 use gogo::anim::{Easing, Finish, Mode, Motion};
 use gogo::draw::{Draw, draw};
 use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::{Action, AnimTrack, NO_STR, PropKey, Rgba, StrId, Value};
+use gogo::page::{Action, AnimTrack, NO_STR, PropKey, Color_Straight_Srgb_4xU8_RGBA, StrId, Value};
 use gogo::runtime::{DISABLED, HELD, Runtime, resolve, resolve_animated};
 use gogo::{Compiled, Page, compile};
 
@@ -732,7 +732,7 @@ fn flash_style_paints_on_held_and_restores_on_release() {
     let mut rt = Runtime::new(&page);
     rt.set_state(b, HELD, true);
     let r = resolve(&page, &rt);
-    assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([0xE5, 0x14, 0x00, 0xFF])));
+    assert_eq!(r.color(&page, b, PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([0xE5, 0x14, 0x00, 0xFF])));
     rt.set_state(b, HELD, false);
     let r = resolve(&page, &rt);
     assert_eq!(r.color(&page, b, PropKey::Background).map(|c| c.0[3]), Some(0), "{:?}", r.color(&page, b, PropKey::Background));
@@ -763,7 +763,7 @@ fn rounded_style_reaches_the_drawn_quad() {
         Draw::Quad { rect, color, corner, .. } if *rect == rects[eb as usize] => Some((*color, *corner)),
         _ => None,
     });
-    assert_eq!(quad, Some((Rgba([0x22, 0x22, 0x22, 0x99]), 6.0)), "{list:#?}");
+    assert_eq!(quad, Some((Color_Straight_Srgb_4xU8_RGBA([0x22, 0x22, 0x22, 0x99]), 6.0)), "{list:#?}");
 }
 
 /// `_apply_style_tests` 5685-5686 (applystyle.unknown-refused) and

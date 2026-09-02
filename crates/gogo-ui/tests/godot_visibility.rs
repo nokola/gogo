@@ -16,7 +16,7 @@
 //!   flags; the shell seats a page root here.
 use gogo::draw::{Draw, draw, hit};
 use gogo::layout::{FixedAdvance, Rect, TextMeasure, layout};
-use gogo::page::{PropKey, Rgba, Value};
+use gogo::page::{PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
 use gogo::runtime::{DISABLED, Resolved, Runtime, resolve};
 use gogo::{Compiled, Page, compile};
 
@@ -51,7 +51,7 @@ fn size_of(page: &Page, rects: &[Rect], name: &str) -> (f32, f32) {
 }
 
 /// The first solid `Quad` painted in exactly this color (a Rectangle's fill).
-fn quad_of(list: &[Draw], color: Rgba) -> Option<Rect> {
+fn quad_of(list: &[Draw], color: Color_Straight_Srgb_4xU8_RGBA) -> Option<Rect> {
     list.iter().find_map(|d| match d {
         Draw::Quad { rect, color: c, .. } if *c == color => Some(*rect),
         _ => None,
@@ -77,9 +77,9 @@ fn set_visibility(page: &mut Page, rt: &mut Runtime, name: &str, word: &str) {
     rt.set_prop(node, PropKey::Visibility, Value::VIdent(id));
 }
 
-const BLUE: Rgba = Rgba([0x44, 0x88, 0xCC, 0xFF]);
-const ORANGE: Rgba = Rgba([0xCC, 0x88, 0x44, 0xFF]);
-const GREEN: Rgba = Rgba([0x22, 0xCC, 0x44, 0xFF]);
+const BLUE: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([0x44, 0x88, 0xCC, 0xFF]);
+const ORANGE: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([0xCC, 0x88, 0x44, 0xFF]);
+const GREEN: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([0x22, 0xCC, 0x44, 0xFF]);
 
 // ------------------------------------------------------------ visibility
 

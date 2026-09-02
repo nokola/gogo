@@ -34,7 +34,7 @@ use gogo::diag::Diagnostic;
 use gogo::draw::{Draw, draw, hit};
 use gogo::input::{Input, Phase, Touch};
 use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::{Auto, Kind, NodeId, PropKey, Rgba, Value};
+use gogo::page::{Auto, Kind, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
 use gogo::runtime::{DISABLED, Resolved, Runtime, resolve, resolve_animated};
 use gogo::{Compiled, Page, compile};
 
@@ -316,7 +316,7 @@ fn slot_line_box_props_land_on_the_region() {
     let c = ok("widget Track {\n Layers {\n  slot track width=fill, height=4, background=#332211FF, corner_radius=2, padding=3\n }\n}\nTrack t\n");
     let p = &c.page;
     let track = find(p, "t/track");
-    assert_eq!(p.prop(track, PropKey::Background), Some(Value::VColor(Rgba([0x33, 0x22, 0x11, 0xFF]))), "{:?}", p.node_props(track));
+    assert_eq!(p.prop(track, PropKey::Background), Some(Value::VColor(Color_Straight_Srgb_4xU8_RGBA([0x33, 0x22, 0x11, 0xFF]))), "{:?}", p.node_props(track));
     assert_eq!(p.prop(track, PropKey::CornerRadius), Some(Value::VNum(2.0)), "{:?}", p.node_props(track));
     let pl = p.nodes[track as usize].placement;
     assert_eq!(pl.padding, [3.0; 4], "{pl:?}");

@@ -37,7 +37,7 @@ pub enum ItemValue {
     Int(i64),
     Num(f32),
     Bool(bool),
-    Color(Rgba),
+    Color(Color_Straight_Srgb_4xU8_RGBA),
 }
 
 /// One row of a keyed repeat's data: a record (field → value), or a
@@ -437,7 +437,7 @@ impl Runtime {
                 let v = if alpha {
                     Value::VNum(r.color(page, node, key).map(|c| c.0[3] as f32 / 255.0).unwrap_or(1.0))
                 } else if key.is_color() {
-                    Value::VColor(r.color(page, node, key).unwrap_or(Rgba::TRANSPARENT))
+                    Value::VColor(r.color(page, node, key).unwrap_or(Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT))
                 } else {
                     r.prop(page, node, key).unwrap_or(Value::VNum(0.0))
                 };
@@ -1589,7 +1589,7 @@ impl Resolved {
         Some(deref(page, self.variant, raw))
     }
 
-    pub fn color(&self, page: &Page, node: NodeId, key: PropKey) -> Option<Rgba> {
+    pub fn color(&self, page: &Page, node: NodeId, key: PropKey) -> Option<Color_Straight_Srgb_4xU8_RGBA> {
         let mut c = match self.prop(page, node, key) {
             Some(Value::VColor(c)) => c,
             Some(Value::VStop { color, .. }) => color,
@@ -1699,7 +1699,7 @@ impl Resolved {
     }
 
     /// `font_color=`: own, inherited, or the kind default.
-    pub fn font_color(&self, page: &Page, node: NodeId) -> Option<Rgba> {
+    pub fn font_color(&self, page: &Page, node: NodeId) -> Option<Color_Straight_Srgb_4xU8_RGBA> {
         match self.inherited(page, node, PropKey::FontColor)? {
             Value::VColor(c) => Some(c),
             _ => None,
@@ -2510,23 +2510,23 @@ mod tests {
         let b = page.find("b").unwrap();
         let mut rt = Runtime::new(&page);
         let r = resolve_animated(&page, &mut rt);
-        assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([0, 0, 0, 255])));
+        assert_eq!(r.color(&page, b, PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([0, 0, 0, 255])));
         rt.set_state(b, HELD, true);
         let r = resolve_animated(&page, &mut rt);
         assert_eq!(rt.tweens.len(), 1);
-        assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([0, 0, 0, 255])), "starts from the current value");
+        assert_eq!(r.color(&page, b, PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([0, 0, 0, 255])), "starts from the current value");
         rt.tick(&mut page, 0.5);
         let r = resolve_animated(&page, &mut rt);
         // Half-way black->white under the one mixing law (premultiplied
         // Oklab): the perceptual middle, 99, not the byte middle.
-        assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([99, 99, 99, 255])));
+        assert_eq!(r.color(&page, b, PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([99, 99, 99, 255])));
         // Releasing mid-flight: the leaving change mirrors the entering rule and retargets from 99.
         rt.set_state(b, HELD, false);
         let r = resolve_animated(&page, &mut rt);
-        assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([99, 99, 99, 255])));
+        assert_eq!(r.color(&page, b, PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([99, 99, 99, 255])));
         rt.tick(&mut page, 0.5);
         let r = resolve_animated(&page, &mut rt);
-        assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([33, 33, 33, 255])));
+        assert_eq!(r.color(&page, b, PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([33, 33, 33, 255])));
         rt.tick(&mut page, 0.6);
         assert!(!rt.animating());
     }

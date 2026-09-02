@@ -5,7 +5,7 @@
 //! of the per-rule pins (`godot_*.rs`, un-ignored with E4); these cover
 //! the rest and the two design calls (one hex form, one child in
 //! `empty { }`).
-use gogo::page::{Len, PropKey, Rgba, State, Value};
+use gogo::page::{Len, PropKey, Color_Straight_Srgb_4xU8_RGBA, State, Value};
 use gogo::runtime::{BASE, HELD, Runtime, resolve_animated};
 use gogo::{Compiled, compile};
 
@@ -40,12 +40,12 @@ fn base_is_the_rest_end_of_a_builtin_flip_and_home_mirrors_it() {
     resolve_animated(&page, &mut rt);
     rt.tick(&mut page, 0.5);
     let r = resolve_animated(&page, &mut rt);
-    assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([99, 99, 99, 255])), "half way up after 0.5 s of the 1 s rule");
+    assert_eq!(r.color(&page, b, PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([99, 99, 99, 255])), "half way up after 0.5 s of the 1 s rule");
     rt.set_state(b, HELD, false);
     resolve_animated(&page, &mut rt);
     rt.tick(&mut page, 0.5);
     let r = resolve_animated(&page, &mut rt);
-    assert_eq!(r.color(&page, b, PropKey::Background), Some(Rgba([33, 33, 33, 255])), "the release mirrors the entering rule");
+    assert_eq!(r.color(&page, b, PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([33, 33, 33, 255])), "the release mirrors the entering rule");
 
     let c = ok("arrangement wide\ntransition base -> wide duration=1, easing=linear\nwhen wide { bar.width = 300 }\nView v { Panel bar width=100, height=20, halign=left, valign=top }");
     let mut page = c.page;
@@ -173,7 +173,7 @@ fn a_transition_rule_has_one_arrow_and_names_its_from_end() {
 /// drew 0.5 while Godot drew 0.3, both from a clean build.
 #[test]
 fn the_suffix_at_the_slot_sets_the_alpha() {
-    fn bg(src: &str, node: &str, variant: Option<&str>) -> Rgba {
+    fn bg(src: &str, node: &str, variant: Option<&str>) -> Color_Straight_Srgb_4xU8_RGBA {
         let c = ok(src);
         let page = c.page;
         let n = page.find(node).unwrap();
@@ -185,13 +185,13 @@ fn the_suffix_at_the_slot_sets_the_alpha() {
         r.color(&page, n, PropKey::Background).unwrap()
     }
     let a = |o: f32| (o * 255.0).round() as u8;
-    assert_eq!(bg("View v { Panel p background=#00000080/0.5 }", "p", None), Rgba([0, 0, 0, a(0.5)]), "a pasted 8-digit hex takes the suffix");
-    assert_eq!(bg("$flash = #FFFFFF6B\nView v { Panel p background=$flash/0 }", "p", None), Rgba([0xFF, 0xFF, 0xFF, 0]), "the fade idiom: the same color, transparent");
-    assert_eq!(bg("$dim = #80808080\nView v { Panel p background=$dim/0.3 }", "p", None), Rgba([0x80, 0x80, 0x80, a(0.3)]), "over a theme value with its own alpha");
-    assert_eq!(bg("$dim = gray\ntheme dark { $dim = #80808080 }\nView v { Panel p background=$dim/0.3 }", "p", Some("dark")), Rgba([0x80, 0x80, 0x80, a(0.3)]), "through a variant");
-    assert_eq!(bg("$a = $b/0.5\n$b = #101010\nView v { Panel p background=$a/0.3 }", "p", None), Rgba([0x10, 0x10, 0x10, a(0.3)]), "the slot's suffix over a hop's (Rust drew the hop's 0.5)");
-    assert_eq!(bg("$a = $b/0.3\n$b = #10101080\nView v { Panel p background=$a }", "p", None), Rgba([0x10, 0x10, 0x10, a(0.3)]), "a hop's suffix over a value defined later in the file");
-    assert_eq!(bg("widget Chip $tint=red { Panel face background=$tint/0.2 }\nView v { Chip c tint=#20202080 }", "c", None), Rgba([0x20, 0x20, 0x20, a(0.2)]), "the widget's suffix over the caller's alpha");
+    assert_eq!(bg("View v { Panel p background=#00000080/0.5 }", "p", None), Color_Straight_Srgb_4xU8_RGBA([0, 0, 0, a(0.5)]), "a pasted 8-digit hex takes the suffix");
+    assert_eq!(bg("$flash = #FFFFFF6B\nView v { Panel p background=$flash/0 }", "p", None), Color_Straight_Srgb_4xU8_RGBA([0xFF, 0xFF, 0xFF, 0]), "the fade idiom: the same color, transparent");
+    assert_eq!(bg("$dim = #80808080\nView v { Panel p background=$dim/0.3 }", "p", None), Color_Straight_Srgb_4xU8_RGBA([0x80, 0x80, 0x80, a(0.3)]), "over a theme value with its own alpha");
+    assert_eq!(bg("$dim = gray\ntheme dark { $dim = #80808080 }\nView v { Panel p background=$dim/0.3 }", "p", Some("dark")), Color_Straight_Srgb_4xU8_RGBA([0x80, 0x80, 0x80, a(0.3)]), "through a variant");
+    assert_eq!(bg("$a = $b/0.5\n$b = #101010\nView v { Panel p background=$a/0.3 }", "p", None), Color_Straight_Srgb_4xU8_RGBA([0x10, 0x10, 0x10, a(0.3)]), "the slot's suffix over a hop's (Rust drew the hop's 0.5)");
+    assert_eq!(bg("$a = $b/0.3\n$b = #10101080\nView v { Panel p background=$a }", "p", None), Color_Straight_Srgb_4xU8_RGBA([0x10, 0x10, 0x10, a(0.3)]), "a hop's suffix over a value defined later in the file");
+    assert_eq!(bg("widget Chip $tint=red { Panel face background=$tint/0.2 }\nView v { Chip c tint=#20202080 }", "c", None), Color_Straight_Srgb_4xU8_RGBA([0x20, 0x20, 0x20, a(0.2)]), "the widget's suffix over the caller's alpha");
 }
 
 /// GPAR30: a theme `$value` is written in color context — `$dim = gray`
@@ -229,5 +229,5 @@ fn a_child_response_times_by_the_declaring_scope() {
     resolve_animated(&page, &mut rt);
     rt.tick(&mut page, 0.5);
     let r = resolve_animated(&page, &mut rt);
-    assert_eq!(r.color(&page, flash, PropKey::Color), Some(Rgba([99, 99, 99, 255])), "half way, timed by b's own rule");
+    assert_eq!(r.color(&page, flash, PropKey::Color), Some(Color_Straight_Srgb_4xU8_RGBA([99, 99, 99, 255])), "half way, timed by b's own rule");
 }

@@ -24,7 +24,7 @@
 use gogo::ast::{AstItem, AstNode, AstValue, Document};
 use gogo::draw::{Draw, Fit, draw, hit};
 use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::{Kind, NO_STR, PropKey, Rgba, State, Value};
+use gogo::page::{Kind, NO_STR, PropKey, Color_Straight_Srgb_4xU8_RGBA, State, Value};
 use gogo::parser::parse;
 use gogo::runtime::{Resolved, Runtime, SELECTED, resolve};
 use gogo::{Compiled, Page, compile};
@@ -112,7 +112,7 @@ fn node(item: &AstItem) -> &AstNode {
     }
 }
 
-fn quads(list: &[Draw]) -> Vec<(Rect, Rgba, f32)> {
+fn quads(list: &[Draw]) -> Vec<(Rect, Color_Straight_Srgb_4xU8_RGBA, f32)> {
     list.iter().filter_map(|d| if let Draw::Quad { rect, color, corner, .. } = d { Some((*rect, *color, *corner)) } else { None }).collect()
 }
 
@@ -550,7 +550,7 @@ fn cookbook_button_background_recolors_not_reshapes() {
     };
     let (b, b_color, b_corner) = plate("b");
     let (p, _, p_corner) = plate("plain");
-    assert_eq!(b_color, Rgba([0x44, 0x88, 0xFF, 0xFF]), "recolored");
+    assert_eq!(b_color, Color_Straight_Srgb_4xU8_RGBA([0x44, 0x88, 0xFF, 0xFF]), "recolored");
     assert_eq!(b_corner, p_corner, "same corner as the unstyled twin");
     assert_eq!((b.w, b.h), (p.w, p.h), "same padding as the unstyled twin: {b:?} vs {p:?}");
 }
@@ -651,7 +651,7 @@ fn extends_inherits_and_overrides() {
     let c = ok("style BaseLook min_height=36, background=#112233FF\nstyle Warn extends=BaseLook, background=#AA0000FF\nView v { Button b .Warn }\n");
     let b = c.page.find("b").unwrap();
     assert_eq!(c.page.nodes[b as usize].placement.min_height, 36.0, "inherited");
-    assert_eq!(c.page.prop(b, PropKey::Background), Some(Value::VColor(Rgba([0xAA, 0, 0, 0xFF]))), "overridden");
+    assert_eq!(c.page.prop(b, PropKey::Background), Some(Value::VColor(Color_Straight_Srgb_4xU8_RGBA([0xAA, 0, 0, 0xFF]))), "overridden");
 }
 
 /// `_extends_tests` 3000-3019 (extends.chain-ok, chain-props, chain-states,
@@ -668,7 +668,7 @@ fn extends_three_level_chain_with_whens() {
     assert!(whens.iter().any(|w| w.state == State::Hovered), "{whens:#?}");
     let held = whens.iter().filter(|w| w.state == State::Held).last().unwrap_or_else(|| panic!("{whens:#?}"));
     let bg = c.page.props[held.props.0 as usize..(held.props.0 + held.props.1) as usize].iter().rev().find(|p| p.key == PropKey::Background).map(|p| p.value);
-    assert_eq!(bg, Some(Value::VColor(Rgba([0x33, 0x33, 0x33, 0]))), "the deepest held response wins");
+    assert_eq!(bg, Some(Value::VColor(Color_Straight_Srgb_4xU8_RGBA([0x33, 0x33, 0x33, 0]))), "the deepest held response wins");
 }
 
 /// `_extends_tests` 3023-3028 (extends.err-cycle, err-unknown-parent,
@@ -775,7 +775,7 @@ fn vocab_view_defaults_and_file_wins() {
     assert_eq!(l.rect("v"), VIEW, "{:?}", l.rect("v"));
     assert!(l.draws().is_empty(), "transparent, borderless: {:#?}", l.draws());
     let l = lay("View v background=#FF0000FF");
-    assert_eq!(quads(&l.draws()), vec![(VIEW, Rgba([0xFF, 0, 0, 0xFF]), 0.0)], "{:#?}", l.draws());
+    assert_eq!(quads(&l.draws()), vec![(VIEW, Color_Straight_Srgb_4xU8_RGBA([0xFF, 0, 0, 0xFF]), 0.0)], "{:#?}", l.draws());
 }
 
 /// `_vocab_tests` 12401-12406 (vocab.view-halign-skips-fill): a positioned

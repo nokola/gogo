@@ -27,7 +27,7 @@
 //!   (1996-2001): theme stylebox ownership, `hover_pressed` slot.
 use gogo::draw::{Draw, draw, hit};
 use gogo::layout::{DEFAULT_FONT_SIZE, FixedAdvance, Rect, layout};
-use gogo::page::{Align, Kind, Len, Rgba};
+use gogo::page::{Align, Kind, Len, Color_Straight_Srgb_4xU8_RGBA};
 use gogo::runtime::{HELD, Resolved, Runtime, resolve};
 use gogo::{Compiled, NodeId, Page, compile};
 
@@ -94,7 +94,7 @@ impl Built {
         })
     }
     /// The plate a node draws: the first Quad exactly over its rect.
-    fn plate(&self, name: &str) -> Option<(Rgba, f32)> {
+    fn plate(&self, name: &str) -> Option<(Color_Straight_Srgb_4xU8_RGBA, f32)> {
         let own = self.rect(name);
         self.draws().iter().find_map(|d| match d {
             Draw::Quad { rect, color, corner, .. } if *rect == own => Some((*color, *corner)),
@@ -497,7 +497,7 @@ fn root_is_free_placement_and_hugs_its_children() {
 #[test]
 fn root_draws_its_own_plate() {
     let b = build("View v background=#112233FF, corner_radius=3", 200.0, 100.0);
-    assert_eq!(b.plate("v"), Some((Rgba([0x11, 0x22, 0x33, 0xFF]), 3.0)), "{:#?}", b.draws());
+    assert_eq!(b.plate("v"), Some((Color_Straight_Srgb_4xU8_RGBA([0x11, 0x22, 0x33, 0xFF]), 3.0)), "{:#?}", b.draws());
 }
 
 /// `_placement_tests` 1780-1781 (`place.err-placement-in-when`): a
@@ -640,10 +640,10 @@ fn button_padding_and_radius_keep_press_feedback() {
     b.rt.set_state(b.id("pad"), HELD, true);
     b.rt.set_state(b.id("rad"), HELD, true);
     b.relayout();
-    assert_eq!(b.plate("pad").map(|p| p.0), Some(Rgba([0xFF, 0, 0, 0xFF])), "held changes the plate: {:#?}", b.draws());
+    assert_eq!(b.plate("pad").map(|p| p.0), Some(Color_Straight_Srgb_4xU8_RGBA([0xFF, 0, 0, 0xFF])), "held changes the plate: {:#?}", b.draws());
     let held_text = b.text_rect("fails").unwrap();
     assert_eq!(held_text, text, "the padding holds while held");
-    assert_eq!(b.plate("rad"), Some((Rgba([0xFF, 0, 0, 0xFF]), 8.0)), "radius in every state: {:#?}", b.draws());
+    assert_eq!(b.plate("rad"), Some((Color_Straight_Srgb_4xU8_RGBA([0xFF, 0, 0, 0xFF]), 8.0)), "radius in every state: {:#?}", b.draws());
 }
 
 /// `_free_padding_tests` 2014-2025 (`fpad.button-bg-ok`, `fpad.button-
@@ -652,7 +652,7 @@ fn button_padding_and_radius_keep_press_feedback() {
 #[test]
 fn static_background_takes_over_every_state_and_keeps_padding() {
     let mut b = build("View v {\n Button b text=\"x\", padding=10, background=#4488FFFF, halign=left, valign=top\n}\n", 400.0, 400.0);
-    let blue = Rgba([0x44, 0x88, 0xFF, 0xFF]);
+    let blue = Color_Straight_Srgb_4xU8_RGBA([0x44, 0x88, 0xFF, 0xFF]);
     assert_eq!(b.plate("b").map(|p| p.0), Some(blue), "{:#?}", b.draws());
     let text = b.text_rect("x").unwrap();
     assert!(close(text.x, b.rect("b").x + 10.0), "{text:?} in {:?}", b.rect("b"));

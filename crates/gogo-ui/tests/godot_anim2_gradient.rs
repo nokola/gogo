@@ -31,7 +31,7 @@ use std::path::PathBuf;
 use gogo::anim::Finish;
 use gogo::draw::{Draw, GradientKind, draw};
 use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::{PropKey, Rgba, Value};
+use gogo::page::{PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
 use gogo::runtime::{HOVERED, Runtime, resolve};
 use gogo::{BuildOptions, Compiled, Diagnostic, Page, build_pages, compile, has_errors};
 
@@ -109,7 +109,7 @@ fn scene(src: &str) -> (Page, Vec<Rect>, Vec<Draw>) {
 }
 
 /// Every gradient segment in the list: (kind, from, to, angle, band).
-fn gradients(draws: &[Draw]) -> Vec<(GradientKind, Rgba, Rgba, f32, (f32, f32))> {
+fn gradients(draws: &[Draw]) -> Vec<(GradientKind, Color_Straight_Srgb_4xU8_RGBA, Color_Straight_Srgb_4xU8_RGBA, f32, (f32, f32))> {
     draws
         .iter()
         .filter_map(|d| match d {
@@ -119,7 +119,7 @@ fn gradients(draws: &[Draw]) -> Vec<(GradientKind, Rgba, Rgba, f32, (f32, f32))>
         .collect()
 }
 
-fn circles(draws: &[Draw]) -> Vec<(Rect, Rgba, f32, Rgba)> {
+fn circles(draws: &[Draw]) -> Vec<(Rect, Color_Straight_Srgb_4xU8_RGBA, f32, Color_Straight_Srgb_4xU8_RGBA)> {
     draws
         .iter()
         .filter_map(|d| match d {
@@ -576,7 +576,7 @@ fn radial_gradient_with_a_plateau_reaches_the_draw_list() {
     assert_eq!(g.len(), 2, "{g:#?}");
     assert!(g.iter().all(|s| s.0 == GradientKind::Radial), "{g:#?}");
     assert!(near(g[0].4.1, 0.94) && near(g[1].4.0, 0.94), "{g:#?}");
-    assert_eq!(g[0].1, Rgba([0xFF, 0xFF, 0xFF, 0x6B]), "{g:#?}");
+    assert_eq!(g[0].1, Color_Straight_Srgb_4xU8_RGBA([0xFF, 0xFF, 0xFF, 0x6B]), "{g:#?}");
     assert_eq!(g[1].2.0[3], 0, "{g:#?}");
     let covers = draws.iter().filter(|d| matches!(d, Draw::Gradient { rect, .. } if *rect == glow)).count();
     assert_eq!(covers, 2, "every segment spans the node's rect: {draws:#?}");
@@ -606,7 +606,7 @@ fn a_ref_stop_carries_its_position() {
     assert!(!fails(src), "{:#?}", diags(src));
     let (_, _, draws) = scene(src);
     let g = gradients(&draws);
-    assert_eq!(g[0].1, Rgba([0x10, 0x20, 0x30, 0x40]), "{g:#?}");
+    assert_eq!(g[0].1, Color_Straight_Srgb_4xU8_RGBA([0x10, 0x20, 0x30, 0x40]), "{g:#?}");
 }
 
 /// `_gradient_tests` 8311 (gradient.opacity-entry): `/opacity` goes on a
@@ -618,7 +618,7 @@ fn a_stop_entry_takes_an_opacity_suffix() {
     let (_, _, draws) = scene("View v { Gradient g width=100, height=10, stops=[#10203040@0, accent/0.5@0.3, white@1] }");
     let g = gradients(&draws);
     assert_eq!(g.len(), 2, "{g:#?}");
-    assert_eq!(g[0].1, Rgba([0x10, 0x20, 0x30, 0x40]), "{g:#?}");
+    assert_eq!(g[0].1, Color_Straight_Srgb_4xU8_RGBA([0x10, 0x20, 0x30, 0x40]), "{g:#?}");
     assert!((g[0].2.0[3] as i32 - 128).abs() <= 1, "accent/0.5 alpha: {g:#?}");
     assert!(near(g[0].4.1, 0.3), "{g:#?}");
 }
@@ -679,12 +679,12 @@ fn stops_are_live_per_stop_properties() {
     let c = ok("View v { Gradient g width=100, height=100, stops=[white, black] }");
     let mut rt = Runtime::new(&c.page);
     let g = c.page.find("g").unwrap();
-    rt.set_prop(g, PropKey::StopColor(1), Value::VColor(Rgba([0xE5, 0x14, 0x00, 0xFF])));
+    rt.set_prop(g, PropKey::StopColor(1), Value::VColor(Color_Straight_Srgb_4xU8_RGBA([0xE5, 0x14, 0x00, 0xFF])));
     let res = resolve(&c.page, &rt);
     let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
     let list = gradients(&draw(&c.page, &res, &rects));
-    assert_eq!(list.first().unwrap().1, Rgba([0xE5, 0x14, 0x00, 0xFF]), "{list:#?}");
-    assert_eq!(list.last().unwrap().2, Rgba([0x00, 0x00, 0x00, 0xFF]), "the other stop holds: {list:#?}");
+    assert_eq!(list.first().unwrap().1, Color_Straight_Srgb_4xU8_RGBA([0xE5, 0x14, 0x00, 0xFF]), "{list:#?}");
+    assert_eq!(list.last().unwrap().2, Color_Straight_Srgb_4xU8_RGBA([0x00, 0x00, 0x00, 0xFF]), "the other stop holds: {list:#?}");
 }
 
 /// The stop-write fences: the declared look has one spelling (`stops=`),
@@ -822,13 +822,13 @@ fn circle_disc_ring_and_when_color() {
     assert_eq!((dot.w, dot.h), (24.0, 24.0), "{dot:?}");
     let c = circles(&draws);
     assert_eq!(c.len(), 1, "{draws:#?}");
-    assert_eq!(c[0], (dot, Rgba([0xE5, 0x14, 0x00, 0xFF]), 0.0, Rgba::TRANSPARENT), "{c:?}");
+    assert_eq!(c[0], (dot, Color_Straight_Srgb_4xU8_RGBA([0xE5, 0x14, 0x00, 0xFF]), 0.0, Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT), "{c:?}");
 
     let (_, _, draws) = scene("View v { Circle ring width=50, height=50, border_color=#E51400FF, border_thickness=1.5 }");
     let c = circles(&draws);
     assert_eq!(c.len(), 1, "{draws:#?}");
     assert_eq!(c[0].1.0[3], 0, "the fill stays clear: {c:?}");
-    assert!(near(c[0].2, 1.5) && c[0].3 == Rgba([0xE5, 0x14, 0x00, 0xFF]), "{c:?}");
+    assert!(near(c[0].2, 1.5) && c[0].3 == Color_Straight_Srgb_4xU8_RGBA([0xE5, 0x14, 0x00, 0xFF]), "{c:?}");
 
     let c = ok("View v { Circle c 24x24, color=#FFFFFFFF {\n    when hovered color=#FF0000FF\n} }");
     let page = c.page;
@@ -839,9 +839,9 @@ fn circle_disc_ring_and_when_color() {
         let rects = layout(&page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
         circles(&draw(&page, &res, &rects))[0].1
     };
-    assert_eq!(fill(&rt), Rgba([0xFF, 0xFF, 0xFF, 0xFF]));
+    assert_eq!(fill(&rt), Color_Straight_Srgb_4xU8_RGBA([0xFF, 0xFF, 0xFF, 0xFF]));
     rt.set_state(id, HOVERED, true);
-    assert_eq!(fill(&rt), Rgba([0xFF, 0x00, 0x00, 0xFF]));
+    assert_eq!(fill(&rt), Color_Straight_Srgb_4xU8_RGBA([0xFF, 0x00, 0x00, 0xFF]));
 }
 
 /// `_circle_tests` 8485-8487 (circle.err-corner, circle.err-padding,

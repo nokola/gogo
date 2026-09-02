@@ -25,7 +25,7 @@ use gogo::compile;
 use gogo::draw::{Draw, draw};
 use gogo::input::{Event, EventKind, Input, Phase, Touch};
 use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::{Action, Kind, NO_CHOICE, PropKey, Rgba, Value};
+use gogo::page::{Action, Kind, NO_CHOICE, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
 use gogo::runtime::{HELD, Resolved, Runtime, SELECTED, resolve};
 use gogo::{Compiled, Page};
 
@@ -315,7 +315,7 @@ fn background_recolors_the_bodied_radio_slate() {
     let list = fx.draws();
     let (_, rects) = fx.lay();
     let ra = rects[fx.id("a") as usize];
-    assert!(list.iter().any(|d| matches!(d, Draw::Quad { rect, color, .. } if *rect == ra && *color == Rgba([255, 0, 0, 255]))), "{list:#?}");
+    assert!(list.iter().any(|d| matches!(d, Draw::Quad { rect, color, .. } if *rect == ra && *color == Color_Straight_Srgb_4xU8_RGBA([255, 0, 0, 255]))), "{list:#?}");
     assert_eq!(count(&list, |d| matches!(d, Draw::Quad { .. })), 1, "the untinted Radio stays blank: {list:#?}");
 }
 
@@ -399,7 +399,7 @@ fn host_with_its_own_when_builds() {
     let fx = Fx::new(&src);
     assert!(fx.page.find("lookA/dot").is_some());
     let (res, _) = fx.lay();
-    assert_eq!(res.color(&fx.page, fx.id("a"), PropKey::Background), Some(Rgba([0, 255, 0, 255])), "the host's own response applies");
+    assert_eq!(res.color(&fx.page, fx.id("a"), PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([0, 255, 0, 255])), "the host's own response applies");
 }
 
 /// `_widget_host_when_tests` 13895-13903 (override-replaces): the host's

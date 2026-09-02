@@ -21,7 +21,7 @@
 //! - `input.twin-first` 9830-9859: engine touch-emulation dispatch order.
 use gogo::input::{Event, EventKind, FLING_BOOST, Input, Phase, SCROLL_DEADZONE, Touch};
 use gogo::layout::{FixedAdvance, Rect, SCROLL_BAR_EPX, layout, scroll_axes_of};
-use gogo::page::{Kind, NodeId, PropKey, Rgba, Value};
+use gogo::page::{Kind, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
 use gogo::runtime::{FOCUSED, HELD, HOVERED, Resolved, Runtime, SELECTED, resolve, resolve_animated};
 use gogo::{Compiled, Page, compile};
 
@@ -100,7 +100,7 @@ impl Fx {
 
     fn background(&self, name: &str) -> Option<[u8; 4]> {
         let (res, _) = self.lay();
-        res.color(&self.page, self.id(name), PropKey::Background).map(|c: Rgba| c.0)
+        res.color(&self.page, self.id(name), PropKey::Background).map(|c: Color_Straight_Srgb_4xU8_RGBA| c.0)
     }
 
     /// A real flick up the list: the finger crosses the deadzone fast and

@@ -10,7 +10,7 @@ use gogo::Compiled;
 use gogo::anim::Finish;
 use gogo::color::mix_rgba;
 use gogo::compile;
-use gogo::page::{PropKey, Rgba, StrId, Value};
+use gogo::page::{PropKey, Color_Straight_Srgb_4xU8_RGBA, StrId, Value};
 use gogo::runtime::{HELD, Runtime, resolve, resolve_animated};
 
 fn ok(src: &str) -> Compiled {
@@ -45,13 +45,13 @@ fn a_background_lane_plays_holds_and_outranks_writes() {
     rt.play(&page, warn, Finish::Nothing);
     rt.tick(&mut page, 0.5);
     let mid = resolve(&page, &rt).color(&page, b, PropKey::Background).unwrap();
-    assert_eq!(mid, mix_rgba(Rgba([0, 0, 0, 255]), Rgba([255, 0, 0, 255]), 0.5), "the law's midpoint");
-    assert_ne!(mid, Rgba([128, 0, 0, 255]), "not the byte midpoint");
+    assert_eq!(mid, mix_rgba(Color_Straight_Srgb_4xU8_RGBA([0, 0, 0, 255]), Color_Straight_Srgb_4xU8_RGBA([255, 0, 0, 255]), 0.5), "the law's midpoint");
+    assert_ne!(mid, Color_Straight_Srgb_4xU8_RGBA([128, 0, 0, 255]), "not the byte midpoint");
     rt.tick(&mut page, 0.6);
     assert!(!rt.is_playing(warn));
-    assert_eq!(resolve(&page, &rt).color(&page, b, PropKey::Background), Some(Rgba([255, 0, 0, 255])), "the end pose holds");
-    rt.set_prop(b, PropKey::Background, Value::VColor(Rgba([255, 255, 255, 255])));
-    assert_eq!(resolve(&page, &rt).color(&page, b, PropKey::Background), Some(Rgba([255, 0, 0, 255])), "a held pose outranks a later code write");
+    assert_eq!(resolve(&page, &rt).color(&page, b, PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([255, 0, 0, 255])), "the end pose holds");
+    rt.set_prop(b, PropKey::Background, Value::VColor(Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 255])));
+    assert_eq!(resolve(&page, &rt).color(&page, b, PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([255, 0, 0, 255])), "a held pose outranks a later code write");
 }
 
 /// `background.a` moves alpha alone: mid-play the fill is the declared
@@ -67,9 +67,9 @@ fn an_alpha_lane_keeps_the_ladder_hue() {
     let mut rt = Runtime::new(&page);
     rt.play(&page, fade, Finish::Nothing);
     rt.tick(&mut page, 0.5);
-    assert_eq!(resolve(&page, &rt).color(&page, b, PropKey::Background), Some(Rgba([0x33, 0x55, 0xFF, 153])), "declared hue, the lane's alpha (1 -> 0.2 at t=0.5 = 0.6)");
-    rt.set_prop(b, PropKey::Background, Value::VColor(Rgba([0, 255, 0, 255])));
-    assert_eq!(resolve(&page, &rt).color(&page, b, PropKey::Background), Some(Rgba([0, 255, 0, 153])), "a whole-color write swaps the hue under the anim's alpha");
+    assert_eq!(resolve(&page, &rt).color(&page, b, PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([0x33, 0x55, 0xFF, 153])), "declared hue, the lane's alpha (1 -> 0.2 at t=0.5 = 0.6)");
+    rt.set_prop(b, PropKey::Background, Value::VColor(Color_Straight_Srgb_4xU8_RGBA([0, 255, 0, 255])));
+    assert_eq!(resolve(&page, &rt).color(&page, b, PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([0, 255, 0, 153])), "a whole-color write swaps the hue under the anim's alpha");
 }
 
 /// The take-over law on a prop lane: a newer player takes `b.background`,
@@ -87,7 +87,7 @@ fn a_newer_player_takes_the_lane_and_stop_restores() {
     rt.play(&page, back, Finish::Nothing);
     rt.tick(&mut page, 0.1);
     rt.stop(back, true);
-    assert_eq!(resolve(&page, &rt).color(&page, b, PropKey::Background), Some(Rgba([0x11, 0x22, 0x33, 255])), "restore lands on the first play's base");
+    assert_eq!(resolve(&page, &rt).color(&page, b, PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([0x11, 0x22, 0x33, 255])), "restore lands on the first play's base");
 }
 
 /// Anim beats transition (user call): while a player owns `background`,
@@ -107,7 +107,7 @@ fn an_owned_lane_spawns_no_tween() {
     let r = resolve_animated(&page, &mut rt);
     assert!(!rt.tweens.iter().any(|t| t.node == b && t.key == PropKey::Background), "no tween on an owned lane");
     let shown = r.color(&page, b, PropKey::Background).unwrap();
-    assert_ne!(shown, Rgba([255, 255, 255, 255]), "the anim's value shows, not the when's");
+    assert_ne!(shown, Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 255]), "the anim's value shows, not the when's");
 }
 
 /// `g.stop_1_color.a` at full runtime: the resolved stop color is the
@@ -122,8 +122,8 @@ fn a_stop_alpha_lane_reads_the_declared_stop() {
     let mut rt = Runtime::new(&page);
     rt.play(&page, glow, Finish::Nothing);
     rt.tick(&mut page, 1.1);
-    assert_eq!(resolve(&page, &rt).color(&page, g, PropKey::StopColor(1)), Some(Rgba([255, 255, 255, 107])), "white at 0.42");
-    assert_eq!(resolve(&page, &rt).color(&page, g, PropKey::StopColor(2)), Some(Rgba([0, 0, 0, 255])), "the other stop untouched");
+    assert_eq!(resolve(&page, &rt).color(&page, g, PropKey::StopColor(1)), Some(Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 107])), "white at 0.42");
+    assert_eq!(resolve(&page, &rt).color(&page, g, PropKey::StopColor(2)), Some(Color_Straight_Srgb_4xU8_RGBA([0, 0, 0, 255])), "the other stop untouched");
 }
 
 /// The lane fences: a word anims may not drive, `.a` on a non-color,

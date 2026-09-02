@@ -6,7 +6,7 @@
 use gogo::draw::{Draw, draw};
 use gogo::input::{Event, EventKind, Input, Key, MOUSE_ID, Mods, Phase, SEL_HANDLE_EPX, Touch, sel_handle_rect};
 use gogo::layout::{DEFAULT_FONT_SIZE, FixedAdvance, Rect, layout};
-use gogo::page::{NodeId, PropKey, Rgba, Value};
+use gogo::page::{NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
 use gogo::runtime::{FOCUSED, Runtime, resolve};
 use gogo::{Page, compile};
 
@@ -549,7 +549,7 @@ fn backspace_removes_a_whole_emoji() {
 fn selection_color_paints_the_highlight_and_handles() {
     let mut fx = Fx::new();
     let field = fx.page.find("field").unwrap();
-    fx.rt.set_prop(field, PropKey::SelectionColor, Value::VColor(Rgba([255, 0, 0, 128])));
+    fx.rt.set_prop(field, PropKey::SelectionColor, Value::VColor(Color_Straight_Srgb_4xU8_RGBA([255, 0, 0, 128])));
     fx.tap("field", 0.0);
     for c in "hello".chars() {
         fx.key(Key::Char(c));

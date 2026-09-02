@@ -47,7 +47,7 @@
 use gogo::compile::CompileOptions;
 use gogo::draw::{Draw, draw};
 use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::{Align, Kind, PropKey, Rgba, Value};
+use gogo::page::{Align, Kind, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
 use gogo::runtime::{Resolved, Runtime, resolve};
 use gogo::{Compiled, NodeId, Page, compile, compile_with};
 
@@ -104,7 +104,7 @@ fn view_fixture_builds_with_its_include_and_a_broken_file_does_not() {
     let rt = Runtime::new(&page);
     let (res, _) = lay(&page, &rt, 400.0, 800.0);
     let swatch = id(&page, "swatch");
-    assert_eq!(res.color(&page, swatch, PropKey::Color), Some(Rgba([0xEB, 0x64, 0x28, 0xFF])), "the include's $swatchTest reaches the swatch");
+    assert_eq!(res.color(&page, swatch, PropKey::Color), Some(Color_Straight_Srgb_4xU8_RGBA([0xEB, 0x64, 0x28, 0xFF])), "the include's $swatchTest reaches the swatch");
     assert!(res.gone(&page, 0), "the root's `visibility=gone` holds");
     let root = res.placement[0];
     assert_eq!(root.valign, Align::End, "{root:?}");
@@ -124,7 +124,7 @@ fn panel_root_component_is_the_styled_box() {
     assert_eq!(page.find("box"), Some(0), "the root IS the box: no wrapper node");
     let rt = Runtime::new(&page);
     let (res, rects) = lay(&page, &rt, 400.0, 300.0);
-    assert_eq!(res.color(&page, 0, PropKey::Background), Some(Rgba([0x11, 0x22, 0x33, 0xFF])));
+    assert_eq!(res.color(&page, 0, PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([0x11, 0x22, 0x33, 0xFF])));
     assert_eq!(res.placement[0].padding, [8.0, 8.0, 8.0, 8.0], "{:?}", res.placement[0]);
     assert_eq!((rects[0].w, rects[0].h), (120.0, 40.0), "{rects:?}");
 }

@@ -18,14 +18,14 @@ pub const DISABLED_OPACITY: f32 = 0.3;
 /// the engine theme's ItemList `selected` color with white@0.3 as the
 /// fallback (list_item.gd); with no engine theme here the fallback IS
 /// the color — held at half strength, the cursor echo at a quarter.
-pub const LIST_SELECTED_FILL: Rgba = Rgba([255, 255, 255, 77]);
-pub const LIST_HELD_FILL: Rgba = Rgba([255, 255, 255, 38]);
-pub const LIST_FOCUS_FILL: Rgba = Rgba([255, 255, 255, 19]);
+pub const LIST_SELECTED_FILL: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 77]);
+pub const LIST_HELD_FILL: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 38]);
+pub const LIST_FOCUS_FILL: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 19]);
 /// The Button family's injected default `when focused` ring (D129: the
 /// engine's always-on ring retired, re-owned as a default response) —
 /// visible focus shows it for key-driven focus only, and authoring
 /// `when focused` replaces it (the D122 per-state doctrine).
-pub const BUTTON_FOCUS_RING: Rgba = Rgba([255, 255, 255, 85]);
+pub const BUTTON_FOCUS_RING: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 85]);
 pub const BUTTON_FOCUS_RING_EPX: f32 = 2.0;
 /// The empty string; `name == NO_STR` = unnamed.
 pub const NO_STR: StrId = 0;
@@ -749,17 +749,24 @@ pub fn kind_own_words(kind: Kind) -> Vec<&'static str> {
     kind_row(kind).iter().flat_map(|g| g.iter()).filter(|k| !BOX.contains(k)).map(|k| k.word()).collect()
 }
 
-/// sRGB bytes, alpha last — the file's `#RRGGBBAA`.
+/// The one authored-color type — every color a `.gogo` file names, a
+/// `when` writes or a draw command carries: the file's `#RRGGBBAA`.
+/// STRAIGHT alpha, sRGB-encoded bytes, RGBA order — nothing in gogo
+/// holds a premultiplied byte color (premultiplying happens in the
+/// shader at output, and in `color::OklabPm`, its own type). The name
+/// duplicates imaging's color_types spelling on purpose — same concept,
+/// but gogo stays dependency-free (asset-store bound).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub struct Rgba(pub [u8; 4]);
+#[allow(non_camel_case_types)]
+pub struct Color_Straight_Srgb_4xU8_RGBA(pub [u8; 4]);
 
-impl Rgba {
-    pub const TRANSPARENT: Rgba = Rgba([0, 0, 0, 0]);
+impl Color_Straight_Srgb_4xU8_RGBA {
+    pub const TRANSPARENT: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([0, 0, 0, 0]);
     /// The opaque color of `0xRRGGBB` — how the palette tables spell bytes.
-    pub const fn opaque(hex: u32) -> Rgba {
-        Rgba([(hex >> 16) as u8, (hex >> 8) as u8, hex as u8, 0xFF])
+    pub const fn opaque(hex: u32) -> Color_Straight_Srgb_4xU8_RGBA {
+        Color_Straight_Srgb_4xU8_RGBA([(hex >> 16) as u8, (hex >> 8) as u8, hex as u8, 0xFF])
     }
-    pub fn with_opacity(self, opacity: f32) -> Rgba {
+    pub fn with_opacity(self, opacity: f32) -> Color_Straight_Srgb_4xU8_RGBA {
         let mut c = self;
         c.0[3] = (opacity.clamp(0.0, 1.0) * 255.0).round() as u8;
         c
@@ -775,11 +782,11 @@ pub enum Value {
     VBool(bool),
     /// A bare number; lengths are epx.
     VNum(f32),
-    VColor(Rgba),
+    VColor(Color_Straight_Srgb_4xU8_RGBA),
     /// Both halves of a variant-flipping color word (`surface`, `text`,
     /// … — `page::MODE_COLORS`): compile keeps the pair, `runtime::deref`
     /// picks the half the active variant reads.
-    VColorPair { light: Rgba, dark: Rgba },
+    VColorPair { light: Color_Straight_Srgb_4xU8_RGBA, dark: Color_Straight_Srgb_4xU8_RGBA },
     /// A displayed string: `text` is the literal as the file wrote it (the
     /// English), `key` its translation key or `NO_KEY`. With a key, what
     /// shows is `Locale::text(key)` when the runtime has a locale, else the
@@ -798,7 +805,7 @@ pub enum Value {
     /// `[a, b, c]` — a range in `Page::values`.
     VList(u32, u32),
     /// A gradient stop: color at a position (`None` = evenly spaced).
-    VStop { color: Rgba, pos: Option<f32> },
+    VStop { color: Color_Straight_Srgb_4xU8_RGBA, pos: Option<f32> },
     /// `$item.<field>` inside a keyed repeat's template — the id is the
     /// field path after the binding (the empty string = the item itself).
     /// `Runtime::set_items` replaces it with the item's value on each
@@ -1217,9 +1224,9 @@ pub const MODE_COLORS: &[(&str, u32, u32)] = &[
 ];
 
 /// A palette word's color, aliases followed (`None` = not a palette word).
-pub fn palette_color(word: &str) -> Option<Rgba> {
+pub fn palette_color(word: &str) -> Option<Color_Straight_Srgb_4xU8_RGBA> {
     let word = PALETTE_ALIASES.iter().find(|(a, _)| *a == word).map_or(word, |(_, of)| *of);
-    PALETTE.iter().find(|(w, _)| *w == word).map(|(_, hex)| Rgba([(hex >> 16) as u8, (hex >> 8) as u8, *hex as u8, 0xFF]))
+    PALETTE.iter().find(|(w, _)| *w == word).map(|(_, hex)| Color_Straight_Srgb_4xU8_RGBA([(hex >> 16) as u8, (hex >> 8) as u8, *hex as u8, 0xFF]))
 }
 
 /// Property words the compiler accepts and no pass reads, each with the

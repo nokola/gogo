@@ -39,7 +39,7 @@
 use gogo::draw::{Draw, SLIDER_FILL, SLIDER_TRACK, TOGGLE_OFF, draw};
 use gogo::input::{Event, EventKind, Input, Phase, Touch};
 use gogo::layout::{FixedAdvance, Rect, TOGGLE_PILL, layout};
-use gogo::page::{Action, Kind, PropKey, Rgba, Value};
+use gogo::page::{Action, Kind, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
 use gogo::runtime::{DISABLED, HELD, Resolved, Runtime, SELECTED, resolve};
 use gogo::{Compiled, Diagnostic, Page, compile};
 
@@ -150,7 +150,7 @@ fn slider_parts(list: &[Draw]) -> (Draw, Draw, Draw) {
     (quads[0], quads[1], knob)
 }
 
-fn quad_color(d: Draw) -> Rgba {
+fn quad_color(d: Draw) -> Color_Straight_Srgb_4xU8_RGBA {
     match d {
         Draw::Quad { color, .. } => color,
         other => panic!("not a quad: {other:?}"),
@@ -202,7 +202,7 @@ fn render_bare_slider_draws_groove_and_no_label() {
     let (track, fill, knob) = slider_parts(&list);
     assert_eq!(quad_color(track), SLIDER_TRACK, "{list:#?}");
     assert_eq!(quad_color(fill), SLIDER_FILL, "{list:#?}");
-    assert!(matches!(knob, Draw::Circle { color, .. } if color == Rgba([255, 255, 255, 255])), "{knob:?}");
+    assert!(matches!(knob, Draw::Circle { color, .. } if color == Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 255])), "{knob:?}");
     assert!(!list.iter().any(|d| matches!(d, Draw::Text { .. })), "the label is empty by default: {list:#?}");
     assert_eq!(list.len(), 3, "{list:#?}");
 }
@@ -217,7 +217,7 @@ fn render_slider_holds_held_while_pressed() {
     fx.touch(Phase::Down, 100.0, 16.0, 0.0);
     assert!(fx.rt.has(s, HELD));
     let (track, _, _) = slider_parts(&fx.draws());
-    assert_eq!(quad_color(track), Rgba([255, 0, 0, 255]), "{track:?}");
+    assert_eq!(quad_color(track), Color_Straight_Srgb_4xU8_RGBA([255, 0, 0, 255]), "{track:?}");
     fx.touch(Phase::Up, 100.0, 16.0, 0.1);
     assert!(!fx.rt.has(s, HELD));
     let (track, _, _) = slider_parts(&fx.draws());
@@ -288,7 +288,7 @@ fn render_for_slider_style_restyles_the_track() {
     assert_eq!(quad_color(track), SLIDER_TRACK, "a corner alone does not paint the box: {track:?}");
     let fx = Fx::new("style RedTrack for=Slider, slot.track.background=#AA1111FF\nView v { Slider s .RedTrack value=30, width=200 }");
     let (track, _, _) = slider_parts(&fx.draws());
-    assert_eq!(quad_color(track), Rgba([0xAA, 0x11, 0x11, 0xFF]), "{track:?}");
+    assert_eq!(quad_color(track), Color_Straight_Srgb_4xU8_RGBA([0xAA, 0x11, 0x11, 0xFF]), "{track:?}");
 }
 
 /// `_render_tests` 4207 (`render.fill-label`): a `slot label { Label }`
