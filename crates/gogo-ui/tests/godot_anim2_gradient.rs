@@ -324,7 +324,7 @@ fn assignments_inside_an_anim_are_refused() {
 /// the error names whose `when` holds it even when the anim sits on the
 /// style and the `when` on the node.
 #[test]
-#[ignore = "GPAR62: not ported: G4003 two writers (when + anim on one prop); transition anim= is GP31"]
+#[ignore = "GP40: the group-form anim body and the holder-naming message; the plain G4003 fence is live (GPAR62 — godot_controls::diag_two_writers_on_one_property_is_refused)"]
 fn two_writers_on_one_property_are_refused_naming_the_holder() {
     assert!(mentions("style S {\n    when held scale=0.9\n    transition any -> held anim=pop\n}\nanim pop {\n    group t duration_each=0.1 { self.scale to=1.1 }\n}\nView v { Button b .S }\n", "two writers"));
     assert!(mentions("style S {\n    transition any -> held anim=pop\n}\nanim pop { self.scale to=1.1, duration=0.1 }\nView v { Button menuBtn .S {\n    when held scale=0.9\n} }\n", "'scale' on menuBtn is held by its `when held`"));

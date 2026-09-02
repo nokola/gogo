@@ -262,16 +262,20 @@ fn node_prop_beside_a_style_when_builds() {
     ok("style S background=#111111FF { when held background=#222222FF }\nView v { Button b .S background=#333333FF }");
 }
 
-/// `_state_tests` 5932-5935 (`state.style-state-dropped`): the spec's
-/// merge rule — a node's own static prop drops the STYLE's when-response
-/// for that key, so pressing keeps #333333.
+/// `_state_tests` 5932-5935 (`state.style-state-dropped`): Godot's merge
+/// rule let a node's static prop drop the STYLE's when-response for that
+/// key. FLIP (GPAR48, cut from the spec 2026-08-31): the static line
+/// replaces the style's BASE value only — the style's `when held` still
+/// answers; opting out of a style's response is a written `when`, never
+/// a side effect of a static prop.
 #[test]
-#[ignore = "GPAR48: static node prop should drop a style's when-response (Rust applies the style's #222222)"]
-fn static_node_prop_drops_the_styles_when_response() {
+fn a_styles_when_response_survives_a_static_node_prop() {
     let mut fx = Fx::new("style S background=#111111FF { when held background=#222222FF }\nView v { Button b .S background=#333333FF }");
     let b = fx.id("b");
     fx.rt.set_state(b, HELD, true);
-    assert_eq!(fx.background("b"), rgba(0x333333FF));
+    assert_eq!(fx.background("b"), rgba(0x222222FF), "the style's held response answers");
+    fx.rt.set_state(b, HELD, false);
+    assert_eq!(fx.background("b"), rgba(0x333333FF), "at rest the node's static wins the base");
 }
 
 const THEMED: &str = "style Tap width=100, height=48 {\n    transition duration=0.1\n    when held background=#FFFFFFFF\n}\nView v { Column m {\n    Button plain .Tap text=\"a\"\n    Button based .Tap text=\"b\", background=#FF0000FF {\n        when held background=#00FF00FF\n    }\n} }";
@@ -510,7 +514,6 @@ fn widget_instances_are_named_and_body_names_scoped() {
 /// widget's OWN `style` (with a `transition … anim=` naming the widget's
 /// own anim) builds and lands per instance on the `signals` Button.
 #[test]
-#[ignore = "GP32: not ported: widget-scoped `style`/`transition` (unknown style `.Root`, G5002)"]
 fn widget_scoped_style_and_transition_anim_land_per_instance() {
     let c = ok("widget FxButton $text=\"\" {\n    anim pressFx {\n        caption.translate.x { key t=0, v=0; key t=0.1, v=3; key t=0.2, v=0 }\n    }\n    style Root background=#1F1F1FFF {\n        transition any -> held duration=0.05, anim=pressFx\n        when held background=#E51400FF\n    }\n    Button signals .Root {\n        Label caption text=$text\n    }\n}\nView v { Row r {\n    FxButton one text=\"Paint\"\n    FxButton two text=\"Undo\"\n} }");
     let one = c.page.find("one").unwrap();

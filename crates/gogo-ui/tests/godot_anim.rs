@@ -149,7 +149,6 @@ fn duration_beside_keys_is_refused() {
 /// inside an anim is an assignment, not a journey — refused with the
 /// `to=` spelling.
 #[test]
-#[ignore = "GP41: not ported: anim step validation — an `=` assignment inside an anim is silently skipped"]
 fn assignment_inside_anim_is_refused() {
     let src = "anim a { box.opacity = 0 }\nView v { Rectangle box }";
     assert!(fails(src), "{}", messages(src));
@@ -513,7 +512,6 @@ fn hidden_and_speed_fixtures_build() {
 /// though the end pose is not identity (the SlideOut pattern: hide first,
 /// the release cleans up) — re-showing it later finds it at rest.
 #[test]
-#[ignore = "NEW: Godot resets a hidden target's motion to identity at anim end vs Rust leaves translate.x=40 on the hidden node (re-show finds it slid out)"]
 fn hidden_target_is_reset_when_the_anim_ends() {
     let c = ok("anim off { box.translate.x to=40, duration=0.2 }\nView host { Rectangle box }\n");
     let mut page = c.page;
@@ -748,7 +746,6 @@ fn flash_style_paints_on_held_and_restores_on_release() {
 /// `_apply_style_tests` 5670-5673 (applystyle.for-ok): a `for=Button`
 /// style on a Button applies without complaint.
 #[test]
-#[ignore = "GP40: not ported: `for=` checked styles (`for` reaches the node as an unknown prop, G2001)"]
 fn for_button_style_applies_to_a_button_cleanly() {
     let src = format!("{APPLY_STYLE_FIXTURE}\nView v {{ Button fb .ButtonOnly text=\"x\" }}\n");
     let c = compile(&src, &|_| None);

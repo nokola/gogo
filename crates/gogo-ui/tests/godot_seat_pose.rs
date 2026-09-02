@@ -409,7 +409,6 @@ fn posed_alignment_on_a_stack_child_realigns_the_cross_axis() {
 /// `_flow_pose_tests` 7488-7489 `flow.err-margin`: a `when` may not pose a
 /// margin on a stack child — the parent seats its children (D164).
 #[test]
-#[ignore = "GP34: not ported: margins on a container child are a load error"]
 fn posed_margin_on_a_stack_child_is_refused() {
     assert!(refuses("arrangement o\nwhen o { b.margin_left=4 }\nView v { Column c { Rectangle b 10x10 } }"));
 }

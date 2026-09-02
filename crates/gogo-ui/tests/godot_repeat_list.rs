@@ -404,9 +404,8 @@ fn repeat_empty_block_rules() {
 
 /// `_repeat_tests` 12688 (`repeat.err-props`): the repeat line takes no
 /// look/size props (Godot G9009) — they belong on the parent or the
-/// template. Rust stores `spacing=4` on the repeat node and nobody reads it.
+/// template. Rust refuses them through the kind-words table.
 #[test]
-#[ignore = "GP41: Rust accepts props on the repeat line (Godot G9009)"]
 fn repeat_line_takes_no_props() {
     let src = "View v { Column c { repeat t capacity=1, spacing=4 { empty { } Label text=\"x\" } } }";
     assert!(!builds(src), "{:?}", codes(src));

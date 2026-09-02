@@ -846,10 +846,9 @@ fn a_seated_glyph_stays_put_when_its_minimum_changes() {
 
 /// `_container_seat_tests` 1422-1430 (seat.flip-refused): a `when` block
 /// re-pinning a container child with a margin is refused at load ("seats
-/// its children"). Rust refuses margins on a container child on the node
-/// line (G1014) but a posed margin builds.
+/// its children"). Rust refuses both spellings as G1014 — the node line
+/// and the posed form (the posed half landed with GPAR94, round 6).
 #[test]
-#[ignore = "GP34: not ported: margins on a container child refused (resolver 7570) — the posed form builds in Rust"]
 fn a_when_block_cannot_re_pin_a_container_child() {
     assert!(errs("arrangement alt\nView v {\n Column {\n  Button b 40x40\n }\n}\nwhen alt {\n b.margin_left = 6\n}\n"));
 }

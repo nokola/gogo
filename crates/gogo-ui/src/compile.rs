@@ -328,6 +328,7 @@ fn wrong_kind(key: PropKey, kind: Kind) -> String {
         PropKey::CornerRadius | PropKey::BorderThickness | PropKey::BorderColor | PropKey::ClipContents if kind == Kind::Circle => format!("`{word}=` on a Circle — a Circle is not a box; it has a `color=` and a ring (`border_thickness=`, `border_color=`)"),
         PropKey::CornerRadius | PropKey::BorderThickness | PropKey::BorderColor | PropKey::ClipContents => format!("`{word}=` shapes a box's plate — a {name} has none; wrap it in a Panel"),
         PropKey::Padding | PropKey::PaddingLeft | PropKey::PaddingTop | PropKey::PaddingRight | PropKey::PaddingBottom if leaf => format!("`{word}=` is air inside a box around its children or text — a {name} has neither; outer air is `margin=`"),
+        PropKey::Allow if kind == Kind::List => "a List picks its pan axis with `layout`, not `allow=` — `layout Row` pans sideways, anything else pans down".to_string(),
         PropKey::Allow | PropKey::Bars => format!("`{word}=` picks a Scroll's pan axes — a {name} does not scroll"),
         PropKey::Cols | PropKey::RowHeight => format!("`{word}=` lays out a Grid or Tiles — a {name} has no tracks"),
         PropKey::Spacing => format!("`spacing=` separates a stack's children (Column, Row, Flow, Grid, Tiles, List) — a {name} stacks nothing"),

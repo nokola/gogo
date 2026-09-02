@@ -317,9 +317,9 @@ fn disabled_cascades_down_and_own_flags_survive() {
 /// cap-fence, container-fence, natural-non-image, bad-value). Godot
 /// refuses six `aspect=` shapes at build: both axes spelled, `hug` with
 /// it, a `max_*` cap with it, a container parent, `natural` on a
-/// non-Image, a non-positive number. Rust has no `aspect=` fence at all.
+/// non-Image, a non-positive number. Rust refuses the same six as G1017
+/// (GPAR80, round 4).
 #[test]
-#[ignore = "NEW: Godot refuses 6 aspect= shapes (both spelled, hug, cap, container parent, natural on non-Image, -2) vs Rust compiles every one with no diagnostic"]
 fn aspect_fences_refuse_bad_shapes() {
     for src in [
         "View v { Rectangle r width=100, height=50, aspect=1 }",
@@ -336,9 +336,9 @@ fn aspect_fences_refuse_bad_shapes() {
 /// `_aspect_fit_tests` 12087-12092 (fit.non-image, fit.fill-hint,
 /// fit.bad-word). Godot refuses `fit=` on a non-content node, hints
 /// `distort` for the CSS word `fill`, and names `contain` for an unknown
-/// word. Rust compiles all three (an unknown fit word draws as contain).
+/// word. Rust refuses all three too — the kind table keeps `fit=` on an
+/// Image, and G0057's closed word set names the good words.
 #[test]
-#[ignore = "NEW: Godot refuses fit= on a Panel, fit=fill, fit=middle vs Rust compiles all three with no diagnostic (unknown word draws as contain)"]
 fn fit_fences_refuse_bad_shapes() {
     for src in ["View v { Panel p fit=cover }", "View v { Image i fit=fill }", "View v { Image i fit=middle }"] {
         assert!(fails(src), "{src}: {:?}", codes(src));
@@ -385,10 +385,9 @@ fn fit_words_reach_the_draw_list_with_contain_as_default() {
 /// fill). `aspect=` is a relation on ANY node's own rectangle: the spelled
 /// axis drives, the other is derived — a 200-wide `aspect=2` Rectangle is
 /// 200×100; a fill-width `aspect=4` one with 20-epx side margins in a
-/// 400 frame is 360×90. Rust reads `aspect=` only on `Image`
-/// (`layout::image_min`): both Rectangles come out 0 tall.
+/// 400 frame is 360×90. Rust derives the same way on any box at place
+/// (GPAR80, round 4).
 #[test]
-#[ignore = "NEW: Godot derives aspect= on any node (Rectangle 200,aspect=2 → 200×100) vs Rust reads aspect only on Image — the Rectangles lay out 200×0 and 360×0"]
 fn aspect_derives_the_unspelled_axis_on_any_node() {
     let c = ok(ASPECT_FIXTURE);
     let (_, rects) = lay(&c.page, &Runtime::new(&c.page), 400.0, 300.0);
@@ -402,7 +401,6 @@ fn aspect_derives_the_unspelled_axis_on_any_node() {
 /// x=50; the solve is live — at 240×300 the square is 240×240 and the
 /// fill-width `aspect=4` box re-derives to 200×50.
 #[test]
-#[ignore = "GP35: aspect= with both axes fill (largest fitting rect, centered) — Rust gives the whole frame"]
 fn both_fill_aspect_is_the_largest_fitting_box_centered_and_live() {
     let c = ok(ASPECT_FIXTURE);
     let rt = Runtime::new(&c.page);

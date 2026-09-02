@@ -382,9 +382,8 @@ fn render_button_for_style_applies() {
 /// `_render_tests` 4238-4245 (`render.err-button-for-slot-path`,
 /// `render.err-button-inline-path`): a `slot.leading.…` path on a Button
 /// (in a `for=Button` style or inline) is an error — a Button has no
-/// slots. Rust only warns G2001 and builds.
+/// slots. Rust refuses it too (the areas/for= round's checked styles).
 #[test]
-#[ignore = "GP40: not ported: `slot.<name>.<prop>` paths (Godot: `has no slots` error; Rust: G2001 warning, builds)"]
 fn render_button_slot_paths_are_refused() {
     assert!(gogo::has_errors(&diags("style Bad for=Button, slot.leading.size=20\nView v { Button b .Bad text=\"x\" }")));
     assert!(gogo::has_errors(&diags("View v { Button b text=\"x\", slot.leading.size=20 }")));
@@ -513,9 +512,9 @@ fn render_theme_entry_name_wiring_placement_size_and_dup_are_refused() {
 
 /// `_render_tests` 4426-4431 (`render.err-entry-style-mismatch`): a style
 /// `for=Fader` named on a `theme { Slider … }` entry is an error — the
-/// entry defaults Slider. Rust does not check `for=`.
+/// entry defaults Slider. Rust checks the entry's kind against `for=`
+/// too (the areas/for= round).
 #[test]
-#[ignore = "GP40: not ported: `for=` checked styles (a for=Fader style on a Slider entry builds)"]
 fn render_theme_entry_style_kind_must_match() {
     let src = format!("{FADER_SRC}style Chunky for=Fader, slot.track.corner_radius=5\ntheme {{ Slider .Chunky }}\nView v {{ Fader f 100x24 }}");
     assert!(gogo::has_errors(&diags(&src)));
@@ -913,11 +912,11 @@ fn errors_dup_name_reserved_word_and_line_number() {
 /// `_diagnostic_tests` 4849-4850, 4905-4906 (`diag.g3001-fires`,
 /// `diag.g3001-solo-fires`): `anim=` on a `when` line is an error — a
 /// `when` declares a look, the anim belongs on a `transition` (Godot
-/// G3001; Rust's old G3001 — `$` defined twice — is G6002 now (GPAR61)). Rust warns G2001
-/// and drops the word. (The Godot fixture's `self.scale` target is `b.scale`
+/// G3001; Rust's old G3001 — `$` defined twice — is G6002 now (GPAR61));
+/// Rust refuses every timing word on a `when` line the same way —
+/// "timing belongs on a `transition` line". (The Godot fixture's `self.scale` target is `b.scale`
 /// here: `self` outside a widget is G0060.)
 #[test]
-#[ignore = "GP41: not ported: `anim=` on a `when` line is a load-time error (Godot G3001; Rust: G2001 warning, the word is dropped)"]
 fn diag_anim_on_a_when_line_is_refused() {
     let d = diags("style MenuButton width=220, height=48 {\n    when held background=#FFFFFFff, anim=test\n}\nanim test {\n    b.scale to=5, duration=0.8\n}\nView v { Button b .MenuButton text=\"X\" }");
     assert!(gogo::has_errors(&d) && d.iter().any(|x| x.message.contains("anim")), "{d:#?}");
@@ -927,9 +926,8 @@ fn diag_anim_on_a_when_line_is_refused() {
 
 /// `_diagnostic_tests` 4923-4936 (`diag.g4003-fires`): one property with
 /// two writers — a `when held scale=` holds it while a `transition …
-/// anim=t` drives it — is an error naming both. Rust builds it.
+/// anim=t` drives it — is an error naming both (G4003, GPAR62).
 #[test]
-#[ignore = "GPAR62: G4003 two-writers fence not ported (a when and a transition anim on one prop build clean)"]
 fn diag_two_writers_on_one_property_is_refused() {
     let d = diags("style MB width=100, height=48 {\n    when held background=#FFFFFFff\n    transition any -> held anim=t\n}\nanim t {\n    b.scale to=5, duration=0.8\n}\nView root {\n    Button b .MB text=\"X\" {\n        when held scale=0.96\n    }\n}");
     assert!(gogo::has_errors(&d), "{d:#?}");
@@ -970,13 +968,15 @@ fn diag_two_roots_point_at_the_second() {
 }
 
 /// `_diagnostic_tests` 4982-4984 (`diag.legacy-uncoded`): Godot leaves an
-/// unknown-type error UNCODED (its block starts `error: `). Rust codes it
-/// G7011 — a code outside the addon's registry (GPAR61).
+/// unknown-type error UNCODED (its block starts `error: `). FLIP (GPAR61,
+/// 2026-08-31): every Rust diagnostic carries a registered code — an
+/// unknown type is G7011 — and the registry pin keeps codes, docs and
+/// teaching pages in step.
 #[test]
-#[ignore = "GPAR61: registries differ — Godot leaves unknown-type uncoded, Rust codes it G7011 (unregistered)"]
-fn diag_unknown_type_is_uncoded() {
+fn an_unknown_type_is_coded_g7011() {
     let d = diags("View v { Buttn b text=\"x\" }");
-    assert!(d.iter().any(|x| x.code.is_empty()), "{d:#?}");
+    assert!(d.iter().any(|x| x.code == "G7011"), "{d:#?}");
+    assert!(d.iter().all(|x| !x.code.is_empty()), "{d:#?}");
 }
 
 /// `_diagnostic_tests` 4989-4992 (`diag.g0002`): an unclosed `{` is an

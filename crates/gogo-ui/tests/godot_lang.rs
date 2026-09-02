@@ -647,7 +647,6 @@ fn cookbook_hidden_holds_space() {
 /// that `extends=` another inherits its props and overrides the ones it
 /// re-states.
 #[test]
-#[ignore = "GP40: not ported: style extends= (the key is a G2001 warning, the parent's props are not inherited)"]
 fn extends_inherits_and_overrides() {
     let c = ok("style BaseLook min_height=36, background=#112233FF\nstyle Warn extends=BaseLook, background=#AA0000FF\nView v { Button b .Warn }\n");
     let b = c.page.find("b").unwrap();
@@ -659,7 +658,6 @@ fn extends_inherits_and_overrides() {
 /// state-overridden): a three-level chain keeps the inherited `when`
 /// responses and the deepest override of a shared one wins.
 #[test]
-#[ignore = "GP40: not ported: style extends= (chained props and whens are not inherited)"]
 fn extends_three_level_chain_with_whens() {
     let c = ok("style A min_height=20 { when hovered background=#22222200 }\nstyle B extends=A, min_width=30 { when held background=#11111100 }\nstyle C extends=B { when held background=#33333300 }\nView v { Button b .C }\n");
     let b = c.page.find("b").unwrap();
@@ -677,7 +675,6 @@ fn extends_three_level_chain_with_whens() {
 /// err-not-a-name): a cycle, an unknown parent and a non-name value are
 /// load errors.
 #[test]
-#[ignore = "GP40: not ported: style extends= (no cycle / unknown-parent / not-a-name checks; all three build clean)"]
 fn extends_errors() {
     assert!(gogo::has_errors(&compile("style A extends=B\nstyle B extends=A\nView v { Button x .A }", &|_| None).diags), "cycle");
     assert!(gogo::has_errors(&compile("style A extends=Nope\nView v { Button x .A }", &|_| None).diags), "unknown parent");
@@ -687,7 +684,6 @@ fn extends_errors() {
 /// `_extends_tests` 3031-3038 (extends.across-uses): a local style extends
 /// one brought in with `uses`.
 #[test]
-#[ignore = "GP40: not ported: style extends= (the imported parent's spacing is not inherited)"]
 fn extends_across_uses() {
     let loader = |path: &str| if path == "fixtures/theme_inc.gogo" { Some("// Shared include for view_test.gogo (exercises `uses` + theme + style merge).\n$swatchTest = #EB6428FF\nstyle TestPanel spacing=8\n".to_string()) } else { None };
     let c = compile("uses \"fixtures/theme_inc.gogo\"\nstyle Local extends=TestPanel, min_height=99\nView v { Column c .Local }\n", &loader);

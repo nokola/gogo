@@ -317,7 +317,6 @@ fn a_capped_hug_axis_scrolls_past_its_cap() {
 /// (its internal scroll goes bar-less), and `allow=` on a List redirects
 /// to `layout` (the axis is the layout's).
 #[test]
-#[ignore = "GP28: not ported: List is a plain Column — no internal scroll to take `bars=`, no `allow=` → `layout` redirect"]
 fn list_takes_bars_and_redirects_allow_to_layout() {
     let c = compile("View v { List picker bars=never { empty { } repeat rows by $item.id { ListItem { Label text=$item.title } } } }", &|_| None);
     assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
@@ -822,7 +821,6 @@ fn a_hide_mid_journey_reads_the_mid_values() {
 /// opacity 1, no motion armed) — the restarted player must not memorize
 /// the mid-journey values as its base.
 #[test]
-#[ignore = "GPAR54: no as-built ledger — the finished hide leaves the box parked at the vanish end (x −60, opacity 0) instead of restoring x 0, opacity 1"]
 fn a_restarted_hide_restores_the_as_built_values_on_finish() {
     let c = ok(DRIFT);
     let mut page = c.page;

@@ -276,7 +276,6 @@ fn widget_instance_alignment_merges_over_the_body() {
 /// widget body line `Button signals text=$label` builds — the `signals`
 /// flag needs no comma before the next `key=`.
 #[test]
-#[ignore = "NEW: Godot parses `Button signals text=$label` vs Rust G0017 missing `,` before `text` (a flag followed by key= needs a comma)"]
 fn signals_flag_needs_no_comma_before_a_key() {
     let src = "widget RowBtn $label=\"\" {\n Button signals text=$label\n}\nView v { RowBtn a label=\"x\" }";
     assert!(!refused(src), "{}", messages(src));

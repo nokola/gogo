@@ -445,11 +445,10 @@ fn slot_fill_error_family() {
 
 // ----------------------------------------------------------- _control_tests
 
-/// `ctl.ok` 3409: the Godot `FADER_SRC` builds verbatim. Rust refuses its
-/// `slot.thumb.translate.y` anim lane (G0063 — the lane reads as a node
-/// named `slot`).
+/// `ctl.ok` 3409: the Godot `FADER_SRC` builds verbatim — its
+/// `slot.thumb.translate.y` anim lane works in a control's own scoped
+/// anims (GP32, 2026-08-31).
 #[test]
-#[ignore = "GP32: not ported: `slot.<name>.<channel>` anim lanes inside a control body (G0063 today)"]
 fn fader_source_builds_verbatim() {
     ok(&format!("{FADER_SRC}Fader gain 200x24, value=25\n"));
 }
