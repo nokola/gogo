@@ -184,7 +184,8 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     }
     let node = &page.nodes[id as usize];
     let motion = res.motion.get(id as usize).copied().unwrap_or(crate::anim::Motion::IDENTITY);
-    let rect = moved(rects[id as usize], &motion);
+    let pivot = pivot_frac(page, res, id);
+    let rect = moved(rects[id as usize], &motion, pivot);
     // `scale` means the whole picture at that size (Godot's canvas
     // transform, GPAR43): the rects shrink in the child shift below, and
     // the sizes that come from props, not rects — glyph size, corner
@@ -252,7 +253,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     };
     let rotated = motion.rotate != 0.0;
     if rotated {
-        out.push(Draw::RotatePush { angle: motion.rotate, cx: rect.x + rect.w / 2.0, cy: rect.y + rect.h / 2.0 });
+        out.push(Draw::RotatePush { angle: motion.rotate, cx: rect.x + rect.w * pivot.0, cy: rect.y + rect.h * pivot.1 });
     }
 
     // Any box has a plate (docs/gogo-design.md §8, E8 2026-08-31):
@@ -587,9 +588,10 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
 
     if motion.translate != [0.0, 0.0] || motion.scale != [1.0, 1.0] {
         // Children move with their parent: shift their rects by the same
-        // transform (scale about this node's center).
+        // transform (scale about this node's `pivot=` point, default the
+        // center — the same fixed point `moved` held for the node itself).
         let mut moved_rects: Vec<Rect> = rects.to_vec();
-        let (cx, cy) = (rects[id as usize].x + rects[id as usize].w / 2.0, rects[id as usize].y + rects[id as usize].h / 2.0);
+        let (cx, cy) = (rects[id as usize].x + rects[id as usize].w * pivot.0, rects[id as usize].y + rects[id as usize].h * pivot.1);
         for i in (id as usize + 1)..node.subtree_end as usize {
             let r = rects[i];
             moved_rects[i] = Rect::new(cx + (r.x - cx) * motion.scale[0] + motion.translate[0], cy + (r.y - cy) * motion.scale[1] + motion.translate[1], r.w * motion.scale[0], r.h * motion.scale[1]);
@@ -676,11 +678,23 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     }
 }
 
-/// The node's own rect under its motion channels (scale about the center).
-fn moved(r: Rect, m: &crate::anim::Motion) -> Rect {
+/// The node's own rect under its motion channels — scale holds the
+/// `pivot=` point still (default the center).
+fn moved(r: Rect, m: &crate::anim::Motion, pivot: (f32, f32)) -> Rect {
     let w = r.w * m.scale[0];
     let h = r.h * m.scale[1];
-    Rect::new(r.x + (r.w - w) / 2.0 + m.translate[0], r.y + (r.h - h) / 2.0 + m.translate[1], w, h)
+    Rect::new(r.x + (r.w - w) * pivot.0 + m.translate[0], r.y + (r.h - h) * pivot.1 + m.translate[1], w, h)
+}
+
+/// The 0..1 `pivot=` fraction — where the fixed point of `scale` and
+/// `rotate` sits in the node's box. Unset = the center. The compiler
+/// fenced the value to a full 0..1 pair (G2005), so anything else here
+/// is simply "unset".
+fn pivot_frac(page: &Page, res: &Resolved, id: NodeId) -> (f32, f32) {
+    match res.prop(page, id, PropKey::Pivot) {
+        Some(Value::VSize(Some(x), Some(y))) => (x, y),
+        _ => (0.5, 0.5),
+    }
 }
 
 /// The nodes in PAINT order (parents before children, siblings by their
@@ -716,7 +730,8 @@ fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option<Vec<Rect>>
         }
         // Ancestors sit at lower indices, so nested motions compose in
         // walk order like the draw pass.
-        let (cx, cy) = (out[i].x + out[i].w / 2.0, out[i].y + out[i].h / 2.0);
+        let p = pivot_frac(page, res, i as NodeId);
+        let (cx, cy) = (out[i].x + out[i].w * p.0, out[i].y + out[i].h * p.1);
         for j in i..page.nodes[i].subtree_end as usize {
             let r = out[j];
             out[j] = Rect::new(cx + (r.x - cx) * m.scale[0] + m.translate[0], cy + (r.y - cy) * m.scale[1] + m.translate[1], r.w * m.scale[0], r.h * m.scale[1]);

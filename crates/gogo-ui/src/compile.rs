@@ -3205,6 +3205,13 @@ impl<'a> Compiler<'a> {
             self.check_stops(&p.value, p.line);
         }
         let mut value = self.value(&p.value, p.line, Some(key));
+        // `pivot=` is a 0..1 box point — the fixed spot `scale` and
+        // `rotate` transform about. A bare number or an out-of-box point
+        // would silently transform about nowhere.
+        if key == PropKey::Pivot && !matches!(value, Value::VSize(Some(x), Some(y)) if (0.0..=1.0).contains(&x) && (0.0..=1.0).contains(&y)) {
+            self.error("G2005", p.line, format!("`pivot=` is a 0..1 box point — `pivot=0.5x0.5` (the center), `pivot=0x0` (top-left), not `{}`", spell(&p.value)));
+            return None;
+        }
         // A number key given a word, color or string: refused, never read
         // as "unset" (`opacity=red`, `when held scale=big`).
         if key.is_number() && !matches!(value, Value::VNum(_) | Value::VRef { .. } | Value::VCall { .. }) {

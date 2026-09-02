@@ -402,6 +402,11 @@ pub enum PropKey {
     TranslateX,
     TranslateY,
     Rotate,
+    /// `pivot=` — the 0..1 box point `scale` and `rotate` transform
+    /// about (`0x0` = the top-left corner; unset = the center). A look
+    /// word, not a motion channel: it places the fixed point, the
+    /// channels do the moving.
+    Pivot,
     /// Placement keys, so `when` blocks can carry them.
     Width,
     Height,
@@ -504,6 +509,7 @@ pub const WORDS: &[(&str, PropKey)] = &[
     ("translate.x", PropKey::TranslateX),
     ("translate.y", PropKey::TranslateY),
     ("rotate", PropKey::Rotate),
+    ("pivot", PropKey::Pivot),
     ("width", PropKey::Width),
     ("height", PropKey::Height),
     ("min_width", PropKey::MinWidth),
@@ -660,6 +666,7 @@ const BOX: &[PropKey] = &[
     PropKey::TranslateX,
     PropKey::TranslateY,
     PropKey::Rotate,
+    PropKey::Pivot,
     PropKey::SeatOf,
     PropKey::Disabled,
     PropKey::TouchTarget,
