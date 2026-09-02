@@ -348,6 +348,13 @@ pub enum PropKey {
     FontColor,
     /// `color.a` — a Rectangle/Circle fill's alpha alone (whens/anims).
     ColorA,
+    /// `stop_<n>_color` — a Gradient's declared stop, kept LIVE after
+    /// declaration (GP40 step 4, user 2026-09-02: parametric keys, the
+    /// `stop_1_color` spelling). 1-based, `stops=` declaration order.
+    StopColor(u8),
+    /// `stop_<n>_offset` — the live position half; a driven write
+    /// clamps to stay non-decreasing (declared `@` order is G2005's).
+    StopOffset(u8),
     /// `theme { disabled_opacity = … }`: how far a `disabled` node's
     /// content dims when no `when disabled` on it says otherwise.
     DisabledOpacity,
@@ -368,7 +375,6 @@ pub enum PropKey {
     /// `Flow orientation=vertical` — items run DOWN and wrap into
     /// columns (WrapPanel's other axis; GPAR97).
     Orientation,
-    Render,
     Step,
     IconSrc,
     /// `icon_size=` on a Button: the icon's box (accepted-unread beside `icon=`).
@@ -475,7 +481,6 @@ pub const WORDS: &[(&str, PropKey)] = &[
     ("keyboard_target", PropKey::KeyboardTarget),
     ("select", PropKey::Select),
     ("orientation", PropKey::Orientation),
-    ("render", PropKey::Render),
     ("step", PropKey::Step),
     ("icon", PropKey::IconSrc),
     ("icon_size", PropKey::IconSize),
@@ -513,7 +518,23 @@ pub const WORDS: &[(&str, PropKey)] = &[
 
 impl PropKey {
     pub fn from_word(word: &str) -> Option<PropKey> {
-        WORDS.iter().find(|(w, _)| *w == word).map(|(_, k)| *k)
+        if let Some(k) = WORDS.iter().find(|(w, _)| *w == word).map(|(_, k)| *k) {
+            return Some(k);
+        }
+        // The numbered stop family (`stop_2_color`): the number rides
+        // IN the key — no cap, the real check is against the gradient's
+        // declared count.
+        let rest = word.strip_prefix("stop_")?;
+        let (n, prop) = rest.split_once('_')?;
+        let n: u8 = n.parse().ok()?;
+        if n == 0 {
+            return None;
+        }
+        match prop {
+            "color" => Some(PropKey::StopColor(n)),
+            "offset" => Some(PropKey::StopOffset(n)),
+            _ => None,
+        }
     }
 
     /// The word a key is written as (`PropKey::FontColor` → `font_color`);
@@ -550,6 +571,7 @@ impl PropKey {
                 | PropKey::TranslateY
                 | PropKey::Rotate
                 | PropKey::ColorA
+                | PropKey::StopOffset(_)
         )
     }
 
@@ -628,7 +650,6 @@ const BOX: &[PropKey] = &[
     PropKey::RevealY,
     PropKey::AccessibilityName,
     PropKey::KeyboardTarget,
-    PropKey::Render,
 ];
 /// The plate behind a box's content. Any box has one (E8): a Label with
 /// `background=` gets a plate under its text, padding included, the same
@@ -687,6 +708,11 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
 /// Is `key` a word `kind` takes? Cell words (`span=`, `col_span=`) count as
 /// legal on every box here — the compiler checks the PARENT for those.
 pub fn legal(kind: Kind, key: PropKey) -> bool {
+    // Parametric keys can't sit in the const rows: a numbered stop word
+    // is a Gradient's, whatever the number.
+    if matches!(key, PropKey::StopColor(_) | PropKey::StopOffset(_)) {
+        return kind == Kind::Gradient;
+    }
     let row = kind_row(kind);
     if row.iter().any(|g| g.contains(&key)) {
         return true;
@@ -1172,7 +1198,6 @@ pub const UNREAD_BY_DESIGN: &[(PropKey, &str)] = &[
     (PropKey::TapPulse, "host-read: the press feedback pulse is drawn by the host; not built here yet"),
     (PropKey::AccessibilityName, "host-read: no screen-reader bridge here yet"),
     (PropKey::KeyboardTarget, "host-read: no keyboard focus routing here yet"),
-    (PropKey::Render, "accepted for old files that picked a renderer per node; one renderer here"),
     (PropKey::IconSrc, "accepted for old files; an icon file hint nothing reads"),
     (PropKey::IconSize, "accepted for old files beside `icon=`; icons are not drawn here"),
     (PropKey::Automatic, "read at compile into `Node.auto`, not as a prop"),

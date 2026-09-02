@@ -400,6 +400,32 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                     *pos = Some(if n <= 1 { 0.0 } else { i as f32 / (n - 1) as f32 });
                 }
             }
+            // The declared stops stay LIVE as numbered properties (GP40
+            // step 4): a `when`/code write of `stop_<n>_color`/`_offset`
+            // re-colors or moves that ONE stop (1-based, declaration
+            // order). A driven offset clamps to stay non-decreasing —
+            // the declared `@` order stays law (G2005); a mid-motion
+            // write clamps instead of erroring.
+            let mut live_off = false;
+            for (i, s) in colored.iter_mut().enumerate() {
+                if let Some(Value::VColor(c)) = res.prop(page, id, PropKey::StopColor(i as u8 + 1)) {
+                    s.0 = mul_alpha(c, opacity);
+                }
+                if let Some(Value::VNum(p)) = res.prop(page, id, PropKey::StopOffset(i as u8 + 1)) {
+                    s.1 = Some(p.clamp(0.0, 1.0));
+                    live_off = true;
+                }
+            }
+            if live_off {
+                let mut last = 0.0;
+                for s in colored.iter_mut() {
+                    if let Some(p) = s.1 {
+                        let c = p.max(last);
+                        s.1 = Some(c);
+                        last = c;
+                    }
+                }
+            }
             // With `repeat=mirror` the ramp runs 0..0.5 and mirrors back
             // (unpinned stops spread over the half); the fold and its
             // mirror are emitted as two band runs.

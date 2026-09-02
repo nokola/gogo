@@ -11,11 +11,11 @@
 //! - `_error_tests` 4787-4827 (14): suggestions, dialect signposts, names.
 //! - `_diagnostic_tests` 4838-5037 (43): coded errors and their rendering.
 //!
-//! Rust has ONE renderer (docs/DECISIONS.md D1; `page::UNREAD_BY_DESIGN`
-//! keeps `render=` as an accepted, unread word), so Godot's checks that a
-//! `render=` value picks or refuses a backend are FLIP: the word builds
-//! everywhere, and what the composite would have drawn is read off the
-//! draw list.
+//! Rust has ONE renderer (docs/DECISIONS.md D1), and the `render=` word
+//! is REMOVED outright (E12 + user 2026-09-02) — Godot's checks that a
+//! `render=` value picks or refuses a backend are FLIP: the word refuses
+//! as an unknown property, and what the composite would have drawn is
+//! read off the draw list.
 //!
 //! ENGINE (not ported), with the reason:
 //! - `render.composite-root`, `render.contract-slots`, `tgl.root-class`:
@@ -181,7 +181,7 @@ fn text_alpha(page: &Page, list: &[Draw], word: &str) -> u8 {
 /// `render=native` raises no warning.
 #[test]
 fn render_value_shows_under_every_render_word() {
-    for src in ["View v { Slider s value=30, step=10, width=200 }", "View v { Slider s render=native, value=30, width=200 }", "View v { Slider s render=gogo, value=30, step=10, width=200 }"] {
+    for src in ["View v { Slider s value=30, step=10, width=200 }", "View v { Slider s value=30, width=200 }", "View v { Slider s value=30, step=10, width=200 }"] {
         let fx = Fx::new(src);
         assert!(!build(src).diags.iter().any(|d| d.message.contains("render")), "{src}: {:#?}", build(src).diags);
         assert_eq!(fx.value("s"), 30.0, "{src}");
@@ -197,7 +197,7 @@ fn render_value_shows_under_every_render_word() {
 /// fill, the knob) and no label text.
 #[test]
 fn render_bare_slider_draws_groove_and_no_label() {
-    let fx = Fx::new("View v { Slider s render=gogo, value=30, step=10, width=200 }");
+    let fx = Fx::new("View v { Slider s value=30, step=10, width=200 }");
     let list = fx.draws();
     let (track, fill, knob) = slider_parts(&list);
     assert_eq!(quad_color(track), SLIDER_TRACK, "{list:#?}");
@@ -246,7 +246,7 @@ fn render_compat_signals_are_change_press_release() {
 /// and `max` 100 — a value of 50 fills half, 150 clamps to the end.
 #[test]
 fn render_param_defaults_min_zero_max_hundred() {
-    let fx = Fx::new("View v { Slider d render=gogo, width=200 }");
+    let fx = Fx::new("View v { Slider d width=200 }");
     assert_eq!(fx.value("d"), 0.0, "no value = min");
     let fx = Fx::new("View v { Slider d width=200, value=50 }");
     assert_eq!(fx.value("d"), 50.0);
@@ -272,8 +272,8 @@ fn render_default_step_is_one_like_range() {
 /// on 30).
 #[test]
 fn render_declared_value_quantizes_at_once() {
-    assert_eq!(Fx::new("View v { Slider s render=gogo, value=30, step=10, width=200 }").value("s"), 30.0);
-    assert_eq!(Fx::new("View v { Slider s render=gogo, value=34, step=10, width=200 }").value("s"), 30.0);
+    assert_eq!(Fx::new("View v { Slider s value=30, step=10, width=200 }").value("s"), 30.0);
+    assert_eq!(Fx::new("View v { Slider s value=34, step=10, width=200 }").value("s"), 30.0);
 }
 
 /// `_render_tests` 4188-4204 (`render.for-style-applies`,
@@ -282,11 +282,11 @@ fn render_declared_value_quantizes_at_once() {
 /// 3 and leaves its default color; `slot.track.background=` paints it.
 #[test]
 fn render_for_slider_style_restyles_the_track() {
-    let fx = Fx::new("style ThinSlider for=Slider, slot.track.corner_radius=3\nView v { Slider s .ThinSlider render=gogo, value=30, width=200 }");
+    let fx = Fx::new("style ThinSlider for=Slider, slot.track.corner_radius=3\nView v { Slider s .ThinSlider value=30, width=200 }");
     let (track, _, _) = slider_parts(&fx.draws());
     assert!((quad_corner(track) - 3.0).abs() < 1e-3, "{track:?}");
     assert_eq!(quad_color(track), SLIDER_TRACK, "a corner alone does not paint the box: {track:?}");
-    let fx = Fx::new("style RedTrack for=Slider, slot.track.background=#AA1111FF\nView v { Slider s .RedTrack render=gogo, value=30, width=200 }");
+    let fx = Fx::new("style RedTrack for=Slider, slot.track.background=#AA1111FF\nView v { Slider s .RedTrack value=30, width=200 }");
     let (track, _, _) = slider_parts(&fx.draws());
     assert_eq!(quad_color(track), Rgba([0xAA, 0x11, 0x11, 0xFF]), "{track:?}");
 }
@@ -296,7 +296,7 @@ fn render_for_slider_style_restyles_the_track() {
 /// slider.
 #[test]
 fn render_slot_fill_label_is_drawn() {
-    let fx = Fx::new("View v { Slider s render=gogo, value=30, width=200 { slot label { Label text=\"vol\" } } }");
+    let fx = Fx::new("View v { Slider s value=30, width=200 { slot label { Label text=\"vol\" } } }");
     let list = fx.draws();
     assert!(list.iter().any(|d| matches!(d, Draw::Text { text, .. } if fx.page.str(*text) == "vol")), "{list:#?}");
 }
@@ -310,7 +310,7 @@ fn render_slot_fill_label_is_drawn() {
 /// shows.
 #[test]
 fn render_autowire_by_name_and_code_writes_stay_silent() {
-    let mut fx = Fx::new("View v { Slider sizeSlider render=gogo, value=10, step=1, width=200, height=32, halign=left, valign=top }");
+    let mut fx = Fx::new("View v { Slider sizeSlider value=10, step=1, width=200, height=32, halign=left, valign=top }");
     let s = fx.node("sizeSlider");
     fx.touch(Phase::Down, 100.0, 16.0, 0.0);
     let ev = fx.touch(Phase::Up, 100.0, 16.0, 0.1);
@@ -322,47 +322,14 @@ fn render_autowire_by_name_and_code_writes_stay_silent() {
 }
 
 /// `_render_tests` 4227-4318, `_toggle_tests` 4721-4726 — the `render=`
-/// error family: `render.err-no-renderer`, `render.err-button-entry-render`,
-/// `render.err-not-contract`, `render.err-bad-value`, `render.err-in-style`,
-/// `render.err-user-control-native`, `render.d15-fixit`,
-/// `render.d15-drop-for-exit`, `render.d15-fill-trigger`,
-/// `render.entry-backend`, `render.entry-optout-whole`,
-/// `render.err-entry-for-needs-backend`, `render.err-entry-variant-render`,
-/// `tgl.err-render-native`, `tgl.err-entry-render-native`. Godot refuses a
-/// `render=` word where its backend cannot exist. FLIP: Rust has one
-/// renderer (docs/DECISIONS.md D1; `page::UNREAD_BY_DESIGN` — `render`
-/// "accepted for old files that picked a renderer per node; one renderer
-/// here"), so every one of these builds with no error, and a for=Slider
-/// style or a slot fill on a Slider needs no `render=gogo` exit. (The
-/// Godot fixtures' `slot.track.corner_radius=3` style path is kept out
-/// of these sources — the render= words are the subject here; slot
-/// paths build since GP40 step 1, 2026-09-02.)
+/// error family (backend-gate refusals). CUT with the word itself (E12
+/// + user 2026-09-02): FanRust has ONE renderer (docs/DECISIONS.md D1),
+/// so the renderer word is gone — not aliased, not excused; it refuses
+/// as an unknown property like any stray word.
 #[test]
-fn render_is_one_renderer_so_the_render_word_builds_everywhere() {
-    let sources: Vec<String> = vec![
-        "View v { Button b render=gogo, text=\"x\" }".to_string(),
-        "theme { Button render=gogo }\nView v { Label l text=\"x\" }".to_string(),
-        "View v { Label l render=gogo, text=\"x\" }".to_string(),
-        "View v { Slider s render=fancy }".to_string(),
-        "style Sneaky render=gogo\nView v { Slider s .Sneaky }".to_string(),
-        format!("{FADER_SRC}View v {{ Fader f 100x24, render=native }}"),
-        "style ThinSlider for=Slider\nView v { Slider s .ThinSlider value=30 }".to_string(),
-        "style Ghost for=Slider { when hovered opacity=0.5 }\nView v { Slider s .Ghost value=30 }".to_string(),
-        "View v { Slider s value=30 { slot label { Label text=\"x\" } } }".to_string(),
-        "style ThinSlider for=Slider\ntheme {\n    Slider .ThinSlider render=gogo\n}\nView v { Slider s value=30 }".to_string(),
-        "style ThinSlider for=Slider\ntheme {\n    Slider .ThinSlider render=gogo\n}\nView v { Slider s render=native, value=30 }".to_string(),
-        "style ThinSlider for=Slider\ntheme { Slider .ThinSlider }\nView v { Slider s value=30 }".to_string(),
-        "theme dark { Slider render=gogo }\nView v { Label l text=\"x\" }".to_string(),
-        "View v { Toggle t render=native }".to_string(),
-        "theme { Toggle render=native }\nView v { Label l text=\"x\" }".to_string(),
-    ];
-    for src in &sources {
-        let c = build(src);
-        assert!(!gogo::has_errors(&c.diags), "{src}\n{:#?}", c.diags);
-    }
-    // The Slider under a `render=` word still draws its one look.
-    let fx = Fx::new("View v { Slider s render=native, value=30, width=200 }");
-    assert_eq!(slider_parts(&fx.draws()).0, slider_parts(&Fx::new("View v { Slider s render=gogo, value=30, width=200 }").draws()).0);
+fn render_word_is_gone() {
+    assert!(has_code(&diags("View v { Slider s render=gogo, value=30 }"), "G2001"));
+    assert!(gogo::has_errors(&diags("theme { Slider render=native }\nView v { Label l text=\"x\" }")));
 }
 
 /// `_render_tests` 4232-4237 (`render.button-for-applies-natively`): a
@@ -402,12 +369,11 @@ fn render_button_slot_fill_is_refused() {
 /// entry applies to every instance of that kind — the Button dims to 0.8
 /// while held, the Slider's track corner is 3.
 #[test]
-#[ignore = "GP40: not ported: theme kind default with `.Style` (the style name on a theme entry is dropped)"]
 fn render_theme_entry_style_applies() {
     let mut fx = Fx::new("style AppBtn for=Button { when held opacity=0.8 }\ntheme { Button .AppBtn }\nView v { Button b text=\"x\", min_size=44x44, halign=left, valign=top }");
     fx.touch(Phase::Down, 10.0, 10.0, 0.0);
     assert_eq!(text_alpha(&fx.page, &fx.draws(), "x"), 204, "the entry's style dims while held");
-    let fx = Fx::new("style ThinSlider for=Slider\ntheme {\n    Slider .ThinSlider render=gogo\n}\nView v { Slider s value=30, width=200 }");
+    let fx = Fx::new("style ThinSlider for=Slider, slot.track.corner_radius=3\ntheme {\n    Slider .ThinSlider\n}\nView v { Slider s value=30, width=200 }");
     let (track, _, _) = slider_parts(&fx.draws());
     assert!((quad_corner(track) - 3.0).abs() < 1e-3, "{track:?}");
 }
@@ -434,7 +400,7 @@ fn render_nativelook_is_not_a_kind() {
 /// and `r/inner` is the Slider, value 30.
 #[test]
 fn render_widget_internal_slider_is_addressable() {
-    let fx = Fx::new("widget VolumeRow {\n    Column {\n        Slider inner render=gogo, value=30, step=10\n    }\n}\nView v { VolumeRow r }");
+    let fx = Fx::new("widget VolumeRow {\n    Column {\n        Slider inner value=30, step=10\n    }\n}\nView v { VolumeRow r }");
     let inner = fx.node("r/inner");
     assert_eq!(fx.page.nodes[inner as usize].kind, Kind::Slider);
     assert_eq!(fx.value("r/inner"), 30.0);
@@ -447,7 +413,7 @@ fn render_widget_internal_slider_is_addressable() {
 /// the entry reaches a Slider with no `render=` word too.
 #[test]
 fn render_theme_entry_props_default_under_instance_overrides() {
-    let fx = Fx::new("theme { Slider step=25, render=gogo }\nView v { Column c { Slider a value=30; Slider b step=10, value=30 } }");
+    let fx = Fx::new("theme { Slider step=25 }\nView v { Column c { Slider a value=30; Slider b step=10, value=30 } }");
     assert_eq!(fx.value("a"), 25.0);
     assert_eq!(fx.value("b"), 30.0);
     let fx = Fx::new("theme { Slider step=25 }\nView v { Slider s value=30, width=200 }");
@@ -458,10 +424,9 @@ fn render_theme_entry_props_default_under_instance_overrides() {
 /// `theme dark { Slider .FatSlider }` entry overrides the look half in the
 /// dark variant — the track corner is 9 there.
 #[test]
-#[ignore = "GP40 contract tail: variant-gated kind entries with PROPS work (GPAR88) and the host seam landed (set_theme_variant, GP38 2026-09-01); this pin also needs `.Style` ON a theme entry + static `slot.` paths — the contract subsystem"]
 fn render_theme_variant_entry_look() {
-    let mut fx = Fx::new("style ThinSlider for=Slider\nstyle FatSlider for=Slider, slot.track.corner_radius=9\ntheme {\n    Slider .ThinSlider render=gogo\n}\ntheme dark {\n    Slider .FatSlider\n}\nView v { Slider s value=30, width=200 }");
-    fx.rt.variant = fx.page.intern("dark");
+    let mut fx = Fx::new("style ThinSlider for=Slider\nstyle FatSlider for=Slider, slot.track.corner_radius=9\ntheme {\n    Slider .ThinSlider\n}\ntheme dark {\n    Slider .FatSlider\n}\nView v { Slider s value=30, width=200 }");
+    fx.rt.set_theme_variant(&fx.page, "dark");
     let (track, _, _) = slider_parts(&fx.draws());
     assert!((quad_corner(track) - 9.0).abs() < 1e-3, "{track:?}");
 }
@@ -471,7 +436,6 @@ fn render_theme_variant_entry_look() {
 /// track to 5. Rust refuses a theme entry on any non-built-in kind with
 /// G3006 ("not a control kind").
 #[test]
-#[ignore = "NEW: Godot lets `theme { <UserControl> … }` default a user control vs Rust refuses it with G3006 `not a control kind`"]
 fn render_theme_entry_defaults_a_user_control() {
     let src = format!("{FADER_SRC}style Chunky for=Fader, slot.track.corner_radius=5\ntheme {{ Fader .Chunky }}\nView v {{ Fader f 100x24 }}");
     let c = build(&src);
@@ -480,15 +444,14 @@ fn render_theme_entry_defaults_a_user_control() {
 
 /// `_render_tests` 4398-4405, 4432-4435 (`render.err-entry-unknown-type`,
 /// `render.err-entry-widget`, `render.err-entry-user-native`): a theme
-/// entry names a control kind — `Fancy`, a `widget Card`, and (here) a
-/// user control are all refused with G3006. Godot refuses the first two
-/// for the same reason and the third for its `render=native`; see
-/// `render_theme_entry_defaults_a_user_control` for the difference.
+/// entry names a control kind — an unknown `Fancy` and a `widget Card`
+/// refuse with G3006 (a widget has no contract; style its nodes by
+/// name). A declared `control` is LEGAL since GP40 step 3 — see
+/// `render_theme_entry_defaults_a_user_control`.
 #[test]
 fn render_theme_entry_needs_a_control_kind() {
     assert!(has_code(&diags("theme { Fancy .X }\nView v { Label l text=\"x\" }"), "G3006"));
     assert!(has_code(&diags("widget Card { Column { slot } }\ntheme { Card .X }\nView v { Label l text=\"x\" }"), "G3006"));
-    assert!(gogo::has_errors(&diags(&format!("{FADER_SRC}theme {{ Fader render=native }}\nView v {{ Fader f 100x24 }}"))));
 }
 
 /// `_render_tests` 4406-4425 (`render.err-entry-named`,
@@ -519,13 +482,13 @@ fn render_theme_entry_style_kind_must_match() {
     assert!(gogo::has_errors(&diags(&src)));
 }
 
-/// `_render_tests` 4262-4264 (`render.user-control-redundant-true`): a
-/// user control is always Gogo-drawn, so `render=gogo` on its instance is
-/// redundant and legal — it builds.
+/// `_render_tests` 4262-4264 (`render.user-control-redundant-true`):
+/// Godot allowed a redundant `render=gogo` on a user control. Gone with
+/// the word (E12 + user 2026-09-02) — it refuses like any unknown
+/// property.
 #[test]
-fn render_user_control_takes_a_redundant_render_gogo() {
-    let fx = Fx::new(&format!("{FADER_SRC}View v {{ Fader f 100x24, render=gogo }}"));
-    assert_eq!(fx.rect("f").w, 100.0);
+fn render_word_is_gone_on_user_controls_too() {
+    assert!(gogo::has_errors(&diags(&format!("{FADER_SRC}View v {{ Fader f 100x24, render=gogo }}"))));
 }
 
 // ------------------------------------------------- _slider_conformance_tests
@@ -541,7 +504,7 @@ fn render_user_control_takes_a_redundant_render_gogo() {
 /// / GP42 here, see `toggle_keyboard_steps`.
 #[test]
 fn conformance_two_sliders_one_trace() {
-    let mut fx = Fx::new("View v { Layers z { Slider nat 200x20, min=0, max=100, step=10, value=30, halign=left, valign=top, margin_left=20, margin_top=20; Slider comp 200x20, render=gogo, min=0, max=100, step=10, value=30, halign=left, valign=top, margin_left=20, margin_top=200 } }");
+    let mut fx = Fx::new("View v { Layers z { Slider nat 200x20, min=0, max=100, step=10, value=30, halign=left, valign=top, margin_left=20, margin_top=20; Slider comp 200x20, min=0, max=100, step=10, value=30, halign=left, valign=top, margin_left=20, margin_top=200 } }");
     let nat = fx.rect("nat");
     let comp = fx.rect("comp");
     assert_eq!((nat.w, nat.h), (200.0, 20.0), "{nat:?}");
@@ -576,7 +539,7 @@ fn conformance_two_sliders_one_trace() {
 /// sliders.
 #[test]
 fn conformance_code_write_snaps_from_min() {
-    let mut fx = Fx::new("View v { Column c { Slider pn min=5, max=25, step=10, value=5; Slider pc render=gogo, min=5, max=25, step=10, value=5 } }");
+    let mut fx = Fx::new("View v { Column c { Slider pn min=5, max=25, step=10, value=5; Slider pc min=5, max=25, step=10, value=5 } }");
     let pn = fx.node("pn");
     let pc = fx.node("pc");
     fx.rt.set_prop(pn, PropKey::Value, Value::VNum(12.0));
@@ -731,7 +694,7 @@ fn toggle_for_style_restyles_the_track() {
 /// a Toggle is redundant and silent.
 #[test]
 fn toggle_render_gogo_is_silent() {
-    let c = build("View v { Toggle t render=gogo }");
+    let c = build("View v { Toggle t }");
     assert!(c.diags.is_empty(), "{:#?}", c.diags);
 }
 
@@ -1189,4 +1152,84 @@ View v {{ Fader f .Flat 200x24 }}");
     let fx = Fx::new(&src);
     assert_eq!(fx.rect("f/track").h, 6.0, "the child's write wins");
     assert_eq!(fx.rect("f/thumb").w, 8.0, "the parent's other write survives");
+}
+
+// ----- GP40 step 2: state checking + the D2 advisory (E12) -----
+
+/// A `for=` style's `when` states check at the DECLARATION — a typo'd
+/// contract state would otherwise wait silently forever on every
+/// wearer. An arrangement word is the view's, not the contract's: it
+/// passes.
+#[test]
+fn for_style_when_states_check_at_the_declaration() {
+    let d = diags(&format!("{FADER_SRC}style X for=Fader {{ when draging slot.thumb.opacity=0.5 }}
+View v {{ Fader f .X 100x24 }}"));
+    assert!(d.iter().any(|g| g.message.contains("isn't available") && g.message.contains("dragging")), "{d:#?}");
+    // a built-in raises the universal states — custom words refuse
+    let d = diags("style X for=Slider { when bogus opacity=0.5 }
+View v { Slider s .X value=30 }");
+    assert!(d.iter().any(|g| g.message.contains("isn't available")), "{d:#?}");
+    // the check runs even when nothing wears the style
+    let d = diags(&format!("{FADER_SRC}style X for=Fader {{ when draging slot.thumb.opacity=0.5 }}
+View v {{ Label l text=\"x\" }}"));
+    assert!(d.iter().any(|g| g.message.contains("isn't available")), "{d:#?}");
+    // an arrangement word passes — it answers the view
+    let c = build(&format!("{FADER_SRC}arrangement compact
+
+style X for=Fader {{ when compact slot.thumb.opacity=0.5 }}
+View v {{ Fader f .X 100x24 }}"));
+    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+}
+
+/// A PLAIN style's contract states check where the style is APPLIED —
+/// a control instance or a built-in; a custom state landing on exactly
+/// one control type draws the D2 advisory to add `for=`.
+#[test]
+fn plain_style_states_check_where_applied() {
+    // undeclared on the wearer's contract: error at the wear
+    let d = diags(&format!("{FADER_SRC}style X {{ when busy opacity=0.5 }}
+View v {{ Fader f .X 100x24 }}"));
+    assert!(d.iter().any(|g| g.message.contains("isn't available")), "{d:#?}");
+    // declared: builds, and the D2 advisory names the for= fix
+    let c = build(&format!("{FADER_SRC}style X {{ when dragging opacity=0.5 }}
+View v {{ Fader f .X 100x24 }}"));
+    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(c.diags.iter().any(|g| g.message.contains("for=Fader")), "the D2 advisory: {:#?}", c.diags);
+    // a custom word on a built-in wearer refuses — it raises universals
+    let d = diags("style X { when busy opacity=0.5 }
+View v { Button b .X text=\"x\" }");
+    assert!(d.iter().any(|g| g.message.contains("isn't available")), "{d:#?}");
+    // universal words on a built-in wearer stay legal
+    ok("style X { when held opacity=0.5 }
+View v { Button b .X text=\"x\" }");
+}
+
+// ----- GP40 step 3: theme-entry `.Style` + user-control entries -----
+
+/// GP40 step 3 (user 2026-09-02): a theme entry takes a `.Style` — the
+/// app-wide default for every instance of the kind, out-ranked by
+/// anything written closer (an instance's own styles and lines).
+#[test]
+fn user_control_theme_entry_styles_every_instance() {
+    let src = format!("{FADER_SRC}style Thin for=Fader, slot.track.height=4\nstyle Fat for=Fader, slot.track.height=6\ntheme {{ Fader .Thin }}\nView v {{ Column c {{ Fader a 200x24; Fader b .Fat 200x24 }} }}");
+    let fx = Fx::new(&src);
+    assert_eq!(fx.rect("a/track").h, 4.0, "the entry's style reaches every instance");
+    assert_eq!(fx.rect("b/track").h, 6.0, "an instance style out-ranks the entry");
+}
+
+/// The entry line's own props out-rank its style (the entry-line
+/// last-writer rule), and the v1 fences hold: a user-control entry
+/// takes styles only, and a variant entry takes nothing that can't
+/// switch with the variant yet (the pending variant-stamping call).
+#[test]
+fn theme_entry_tiers_and_v1_fences() {
+    // the entry line's step beats the same key from its style
+    let fx = Fx::new("style S for=Slider, step=10\ntheme { Slider .S step=25 }\nView v { Slider a value=30, width=200 }");
+    assert_eq!(fx.value("a"), 25.0, "the entry line wins over its style");
+    // a user-control entry takes a style, not prop defaults
+    assert!(gogo::has_errors(&diags(&format!("{FADER_SRC}theme {{ Fader step=5 }}\nView v {{ Fader f 100x24 }}"))));
+    // a variant entry can't restyle a user control yet
+    assert!(gogo::has_errors(&diags(&format!("{FADER_SRC}style C for=Fader, slot.track.height=4\ntheme dark {{ Fader .C }}\nView v {{ Fader f 100x24 }}"))));
+    // a variant entry's style is base-look only — whens don't switch yet
+    assert!(gogo::has_errors(&diags("style H for=Button { when held opacity=0.8 }\ntheme dark { Button .H }\nView v { Button b text=\"x\" }")));
 }

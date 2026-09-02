@@ -494,7 +494,7 @@ fn overlay_chrome_keeps_its_own_drag_and_transparent_or_hidden_chrome_lets_the_c
 /// Radios, a style with a timed held look).
 #[test]
 fn accessibility_fixtures_build() {
-    ok("View v { Column c { Slider vol render=gogo, value=30, min=0, max=100, step=5; Toggle mute } }");
+    ok("View v { Column c { Slider vol value=30, min=0, max=100, step=5; Toggle mute } }");
     ok("View v { Column c { choice size value=small { Radio small text=\"S\"; Radio big text=\"B\" } } }");
     ok("style RM {\n transition duration=0.4\n when held background=#FF0000FF\n}\nView v { Button rb .RM text=\"x\", min_size=44x44 }");
 }
@@ -861,7 +861,7 @@ fn catching_a_spring_keeps_the_pull_under_the_finger() {
 /// crossed step once, and a press on the current value says nothing.
 #[test]
 fn slider_edit_streams_changed_values_only() {
-    let mut fx = Fx::new("View v { Slider s render=gogo, value=0, step=10, min=0, max=100, width=200, height=40, halign=left, valign=top }");
+    let mut fx = Fx::new("View v { Slider s value=0, step=10, min=0, max=100, width=200, height=40, halign=left, valign=top }");
     let ev = fx.touch(Phase::Down, 1.0, 20.0, 0.0);
     assert!(ev.iter().all(|e| !matches!(e.kind, EventKind::Edit(_))), "a press at the current value says nothing: {ev:?}");
     let mut edits = 0;

@@ -31,7 +31,7 @@ use std::path::PathBuf;
 use gogo::anim::Finish;
 use gogo::draw::{Draw, GradientKind, draw};
 use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::Rgba;
+use gogo::page::{PropKey, Rgba, Value};
 use gogo::runtime::{HOVERED, Runtime, resolve};
 use gogo::{BuildOptions, Compiled, Diagnostic, Page, build_pages, compile, has_errors};
 
@@ -670,13 +670,43 @@ fn conic_fill_is_its_own_kind() {
 }
 
 /// `_gradient_tests` 8365-8380 (gradient.stop-prop-get,
-/// gradient.stop-prop-set, gradient.stop-prop-listed,
-/// gradient.stop-animatable): stops stay live as per-stop properties
-/// (`stop_1_color`, `stop_2_offset`, listed on the node) that whens and
-/// anims drive — `g.stop_1_color.a to=0.42` is a legal anim line.
+/// gradient.stop-prop-set): stops stay live as per-stop properties
+/// (GP40 step 4, user 2026-09-02: parametric keys, the `stop_1_color`
+/// spelling, 1-based declaration order) — a code write re-colors ONE
+/// stop, the rest hold.
 #[test]
-#[ignore = "GP40: per-stop live properties (stop_1_color…) need parametric prop keys — a design round against the static PropKey/Channel model; parked with the contract-subsystem tail"]
 fn stops_are_live_per_stop_properties() {
+    let c = ok("View v { Gradient g width=100, height=100, stops=[white, black] }");
+    let mut rt = Runtime::new(&c.page);
+    let g = c.page.find("g").unwrap();
+    rt.set_prop(g, PropKey::StopColor(1), Value::VColor(Rgba([0xE5, 0x14, 0x00, 0xFF])));
+    let res = resolve(&c.page, &rt);
+    let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+    let list = gradients(&draw(&c.page, &res, &rects));
+    assert_eq!(list.first().unwrap().1, Rgba([0xE5, 0x14, 0x00, 0xFF]), "{list:#?}");
+    assert_eq!(list.last().unwrap().2, Rgba([0x00, 0x00, 0x00, 0xFF]), "the other stop holds: {list:#?}");
+}
+
+/// The stop-write fences: the declared look has one spelling (`stops=`),
+/// the words are a Gradient's, and a live write names a DECLARED stop.
+#[test]
+fn stop_write_fences() {
+    // a static node-line write points at stops=
+    assert!(fails("View v { Gradient g stops=[white, black], stop_1_color=red }"));
+    // the words are a Gradient's
+    assert!(fails("View v { Panel p stop_1_color=red }"));
+    // a write past the declared count names the count
+    let d = diags("View v { Gradient g width=100, height=100, stops=[white, black] { when screen.landscape stop_3_color=red } }");
+    assert!(d.iter().any(|g| g.message.contains("declares 2 stops")), "{d:#?}");
+}
+
+/// `_gradient_tests` 8370-8380 (gradient.stop-prop-listed,
+/// gradient.stop-animatable): `g.stop_1_color.a to=0.42` as an anim
+/// lane — the per-stop property surface landed (GP40 step 4); the LANE
+/// rides the non-motion anim engine, its own unported GP40 item.
+#[test]
+#[ignore = "GP40: color/non-motion anim LANES (`g.stop_1_color.a to=…`) — the anim engine drives motion channels only; the per-stop property surface itself landed 2026-09-02"]
+fn stops_are_animatable() {
     let src = "anim glow { g.stop_1_color.a to=0.42, duration=0.1 }\nView v { Gradient g stops=[white, black], on:show=play(glow) }";
     assert!(!fails(src), "{:#?}", diags(src));
     assert_eq!(lanes(&compile(src, &|_| None).page, "glow").len(), 1);

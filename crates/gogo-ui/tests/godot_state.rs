@@ -622,7 +622,7 @@ fn touch_target_lint() {
     assert!(touch("View v { Row r { Button b width=fill, min_height=44 } }").is_empty());
     let slider = touch("View v { Column c { Slider s min_width=220 } }");
     assert!(slider.len() == 1 && slider[0].contains("height"), "{slider:?}");
-    assert!(touch("View v { Column c { Slider s min=0, max=100, value=24, render=native, height=50 } }").is_empty());
+    assert!(touch("View v { Column c { Slider s min=0, max=100, value=24, height=50 } }").is_empty());
     let narrow = touch("View v { Column c { Slider s width=20, height=50 } }");
     assert!(narrow.len() == 1 && narrow[0].contains("width"), "{narrow:?}");
     assert!(touch("View v { Rectangle r 10x10 }").is_empty());

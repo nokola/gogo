@@ -1187,13 +1187,13 @@ fn held_is_gated_to_press_surfaces() {
 }
 
 /// `_list_tests` 13477-13480 (`list.err-render-native`): Godot refuses
-/// `render=native` on a List ("no native backend"). FLIP: FanRust has ONE
-/// renderer (docs/DECISIONS.md D1) and `render=` is accepted for old
-/// files and read by nobody (`page::UNREAD_BY_DESIGN`, `PropKey::Render`).
+/// `render=native` on a List ("no native backend"). The word itself is
+/// gone here (E12 + user 2026-09-02, one renderer) — it refuses as an
+/// unknown property.
 #[test]
-fn render_word_is_accepted_one_renderer() {
+fn render_word_is_gone() {
     let src = "View v { List l render=native { empty { } repeat t capacity=1 { ListItem { Label text=\"\" } } } }";
-    assert!(builds(src), "{:?}", codes(src));
+    assert!(!builds(src), "{:?}", codes(src));
 }
 
 /// `_list_tests` 13481-13495 (`list.render-gogo-ok`, `.listitem-box-props`,
@@ -1202,7 +1202,7 @@ fn render_word_is_accepted_one_renderer() {
 /// List is 90 high, no silent stretch.
 #[test]
 fn listitem_is_a_drawn_box_and_an_authored_height_wins() {
-    assert!(builds("View v { List l render=gogo { empty { } repeat t capacity=1 { ListItem { Label text=\"\" } } } }"), "list.render-gogo-ok");
+    assert!(builds("View v { List l { empty { } repeat t capacity=1 { ListItem { Label text=\"\" } } } }"), "list.render-gogo-ok");
     let src = "View v { List l { empty { } repeat t capacity=1 { ListItem background=accent, padding=8 { Label text=\"\" } } } }";
     assert!(builds(src), "list.listitem-box-props: {:?}", codes(src));
     let fx = Fx::new("View v { Column c height=400, halign=left, valign=top { List sized height=90 { empty { } repeat t capacity=1 { ListItem { Label text=\"\" } } } } }");

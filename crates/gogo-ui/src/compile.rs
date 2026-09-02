@@ -211,6 +211,17 @@ fn builtin_slot_prop(kind: Kind, slot: &str, prop: &str) -> Option<&'static str>
     }
 }
 
+/// The universal control states every press surface and built-in
+/// raises natively; a declared `control` raises only what its contract
+/// opts into (`state_builtin`).
+const CONTROL_STATE_WORDS: &[&str] = &["held", "hovered", "focused", "focus_within", "selected", "disabled"];
+
+/// The condition words a `when` line names (`when held`, `when
+/// screen.compact hovered` — the name slot plus the ident args).
+fn when_words(k: &AstNode) -> impl Iterator<Item = &str> {
+    k.name.iter().map(String::as_str).chain(k.args.iter().filter_map(|a| a.as_ident()))
+}
+
 /// Whether a `when` block answers with any `slot.` path — those need a
 /// contract resolved before the block can be rewritten.
 fn when_has_slot_path(w: &AstNode) -> bool {
@@ -412,6 +423,7 @@ fn wrong_kind(key: PropKey, kind: Kind) -> String {
     match key {
         PropKey::Color if shows_text => format!("`color=` on a {name} — text is `font_color=`, the plate is `background=`"),
         PropKey::Color if kind == Kind::Gradient => "`color=` on a Gradient — a Gradient paints its `stops=`".to_string(),
+        PropKey::StopColor(_) | PropKey::StopOffset(_) => format!("`stop_<n>_color`/`stop_<n>_offset` keep a Gradient's declared stops live — a {name} has no stops"),
         PropKey::Color | PropKey::ColorA => format!("`{word}=` is the fill of a Rectangle or Circle — a {name}'s plate is `background=`, a fade is `opacity=`"),
         PropKey::Background if kind == Kind::Gradient => "`background=` on a Gradient — a Gradient paints its `stops=`".to_string(),
         PropKey::Background => format!("`background=` on a {name} — its fill is `color=`"),
@@ -536,6 +548,15 @@ pub struct Compiler<'a> {
     /// node to build — style writes first, instance-line writes after,
     /// so the later-wins read gives the closest writer the last word.
     slot_writes: Vec<HashMap<String, Vec<AstProp>>>,
+    /// A `for=` style's `when` state words, checked in `finish` (GP40
+    /// step 2): an arrangement word is the view's to declare, and the
+    /// view may not have built when the style is read. (style, target,
+    /// word, line).
+    pending_style_states: Vec<(String, String, String, u32)>,
+    /// A plain style's custom state landing on a control type that
+    /// declares it (style, word, type, style line) — `finish` draws the
+    /// D2 advisory when exactly one type is in the set.
+    d2_lands: Vec<(String, String, String, u32)>,
     /// While a Gradient's own line compiles: its name and the
     /// gradient-only words it carries, so G2003's Rectangle rewrite can be
     /// spelled out (`check_stops`).
@@ -550,7 +571,13 @@ pub struct Compiler<'a> {
     in_when: u32,
     /// Theme entry kinds seen per variant — a second `theme { Slider … }`
     /// prototype for one kind is a silent first-wins without this.
-    theme_entry_kinds: Vec<(Kind, StrId)>,
+    theme_entry_kinds: Vec<(String, StrId)>,
+    /// A DEFAULT-variant theme entry's `.Style` names per kind word
+    /// (`theme {{ Fader .Chunky }}`), worn FIRST — weakest — at every
+    /// node build of that kind, plus the entry line's own prop keys
+    /// (the line out-ranks its style, so the style's copies of those
+    /// keys are filtered at the wear).
+    entry_styles: HashMap<String, (Vec<String>, Vec<String>)>,
     /// Palette overrides whose value was a bare palette word (`red =
     /// green`): the chain the circular-override fence walks (G6005).
     palette_links: std::collections::HashMap<String, String>,
@@ -641,10 +668,13 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         fills: Vec::new(),
         instance_on: Vec::new(),
         slot_writes: Vec::new(),
+        pending_style_states: Vec::new(),
+        d2_lands: Vec::new(),
         stops_ctx: None,
         repeat_binding: None,
         in_when: 0,
         theme_entry_kinds: Vec::new(),
+        entry_styles: HashMap::new(),
         palette_links: std::collections::HashMap::new(),
         pending_repeats: Vec::new(),
     };
@@ -959,10 +989,16 @@ impl<'a> Compiler<'a> {
                 }
                 AstItem::Node(kn) => {
                     // Kind defaults: `Button background=..., font_size=...`.
-                    let Some(kind) = Kind::from_word(&kn.type_word) else {
+                    // A declared `control` is a legal entry too (GP40
+                    // step 3, user 2026-09-02) — its contract makes the
+                    // entry checkable like a built-in's. A plain widget
+                    // has no contract: style its nodes by name.
+                    let kind = Kind::from_word(&kn.type_word);
+                    let user_control = kind.is_none() && self.widgets.get(&kn.type_word).map_or(false, |d| d.control);
+                    if kind.is_none() && !user_control {
                         self.error("G3006", kn.line, format!("`{}` is not a control kind", kn.type_word));
                         continue;
-                    };
+                    }
                     // A theme entry is the prototype for EVERY node of
                     // its kind (GPAR88, the shipped fences): no name, no
                     // wiring, no placement, one entry per kind per block.
@@ -983,15 +1019,13 @@ impl<'a> Compiler<'a> {
                         self.error("G3006", kn.line, "a WxH size is placement — it belongs where the instance sits, not on a type default");
                         continue;
                     }
-                    if self.theme_entry_kinds.contains(&(kind, variant)) {
+                    if self.theme_entry_kinds.contains(&(kn.type_word.clone(), variant)) {
                         self.error("G3006", kn.line, format!("duplicate theme entry for {} — one prototype per type per block; fold the props into it", kn.type_word));
                         continue;
                     }
                     // A style named on the entry must dress this kind
                     // (its `for=` says which) — the mismatch would default
-                    // one control with another's slot words. Applying the
-                    // style as the kind's default is GP40's theme-entry
-                    // `.Style` tail.
+                    // one control with another's slot words.
                     for sname in &kn.styles {
                         let target = self.find_style(sname).and_then(|sd| sd.for_target.clone());
                         if let Some(t) = target {
@@ -1000,7 +1034,40 @@ impl<'a> Compiler<'a> {
                             }
                         }
                     }
-                    self.theme_entry_kinds.push((kind, variant));
+                    self.theme_entry_kinds.push((kn.type_word.clone(), variant));
+                    if user_control {
+                        // A user control's entry takes a style; its prop
+                        // defaults are its `$param=` line — an entry
+                        // prop would silently shadow the param scope.
+                        if let Some(p) = kn.props.first() {
+                            self.error("G3006", p.line, format!("a `{}` entry takes a style (`theme {{ {} .X }}`) — prop defaults live on the control's `$param=` line", kn.type_word, kn.type_word));
+                        }
+                        if variant != NO_STR {
+                            // A user control's style writes bake per
+                            // instance at compile — they can't switch
+                            // with the variant (variant-stamped writes,
+                            // LATER IF NEEDED: todo-gogo.md GP47).
+                            if !kn.styles.is_empty() {
+                                self.error("G3006", kn.line, format!("a variant entry can't restyle `{}` yet — its style's writes bake at compile and don't switch with the variant", kn.type_word));
+                            }
+                            continue;
+                        }
+                        if !kn.styles.is_empty() {
+                            let e = self.entry_styles.entry(kn.type_word.clone()).or_default();
+                            e.0.extend(kn.styles.iter().cloned());
+                        }
+                        continue;
+                    }
+                    let kind = kind.unwrap_or(Kind::Layers);
+                    if variant == NO_STR {
+                        // The entry's style dresses every node of the
+                        // kind — worn at each node build, weakest.
+                        if !kn.styles.is_empty() {
+                            let e = self.entry_styles.entry(kn.type_word.clone()).or_default();
+                            e.0.extend(kn.styles.iter().cloned());
+                            e.1.extend(kn.props.iter().map(|p| p.key.clone()));
+                        }
+                    }
                     let first = self.page.props.len() as u32;
                     for p in &kn.props {
                         if let Some(prop) = self.prop(p, kind) {
@@ -1009,6 +1076,30 @@ impl<'a> Compiler<'a> {
                     }
                     let count = self.page.props.len() as u32 - first;
                     self.page.kind_defaults.push(KindDefault { kind, props: (first, count), variant });
+                    if variant != NO_STR {
+                        // A VARIANT entry's style: base-look props only,
+                        // riding the variant-gated kind defaults (pushed
+                        // AFTER the line's run — the first matching run
+                        // wins the read, so the line out-ranks it).
+                        // `when`/`transition` can't switch with the
+                        // variant yet (variant-stamped writes, LATER IF
+                        // NEEDED: todo-gogo.md GP47).
+                        for sname in &kn.styles {
+                            let Some(def) = self.resolve_style(sname, kn.line) else { continue };
+                            if !def.whens.is_empty() || !def.transitions.is_empty() {
+                                self.error("G3006", kn.line, format!("style `{sname}` carries `when`/`transition` — those don't switch with the variant yet; a variant entry's style holds base-look props"));
+                                continue;
+                            }
+                            let first = self.page.props.len() as u32;
+                            for p in &def.props {
+                                if let Some(prop) = self.prop(p, kind) {
+                                    self.page.props.push(prop);
+                                }
+                            }
+                            let count = self.page.props.len() as u32 - first;
+                            self.page.kind_defaults.push(KindDefault { kind, props: (first, count), variant });
+                        }
+                    }
                 }
             }
         }
@@ -1112,6 +1203,17 @@ impl<'a> Compiler<'a> {
         if when_paths {
             for w in &mut def.whens {
                 self.rewrite_slot_when(w, slot_target.as_ref());
+            }
+        }
+        // GP40 step 2 (2026-09-02): a `for=` style's `when` states check
+        // at the DECLARATION — a typo'd contract state would otherwise
+        // wait silently forever on every wearer. Checked in `finish`,
+        // where the view's arrangement words exist.
+        if let Some(t) = &def.for_target {
+            for w in &def.whens {
+                for word in when_words(w) {
+                    self.pending_style_states.push((name.to_string(), t.clone(), word.to_string(), w.line));
+                }
             }
         }
         def
@@ -2972,6 +3074,15 @@ impl<'a> Compiler<'a> {
     }
 
     fn prop_checked(&mut self, p: &AstProp, kind: Option<Kind>) -> Option<Prop> {
+        // GP40 step 4: `stop_<n>_color`/`_offset` are the LIVE half of a
+        // Gradient's stops (a `when` response or a code write) — the
+        // declared look has ONE spelling, `stops=`.
+        if let Some(PropKey::StopColor(_) | PropKey::StopOffset(_)) = PropKey::from_word(&p.key) {
+            if self.in_when == 0 && kind == Some(Kind::Gradient) {
+                self.error("G2005", p.line, format!("`{}=` writes a stop LIVE (a `when` response, or code) — the declared look is spelled in `stops=`", p.key));
+                return None;
+            }
+        }
         match p.key.as_str() {
             "anchors" | "offset_left" | "offset_top" | "offset_right" | "offset_bottom" | "size_flags_horizontal" | "size_flags_vertical" => {
                 self.error("G0041", p.line, format!("`{}` is gone — placement says it all (halign/valign, width/height, margins)", p.key));
@@ -3587,8 +3698,14 @@ impl<'a> Compiler<'a> {
         // The body's own `style=` sees the widget's scoped styles; the
         // instance line's does NOT — the scope belongs to the body (GP32,
         // the shipped rule).
-        let styles: Vec<(String, bool)> = n.styles.iter().map(|s| (s.clone(), false)).chain(instance.iter().flat_map(|i| i.styles.iter().map(|s| (s.clone(), true)))).collect();
-        for (s, from_instance) in &styles {
+        // The kind's theme-entry style is worn FIRST — the weakest
+        // writer (GP40 step 3): every later style and prop out-ranks it
+        // by the later-wins read. The entry line's own prop keys are
+        // filtered out of it (the line out-ranks its style).
+        let wear_word = instance.map_or(n.type_word.as_str(), |i| i.type_word.as_str());
+        let entry_line_keys: Vec<String> = self.entry_styles.get(wear_word).map(|e| e.1.clone()).unwrap_or_default();
+        let styles: Vec<(String, bool, bool)> = self.entry_styles.get(wear_word).map(|e| e.0.clone()).unwrap_or_default().into_iter().map(|s| (s, instance.is_some(), true)).chain(n.styles.iter().map(|s| (s.clone(), false, false))).chain(instance.iter().flat_map(|i| i.styles.iter().map(|s| (s.clone(), true, false)))).collect();
+        for (s, from_instance, from_entry) in &styles {
             let resolved = if *from_instance {
                 let top = self.style_scopes.pop();
                 let r = self.resolve_style(s, n.line);
@@ -3617,7 +3734,54 @@ impl<'a> Compiler<'a> {
                             }
                         }
                     }
-                    all_props.extend(def.props.iter().cloned());
+                    // GP40 step 2: a PLAIN style's contract states check
+                    // where the style is APPLIED — only here is the
+                    // wearer's contract known (`for=` styles checked at
+                    // their declaration; a plain box has no contract, so
+                    // its wear stays unchecked). A declared custom state
+                    // also feeds the D2 advisory.
+                    if def.for_target.is_none() && !def.whens.is_empty() {
+                        let wearer: Option<(String, Option<(Vec<String>, Vec<String>)>)> = if *from_instance {
+                            self.widget_stack.last().and_then(|w| self.widgets.get(w)).filter(|d| d.control).map(|d| (self.widget_stack.last().cloned().unwrap_or_default(), Some((d.states.clone(), d.state_builtins.clone()))))
+                        } else if kind.is_press_surface() || matches!(kind, Kind::Slider | Kind::Input) {
+                            Some((n.type_word.clone(), None))
+                        } else {
+                            None
+                        };
+                        if let Some((type_word, contract)) = wearer {
+                            for w in &def.whens {
+                                let words: Vec<String> = when_words(w).map(str::to_string).collect();
+                                for word in words {
+                                    let view_word = word.starts_with("screen.") || self.page.arrangements.iter().any(|a| self.page.str(*a) == word);
+                                    let control_word = CONTROL_STATE_WORDS.contains(&word.as_str());
+                                    match &contract {
+                                        Some((states, builtins)) => {
+                                            let declared = states.iter().any(|x| x == &word) || builtins.iter().any(|x| x == &word);
+                                            if (control_word || !view_word) && !declared {
+                                                let mut avail: Vec<String> = builtins.iter().chain(states.iter()).map(|x| format!("`{x}`")).collect();
+                                                if avail.is_empty() {
+                                                    avail.push("none".to_string());
+                                                }
+                                                self.error("G0036", w.line, format!("'{word}' isn't available on `{type_word}` — its contract raises {} (worn via style `{s}`)", avail.join(", ")));
+                                            } else if declared && !control_word {
+                                                self.d2_lands.push((s.clone(), word.clone(), type_word.clone(), def.line));
+                                            }
+                                        }
+                                        None => {
+                                            if !control_word && !view_word {
+                                                self.error("G0036", w.line, format!("'{word}' isn't available on `{type_word}` — a built-in raises `held`, `hovered`, `focused`, `focus_within`, `selected`, `disabled` (worn via style `{s}`)"));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if *from_entry && !entry_line_keys.is_empty() {
+                        all_props.extend(def.props.iter().filter(|p| !entry_line_keys.contains(&p.key)).cloned());
+                    } else {
+                        all_props.extend(def.props.iter().cloned());
+                    }
                     style_whens.extend(def.whens);
                     style_transitions.extend(def.transitions);
                 }
@@ -4916,6 +5080,52 @@ impl<'a> Compiler<'a> {
     // ----- finish ---------------------------------------------------------
 
     fn finish(&mut self) {
+        // GP40 step 2: `for=` style states against their contract (the
+        // wear-time twin for plain styles lives in the styles loop) —
+        // run first so a bad style errors even when nothing wears it.
+        for (sname, target, word, line) in std::mem::take(&mut self.pending_style_states) {
+            let view_word = word.starts_with("screen.") || self.page.arrangements.iter().any(|a| self.page.str(*a) == word);
+            let control_word = CONTROL_STATE_WORDS.contains(&word.as_str());
+            match self.widgets.get(&target) {
+                Some(def) => {
+                    let declared = def.states.iter().any(|w| w == &word) || def.state_builtins.iter().any(|w| w == &word);
+                    if (control_word || !view_word) && !declared {
+                        let mut avail: Vec<String> = def.state_builtins.iter().chain(def.states.iter()).map(|w| format!("`{w}`")).collect();
+                        if avail.is_empty() {
+                            avail.push("none".to_string());
+                        }
+                        self.error("G0036", line, format!("'{word}' isn't available on `{target}` — its contract raises {} (style `{sname}`)", avail.join(", ")));
+                    }
+                }
+                // A built-in raises the universal states natively.
+                None => {
+                    if !control_word && !view_word {
+                        self.error("G0036", line, format!("'{word}' isn't available on `{target}` — a built-in raises `held`, `hovered`, `focused`, `focus_within`, `selected`, `disabled` (style `{sname}`)"));
+                    }
+                }
+            }
+        }
+        // The D2 advisory (customization spec): a plain style whose
+        // custom state lands on exactly ONE control type would read
+        // better `for=` that type — two distinct types is deliberately
+        // generic and the advisory stands down.
+        let mut lands: Vec<(String, String, Vec<String>, u32)> = Vec::new();
+        for (s, word, t, line) in std::mem::take(&mut self.d2_lands) {
+            match lands.iter_mut().find(|(ls, lw, ..)| *ls == s && *lw == word) {
+                Some((_, _, types, _)) => {
+                    if !types.contains(&t) {
+                        types.push(t);
+                    }
+                }
+                None => lands.push((s, word, vec![t], line)),
+            }
+        }
+        for (s, word, types, line) in lands {
+            if let [t] = types.as_slice() {
+                self.warning("G0036", line, format!("style `{s}`'s `when {word}` lands only on {t} — `for={t}` checks it at the declaration (customization spec D2)"));
+            }
+        }
+
         // Repeats: name -> node id; the non-`empty` child is the hidden
         // template the Runtime clones into row slots (GPAR108/capacity).
         // The template's `$item.<field>` sites are recorded here, once —
@@ -5177,6 +5387,26 @@ impl<'a> Compiler<'a> {
             let host = w.host;
             whens[target].push(w);
             of[target].push(if host { HOST_PENDING } else { of_node });
+        }
+        // GP40 step 4: a live stop write names a DECLARED stop — the
+        // count is the `stops=` list's; `stop_3_color` on a two-stop
+        // gradient would die silently in the draw fold.
+        for (id, list) in whens.iter().enumerate() {
+            if self.page.nodes[id].kind != Kind::Gradient {
+                continue;
+            }
+            let count = self.page.prop(id as NodeId, PropKey::Stops).map_or(0, |v| self.page.list(v).len());
+            for w in list {
+                for pr in &w.props {
+                    let n = match pr.key {
+                        PropKey::StopColor(n) | PropKey::StopOffset(n) => n as usize,
+                        _ => continue,
+                    };
+                    if n > count {
+                        self.error("G2005", w.line, format!("this gradient declares {count} stops — stop {n} names nothing"));
+                    }
+                }
+            }
         }
         // `for=` widget responses watch the hosting control (the nearest
         // press surface above).
