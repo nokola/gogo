@@ -148,8 +148,10 @@ fn node_level_when_builds_and_attaches() {
     let c = ok("View v { Button b text=\"x\" {\n    when held background=#B00020FF\n} }");
     let b = c.page.find("b").unwrap();
     let node = c.page.nodes[b as usize];
-    assert_eq!(node.whens.1, 1, "{:?}", c.page.whens);
+    // held (authored) + the injected default focus ring (D129, GP26).
+    assert_eq!(node.whens.1, 2, "{:?}", c.page.whens);
     assert_eq!(c.page.whens[node.whens.0 as usize].state, State::Held);
+    assert_eq!(c.page.whens[node.whens.0 as usize + 1].state, State::Focused);
 }
 
 /// `_state_tests` 5764-5779 (`state.hover-ok`, `-mouse-applies`,

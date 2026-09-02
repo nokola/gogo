@@ -8,10 +8,11 @@
 //! the key (an Input's caret claims Left/Right). The FOCUSED bit is
 //! D129 VISIBLE focus: a key grant shows the ring, a tap parks focus
 //! with no ring — except on an Input, whose caret always warrants one.
+use gogo::draw::{Draw, draw};
 use gogo::input::{Event, EventKind, Input, Key, Phase, Touch};
 use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::NodeId;
-use gogo::runtime::{FOCUSED, Runtime, resolve};
+use gogo::page::{BUTTON_FOCUS_RING, BUTTON_FOCUS_RING_EPX, NodeId, PropKey, Rgba, Value};
+use gogo::runtime::{DISABLED, FOCUS_WITHIN, FOCUSED, Runtime, resolve};
 use gogo::{Page, compile};
 
 struct Fx {
@@ -49,6 +50,11 @@ impl Fx {
     /// The one node holding the FOCUSED bit (None = no ring anywhere).
     fn ring(&self) -> Option<NodeId> {
         (0..self.page.nodes.len() as NodeId).find(|n| self.rt.has(*n, FOCUSED))
+    }
+    fn draws(&self) -> Vec<Draw> {
+        let res = resolve(&self.page, &self.rt);
+        let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        draw(&self.page, &res, &rects)
     }
 }
 
@@ -139,6 +145,69 @@ fn a_tap_parks_focus_without_the_ring() {
     assert_eq!(fx.ring(), Some(fx.id("s")));
     fx.tap("t");
     assert_eq!(fx.ring(), Some(fx.id("t")), "an Input's caret always warrants the ring");
+}
+
+/// `focus_within` lights the owner and every ancestor — the one state
+/// that looks up — with the ring's visible-focus warrant: a tapped
+/// Input (caret) lights its row, and focus leaving dims the chain.
+#[test]
+fn focus_within_lights_the_ancestor_chain() {
+    let src = "View v { Panel row width=200, height=60, halign=left, valign=top { Input t2 width=180, height=36 }\n Button away text=\"x\", width=60, height=24, halign=left, valign=bottom }";
+    let mut fx = Fx::new(src);
+    fx.tap("t2");
+    for name in ["t2", "row", "v"] {
+        assert!(fx.rt.has(fx.id(name), FOCUS_WITHIN), "{name} lights while the field holds focus");
+    }
+    fx.tap("away");
+    for name in ["t2", "row", "v"] {
+        assert!(!fx.rt.has(fx.id(name), FOCUS_WITHIN), "{name} dims when focus leaves");
+    }
+    assert!(!fx.rt.has(fx.id("v"), FOCUS_WITHIN), "a parked Button lights nothing");
+}
+
+/// The D129 modality edge: ANY key press means keyboard driving — a
+/// Button holding parked (ringless) focus gets its ring and its chain
+/// lights, in place, even when the key itself did nothing.
+#[test]
+fn a_parked_focus_lights_on_the_next_key() {
+    let mut fx = Fx::new(ROW_SRC);
+    fx.tap("a");
+    assert_eq!(fx.ring(), None, "parked: no ring");
+    assert!(!fx.rt.has(fx.id("v"), FOCUS_WITHIN));
+    fx.key(Key::Char('x'));
+    assert_eq!(fx.ring(), Some(fx.id("a")), "the key upgrades the ring in place");
+    assert!(fx.rt.has(fx.id("v"), FOCUS_WITHIN), "the chain lights with it");
+}
+
+/// D129: the Button family ships a default `when focused` ring — shown
+/// for key focus only; authoring `when focused` replaces it (the D122
+/// per-state doctrine).
+#[test]
+fn the_button_family_ships_a_default_focus_ring() {
+    let mut fx = Fx::new("View v { Button b text=\"B\", width=80, height=30 }");
+    let ringed = |list: &[Draw]| list.iter().any(|d| matches!(d, Draw::Quad { border, border_color, .. } if *border == BUTTON_FOCUS_RING_EPX && *border_color == BUTTON_FOCUS_RING));
+    assert!(!ringed(&fx.draws()), "no ring at rest");
+    fx.key(Key::Tab);
+    assert!(ringed(&fx.draws()), "key focus draws the default ring: {:#?}", fx.draws());
+    let mut own = Fx::new("View v { Button b text=\"B\", width=80, height=30 { when focused background=#00FF00FF } }");
+    own.key(Key::Tab);
+    let list = own.draws();
+    assert!(!ringed(&list), "an authored `when focused` replaces the default ring");
+    assert!(list.iter().any(|d| matches!(d, Draw::Quad { color, .. } if *color == Rgba([0x00, 0xFF, 0x00, 0xFF]))), "the author's response shows: {list:#?}");
+}
+
+/// `disabled` beats everything, always — a control's own state implies
+/// held-plus-meaning and beats `held`, but it can't out-rank the input
+/// blocker (the addon's §5.3 law; was misported with custom on top).
+#[test]
+fn disabled_beats_a_controls_own_state() {
+    let src = "control Chip $value=0 {\n state_builtin disabled\n state glowing\n Layers { Rectangle r width=40, height=20, color=white } }\nView v { Chip k { when glowing background=#112233FF\n when disabled background=#445566FF } }";
+    let mut fx = Fx::new(src);
+    let root = fx.id("k");
+    fx.rt.set_custom(&fx.page, root, "glowing", true).unwrap();
+    fx.rt.set_state(root, DISABLED, true);
+    let res = resolve(&fx.page, &fx.rt);
+    assert_eq!(res.prop(&fx.page, root, PropKey::Background), Some(Value::VColor(Rgba([0x44, 0x55, 0x66, 0xFF]))), "disabled wins the conflict");
 }
 
 /// A `control`'s contract gates the keyboard: `state_builtin focused`

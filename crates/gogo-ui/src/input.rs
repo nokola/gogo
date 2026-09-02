@@ -20,7 +20,7 @@ use crate::draw::hit;
 use crate::layout::{Rect, SLIDER_KNOB_EPX, TOGGLE_PILL};
 use crate::draw::TOGGLE_KNOB_EPX;
 use crate::page::*;
-use crate::runtime::{FOCUSED, HELD, Resolved, Runtime, SELECTED};
+use crate::runtime::{FOCUS_WITHIN, FOCUSED, HELD, Resolved, Runtime, SELECTED};
 
 /// Pan starts after this much travel (spec: 16 epx).
 pub const SCROLL_DEADZONE: f32 = 16.0;
@@ -258,6 +258,22 @@ fn reachable(page: &Page, rt: &Runtime, res: &Resolved, node: NodeId) -> bool {
     }
 }
 
+/// `focus_within` up the chain (D129): the bit rides the owner and every
+/// ancestor — the one state that looks up — under the ring's own
+/// visible-focus warrant, so a settings row lights while its inner
+/// control is key-focused and a tap into a Button parks silently.
+fn set_within(page: &Page, rt: &mut Runtime, node: NodeId, on: bool) {
+    let mut n = node;
+    loop {
+        rt.set_state(n, FOCUS_WITHIN, on);
+        let p = page.nodes[n as usize].parent;
+        if p == NO_NODE {
+            return;
+        }
+        n = p;
+    }
+}
+
 fn scroll_ancestor(page: &Page, node: NodeId) -> Option<NodeId> {
     let mut n = page.nodes[node as usize].parent;
     while n != NO_NODE {
@@ -478,7 +494,7 @@ impl Input {
     /// when the page leaves the screen, so a list closed mid-fling is
     /// where the user left it on return and no `held` ghost survives a
     /// page swap. Nothing is reported (the finger is not on this page).
-    pub fn reset(&mut self, rt: &mut Runtime) {
+    pub fn reset(&mut self, page: &Page, rt: &mut Runtime) {
         if let Some(p) = self.press.take() {
             rt.set_state(p.node, HELD, false);
         }
@@ -488,6 +504,7 @@ impl Input {
         // reporting now would land on nobody.
         if let Some(f) = self.focus.take() {
             rt.set_state(f, FOCUSED, false);
+            set_within(page, rt, f, false);
         }
         self.focus_visible = false;
         rt.caret = None;
@@ -505,6 +522,17 @@ impl Input {
     /// changed-means-CHANGED law), Home/End move the caret.
     pub fn key(&mut self, page: &mut Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], k: Key) -> Vec<Event> {
         let mut events = Vec::new();
+        // D129 modality edge: ANY key press means keyboard driving — a
+        // parked (ringless) owner gets its ring and its chain lights, in
+        // place, even when the key itself does nothing.
+        if let Some(f) = self.focus {
+            if !self.focus_visible {
+                self.focus_visible = true;
+                rt.set_state(f, FOCUSED, true);
+                set_within(page, rt, f, true);
+                rt.dirty = true;
+            }
+        }
         let in_field = self.focus.is_some_and(|f| page.nodes[f as usize].kind == Kind::Input);
         match k {
             Key::Tab | Key::TabBack => {
@@ -584,6 +612,7 @@ impl Input {
         let Some(f) = self.focus.take() else { return };
         self.focus_visible = false;
         rt.set_state(f, FOCUSED, false);
+        set_within(page, rt, f, false);
         rt.caret = None;
         if page.nodes[f as usize].kind == Kind::Input {
             let now = input_text(page, rt, f);
@@ -611,9 +640,10 @@ impl Input {
         }
         let Some(n) = node else { return };
         self.focus = Some(n);
-        if by_key {
-            self.focus_visible = true;
-        }
+        // D129 modality: a key grant shows the ring, a pointer press
+        // turns it off — re-tapping an already-focused box clears a
+        // ring earlier keys put there.
+        self.focus_visible = by_key;
         let in_field = page.nodes[n as usize].kind == Kind::Input;
         if in_field {
             if moved {
@@ -622,9 +652,9 @@ impl Input {
             self.caret = input_text(page, rt, n).chars().count();
             rt.caret = Some((n, self.caret as u32));
         }
-        if self.focus_visible || in_field {
-            rt.set_state(n, FOCUSED, true);
-        }
+        let warranted = self.focus_visible || in_field;
+        rt.set_state(n, FOCUSED, warranted);
+        set_within(page, rt, n, warranted);
         rt.dirty = true;
     }
 
@@ -1329,13 +1359,13 @@ mod tests {
         }
         fx.touch(Phase::Up, 100.0, -130.0, 0.06);
         assert!(fx.input.fling.is_some(), "gliding");
-        fx.input.reset(&mut fx.rt);
+        fx.input.reset(&fx.page, &mut fx.rt);
         assert!(fx.input.fling.is_none() && fx.input.press.is_none());
         let mut fx = Fx::new(src);
         let b = fx.page.find("b").unwrap();
         fx.touch(Phase::Down, 100.0, 20.0, 1.0);
         assert!(fx.rt.has(b, HELD));
-        fx.input.reset(&mut fx.rt);
+        fx.input.reset(&fx.page, &mut fx.rt);
         assert!(!fx.rt.has(b, HELD), "no held ghost");
         assert!(fx.touch(Phase::Move, 100.0, 0.0, 1.1).is_empty(), "the gesture is gone");
 

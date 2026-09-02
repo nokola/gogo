@@ -5770,6 +5770,30 @@ impl<'a> Compiler<'a> {
             let count = self.page.whens.len() as u32 - n0;
             self.page.nodes[i].whens = (n0, count);
         }
+        // D129: the Button family ships a default `when focused` ring —
+        // the engine's always-on ring, re-owned so it shows only for
+        // key-driven focus (GP26 step 2). Authoring `when focused` (node
+        // or style) replaces it, the D122 per-state doctrine; `Input` is
+        // untouched — its caret is the focus look.
+        for i in 0..self.page.nodes.len() {
+            if !matches!(self.page.nodes[i].kind, Kind::Button | Kind::Check | Kind::Toggle | Kind::Radio) {
+                continue;
+            }
+            let (w0, wc) = self.page.nodes[i].whens;
+            if self.page.whens[w0 as usize..(w0 + wc) as usize].iter().any(|w| w.state == State::Focused) {
+                continue;
+            }
+            let n0 = self.page.whens.len() as u32;
+            for wi in w0..w0 + wc {
+                let w = self.page.whens[wi as usize];
+                self.page.whens.push(w);
+            }
+            let p0 = self.page.props.len() as u32;
+            self.page.props.push(Prop { key: PropKey::BorderColor, value: Value::VColor(BUTTON_FOCUS_RING) });
+            self.page.props.push(Prop { key: PropKey::BorderThickness, value: Value::VNum(BUTTON_FOCUS_RING_EPX) });
+            self.page.whens.push(When { state: State::Focused, props: (p0, 2), of: NO_NODE, line: self.page.nodes[i].line });
+            self.page.nodes[i].whens = (n0, wc + 1);
+        }
         // GP33: the automatic couplings' driver rows — the control roots
         // exist now, so the recorded paths resolve to arena ids.
         for (node, root, min, max, state) in std::mem::take(&mut self.pending_drivers) {
@@ -5979,7 +6003,10 @@ mod tests {
         assert_eq!(p.prop(b, PropKey::Background), Some(Value::VColor(Rgba([0x11, 0x22, 0x33, 0xFF]))));
         assert_eq!(p.nodes[b as usize].placement.min_height, 36.0);
         let whens: Vec<State> = p.whens[p.nodes[b as usize].whens.0 as usize..].iter().map(|w| w.state).collect();
-        assert_eq!(whens, vec![State::Selected, State::Held]);
+        // The trailing Focused is the injected default focus ring (D129,
+        // GP26 step 2) — every Button without an authored `when focused`
+        // carries it.
+        assert_eq!(whens, vec![State::Selected, State::Held, State::Focused]);
         assert!(p.whens.iter().all(|w| w.of == NO_NODE));
         let held_props = &p.props[p.whens[1].props.0 as usize..];
         assert_eq!(held_props[0].value, Value::VColor(Rgba([255, 255, 255, 128])));

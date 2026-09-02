@@ -141,7 +141,7 @@ fn an_unfocused_page_ignores_keys_and_reset_forgets_without_committing() {
     let field = fx.page.find("field").unwrap();
     fx.tap("field", 0.0);
     fx.key(Key::Char('q'));
-    fx.input.reset(&mut fx.rt);
+    fx.input.reset(&fx.page, &mut fx.rt);
     assert!(!fx.rt.has(field, FOCUSED));
     assert!(fx.rt.caret.is_none(), "the page left — no commit, no caret");
 }

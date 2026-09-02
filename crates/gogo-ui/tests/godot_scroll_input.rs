@@ -357,7 +357,7 @@ fn scroll_tap_deadzone_pan_fling_overscroll_spring_and_axis_lock() {
     // release ends the pan
     fx.touch(Phase::Up, 50.0, 40.0, 1.03);
     assert!(!fx.input.is_pressed());
-    fx.input.reset(&mut fx.rt);
+    fx.input.reset(&fx.page, &mut fx.rt);
     // touches outside the container are ignored entirely
     fx.touch(Phase::Down, 300.0, 300.0, 1.5);
     assert!(!fx.input.is_pressed());
@@ -366,7 +366,7 @@ fn scroll_tap_deadzone_pan_fling_overscroll_spring_and_axis_lock() {
     fx.touch(Phase::Move, 50.0, 40.0, 2.01);
     fx.touch(Phase::Up, 50.0, 40.0, 2.02);
     assert!(fx.input.is_gliding());
-    fx.input.reset(&mut fx.rt);
+    fx.input.reset(&fx.page, &mut fx.rt);
     // pulling past the top shows a softened content offset...
     fx.rt.scroll[sv as usize] = [0.0, 0.0];
     let top = fx.rect("list").y;

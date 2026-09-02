@@ -21,6 +21,12 @@ pub const DISABLED_OPACITY: f32 = 0.3;
 pub const LIST_SELECTED_FILL: Rgba = Rgba([255, 255, 255, 77]);
 pub const LIST_HELD_FILL: Rgba = Rgba([255, 255, 255, 38]);
 pub const LIST_FOCUS_FILL: Rgba = Rgba([255, 255, 255, 19]);
+/// The Button family's injected default `when focused` ring (D129: the
+/// engine's always-on ring retired, re-owned as a default response) —
+/// visible focus shows it for key-driven focus only, and authoring
+/// `when focused` replaces it (the D122 per-state doctrine).
+pub const BUTTON_FOCUS_RING: Rgba = Rgba([255, 255, 255, 85]);
+pub const BUTTON_FOCUS_RING_EPX: f32 = 2.0;
 /// The empty string; `name == NO_STR` = unnamed.
 pub const NO_STR: StrId = 0;
 /// A translation key (`text="x"/key`), one id space for the WHOLE build:
@@ -933,11 +939,12 @@ impl State {
             State::Hovered => 4,
             State::Selected => 5,
             State::Held => 6,
-            State::StateDisabled => 7,
-            // A control's own state outranks every built-in (the addon
-            // gives declared states priority 100+): the script raised it
-            // on purpose, over whatever the finger is doing.
-            State::Custom(_) => 8,
+            // A control's own state implies held-plus-meaning, so it
+            // beats `held` — but `disabled` beats everything, always: a
+            // behavior can't out-rank the input blocker (the addon's
+            // §5.3 law; declared states carry prio 100+, disabled 1000).
+            State::Custom(_) => 7,
+            State::StateDisabled => 8,
         }
     }
 }
