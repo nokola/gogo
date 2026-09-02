@@ -318,19 +318,6 @@ impl UiRenderer {
                         self.quads.push(Quad { rect: [g.x, g.y, g.w, g.h], color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_GLYPH, 0.0], uv: g.uv, rot, wedge });
                     }
                 }
-                Draw::Chrome { rect, label, font_size, color } => {
-                    // Un-interned chrome text (the edit bar): shaped
-                    // directly, centered both ways.
-                    let r = px(rect);
-                    let size_px = (font_size * epx).floor().max(1.0);
-                    let (tw, th) = text.measure(label, size_px, None, None);
-                    let x = r[0] + (r[2] - tw) / 2.0;
-                    let y = r[1] + (r[3] - th) / 2.0;
-                    let color = color.to_f32();
-                    for g in text.shape(label, size_px, None, None, x, y, r[2], 0) {
-                        self.quads.push(Quad { rect: [g.x, g.y, g.w, g.h], color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_GLYPH, 0.0], uv: g.uv, rot, wedge });
-                    }
-                }
                 Draw::Selection { rect, text: text_id, key, font_size, font, lo, hi, color } => {
                     // The highlight between the two shaped prefixes —
                     // measured here because glyph positions live here.
@@ -344,6 +331,24 @@ impl UiRenderer {
                     let h = size_px * 1.2;
                     let y = r[1] + (r[3] - h) / 2.0;
                     self.quads.push(Quad { rect: [r[0] + xlo, y, (xhi - xlo).max(0.0), h], color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_RECT, 0.0], uv: NO_UV, rot, wedge });
+                }
+                Draw::SelHandles { rect, text: text_id, key, font_size, font, lo, hi, color } => {
+                    // The grab circles below the selection's ends —
+                    // measured here like the highlight (glyph positions
+                    // live here); the input machine grab-checks the
+                    // same `sel_handle_rect` in epx.
+                    let s = gogo::locale::display(page, locale, *text_id, *key);
+                    let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
+                    let r = px(rect);
+                    let size_px = (font_size * epx).floor().max(1.0);
+                    let byte = |i: u32| s.char_indices().nth(i as usize).map(|(b, _)| b).unwrap_or(s.len());
+                    let (xlo, _) = text.measure(&s[..byte(*lo)], size_px, None, font_key);
+                    let (xhi, _) = text.measure(&s[..byte(*hi)], size_px, None, font_key);
+                    let color = color.to_f32();
+                    for x in [r[0] + xlo, r[0] + xhi] {
+                        let h = gogo::input::sel_handle_rect(r[1] + r[3], x, gogo::input::SEL_HANDLE_EPX * epx);
+                        self.quads.push(Quad { rect: [h.x, h.y, h.w, h.h], color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_CIRCLE, 0.0], uv: NO_UV, rot, wedge });
+                    }
                 }
                 Draw::Caret { rect, text: text_id, key, font_size, font, index, color } => {
                     // A thin solid bar after the shaped prefix — shaping
