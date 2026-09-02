@@ -89,6 +89,13 @@ pub fn compile_file_with(path: &Path, options: CompileOptions<'_>) -> Result<Com
 /// `emit::emit_keys`) and the asset tables: every image/font path a page
 /// names, embedded from `options.res_root`. Errors are returned as one
 /// string for `panic!` — a bad page fails the build with file:line.
+/// The built-in edit bar's source (`edit_bar.gogo`, embedded) —
+/// `build_pages` compiles it into every app as module `gogo_edit_bar`,
+/// so a host composes the bar as a page (see the file's header).
+pub const EDIT_BAR_GOGO: &str = include_str!("edit_bar.gogo");
+/// The module/page name `build_pages` gives the built-in edit bar.
+pub const EDIT_BAR_MODULE: &str = "gogo_edit_bar";
+
 pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<(), String> {
     let res_root: &Path = options.res_root;
     // One key table for the whole build (`options.compile.keys` from the
@@ -142,6 +149,23 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
         }
         println!("cargo:rerun-if-changed={}", path.display());
         source.push_str(&emit::emit_rust(&compiled.page, &module));
+        source.push('\n');
+    }
+    // The built-in edit bar page, compiled with the app's key table so
+    // its labels join the app's translation keys (`cut`, `copy`,
+    // `paste`, `selectAll`) — an app page never has to author it.
+    {
+        let compiled = compile_with(EDIT_BAR_GOGO, &|_: &str| None::<String>, CompileOptions { source_name: "edit_bar.gogo (built-in)", ..options.compile });
+        for d in &compiled.diags {
+            let line = format!("edit_bar.gogo (built-in):{}: {} {}: {}\n", d.line, if d.severity == Severity::Error { "error" } else { "warning" }, d.code, d.message);
+            if d.severity == Severity::Error {
+                errors.push_str(&line);
+            } else {
+                println!("cargo:warning={}", line.trim_end());
+            }
+        }
+        modules.push(EDIT_BAR_MODULE.to_string());
+        source.push_str(&emit::emit_rust(&compiled.page, EDIT_BAR_MODULE));
         source.push('\n');
     }
     // Every page by file stem, for a `--page <stem>` pick at runtime.

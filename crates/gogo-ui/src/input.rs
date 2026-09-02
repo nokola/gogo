@@ -105,50 +105,34 @@ const DOUBLE_CLICK_S: f64 = 0.35;
 /// has no Ctrl).
 const LONG_PRESS_S: f32 = 0.5;
 
-/// The edit bar's button cell, epx.
-pub const EDIT_BAR_CELL_EPX: f32 = 64.0;
-/// The edit bar's height, epx.
-pub const EDIT_BAR_H_EPX: f32 = 40.0;
-const EDIT_BAR_GAP_EPX: f32 = 4.0;
+/// Air between the edit bar and its field, epx.
+pub const EDIT_BAR_GAP_EPX: f32 = 4.0;
 
-/// One edit-bar button.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum EditOp {
-    Cut,
-    Copy,
-    Paste,
-    All,
+/// Where the edit bar (the built-in `edit_bar.gogo` page) sits for a
+/// field's rectangle: docked just above the field, below it when the
+/// top edge would clip it, left edges aligned and clamped into the
+/// view. ONE function so every host docks the bar the same way.
+/// `bar_w`/`bar_h` = the laid-out bar's size.
+///
+/// Returns the bar's top-left in the same epx space as `field`.
+pub fn edit_bar_anchor(field: Rect, bar_w: f32, bar_h: f32, view_w: f32) -> (f32, f32) {
+    let y = if field.y - bar_h - EDIT_BAR_GAP_EPX >= 0.0 { field.y - bar_h - EDIT_BAR_GAP_EPX } else { field.y + field.h + EDIT_BAR_GAP_EPX };
+    let x = field.x.min((view_w - bar_w).max(0.0)).max(0.0);
+    (x, y)
 }
 
-impl EditOp {
-    /// The drawn label (English literals — bar i18n is a logged open).
-    pub fn label(self) -> &'static str {
-        match self {
-            EditOp::Cut => "Cut",
-            EditOp::Copy => "Copy",
-            EditOp::Paste => "Paste",
-            EditOp::All => "All",
-        }
-    }
-}
+/// A selection drag handle's drawn size (the circle's diameter), epx.
+pub const SEL_HANDLE_EPX: f32 = 16.0;
+/// Extra grab air around a handle's circle, epx each side.
+const SEL_HANDLE_GRAB_EPX: f32 = 6.0;
 
-/// The edit bar's buttons for a field's rectangle: fixed cells docked
-/// just above the field (below it when the field touches the top edge).
-/// Cut/Copy show only over a selection; All only when there is text.
-/// ONE function drives BOTH the drawer and the tap hit-check, so the
-/// look and the touch always agree.
-pub fn edit_bar_rects(field: Rect, has_selection: bool, has_text: bool) -> Vec<(EditOp, Rect)> {
-    let mut ops = Vec::new();
-    if has_selection {
-        ops.push(EditOp::Cut);
-        ops.push(EditOp::Copy);
-    }
-    ops.push(EditOp::Paste);
-    if has_text {
-        ops.push(EditOp::All);
-    }
-    let y = if field.y - EDIT_BAR_H_EPX - EDIT_BAR_GAP_EPX >= 0.0 { field.y - EDIT_BAR_H_EPX - EDIT_BAR_GAP_EPX } else { field.y + field.h + EDIT_BAR_GAP_EPX };
-    ops.into_iter().enumerate().map(|(i, op)| (op, Rect::new(field.x + i as f32 * (EDIT_BAR_CELL_EPX + EDIT_BAR_GAP_EPX), y, EDIT_BAR_CELL_EPX, EDIT_BAR_H_EPX))).collect()
+/// One selection handle's rectangle: a circle hanging just below the
+/// field, centered on the selection edge at `x`. `diam` is in the
+/// caller's units (epx in the input machine, px in the renderer), so
+/// BOTH consumers — the drawer and the grab hit-check — get the same
+/// picture.
+pub fn sel_handle_rect(field_bottom: f32, x: f32, diam: f32) -> Rect {
+    Rect::new(x - diam / 2.0, field_bottom + diam / 8.0, diam, diam)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -169,13 +153,6 @@ pub enum EventKind {
     /// in the node's own epx space (0,0 = its top-left), captured until up.
     /// A mouse is one pointer — the shell feeds it as one fixed finger.
     Pointer { phase: Phase, x: f32, y: f32 },
-    /// The edit bar's Copy/Cut/Paste (a REQUEST, not a result): gogo
-    /// never touches a clipboard — the shell answers each through the
-    /// same door as Ctrl+C/X/V (`selected_text`, `delete_selection`,
-    /// `paste`). No `on:` handler; the shell consumes these itself.
-    ClipboardCopy,
-    ClipboardCut,
-    ClipboardPaste,
 }
 
 /// What happened, on which node, and the `on:` action the file names for
@@ -309,6 +286,19 @@ fn index_from_x(page: &Page, rt: &Runtime, res: &Resolved, rects: &[Rect], measu
     chars.len()
 }
 
+/// The caret x for a char index — the inverse of `index_from_x`,
+/// through the same shaping, so a drag handle sits exactly where the
+/// selection edge draws.
+fn x_from_index(page: &Page, rt: &Runtime, res: &Resolved, rects: &[Rect], measure: &dyn TextMeasure, node: NodeId, index: usize) -> f32 {
+    let font_size = res.font_size(page, node).unwrap_or(DEFAULT_FONT_SIZE);
+    let font_id = res.font(page, node).unwrap_or(crate::page::NO_STR);
+    let font = if font_id == crate::page::NO_STR { None } else { Some(page.str(font_id)) };
+    let chars: Vec<char> = input_text(page, rt, node).chars().collect();
+    let s: String = chars[..index.min(chars.len())].iter().collect();
+    let (w, _) = measure.measure(&s, font_size, None, font);
+    rects[node as usize].x + 8.0 + w
+}
+
 /// The word span at `i`: an alphanumeric/underscore run, else the run of
 /// whatever else sits under the press (a double click on a gap selects
 /// the gap — the everywhere behavior).
@@ -376,6 +366,12 @@ pub struct Input {
     /// Where the current field press landed (chars) — the long-press
     /// selects the word THERE, not wherever the finger drifted.
     press_index: usize,
+    /// The grabbed selection handle mid-drag (`true` = the HI end);
+    /// `None` between grabs.
+    drag_handle: Option<bool>,
+    /// The live selection was born of touch (long-press, double-tap,
+    /// the bar's All) — published as `Runtime::sel_handles`.
+    touch_sel: bool,
     /// The text at focus (or the last commit): `change` fires once per
     /// genuine transition — the shipped changed-means-CHANGED law.
     committed: String,
@@ -674,6 +670,7 @@ impl Input {
         self.focus_visible = false;
         rt.caret = None;
         rt.selection = None;
+        rt.sel_handles = false;
         rt.edit_bar = None;
         self.anchor = None;
         self.caret = 0;
@@ -866,6 +863,7 @@ impl Input {
         set_chain(page, rt, f, FOCUS_WITHIN, false);
         rt.caret = None;
         rt.selection = None;
+        rt.sel_handles = false;
         rt.edit_bar = None;
         self.anchor = None;
         if page.nodes[f as usize].kind == Kind::Input {
@@ -1153,6 +1151,7 @@ impl Input {
     fn publish(&self, rt: &mut Runtime, f: NodeId) {
         rt.caret = Some((f, self.caret as u32));
         rt.selection = self.selection().map(|(lo, hi)| (f, lo as u32, hi as u32));
+        rt.sel_handles = self.touch_sel && rt.selection.is_some();
     }
 
     /// The focused Input's text + selection span for seeding an IME
@@ -1267,6 +1266,20 @@ impl Input {
         best.map(|(_, n)| n)
     }
 
+    /// Selects the focused field's whole text, caret at the end — the
+    /// edit bar's All (the shell answers that tap), same result as
+    /// Ctrl+A. Returns false when no field holds focus.
+    pub fn select_all(&mut self, page: &Page, rt: &mut Runtime) -> bool {
+        let Some(f) = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input) else { return false };
+        let len = input_text(page, rt, f).chars().count();
+        self.anchor = Some(0).filter(|_| len > 0);
+        self.caret = len;
+        self.touch_sel = true;
+        self.publish(rt, f);
+        rt.dirty = true;
+        true
+    }
+
     /// Feeds one touch sample; returns the events it completed.
     pub fn touch(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], measure: &dyn TextMeasure, t: Touch) -> Vec<Event> {
         let mut events = Vec::new();
@@ -1276,45 +1289,48 @@ impl Input {
                     // A second finger mid-gesture is swallowed.
                     return events;
                 }
+                // A selection handle grab comes FIRST: the circles hang
+                // BELOW the field, over whatever sits there — the press
+                // adjusts that end and never reaches the page (the bar
+                // stays up; adjusting is not dismissing).
+                let mut grabbed: Option<(NodeId, bool)> = None;
+                if let Some(f) = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input) {
+                    if rt.sel_handles {
+                        if let Some((lo, hi)) = self.selection() {
+                            let bottom = rects[f as usize].y + rects[f as usize].h;
+                            let xlo = x_from_index(page, rt, res, rects, measure, f, lo);
+                            let xhi = x_from_index(page, rt, res, rects, measure, f, hi);
+                            let grab = |x: f32| {
+                                let r = sel_handle_rect(bottom, x, SEL_HANDLE_EPX);
+                                Rect::new(r.x - SEL_HANDLE_GRAB_EPX, r.y - SEL_HANDLE_GRAB_EPX, r.w + 2.0 * SEL_HANDLE_GRAB_EPX, r.h + 2.0 * SEL_HANDLE_GRAB_EPX).contains(t.x, t.y)
+                            };
+                            grabbed = match (grab(xlo), grab(xhi)) {
+                                // Both in reach (a short selection): the nearer end.
+                                (true, true) => Some((f, (t.x - xhi).abs() <= (t.x - xlo).abs())),
+                                (false, true) => Some((f, true)),
+                                (true, false) => Some((f, false)),
+                                (false, false) => None,
+                            };
+                        }
+                    }
+                }
+                if let Some((f, hi_end)) = grabbed {
+                    self.drag_handle = Some(hi_end);
+                    self.press = Some(Press { node: f, kind: Kind::Input, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: false, accum: [0.0; 2], value_from: 0.0, toggle_moved: false, release_owed: false, raw: None });
+                    return events;
+                }
                 // A glide is stopped only by a touch that lands ON the
                 // gliding Scroll or its content — chrome drawn over it
                 // keeps its own press and the list keeps rolling
                 // underneath (D130, GPAR4). A FAST catch is "caught": the
                 // child under the finger is not pressed by accident.
-                // The edit bar floats over everything: its taps are its
-                // own, and any OTHER press dismisses it (the press then
-                // runs its normal course).
-                if let Some(bn) = rt.edit_bar {
-                    let has_sel = self.focus == Some(bn) && self.selection().is_some();
-                    let has_text = !input_text(page, rt, bn).is_empty();
-                    let op = edit_bar_rects(rects[bn as usize], has_sel, has_text).into_iter().find(|(_, r)| r.contains(t.x, t.y)).map(|(op, _)| op);
-                    match op {
-                        Some(EditOp::All) => {
-                            // Select-all keeps the bar up — Copy is the
-                            // natural next tap.
-                            let len = input_text(page, rt, bn).chars().count();
-                            self.anchor = Some(0).filter(|_| len > 0);
-                            self.caret = len;
-                            self.publish(rt, bn);
-                            rt.dirty = true;
-                            return events;
-                        }
-                        Some(op) => {
-                            rt.edit_bar = None;
-                            rt.dirty = true;
-                            let kind = match op {
-                                EditOp::Cut => EventKind::ClipboardCut,
-                                EditOp::Copy => EventKind::ClipboardCopy,
-                                _ => EventKind::ClipboardPaste,
-                            };
-                            events.push(Event { node: bn, kind, action: None });
-                            return events;
-                        }
-                        None => {
-                            rt.edit_bar = None;
-                            rt.dirty = true;
-                        }
-                    }
+                // The edit bar lives on its own page above this one — a
+                // press reaching THIS machine is off the bar by
+                // construction, and any such press dismisses it (the
+                // press then runs its normal course).
+                if rt.edit_bar.is_some() {
+                    rt.edit_bar = None;
+                    rt.dirty = true;
                 }
                 let hit_node = hit(page, res, rects, t.x, t.y, false);
                 let mut caught_accum: Option<(NodeId, [f32; 2])> = None;
@@ -1366,6 +1382,7 @@ impl Input {
                         let (lo, hi) = word_at(&chars, idx);
                         self.anchor = Some(lo).filter(|_| lo != hi);
                         self.caret = hi;
+                        self.touch_sel = t.id != MOUSE_ID;
                     } else {
                         self.caret = idx;
                         self.anchor = None;
@@ -1462,7 +1479,7 @@ impl Input {
                         // goes back to where the finger found it). Nothing
                         // scrolls that way: the child keeps the finger for good.
                         let vertical = dy > dx;
-                        let child_keeps = (p.kind == Kind::Slider && !vertical) || (p.kind == Kind::Toggle && p.toggle_moved) || (p.kind == Kind::Input && t.id == MOUSE_ID);
+                        let child_keeps = (p.kind == Kind::Slider && !vertical) || (p.kind == Kind::Toggle && p.toggle_moved) || (p.kind == Kind::Input && (t.id == MOUSE_ID || self.drag_handle.is_some()));
                         let taker = if child_keeps { None } else { scroll_taker(page, res, rects, p.node, vertical) };
                         match taker {
                             Some(scroll) => {
@@ -1491,11 +1508,26 @@ impl Input {
                     let f = toggle_fraction(res, rects, p.node, t.x);
                     rt.set_prop(p.node, PropKey::Value, Value::VNum(f));
                     rt.set_state(p.node, SELECTED, f >= 0.5);
+                } else if p.kind == Kind::Input && self.drag_handle.is_some() && !p.panning && self.focus == Some(p.node) {
+                    // A handle drag moves ITS end; the selection never
+                    // collapses — at least one char stays (lift and tap
+                    // to place a caret instead).
+                    if let Some((lo, hi)) = self.selection() {
+                        let idx = index_from_x(page, rt, res, rects, measure, p.node, t.x);
+                        let hi_end = self.drag_handle == Some(true);
+                        let (fixed, moved) = if hi_end { (lo, idx.max(lo + 1)) } else { (hi, idx.min(hi - 1)) };
+                        self.anchor = Some(fixed);
+                        self.caret = moved;
+                        self.publish(rt, p.node);
+                        rt.dirty = true;
+                    }
                 } else if p.kind == Kind::Input && t.id == MOUSE_ID && !p.panning && self.focus == Some(p.node) {
                     // The mouse drag selects: the anchor is where the
                     // press landed, the caret follows the cursor. A
                     // FINGER pans the Scroll instead — its selection
-                    // door is the long-press (step 3).
+                    // door is the long-press (step 3). A drag-born
+                    // selection shows no handles.
+                    self.touch_sel = false;
                     let idx = index_from_x(page, rt, res, rects, measure, p.node, t.x);
                     if self.anchor.is_none() {
                         self.anchor = Some(self.caret);
@@ -1536,6 +1568,9 @@ impl Input {
                 self.press = Some(p);
             }
             Phase::Up | Phase::Cancel => {
+                // A handle drag ends where the finger lifts — the
+                // selection (and the bar) stand.
+                self.drag_handle = None;
                 // The hover capture bracket closes here: a mouse that
                 // slipped off mid-press re-checks where it is — back
                 // over the box keeps hover, anywhere else clears it.
@@ -1694,6 +1729,7 @@ impl Input {
                         let (lo, hi) = word_at(&chars, self.press_index);
                         self.anchor = Some(lo).filter(|_| lo != hi);
                         self.caret = hi;
+                        self.touch_sel = true;
                         self.publish(rt, p.node);
                         rt.edit_bar = Some(p.node);
                         rt.dirty = true;

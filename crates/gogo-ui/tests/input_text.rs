@@ -4,9 +4,9 @@
 //! changed-means-CHANGED law), arrows move the caret. The soft-keyboard
 //! raising is the device half and stays open (the tracker row).
 use gogo::draw::{Draw, draw};
-use gogo::input::{EDIT_BAR_H_EPX, EditOp, Event, EventKind, Input, Key, MOUSE_ID, Mods, Phase, Touch, edit_bar_rects};
+use gogo::input::{Event, EventKind, Input, Key, MOUSE_ID, Mods, Phase, SEL_HANDLE_EPX, Touch, sel_handle_rect};
 use gogo::layout::{DEFAULT_FONT_SIZE, FixedAdvance, Rect, layout};
-use gogo::page::{NodeId, PropKey, Value};
+use gogo::page::{NodeId, PropKey, Rgba, Value};
 use gogo::runtime::{FOCUSED, Runtime, resolve};
 use gogo::{Page, compile};
 
@@ -395,7 +395,9 @@ fn the_cut_door_removes_the_selection_with_one_edit() {
 
 /// Step 3: the touch door. A phone has no Ctrl — a still long-press in
 /// a field selects the word under the finger and raises the edit bar
-/// (Cut/Copy/Paste/All), whose taps the input machine answers itself.
+/// (`Runtime::edit_bar`; the bar itself is the built-in `edit_bar.gogo`
+/// page the shell composes and answers). The touch-born selection
+/// hangs its two drag circles below the field.
 #[test]
 fn a_long_press_selects_the_word_and_raises_the_bar() {
     let mut fx = Fx::new();
@@ -409,12 +411,11 @@ fn a_long_press_selects_the_word_and_raises_the_bar() {
     assert_eq!(fx.rt.selection, Some((field, 6, 11)), "the word under the finger");
     assert_eq!(fx.rt.edit_bar, Some(field));
     fx.point(Phase::Up, at_char(8), 18.0, 40.7, 7);
+    assert!(fx.rt.sel_handles, "a touch selection shows drag handles");
     let res = resolve(&fx.page, &fx.rt);
     let rects = layout(&fx.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
     let draws = draw(&fx.page, &res, &rects);
-    for label in ["Cut", "Copy", "Paste", "All"] {
-        assert!(draws.iter().any(|d| matches!(d, Draw::Chrome { label: l, .. } if *l == label)), "{label} missing: {draws:?}");
-    }
+    assert!(draws.iter().any(|d| matches!(d, Draw::SelHandles { lo: 6, hi: 11, .. })), "{draws:?}");
 }
 
 #[test]
@@ -430,8 +431,11 @@ fn a_mouse_hold_never_raises_the_bar() {
     fx.point(Phase::Up, at_char(1), 18.0, 50.7, MOUSE_ID);
 }
 
+/// The bar's All (the shell answers that button on the bar's own page)
+/// selects everything and keeps the bar up — Copy is the natural next
+/// tap.
 #[test]
-fn the_bar_buttons_ask_the_shell_and_all_selects_all() {
+fn select_all_keeps_the_bar_up() {
     let mut fx = Fx::new();
     let field = fx.page.find("field").unwrap();
     fx.tap("field", 0.0);
@@ -441,33 +445,59 @@ fn the_bar_buttons_ask_the_shell_and_all_selects_all() {
     fx.point(Phase::Down, at_char(8), 18.0, 40.0, 7);
     fx.tick(0.6);
     fx.point(Phase::Up, at_char(8), 18.0, 40.7, 7);
-    // The bar's rects come from the ONE shared geometry.
-    let res = resolve(&fx.page, &fx.rt);
-    let rects = layout(&fx.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    let bar = edit_bar_rects(rects[field as usize], true, true);
-    let center = |op: EditOp| {
-        let r = bar.iter().find(|(o, _)| *o == op).unwrap().1;
-        (r.x + r.w / 2.0, r.y + r.h / 2.0)
-    };
-    let (cx, cy) = center(EditOp::Copy);
-    let ev = fx.point(Phase::Down, cx, cy, 41.0, 7);
-    assert!(ev.iter().any(|e| matches!(e.kind, EventKind::ClipboardCopy)), "{ev:?}");
-    assert_eq!(fx.rt.edit_bar, None, "an answered button drops the bar");
-    assert!(fx.rt.selection.is_some(), "copy keeps the selection");
-    fx.point(Phase::Up, cx, cy, 41.1, 7);
-    // Again: All keeps the bar (Copy is the natural next tap), Paste asks.
-    fx.point(Phase::Down, at_char(8), 18.0, 50.0, 7);
-    fx.tick(0.6);
-    fx.point(Phase::Up, at_char(8), 18.0, 50.7, 7);
-    let (ax, ay) = center(EditOp::All);
-    fx.point(Phase::Down, ax, ay, 51.0, 7);
+    assert!(fx.input.select_all(&fx.page, &mut fx.rt));
     assert_eq!(fx.rt.selection, Some((field, 0, 11)));
     assert_eq!(fx.rt.edit_bar, Some(field), "All keeps the bar up");
-    fx.point(Phase::Up, ax, ay, 51.1, 7);
-    let (px_, py_) = center(EditOp::Paste);
-    let ev = fx.point(Phase::Down, px_, py_, 52.0, 7);
-    assert!(ev.iter().any(|e| matches!(e.kind, EventKind::ClipboardPaste)), "{ev:?}");
-    fx.point(Phase::Up, px_, py_, 52.1, 7);
+    assert!(fx.rt.sel_handles, "All is a touch door — handles show");
+}
+
+/// The two drag circles below a touch selection: grabbing one moves
+/// ITS end; the selection never collapses past one char; lifting keeps
+/// the bar (adjusting is not dismissing). The grab uses the same
+/// `sel_handle_rect` the renderer draws.
+#[test]
+fn a_handle_drag_moves_its_end() {
+    let mut fx = Fx::new();
+    let field = fx.page.find("field").unwrap();
+    fx.tap("field", 0.0);
+    for c in "hello world".chars() {
+        fx.key(Key::Char(c));
+    }
+    fx.point(Phase::Down, at_char(2), 18.0, 40.0, 7);
+    fx.tick(0.6);
+    fx.point(Phase::Up, at_char(2), 18.0, 40.7, 7);
+    assert_eq!(fx.rt.selection, Some((field, 0, 5)), "hello selected");
+    let res = resolve(&fx.page, &fx.rt);
+    let rects = layout(&fx.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let fr = rects[field as usize];
+    let hr = sel_handle_rect(fr.y + fr.h, 8.0 + adv() * 5.0, SEL_HANDLE_EPX);
+    let (hx, hy) = (hr.x + hr.w / 2.0, hr.y + hr.h / 2.0);
+    fx.point(Phase::Down, hx, hy, 41.0, 7);
+    fx.point(Phase::Move, at_char(8), hy, 41.1, 7);
+    assert_eq!(fx.rt.selection, Some((field, 0, 8)), "the HI end followed the finger");
+    // Dragging past the other end stops at one char.
+    fx.point(Phase::Move, 0.0, hy, 41.2, 7);
+    assert_eq!(fx.rt.selection, Some((field, 0, 1)));
+    fx.point(Phase::Up, at_char(0), hy, 41.3, 7);
+    assert_eq!(fx.rt.edit_bar, Some(field), "adjusting is not dismissing");
+    assert!(fx.rt.sel_handles, "the handles stand after the lift");
+}
+
+/// A mouse drag-select shows NO handles (the mouse has drag-select and
+/// Ctrl; the circles are the finger's affordance).
+#[test]
+fn a_mouse_selection_has_no_handles() {
+    let mut fx = Fx::new();
+    let field = fx.page.find("field").unwrap();
+    fx.tap("field", 0.0);
+    for c in "hello".chars() {
+        fx.key(Key::Char(c));
+    }
+    fx.point(Phase::Down, at_char(1), 18.0, 40.0, MOUSE_ID);
+    fx.point(Phase::Move, at_char(4), 18.0, 40.1, MOUSE_ID);
+    fx.point(Phase::Up, at_char(4), 18.0, 40.2, MOUSE_ID);
+    assert_eq!(fx.rt.selection, Some((field, 1, 4)));
+    assert!(!fx.rt.sel_handles, "mouse selections show no drag circles");
 }
 
 #[test]
@@ -482,13 +512,13 @@ fn a_press_off_the_bar_dismisses_it() {
     fx.tick(0.6);
     fx.point(Phase::Up, at_char(8), 18.0, 40.7, 7);
     assert_eq!(fx.rt.edit_bar, Some(field));
-    // A press on the field's TEXT (not the bar) dismisses and runs its
-    // normal course (the caret moves there).
-    fx.point(Phase::Down, at_char(2), 18.0, 60.0, 7);
+    // A press on the field's TEXT (clear of the bar's page and of the
+    // handle circles) dismisses and runs its normal course (the caret
+    // moves there).
+    fx.point(Phase::Down, at_char(2), 4.0, 60.0, 7);
     assert_eq!(fx.rt.edit_bar, None);
     assert_eq!(fx.rt.caret, Some((field, 2)));
-    fx.point(Phase::Up, at_char(2), 18.0, 60.1, 7);
-    let _ = EDIT_BAR_H_EPX;
+    fx.point(Phase::Up, at_char(2), 4.0, 60.1, 7);
 }
 
 /// Emoji ride gogo as single CHARS (the platform seam converts Java's
@@ -510,4 +540,28 @@ fn backspace_removes_a_whole_emoji() {
     let ev = fx.input.ime_replace(&mut fx.page, &mut fx.rt, "hi\u{1F60D}", 3, 3);
     assert!(ev.iter().any(|e| matches!(e.kind, EventKind::Edit(_))), "{ev:?}");
     assert_eq!(fx.rt.caret, Some((field, 3)));
+}
+
+/// `selection_color=` paints the highlight, and the drag circles wear
+/// it made opaque. The word is an Input's own — a Label refuses it
+/// (G2002).
+#[test]
+fn selection_color_paints_the_highlight_and_handles() {
+    let mut fx = Fx::new();
+    let field = fx.page.find("field").unwrap();
+    fx.rt.set_prop(field, PropKey::SelectionColor, Value::VColor(Rgba([255, 0, 0, 128])));
+    fx.tap("field", 0.0);
+    for c in "hello".chars() {
+        fx.key(Key::Char(c));
+    }
+    fx.point(Phase::Down, at_char(1), 18.0, 40.0, 7);
+    fx.tick(0.6);
+    fx.point(Phase::Up, at_char(1), 18.0, 40.7, 7);
+    let res = resolve(&fx.page, &fx.rt);
+    let rects = layout(&fx.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let draws = draw(&fx.page, &res, &rects);
+    assert!(draws.iter().any(|d| matches!(d, Draw::Selection { color, .. } if color.0 == [255, 0, 0, 128])), "{draws:?}");
+    assert!(draws.iter().any(|d| matches!(d, Draw::SelHandles { color, .. } if color.0 == [255, 0, 0, 255])), "{draws:?}");
+    let c = compile("View v { Label l text=\"x\", selection_color=#FF000000 }", &|_| None);
+    assert!(c.diags.iter().any(|d| d.code == "G2002"), "{:#?}", c.diags);
 }

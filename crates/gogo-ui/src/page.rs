@@ -352,6 +352,9 @@ pub enum PropKey {
     Font,
     /// Text color (`font_color=`), the text half of `background=`.
     FontColor,
+    /// `selection_color=` — an Input's selection highlight (and its
+    /// drag handles, drawn opaque). Unset = white at 25%.
+    SelectionColor,
     /// `color.a` — a Rectangle/Circle fill's alpha alone (whens/anims).
     ColorA,
     /// `stop_<n>_color` — a Gradient's declared stop, kept LIVE after
@@ -474,6 +477,7 @@ pub const WORDS: &[(&str, PropKey)] = &[
     ("aspect", PropKey::Aspect),
     ("font", PropKey::Font),
     ("font_color", PropKey::FontColor),
+    ("selection_color", PropKey::SelectionColor),
     ("color.a", PropKey::ColorA),
     ("disabled_opacity", PropKey::DisabledOpacity),
     ("clip_text", PropKey::ClipText),
@@ -697,7 +701,7 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
         Kind::Arc => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::From, PropKey::Sweep, PropKey::Thickness]],
         // A Slider's `background=` is its track, `color=` the filled part.
         Kind::Slider => &[BOX, &[PropKey::Background, PropKey::CornerRadius, PropKey::Color, PropKey::Value, PropKey::Min, PropKey::Max, PropKey::Step]],
-        Kind::Input => &[BOX, PLATE, PADDING, TEXT, &[PropKey::Value, PropKey::PlaceholderText, PropKey::MaxLength]],
+        Kind::Input => &[BOX, PLATE, PADDING, TEXT, &[PropKey::Value, PropKey::PlaceholderText, PropKey::MaxLength, PropKey::SelectionColor]],
         Kind::Check | Kind::Radio => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::SelectedProp]],
         Kind::Toggle => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::SelectedProp, PropKey::Value]],
         Kind::Choice => &[BOX, &[PropKey::Value, PropKey::Spacing]],

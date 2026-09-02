@@ -239,6 +239,11 @@ pub struct Runtime {
     /// The focused Input's selected span (node, lo, hi in chars) — the
     /// drawer paints the highlight under the glyphs from it.
     pub selection: Option<(NodeId, u32, u32)>,
+    /// The selection was born of TOUCH (long-press, the bar's All):
+    /// the drawer hangs the two drag circles below it. A mouse or
+    /// keyboard selection shows none — those have drag-select and
+    /// Shift+arrows.
+    pub sel_handles: bool,
     /// The field whose edit bar (Cut/Copy/Paste/All) is up — raised by a
     /// long-press, dropped by blur or any press off the bar.
     pub edit_bar: Option<NodeId>,
@@ -339,6 +344,7 @@ impl Runtime {
             vis_seen: Vec::new(),
             caret: None,
             selection: None,
+            sel_handles: false,
             edit_bar: None,
             motion: vec![Motion::IDENTITY; page.nodes.len()],
             owned_text: vec![NO_STR; page.nodes.len()],
@@ -1472,8 +1478,8 @@ pub struct Resolved {
     pub caret: Option<(NodeId, u32)>,
     /// The focused Input's selected span (copied from the Runtime).
     pub selection: Option<(NodeId, u32, u32)>,
-    /// The field whose edit bar is up (copied from the Runtime).
-    pub edit_bar: Option<NodeId>,
+    /// The selection is touch-born and shows drag handles (copied).
+    pub sel_handles: bool,
     /// The language keyed text shows (copied from the Runtime; one Arc
     /// bump per pass, no allocation).
     pub locale: Option<Arc<Locale>>,
@@ -1744,7 +1750,7 @@ impl Resolved {
 }
 
 fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
-    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), auto: Vec::new(), presence: Vec::new(), caret: rt.caret, selection: rt.selection, edit_bar: rt.edit_bar };
+    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), auto: Vec::new(), presence: Vec::new(), caret: rt.caret, selection: rt.selection, sel_handles: rt.sel_handles };
     for (i, node) in page.nodes.iter().enumerate() {
         let id = i as NodeId;
         let mut placement = node.placement;

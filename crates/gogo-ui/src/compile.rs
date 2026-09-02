@@ -2787,7 +2787,7 @@ impl<'a> Compiler<'a> {
     /// (GPAR30 — `font_color=accent` used to fall through to the white
     /// default with a clean build).
     fn is_color_key(key: PropKey) -> bool {
-        matches!(key, PropKey::Background | PropKey::Color | PropKey::BorderColor | PropKey::Stops | PropKey::FontColor)
+        matches!(key, PropKey::Background | PropKey::Color | PropKey::BorderColor | PropKey::Stops | PropKey::FontColor | PropKey::SelectionColor)
     }
 
     /// A palette word's bytes for one mode, following override links and
