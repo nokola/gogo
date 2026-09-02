@@ -205,6 +205,12 @@ pub struct Runtime {
     /// item is INERT — it renders nothing and reads back until
     /// reassigned or the item arrives (select-then-load).
     list_sel: Vec<(NodeId, Vec<ItemKey>)>,
+    /// Per node: the drawn/not-drawn state the visibility triggers last
+    /// answered (GP19). Needed so `on:show`/`on:hide` fire on a real flip
+    /// only — the first resolve baselines silently (initial visibility is
+    /// state, not a trigger — the shipped armed gate), and nodes appended
+    /// later (repeat clones) baseline the same way.
+    vis_seen: Vec<bool>,
     /// The focused Input's caret (node, chars) — written by the input
     /// machine, drawn by the renderer (GPAR112).
     pub caret: Option<(NodeId, u32)>,
@@ -277,6 +283,7 @@ impl Runtime {
             arrangement_count: page.arrangements.len() as u32,
             customs: Vec::new(),
             list_sel: Vec::new(),
+            vis_seen: Vec::new(),
             caret: None,
             motion: vec![Motion::IDENTITY; page.nodes.len()],
             owned_text: vec![NO_STR; page.nodes.len()],
@@ -386,11 +393,16 @@ impl Runtime {
             return;
         }
         if visible {
-            self.players.retain(|p| p.finish != Finish::Hide(node));
+            self.players.retain(|p| p.finish != Finish::Hide(node) && p.finish != Finish::HideWhen(node));
             self.set_visible(page, node, true);
             self.play_action(page, node, "show", Finish::Nothing);
         } else if !self.play_action(page, node, "hide", Finish::Hide(node)) {
             self.set_visible(page, node, false);
+        }
+        // This flip is answered — the `when`-flip watcher in
+        // `resolve_animated` (GP19) must not play the anims a second time.
+        if let Some(seen) = self.vis_seen.get_mut(node as usize) {
+            *seen = visible;
         }
     }
 
@@ -970,8 +982,14 @@ impl Runtime {
         self.players = players;
         for (f, owns, anim) in finished {
             self.finished.push(anim);
-            if let Finish::Hide(node) = f {
-                self.set_visible(page, node, false);
+            if let Finish::Hide(node) | Finish::HideWhen(node) = f {
+                if let Finish::Hide(_) = f {
+                    // The code door hides by writing the prop; a `when`-
+                    // driven hide (HideWhen) writes NOTHING — the `when`'s
+                    // own gone takes over as `Resolved::hiding` lifts, and
+                    // a code write here would outrank it forever (GPAR57).
+                    self.set_visible(page, node, false);
+                }
                 self.motion[node as usize] = Motion::IDENTITY;
                 // The hide anim may have moved DESCENDANTS too — every
                 // driven channel goes back to identity, or the re-show
@@ -1265,6 +1283,10 @@ pub struct Resolved {
     /// Keyed repeats' live row roots, in shown order (copied from the
     /// Runtime) — `children` hands them to layout, draw and hit.
     pub repeat_rows: Vec<(NodeId, Vec<NodeId>)>,
+    /// Nodes mid deferred hide (GP19): a `when` flipped them hidden but
+    /// their `on:hide` anim still plays — layout, draw and input keep them
+    /// until the player finishes (`gone`/`hidden` answer false for them).
+    pub hiding: Vec<NodeId>,
     /// The focused Input's caret (copied from the Runtime).
     pub caret: Option<(NodeId, u32)>,
     /// The language keyed text shows (copied from the Runtime; one Arc
@@ -1402,6 +1424,11 @@ impl Resolved {
         if page.nodes[node as usize].auto == Auto::Presence(false) {
             return true;
         }
+        // Mid deferred hide (GP19): the `when` already says gone but the
+        // `on:hide` anim still plays — the node stays until it finishes.
+        if self.hiding.contains(&node) {
+            return false;
+        }
         self.ident(page, node, PropKey::Visibility) == Some("gone")
     }
 
@@ -1434,7 +1461,7 @@ impl Resolved {
     /// `visibility=space_only` — laid out (the slot holds), not drawn,
     /// no input.
     pub fn hidden(&self, page: &Page, node: NodeId) -> bool {
-        self.ident(page, node, PropKey::Visibility) == Some("space_only")
+        !self.hiding.contains(&node) && self.ident(page, node, PropKey::Visibility) == Some("space_only")
     }
 }
 
@@ -1513,7 +1540,7 @@ impl Resolved {
 }
 
 fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
-    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), caret: rt.caret };
+    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), caret: rt.caret };
     for (i, node) in page.nodes.iter().enumerate() {
         let id = i as NodeId;
         let mut placement = node.placement;
@@ -1806,6 +1833,77 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
         }
     }
     let mut r = resolve_ladder(page, rt);
+    // `on:show` / `on:hide` fire on ANY writer of visibility (GP19, the
+    // shipped visibility_changed door in gogo_visibility_fx.gd) — a `when`
+    // response, an arrangement pose or a raw code write all count; the
+    // `Runtime::show` door syncs `vis_seen` so its own plays don't double.
+    // What flips is what a user SEES: the node's own word folded with its
+    // ancestors'. A hide defers — the node keeps drawing
+    // (`Resolved::hiding`) while its `on:hide` anim plays and really hides
+    // on the player's finish; a show mid-hide cancels the hide and plays
+    // the show anim from the current values.
+    {
+        let n = page.nodes.len();
+        // The ladder's own word, before the mid-hide override — the
+        // override must not hide the flip it exists to serve.
+        let own: Vec<bool> = (0..n).map(|i| {
+            let id = i as NodeId;
+            !page.repeats.iter().any(|rp| rp.template == id)
+                && page.nodes[i].auto != Auto::Presence(false)
+                && !matches!(r.ident(page, id, PropKey::Visibility), Some("gone") | Some("space_only"))
+        }).collect();
+        let baselined = rt.vis_seen.len().min(n);
+        for i in 0..n {
+            let id = i as NodeId;
+            let mut a = id;
+            let now = loop {
+                if !own[a as usize] {
+                    break false;
+                }
+                let parent = page.nodes[a as usize].parent;
+                if parent == NO_NODE {
+                    break true;
+                }
+                a = parent;
+            };
+            if i >= baselined {
+                // First sight of this node (first resolve, or a repeat
+                // clone appended since): its visibility is state, not a
+                // trigger — the shipped armed gate.
+                if i < rt.vis_seen.len() {
+                    rt.vis_seen[i] = now;
+                } else {
+                    rt.vis_seen.push(now);
+                }
+                continue;
+            }
+            if rt.vis_seen[i] == now {
+                continue;
+            }
+            let when_hiding = rt.players.iter().any(|p| !p.stopped && p.finish == Finish::HideWhen(id));
+            let code_hiding = rt.players.iter().any(|p| !p.stopped && p.finish == Finish::Hide(id));
+            if now {
+                if code_hiding {
+                    // The code door owns this window (its finish writes
+                    // gone) — the shipped fx documents the same no-op.
+                    continue;
+                }
+                rt.vis_seen[i] = true;
+                rt.players.retain(|p| p.finish != Finish::HideWhen(id));
+                rt.play_action(page, id, "show", Finish::Nothing);
+            } else {
+                if when_hiding || code_hiding {
+                    // Already hiding on its own clock.
+                    continue;
+                }
+                rt.vis_seen[i] = false;
+                rt.play_action(page, id, "hide", Finish::HideWhen(id));
+            }
+        }
+        // A hide fired or cancelled just above changes who defers — the
+        // ladder's copy predates it.
+        r.hiding = rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(h) => Some(h), _ => None }).collect();
+    }
     // An arrangement flip with a timed view rule: the boxes it re-poses
     // glide to their new rects (`Runtime::glide`).
     for (who, from, to) in &changes {

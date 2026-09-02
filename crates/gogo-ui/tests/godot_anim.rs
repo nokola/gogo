@@ -26,7 +26,7 @@ use gogo::anim::{Easing, Finish, Mode, Motion};
 use gogo::draw::{Draw, draw};
 use gogo::layout::{FixedAdvance, Rect, layout};
 use gogo::page::{Action, AnimTrack, NO_STR, PropKey, Rgba, StrId, Value};
-use gogo::runtime::{HELD, Runtime, resolve, resolve_animated};
+use gogo::runtime::{DISABLED, HELD, Runtime, resolve, resolve_animated};
 use gogo::{Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
@@ -840,6 +840,66 @@ fn a_hide_anim_restores_its_displaced_descendant_on_finish() {
     assert!(near(rt.motion[child].translate[0], 0.0, 0.001), "hide-finish restores the child: {:?}", rt.motion[child]);
     let res = resolve(&page, &rt);
     assert!(res.hidden(&page, host) || res.ident(&page, host, PropKey::Visibility) == Some("gone"), "the host hid");
+}
+
+/// GP19 (gogo_visibility_fx.gd): `on:show`/`on:hide` fire on ANY writer
+/// of visibility — here a `when` response, not a `Runtime::show` call.
+/// The hide DEFERS: the node keeps drawing while its hide anim plays,
+/// really hides on the finish, and displaced channels restore so the next
+/// show starts from the base look. A node with no hide anim hides at
+/// once. Reappearing plays the show anim — and the deferred hide must
+/// have written NO visibility prop, or the code write would outrank the
+/// `when` forever (GPAR57) and the node could never come back.
+#[test]
+fn a_when_visibility_flip_plays_hide_deferred_and_show() {
+    let c = ok("anim tin { t.opacity from=0, to=1, duration=0.2 }\nanim tout { t.translate.x to=100, duration=0.2 }\nView v { Column c0 {\n Rectangle t on:show=play(tin), on:hide=play(tout) { when disabled visibility=gone }\n Rectangle u { when disabled visibility=gone }\n} }\n");
+    let mut page = c.page;
+    let t = page.find("t").unwrap();
+    let u = page.find("u").unwrap();
+    let mut rt = Runtime::new(&page);
+    resolve_animated(&page, &mut rt); // baseline: initial visibility is state, not a trigger
+    assert!(!rt.is_playing(anim_id(&page, "tout")));
+    rt.set_state(t, DISABLED, true);
+    rt.set_state(u, DISABLED, true);
+    let r = resolve_animated(&page, &mut rt);
+    assert!(!r.gone(&page, t), "t keeps drawing while its hide anim plays");
+    assert!(r.gone(&page, u), "no hide anim: u hides at once");
+    assert!(rt.is_playing(anim_id(&page, "tout")), "the hide anim plays");
+    rt.tick(&mut page, 0.1);
+    resolve_animated(&page, &mut rt);
+    assert!(rt.motion[t as usize].translate[0] > 10.0, "the hide anim is driving t: {:?}", rt.motion[t as usize]);
+    rt.tick(&mut page, 0.3);
+    let r = resolve_animated(&page, &mut rt);
+    assert!(r.gone(&page, t), "hide-finish: the when's gone shows");
+    assert!(near(rt.motion[t as usize].translate[0], 0.0, 0.001), "displaced channel restored: {:?}", rt.motion[t as usize]);
+    rt.set_state(t, DISABLED, false);
+    let r = resolve_animated(&page, &mut rt);
+    assert!(!r.gone(&page, t), "the when released — no code write parked gone");
+    assert!(rt.is_playing(anim_id(&page, "tin")), "reappearing plays the show anim");
+}
+
+/// GP19 (gogo_visibility_fx.gd `_on_visibility_changed`): showing while a
+/// `when`-driven hide anim runs cancels the hide and plays the show anim
+/// from the current values — the node never blinks off.
+#[test]
+fn a_show_mid_when_hide_cancels_the_hide() {
+    let c = ok("anim tin { t.opacity from=0, to=1, duration=0.2 }\nanim tout { t.translate.x to=100, duration=0.2 }\nView v { Rectangle t on:show=play(tin), on:hide=play(tout) { when disabled visibility=gone } }\n");
+    let mut page = c.page;
+    let t = page.find("t").unwrap();
+    let mut rt = Runtime::new(&page);
+    resolve_animated(&page, &mut rt);
+    rt.set_state(t, DISABLED, true);
+    resolve_animated(&page, &mut rt);
+    rt.tick(&mut page, 0.1);
+    resolve_animated(&page, &mut rt);
+    rt.set_state(t, DISABLED, false);
+    let r = resolve_animated(&page, &mut rt);
+    assert!(!r.gone(&page, t), "t is back");
+    assert!(!rt.is_playing(anim_id(&page, "tout")), "the hide anim is cancelled");
+    assert!(rt.is_playing(anim_id(&page, "tin")), "the show anim plays from current values");
+    rt.tick(&mut page, 0.3);
+    let r = resolve_animated(&page, &mut rt);
+    assert!(!r.gone(&page, t), "still drawn after everything settles");
 }
 
 /// GPAR56: an entrance plays only for a node the page DRAWS at boot —

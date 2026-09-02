@@ -394,7 +394,15 @@ impl Track {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Finish {
     Nothing,
+    /// A code-door deferred hide (`Runtime::show(.., false)`): the finish
+    /// writes `visibility=gone` and restores every displaced channel.
     Hide(NodeId),
+    /// A `when`/arrangement-driven deferred hide (GP19): the node keeps
+    /// drawing while its `on:hide` anim plays (`Resolved::hiding`), the
+    /// finish restores displaced channels — and writes NO visibility prop,
+    /// because a code write would outrank the `when` forever (GPAR57); the
+    /// `when`'s own `gone` takes over the moment the override lifts.
+    HideWhen(NodeId),
 }
 
 #[derive(Clone, Debug)]
