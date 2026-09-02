@@ -759,10 +759,40 @@ pub fn hit(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: boo
     // not where they are (GPAR50) — so hit reads the moved rects.
     let moved = moved_rects(page, res, rects);
     let rects = moved.as_deref().unwrap_or(rects);
-    hit_laid(page, res, rects, x, y, any)
+    // A standing `rotate` can't ride the rect transform (a turned box is
+    // no axis-aligned Rect), so the FINGER un-rotates instead: each
+    // node's containment test reads the screen point turned back about
+    // the nearest rotating ancestor-or-self — the renderer applies only
+    // the INNERMOST rotate bracket per quad (ui.rs keeps a stack, uses
+    // the top), so nearest-wins here IS the picture. Clip and wedge
+    // checks keep the raw screen point: scissors and wedge masks cut in
+    // screen space, rotation or not. Zero cost while nothing rotates.
+    let pts: Option<Vec<(f32, f32)>> = if res.motion.iter().any(|m| m.rotate != 0.0) {
+        let mut pts = vec![(x, y); page.nodes.len()];
+        for i in 0..page.nodes.len().min(rects.len()) {
+            let m = &res.motion[i];
+            if m.rotate != 0.0 {
+                let r = rects[i];
+                let pv = pivot_frac(page, res, i as NodeId);
+                let (cx, cy) = (r.x + r.w * pv.0, r.y + r.h * pv.1);
+                let (s, c) = (-m.rotate).to_radians().sin_cos();
+                let (dx, dy) = (x - cx, y - cy);
+                pts[i] = (cx + dx * c - dy * s, cy + dx * s + dy * c);
+            } else if i > 0 {
+                pts[i] = pts[page.nodes[i].parent as usize];
+            }
+        }
+        Some(pts)
+    } else {
+        None
+    };
+    hit_laid_at(page, res, rects, x, y, any, pts.as_deref())
 }
 
-fn hit_laid(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: bool) -> Option<NodeId> {
+/// `pts` = the per-node un-rotated screen point (see `hit`); `None` when
+/// nothing rotates — the node containment reads it, everything else
+/// (clips, wedges, ancestors) stays on the raw screen point.
+fn hit_laid_at(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: bool, pts: Option<&[(f32, f32)]>) -> Option<NodeId> {
     if page.nodes.is_empty() {
         return None;
     }
@@ -770,7 +800,8 @@ fn hit_laid(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: bo
     paint_order(page, res, 0, &mut order);
     for id in order.into_iter().rev() {
         let i = id as usize;
-        if !rects[i].contains(x, y) {
+        let (px, py) = pts.and_then(|p| p.get(i).copied()).unwrap_or((x, y));
+        if !rects[i].contains(px, py) {
             continue;
         }
         let node = &page.nodes[i];

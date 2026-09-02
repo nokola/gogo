@@ -97,6 +97,41 @@ fn hit_follows_the_pivot() {
     assert_eq!(hit(&page, &res, &rects, 150.0, 75.0, false), Some(b), "the grown half takes the tap");
 }
 
+/// The finger lands on the ROTATED picture too: a button turned 90
+/// degrees about its center takes a tap in the space its turned box
+/// covers and the laid-out box never did — and refuses one inside the
+/// laid-out footprint the turned box has left. The renderer applies the
+/// innermost rotate bracket per quad; `hit` un-rotates the finger about
+/// the same point, so look and touch agree.
+#[test]
+fn hit_follows_rotation() {
+    let c = compile("View v { Button b text=\"x\", width=100, height=50, halign=left, valign=top }", &|_| None);
+    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    let page = c.page;
+    let b = page.find("b").unwrap();
+    let mut rt = Runtime::new(&page);
+    rt.set_prop(b, PropKey::Rotate, Value::VNum(90.0));
+    let res = resolve(&page, &rt);
+    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    // Turned 90 deg about the center (50, 25): the picture stands tall,
+    // x in 25..75, y in -25..75.
+    assert_eq!(hit(&page, &res, &rects, 60.0, 65.0, false), Some(b), "inside the turned box, below the laid-out one");
+    assert_eq!(hit(&page, &res, &rects, 95.0, 45.0, false), None, "the laid-out corner the turned box left");
+
+    // A pivoted rotation: the hinge is the top-left, the box swings so
+    // its former top edge runs DOWN the y axis.
+    let c = compile("View v { Button b text=\"x\", width=100, height=50, halign=left, valign=top, pivot=0x0 }", &|_| None);
+    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    let page = c.page;
+    let b = page.find("b").unwrap();
+    let mut rt = Runtime::new(&page);
+    rt.set_prop(b, PropKey::Rotate, Value::VNum(90.0));
+    let res = resolve(&page, &rt);
+    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    assert_eq!(hit(&page, &res, &rects, -25.0, 50.0, false), Some(b), "swung across the hinge");
+    assert_eq!(hit(&page, &res, &rects, 60.0, 25.0, false), None, "the old footprint is empty");
+}
+
 /// The fences: a full 0..1 pair or nothing — a bare number, a half pair
 /// or an out-of-box point is refused (G2005), and `pivot` is a look
 /// word, not an anim lane.
