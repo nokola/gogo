@@ -219,6 +219,11 @@ pub struct Runtime {
     /// Finished prop lanes' end poses still standing (WPF HoldEnd) — the
     /// prop half of `held`. An alpha-only lane holds a `VNum`.
     pub held_props: Vec<(NodeId, PropKey, Value)>,
+    /// Roots whose `live($value)` labels are owed a rewrite: the input
+    /// machine writes values holding only `&Page` (`set_value_deferred`),
+    /// so the label follow waits for `tick`, the frame door that has
+    /// `&mut Page`. One frame late at most — a drag streams anyway.
+    pub live_follow: Vec<NodeId>,
     /// Live repeat rows, one pool per touched repeat (`set_count` /
     /// `set_items`).
     pools: Vec<Pool>,
@@ -342,6 +347,7 @@ impl Runtime {
             held: Vec::new(),
             prop_anim: Vec::new(),
             held_props: Vec::new(),
+            live_follow: Vec::new(),
             shown: vec![Motion::IDENTITY; page.nodes.len()],
             players: Vec::new(),
             state_anims: Vec::new(),
@@ -1092,6 +1098,13 @@ impl Runtime {
     /// Advances tweens and players by `dt` seconds; true while anything moves.
     pub fn tick(&mut self, page: &mut Page, dt: f32) -> bool {
         let mut moving = false;
+        // GP52: the deferred `live($value)` follows (`set_value_deferred`).
+        for root in std::mem::take(&mut self.live_follow) {
+            let v = self.writes.iter().find(|(n, w)| *n == root && w.key == PropKey::Value).and_then(|(_, w)| if let Value::VNum(v) = w.value { Some(v) } else { None });
+            if let Some(v) = v {
+                self.follow_live(page, root, v);
+            }
+        }
         if !self.changes.is_empty() {
             // A flip already recorded but not yet resolved: this frame's
             // time belongs to its tweens-to-be.
@@ -1314,9 +1327,26 @@ impl Runtime {
     /// by the control's default feel.
     pub fn set_value(&mut self, page: &mut Page, root: NodeId, v: f32) {
         self.set_prop(root, PropKey::Value, Value::VNum(v));
+        self.follow_live(page, root, v);
+    }
+
+    /// See `set_value` — the label half, shared with `tick`'s deferred
+    /// follow (GP52).
+    fn follow_live(&mut self, page: &mut Page, root: NodeId, v: f32) {
         let labels: Vec<LiveText> = page.live_texts.iter().filter(|lt| lt.root == root).copied().collect();
         for lt in labels {
             self.set_text(page, lt.node, &crate::page::live_text(v, lt.step));
+        }
+    }
+
+    /// `set_value` for a caller holding only `&Page` — the touch and
+    /// wheel paths (GP52): the prop lands now (reads, `when` conditions
+    /// and the automatic slots see it), the `live($value)` labels follow
+    /// at the next `tick`.
+    pub fn set_value_deferred(&mut self, root: NodeId, v: f32) {
+        self.set_prop(root, PropKey::Value, Value::VNum(v));
+        if !self.live_follow.contains(&root) {
+            self.live_follow.push(root);
         }
     }
 

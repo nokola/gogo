@@ -101,6 +101,12 @@ struct WidgetDef {
     /// The `keys` line's claim (GP26, `KEYS_*` bits) — stamped onto
     /// every instance root at build.
     keys: u8,
+    /// The `behavior slider` line (GP52) — baked per instance at stamp
+    /// time (the param scope is live there).
+    behavior: Option<AstNode>,
+    /// The `signal` lines' declared names — what GP52's machine may
+    /// raise (`drag_started`/`drag_ended` when declared).
+    signals: Vec<String>,
     /// A `control` declaration (vs a `widget`): its own scoped anims may
     /// drive `slot.<name>.<motion word>` lanes.
     control: bool,
@@ -283,6 +289,20 @@ fn join_uses(base: &str, path: &str) -> String {
         }
     }
     parts.join("/")
+}
+
+/// GP52: one `behavior slider` line's bake, waiting for the end of the
+/// build (the instance root and its `slot track` have no arena ids yet).
+struct PendingBehavior {
+    path: String,
+    min: f32,
+    max: f32,
+    step: f32,
+    key_unit: f32,
+    rest: f32,
+    drag_started: StrId,
+    drag_ended: StrId,
+    line: u32,
 }
 
 /// Does a widget body flag a `signals` node anywhere?
@@ -544,6 +564,8 @@ pub struct Compiler<'a> {
     pending_live: Option<(String, f32)>,
     /// (node, root path, min, max, state) rows awaiting arena lookups.
     pending_drivers: Vec<(NodeId, String, f32, f32, String)>,
+    /// GP52 `behavior slider` rows awaiting arena ids.
+    pending_behaviors: Vec<PendingBehavior>,
     pending_lives: Vec<(NodeId, String, f32)>,
     fills: Vec<Fills>,
     /// Per widget instance being expanded: the instance's `on:` props still
@@ -669,6 +691,7 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         pending_driver: None,
         pending_live: None,
         pending_drivers: Vec::new(),
+        pending_behaviors: Vec::new(),
         pending_lives: Vec::new(),
         choice_depth: 0,
         fills: Vec::new(),
@@ -1935,10 +1958,34 @@ impl<'a> Compiler<'a> {
         // `widget` has no script to raise or read them, so there they are
         // refused, not skipped; `state_builtin` names must be built-ins.
         let mut keys_mask = 0u8;
+        let mut behavior: Option<AstNode> = None;
         for b in n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }) {
             match b.type_word.as_str() {
-                "script" | "state" | "state_builtin" | "signal" | "keys" if n.type_word == "widget" => {
+                "script" | "state" | "state_builtin" | "signal" | "keys" | "behavior" if n.type_word == "widget" => {
                     self.error("G0077", b.line, format!("`{}` lines belong to a `control` body (they describe its script) — a `widget` has none", b.type_word));
+                }
+                // GP52 (user-approved 2026-09-03): `behavior slider by
+                // $value in $min..$max, step=$step, key_unit=5%` — the
+                // contract names the INPUT MACHINE that answers this
+                // control. The vocabulary is closed; custom input stays
+                // the code-behind's (`on:pointer=` + `keys`).
+                "behavior" => {
+                    match b.name.as_deref() {
+                        Some("slider") => {}
+                        Some(w) => {
+                            self.error("G0082", b.line, format!("`behavior {w}` — the machine vocabulary is closed: `slider` (custom input is code-behind work: `on:pointer=` + `keys`)"));
+                            continue;
+                        }
+                        None => {
+                            self.error("G0082", b.line, "`behavior` names its machine — `behavior slider by $value in $min..$max`");
+                            continue;
+                        }
+                    }
+                    if behavior.is_some() {
+                        self.error("G0082", b.line, "one `behavior` line per control — a machine is already declared");
+                        continue;
+                    }
+                    behavior = Some(b.clone());
                 }
                 // GP26: `keys arrows, home_end` — the control CLAIMS key
                 // groups for its code-behind, the built-ins' static-claim
@@ -1988,7 +2035,7 @@ impl<'a> Compiler<'a> {
                 _ => {}
             }
         }
-        let bodies: Vec<&AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| !matches!(b.type_word.as_str(), "script" | "state" | "state_builtin" | "signal" | "keys" | "transition" | "when" | "anim" | "style")).collect();
+        let bodies: Vec<&AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| !matches!(b.type_word.as_str(), "script" | "state" | "state_builtin" | "signal" | "keys" | "behavior" | "transition" | "when" | "anim" | "style")).collect();
         if bodies.len() != 1 {
             self.error("G0028", n.line, format!("widget `{name}` needs exactly one root node in its body"));
             return;
@@ -2035,7 +2082,15 @@ impl<'a> Compiler<'a> {
         }
         let states: Vec<String> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "state").flat_map(|b| b.args.iter().filter_map(|a| a.as_ident()).map(str::to_string)).collect();
         let state_builtins: Vec<String> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "state_builtin").flat_map(|b| b.args.iter().filter_map(|a| a.as_ident()).map(str::to_string)).collect();
-        self.widgets.insert(name, WidgetDef { params: n.params.clone(), body: bodies[0].clone(), anims, host, props, whens, transitions, styles, states, state_builtins, keys: keys_mask, control: n.type_word == "control", line: n.line });
+        let signals: Vec<String> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "signal").flat_map(|b| b.args.iter().filter_map(|a| a.as_ident()).map(str::to_string)).collect();
+        // GP52: one owner per key group — the slider machine steps
+        // `$value` with arrows/Home/End, so a `keys` claim on those
+        // groups would be a second owner. Refused, never a precedence.
+        if behavior.is_some() && keys_mask & (KEYS_ARROWS | KEYS_HOME_END) != 0 {
+            self.error("G0082", n.line, "the slider behavior already claims arrows and Home/End (they step `$value`) — drop them from `keys`; `enter`/`space` stay claimable");
+            keys_mask &= !(KEYS_ARROWS | KEYS_HOME_END);
+        }
+        self.widgets.insert(name, WidgetDef { params: n.params.clone(), body: bodies[0].clone(), anims, host, props, whens, transitions, styles, states, state_builtins, signals, keys: keys_mask, behavior, control: n.type_word == "control", line: n.line });
     }
 
     /// `easing=name` plus its parameter words on the same line
@@ -3662,6 +3717,11 @@ impl<'a> Compiler<'a> {
             }
             if def.control {
                 t.key_claim = def.keys;
+                if let Some(b) = def.behavior.clone() {
+                    let drag_started = if def.signals.iter().any(|s| s == "drag_started") { self.intern("drag_started") } else { NO_STR };
+                    let drag_ended = if def.signals.iter().any(|s| s == "drag_ended") { self.intern("drag_ended") } else { NO_STR };
+                    self.slider_behavior(&b, drag_started, drag_ended);
+                }
             }
             // The contract's `state_builtin focused` line is the opt-in
             // that makes the instance root keyboard-reachable (GP26);
@@ -4376,6 +4436,70 @@ impl<'a> Compiler<'a> {
             return name.to_string();
         }
         format!("{}/{name}", self.prefix[..depth].join("/"))
+    }
+
+    /// GP52: bakes a contract's `behavior slider by $value in
+    /// $min..$max, step=$step, key_unit=5%` for the instance being
+    /// stamped (the param scope is live, like a slot's `automatic=`).
+    /// The root and its `slot track` resolve to arena ids at the end of
+    /// the build, when the subtree exists (`pending_behaviors`).
+    fn slider_behavior(&mut self, b: &AstNode, drag_started: StrId, drag_ended: StrId) {
+        let by = b.clauses.iter().find(|(k, _)| k == "by").map(|(_, v)| v.clone());
+        let range = b.clauses.iter().find(|(k, _)| k == "in").map(|(_, v)| v.clone());
+        let Some(by) = by else {
+            self.error("G0082", b.line, "`behavior slider` spells its wiring — `by $value in $min..$max`");
+            return;
+        };
+        if !matches!(&by, AstValue::Ref { name, .. } if name == "value") {
+            self.error("G0082", b.line, format!("`behavior slider` drives `$value` — `by $value` (got `{}`)", spell(&by)));
+            return;
+        }
+        let Some(AstValue::Range(lo, hi)) = range else {
+            self.error("G0082", b.line, "`behavior slider` needs its range — `in $min..$max`");
+            return;
+        };
+        if !matches!((&*lo, &*hi), (AstValue::Ref { name: l, .. }, AstValue::Ref { name: h, .. }) if l == "min" && h == "max") {
+            self.error("G0082", b.line, format!("the range is spelled `in $min..$max` (got `in {}..{}`)", spell(&lo), spell(&hi)));
+            return;
+        }
+        let num = |c: &mut Self, v: &AstValue| -> f32 {
+            match c.value(v, b.line, None) {
+                Value::VNum(x) => x,
+                _ => 0.0,
+            }
+        };
+        let rest = num(self, &by);
+        let min = num(self, &lo);
+        let max = num(self, &hi);
+        let mut step = 0.0f32;
+        let mut key_unit = 0.0f32;
+        for p in &b.props {
+            match p.key.as_str() {
+                "step" => {
+                    step = num(self, &p.value);
+                    if step < 0.0 {
+                        self.error("G0082", p.line, "`step=` is a positive amount (0 = continuous)");
+                        step = 0.0;
+                    }
+                }
+                // `key_unit=5%` = per key/wheel tick, of the RANGE; a
+                // bare number is value units. Continuous sliders only —
+                // a stepped instance steps by `step=` (the stock law).
+                "key_unit" => {
+                    key_unit = match &p.value {
+                        AstValue::Num { value, unit } if unit == "%" => *value / 100.0 * (max - min),
+                        other => num(self, other),
+                    };
+                    if key_unit <= 0.0 {
+                        self.error("G0082", p.line, "`key_unit=` is a positive amount per key/wheel tick — value units, or `%` of the range (`key_unit=5%`)");
+                        key_unit = 0.0;
+                    }
+                }
+                other => self.error("G0082", p.line, format!("`{other}=` isn't a `behavior slider` word — the words are `step=`, `key_unit=`")),
+            }
+        }
+        let path = self.prefix.join("/");
+        self.pending_behaviors.push(PendingBehavior { path, min, max, step, key_unit, rest, drag_started, drag_ended, line: b.line });
     }
 
     /// `automatic=<kind> by $value in $min..$max` on a slot line (D134,
@@ -5933,6 +6057,19 @@ impl<'a> Compiler<'a> {
             if let Some(rid) = self.page.find(&root) {
                 self.page.live_texts.push(LiveText { node, root: rid, step });
             }
+        }
+        // GP52: the contracts' `behavior slider` rows — the instance
+        // roots exist now; the machine also needs the `slot track` the
+        // finger maps over.
+        for pb in std::mem::take(&mut self.pending_behaviors) {
+            let Some(rid) = self.page.find(&pb.path) else { continue };
+            let end = self.page.nodes[rid as usize].subtree_end;
+            let track = (rid..end).find(|i| self.page.nodes[*i as usize].kind == Kind::Slot && self.page.str(self.page.nodes[*i as usize].name).rsplit('/').next() == Some("track"));
+            let Some(track) = track else {
+                self.error("G0082", pb.line, "`behavior slider` maps the finger over a `slot track` — the control body declares none");
+                continue;
+            };
+            self.page.behaviors.push(crate::page::SliderBehavior { root: rid, track, min: pb.min, max: pb.max, step: pb.step, key_unit: pb.key_unit, rest: pb.rest, drag_started: pb.drag_started, drag_ended: pb.drag_ended });
         }
         self.transition_scope_guard();
         self.one_writer_guard();

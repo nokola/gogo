@@ -141,6 +141,44 @@ pub struct AutoDriver {
     pub state: StrId,
 }
 
+/// A control's `behavior slider` line, baked per instance (GP52,
+/// user-approved 2026-09-03): the stock slider machine answers the
+/// instance's input — a drag or tap anywhere on it maps bare x over the
+/// `track` slot's width to `$value` (shipped SliderPhone drew no thumb,
+/// so no knob compensation), arrows/Home/End/wheel step it. The machine
+/// OWNS the arrow and Home/End key groups — a `keys` claim on them
+/// refuses at compile (one owner per group).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SliderBehavior {
+    /// The instance root: value writes, `edit`/`change` events, `held`
+    /// and focus all land here.
+    pub root: NodeId,
+    /// The `slot track` the finger maps over.
+    pub track: NodeId,
+    pub min: f32,
+    pub max: f32,
+    /// `step=`: 0 = continuous; a positive step also serves as the key
+    /// unit (the stock law — `key_unit=` never overrides a real step).
+    pub step: f32,
+    /// The key/wheel unit for a CONTINUOUS slider, in value units
+    /// (`key_unit=5%` bakes as 0.05 × the range); 0 = unset — the
+    /// stock 1.0.
+    pub key_unit: f32,
+    /// `$value` at build — what the machine reads before any write
+    /// lands (the instance root carries no live Value prop until one
+    /// does).
+    pub rest: f32,
+    /// The contract's declared `drag_started` signal (`NO_STR` when
+    /// undeclared): raised as the gesture opens, before the first
+    /// `edit` — the addon's behaviors emitted, then applied.
+    pub drag_started: StrId,
+    /// The closing edge — raised after the release commit AND on a
+    /// cancelled or reclaimed gesture (a host arming UI on
+    /// `drag_started` must always hear the end). `NO_STR` when
+    /// undeclared.
+    pub drag_ended: StrId,
+}
+
 /// A `text=live($value)` label inside a control body: a code write of the
 /// control's value rewrites the shown string at the baked display step
 /// (`Runtime::set_value` -- the addon's live-label follow).
@@ -1281,6 +1319,8 @@ pub struct StaticPage {
     /// traversal never sees it.
     pub key_claims: &'static [(NodeId, u8)],
     pub drivers: &'static [AutoDriver],
+    /// See `SliderBehavior` (GP52).
+    pub behaviors: &'static [SliderBehavior],
     pub live_texts: &'static [LiveText],
 }
 
@@ -1306,6 +1346,8 @@ pub struct Page {
     /// See `StaticPage::key_claims`.
     pub key_claims: Vec<(NodeId, u8)>,
     pub drivers: Vec<AutoDriver>,
+    /// See `SliderBehavior` (GP52).
+    pub behaviors: Vec<SliderBehavior>,
     pub live_texts: Vec<LiveText>,
 }
 
@@ -1344,6 +1386,7 @@ impl Page {
             custom_states: s.custom_states.to_vec(),
             key_claims: s.key_claims.to_vec(),
             drivers: s.drivers.to_vec(),
+            behaviors: s.behaviors.to_vec(),
             live_texts: s.live_texts.to_vec(),
         }
     }
@@ -1384,6 +1427,8 @@ impl Page {
         self.custom_states.extend(declared);
         let claims: Vec<(NodeId, u8)> = self.key_claims.iter().filter(|(n, _)| *n >= src && *n < end).map(|(n, m)| (*n + delta, *m)).collect();
         self.key_claims.extend(claims);
+        let behaviors: Vec<SliderBehavior> = self.behaviors.iter().filter(|b| b.root >= src && b.root < end).map(|b| SliderBehavior { root: b.root + delta, track: b.track + delta, ..*b }).collect();
+        self.behaviors.extend(behaviors);
         base
     }
 

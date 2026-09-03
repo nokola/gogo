@@ -806,9 +806,11 @@ fn hit_laid_at(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any:
         }
         let node = &page.nodes[i];
         // `interactive=true` claims input (the catcher plate), `false`
-        // makes a control hit-invisible; else input-taking kinds only.
+        // makes a control hit-invisible; else input-taking kinds — plus
+        // a `behavior slider` instance root (GP52): its WHOLE row is
+        // the gesture surface, paint or no paint under the finger.
         let interactive = res.bool(page, id, PropKey::Interactive);
-        let takes_input = any || interactive == Some(true) || (interactive != Some(false) && (node.kind.is_press_surface() || matches!(node.kind, Kind::Scroll | Kind::List | Kind::Slider | Kind::Input)));
+        let takes_input = any || interactive == Some(true) || (interactive != Some(false) && (node.kind.is_press_surface() || matches!(node.kind, Kind::Scroll | Kind::List | Kind::Slider | Kind::Input) || page.behaviors.iter().any(|b| b.root == id)));
         if !takes_input {
             continue;
         }

@@ -205,11 +205,12 @@ impl<'a> Parser<'a> {
                 }
                 Tok::Ident { word, opacity, pos } => {
                     let next_is_eq = self.tokens.get(self.pos + 1).map(|t| t.tok == Tok::Eq).unwrap_or(false);
-                    // Keyword-anchored clauses, on the two lines that take
+                    // Keyword-anchored clauses, on the lines that take
                     // them: `repeat x as $t by $t.id`, `slot p automatic=length
-                    // by $value in $min..$max`. Comma-free (the keyword
+                    // by $value in $min..$max`, `behavior slider by $value in
+                    // $min..$max` (GP52). Comma-free (the keyword
                     // delimits); fixed order — introduce, then use.
-                    let clause_here = (node.type_word == "repeat" && matches!(word.as_str(), "as" | "by")) || (node.type_word == "slot" && matches!(word.as_str(), "by" | "in"));
+                    let clause_here = (node.type_word == "repeat" && matches!(word.as_str(), "as" | "by")) || (matches!(node.type_word.as_str(), "slot" | "behavior") && matches!(word.as_str(), "by" | "in"));
                     if clause_here && !next_is_eq {
                         self.pos += 1;
                         let has = |k: &str| node.clauses.iter().any(|(c, _)| c == k);

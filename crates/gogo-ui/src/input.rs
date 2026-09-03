@@ -156,6 +156,10 @@ pub enum EventKind {
     /// A key a focused `control` instance claimed (GP26 `keys` line):
     /// the code-behind steps its model — traversal never saw the key.
     Key { key: Key, mods: Mods },
+    /// A signal a control's machine raised (GP52: `behavior slider`'s
+    /// declared `drag_started`/`drag_ended`): the name rides the
+    /// event's `Action::Emit`, like every `emit()`.
+    Signal,
 }
 
 /// What happened, on which node, and the `on:` action the file names for
@@ -224,6 +228,9 @@ struct Press {
     /// A Slider's or Toggle's value when the finger landed (a cancelled
     /// drag restores it; a release on it reports nothing).
     value_from: f32,
+    /// The `behavior slider` this press belongs to (GP52) — an index
+    /// into `Page::behaviors`; the press node is then the instance root.
+    behavior: Option<u32>,
     /// A Toggle press that travelled past the wobble threshold.
     toggle_moved: bool,
     /// The finger went down on a press surface and its `release` has not
@@ -569,6 +576,37 @@ fn snap_step(page: &Page, res: &Resolved, node: NodeId, v: f32) -> f32 {
     res.snap_slider(page, node, v)
 }
 
+/// The `behavior slider` whose instance holds `node` (GP52) — an index
+/// into `Page::behaviors`, by subtree range (the claim rides the
+/// instance root; every descendant is the machine's surface).
+fn behavior_at(page: &Page, node: NodeId) -> Option<u32> {
+    page.behaviors.iter().position(|b| b.root <= node && node < page.nodes[b.root as usize].subtree_end).map(|i| i as u32)
+}
+
+/// The machine's pointer math (GP52): bare x over the `slot track`'s
+/// width — shipped SliderPhone drew no thumb, so there is no knob
+/// compensation (its UpdatePercent was `x / width` verbatim).
+fn behavior_value(rects: &[Rect], b: &crate::page::SliderBehavior, x: f32) -> f32 {
+    let r = rects[b.track as usize];
+    let t = if r.w > 0.0 { ((x - r.x) / r.w).clamp(0.0, 1.0) } else { 0.0 };
+    b_snap(b, b.min + (b.max - b.min) * t)
+}
+
+/// `step=` on a behavior slider: quantized from `min`, then clamped
+/// (Range's rule, `snap_slider`'s law over the contract's baked
+/// numbers).
+fn b_snap(b: &crate::page::SliderBehavior, v: f32) -> f32 {
+    let v = if b.step > 0.0 { b.min + ((v - b.min) / b.step).round() * b.step } else { v };
+    v.clamp(b.min.min(b.max), b.min.max(b.max))
+}
+
+/// A behavior slider's value as shown: a this-frame write, the resolved
+/// prop, or the baked build-time value before any write lands.
+fn b_value_of(rt: &Runtime, res: &Resolved, page: &Page, b: &crate::page::SliderBehavior) -> f32 {
+    let raw = rt.writes.iter().find(|(n, w)| *n == b.root && w.key == PropKey::Value).and_then(|(_, w)| if let Value::VNum(v) = w.value { Some(v) } else { None }).or_else(|| res.num(page, b.root, PropKey::Value)).unwrap_or(b.rest);
+    b_snap(b, raw)
+}
+
 /// A Toggle's current side, a this-frame write included (the tap
 /// path's derivation): the value when one was ever written, else the
 /// `selected` bit.
@@ -638,8 +676,19 @@ impl Input {
 
     /// A gesture ends without a release: the press and any half-done value
     /// go back to where the finger found them.
-    fn cancel_press(&mut self, page: &Page, rt: &mut Runtime, p: &Press) {
+    fn cancel_press(&mut self, page: &Page, rt: &mut Runtime, events: &mut Vec<Event>, p: &Press) {
         rt.set_state(p.node, HELD, false);
+        // GP52: a reclaimed behavior-slider drag restores too (the
+        // labels follow at the next tick) — and the gesture still gets
+        // its closing edge: a host arming UI on `drag_started` must
+        // always hear `drag_ended`.
+        if let Some(bi) = p.behavior {
+            rt.set_value_deferred(p.node, p.value_from);
+            let b = page.behaviors[bi as usize];
+            if b.drag_ended != crate::page::NO_STR {
+                self.push_event(rt, events, b.root, EventKind::Signal, Some(Action::Emit(b.drag_ended)));
+            }
+        }
         match p.kind {
             Kind::Slider => rt.set_prop(p.node, PropKey::Value, Value::VNum(p.value_from)),
             Kind::Toggle => {
@@ -648,7 +697,6 @@ impl Input {
             }
             _ => {}
         }
-        let _ = page;
     }
 
     /// Forgets the gesture in flight and any glide: for the host to call
@@ -703,6 +751,17 @@ impl Input {
         }
         let focus_kind = self.focus.map(|f| page.nodes[f as usize].kind);
         let in_field = focus_kind == Some(Kind::Input);
+        // GP52: a focused `behavior slider` instance steps on the
+        // arrow family — the machine owns those groups (the compile
+        // fence keeps a `keys` claim off them, so no second owner).
+        if let (Some(f), Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End) = (self.focus, k) {
+            if !rt.disabled(page, f) {
+                if let Some(b) = page.behaviors.iter().find(|b| b.root == f).copied() {
+                    self.step_behavior(page, rt, res, &b, k, &mut events);
+                    return events;
+                }
+            }
+        }
         // GP26: a `control` claims key GROUPS by contract (`keys arrows,
         // home_end` — the built-ins' static-claim law, §5.5, extended to
         // user controls): a claimed key reaches the code-behind as a
@@ -1007,6 +1066,32 @@ impl Input {
         }
     }
 
+    /// GP52: a `behavior slider` instance's key/wheel steps — the
+    /// stock slider law with the contract's unit: `step=` when stepped,
+    /// else `key_unit=` (shipped SliderPhone's ±5% of the range), else
+    /// 1.0. Home/End jump to the ends. Commits `change` directly, like
+    /// `step_slider`; a step landing on the current value says nothing.
+    fn step_behavior(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, b: &crate::page::SliderBehavior, k: Key, events: &mut Vec<Event>) {
+        let unit = if b.step > 0.0 {
+            b.step
+        } else if b.key_unit > 0.0 {
+            b.key_unit
+        } else {
+            1.0
+        };
+        let was = b_value_of(rt, res, page, b);
+        let v = match k {
+            Key::Right | Key::Up => b_snap(b, was + unit),
+            Key::Left | Key::Down => b_snap(b, was - unit),
+            Key::Home => b.min,
+            _ => b.max,
+        };
+        if v != was {
+            rt.set_value_deferred(b.root, v);
+            self.push_event(rt, events, b.root, EventKind::Change(Value::VNum(v)), event_action(page, b.root, "change"));
+        }
+    }
+
     /// A Toggle's logical sides (the shipped toggle_behavior):
     /// increment/End = on, decrement/Home = off; `selected` follows
     /// live, `change(bool)` once per genuine transition.
@@ -1081,6 +1166,18 @@ impl Input {
     pub fn wheel(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], x: f32, y: f32, up: bool) -> Vec<Event> {
         let mut events = Vec::new();
         let mut n = hit(page, res, rects, x, y, false);
+        // GP52: a `behavior slider` instance is steppable anywhere on
+        // its surface — found before the kind walk (its root wears a
+        // body kind, not Slider).
+        if let Some(bi) = n.and_then(|h| behavior_at(page, h)) {
+            let b = page.behaviors[bi as usize];
+            if rt.disabled(page, b.root) {
+                return events;
+            }
+            self.grant(page, rt, res, rects, Some(b.root), false, &mut events);
+            self.step_behavior(page, rt, res, &b, if up { Key::Up } else { Key::Down }, &mut events);
+            return events;
+        }
         while let Some(c) = n {
             if matches!(page.nodes[c as usize].kind, Kind::Slider | Kind::Toggle) {
                 break;
@@ -1342,7 +1439,7 @@ impl Input {
                 }
                 if let Some((f, hi_end)) = grabbed {
                     self.drag_handle = Some(hi_end);
-                    self.press = Some(Press { node: f, kind: Kind::Input, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: false, accum: [0.0; 2], value_from: 0.0, toggle_moved: false, release_owed: false, raw: None });
+                    self.press = Some(Press { node: f, kind: Kind::Input, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: false, accum: [0.0; 2], value_from: 0.0, behavior: None, toggle_moved: false, release_owed: false, raw: None });
                     return events;
                 }
                 // A glide is stopped only by a touch that lands ON the
@@ -1390,6 +1487,18 @@ impl Input {
                 if rt.disabled(page, node) {
                     return events;
                 }
+                // GP52: a press anywhere inside a `behavior slider`
+                // instance belongs to the machine — the gesture, focus
+                // and `held` all land on the instance root (shipped
+                // SliderPhone's whole row was the surface).
+                let behavior = behavior_at(page, node);
+                let (node, kind) = match behavior {
+                    Some(i) => {
+                        let root = page.behaviors[i as usize].root;
+                        (root, page.nodes[root as usize].kind)
+                    }
+                    None => (node, kind),
+                };
                 // A tap moves focus: onto the tapped box when it's
                 // keyboard-reachable (an Input also takes the caret;
                 // D129 — only caret controls warrant a tap ring), off
@@ -1421,12 +1530,12 @@ impl Input {
                 if let Some(action) = raw {
                     let r = rects[node as usize];
                     self.push_event(rt, &mut events, node, EventKind::Pointer { phase: Phase::Down, x: t.x - r.x, y: t.y - r.y }, Some(action));
-                    self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum: [0.0; 2], value_from: 0.0, toggle_moved: false, release_owed: false, raw });
+                    self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum: [0.0; 2], value_from: 0.0, behavior: None, toggle_moved: false, release_owed: false, raw });
                     return events;
                 }
                 let scroll = if matches!(kind, Kind::Scroll | Kind::List) { Some(node) } else { scroll_ancestor(page, node) };
                 let mut value_from = 0.0;
-                let pressed = (kind.is_press_surface() || kind == Kind::Slider) && !caught;
+                let pressed = (kind.is_press_surface() || kind == Kind::Slider || behavior.is_some()) && !caught;
                 if pressed {
                     rt.set_state(node, HELD, true);
                     if let Some(action) = event_action(page, node, "press") {
@@ -1435,6 +1544,23 @@ impl Input {
                 }
                 if kind == Kind::Toggle {
                     value_from = if rt.writes.iter().any(|(n, w)| *n == node && w.key == PropKey::Value) { value_of(rt, res, page, node) } else if rt.has(node, SELECTED) { 1.0 } else { 0.0 };
+                }
+                if let (Some(bi), false) = (behavior, caught) {
+                    let b = page.behaviors[bi as usize];
+                    value_from = b_value_of(rt, res, page, &b);
+                    // The gesture's opening edge first, when declared —
+                    // the addon's behaviors emitted, then applied.
+                    if b.drag_started != crate::page::NO_STR {
+                        self.push_event(rt, &mut events, b.root, EventKind::Signal, Some(Action::Emit(b.drag_started)));
+                    }
+                    // The press jumps the value under the finger, like
+                    // the built-in below (shipped UpdatePercent ran on
+                    // the press too).
+                    let v = behavior_value(rects, &b, t.x);
+                    if v != value_from {
+                        rt.set_value_deferred(b.root, v);
+                        self.push_event(rt, &mut events, b.root, EventKind::Edit(Value::VNum(v)), event_action(page, b.root, "edit"));
+                    }
                 }
                 if kind == Kind::Slider && !caught {
                     value_from = value_of(rt, res, page, node);
@@ -1454,7 +1580,7 @@ impl Input {
                     (Some(s), _) => rt.scroll[s as usize],
                     (None, _) => [0.0; 2],
                 };
-                self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum, value_from, toggle_moved: false, release_owed: pressed, raw: None });
+                self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum, value_from, behavior, toggle_moved: false, release_owed: pressed, raw: None });
             }
             Phase::Move => {
                 let Some(mut p) = self.press else { return events };
@@ -1478,7 +1604,7 @@ impl Input {
                         self.push_event(rt, &mut events, p.node, EventKind::Pointer { phase: Phase::Cancel, x: t.x - r.x, y: t.y - r.y }, Some(action));
                     }
                     self.release(page, rt, &mut events, &mut p);
-                    self.cancel_press(page, rt, &p);
+                    self.cancel_press(page, rt, &mut events, &p);
                     self.press = None;
                     return events;
                 }
@@ -1505,21 +1631,30 @@ impl Input {
                         // goes back to where the finger found it). Nothing
                         // scrolls that way: the child keeps the finger for good.
                         let vertical = dy > dx;
-                        let child_keeps = (p.kind == Kind::Slider && !vertical) || (p.kind == Kind::Toggle && p.toggle_moved) || (p.kind == Kind::Input && (t.id == MOUSE_ID || self.drag_handle.is_some()));
+                        let child_keeps = ((p.kind == Kind::Slider || p.behavior.is_some()) && !vertical) || (p.kind == Kind::Toggle && p.toggle_moved) || (p.kind == Kind::Input && (t.id == MOUSE_ID || self.drag_handle.is_some()));
                         let taker = if child_keeps { None } else { scroll_taker(page, res, rects, p.node, vertical) };
                         match taker {
                             Some(scroll) => {
                                 p.scroll = Some(scroll);
                                 p.panning = true;
                                 self.release(page, rt, &mut events, &mut p);
-                                self.cancel_press(page, rt, &p);
+                                self.cancel_press(page, rt, &mut events, &p);
                                 p.accum = rt.scroll[scroll as usize];
                             }
                             None => p.scroll = None,
                         }
                     }
                 }
-                if p.kind == Kind::Slider && !p.panning {
+                if let (Some(bi), false) = (p.behavior, p.panning) {
+                    let b = page.behaviors[bi as usize];
+                    let v = behavior_value(rects, &b, t.x);
+                    // One `edit` per crossed step, none for a same-value
+                    // sample (GPAR6, same as the built-in below).
+                    if v != b_value_of(rt, res, page, &b) {
+                        rt.set_value_deferred(b.root, v);
+                        self.push_event(rt, &mut events, b.root, EventKind::Edit(Value::VNum(v)), event_action(page, b.root, "edit"));
+                    }
+                } else if p.kind == Kind::Slider && !p.panning {
                     let v = slider_value(page, res, rects, p.node, t.x);
                     // One `edit` per crossed step, none for a same-value
                     // sample (GPAR6).
@@ -1644,7 +1779,7 @@ impl Input {
                     return events;
                 }
                 if t.phase == Phase::Cancel {
-                    self.cancel_press(page, rt, &p);
+                    self.cancel_press(page, rt, &mut events, &p);
                     return events;
                 }
                 if p.caught_fling {
@@ -1653,6 +1788,21 @@ impl Input {
                 // Released inside = inside the pressed node's OWN rect (a dialog
                 // opening under the finger does not turn the tap into a miss).
                 let inside = rects[p.node as usize].contains(t.x, t.y) && !(rt.disabled(page, p.node) || res.gone(page, p.node) || res.hidden(page, p.node));
+                // GP52: a behavior slider commits like the built-in —
+                // changed means CHANGED (its root wears a body kind, so
+                // the match below can't route it).
+                if let Some(bi) = p.behavior {
+                    let b = page.behaviors[bi as usize];
+                    let v = b_value_of(rt, res, page, &b);
+                    if v != p.value_from {
+                        self.push_event(rt, &mut events, b.root, EventKind::Change(Value::VNum(v)), event_action(page, b.root, "change"));
+                    }
+                    // The closing edge, after the commit (the
+                    // change-then-activate order's cousin).
+                    if b.drag_ended != crate::page::NO_STR {
+                        self.push_event(rt, &mut events, b.root, EventKind::Signal, Some(Action::Emit(b.drag_ended)));
+                    }
+                }
                 match p.kind {
                     Kind::Slider => {
                         // changed means CHANGED: a release on the value the
