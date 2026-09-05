@@ -13,6 +13,7 @@ use std::hash::{Hash, Hasher};
 use cosmic_text::fontdb;
 use cosmic_text::{Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Weight, Wrap};
 use gogo::layout::TextMeasure;
+use gogo::ImageKey;
 
 /// Godot's default `Label` line_spacing (px), added between lines.
 pub const LINE_SPACING_PX: f32 = 3.0;
@@ -394,8 +395,9 @@ pub struct EpxMeasure<'a> {
     pub epx: f32,
     /// The page's default font key (the `theme { font = … }` line).
     pub font: Option<String>,
-    /// (image key, width px, height px) for `aspect=natural`.
-    pub images: &'a [(String, u32, u32)],
+    /// (width, height) px by `ImageKey` for `aspect=natural`; `None` = no
+    /// readable header (a host picture, or a bad file).
+    pub images: &'a [Option<(u32, u32)>],
 }
 
 impl TextMeasure for EpxMeasure<'_> {
@@ -407,8 +409,8 @@ impl TextMeasure for EpxMeasure<'_> {
         (w / self.epx, h / self.epx)
     }
 
-    fn image_size(&self, key: &str) -> Option<(f32, f32)> {
-        self.images.iter().find(|(k, _, _)| k == key).map(|(_, w, h)| (*w as f32, *h as f32))
+    fn image_size(&self, key: ImageKey) -> Option<(f32, f32)> {
+        self.images.get(key.index()).copied().flatten().map(|(w, h)| (w as f32, h as f32))
     }
 }
 

@@ -8,12 +8,12 @@
 //! every quad until its pop about the given center.
 
 use crate::tex_types::Tex_Display_Srgb_4xU8_RGBA;
-use std::collections::HashMap;
 
 use gogo::draw::{Draw, Fit, GradientKind, TextAlign};
 use gogo::layout::Rect;
 use gogo::locale::Locale;
 use gogo::page::{NO_STR, Page};
+use gogo::ImageKey;
 use text::TextEngine;
 
 #[repr(C)]
@@ -62,8 +62,8 @@ struct Texture {
 
 /// One externally-owned image the UI shows (`UiRenderer::external_image`).
 struct External {
-    /// The Image's `source=` string.
-    key: String,
+    /// The Image's `source=` id.
+    key: ImageKey,
     /// The texture identity last registered; `None` until the first set.
     texture: Option<wgpu::Texture>,
 }
@@ -89,8 +89,9 @@ pub struct UiRenderer {
     textures: Vec<Texture>,
     atlas_texture: Option<wgpu::Texture>,
     atlas_size: u32,
-    /// Image key (the `source=` string) → texture slot.
-    images: HashMap<String, TexId>,
+    /// Texture slot by `ImageKey` (the `source=` id); `None` = no pixels
+    /// yet. Grows as the host interns pictures past the build's table.
+    images: Vec<Option<TexId>>,
     /// Externally-owned textures (`external_image` / `set_external_image`):
     /// the image key and the texture identity last registered, so a
     /// same-texture frame makes no bind group. Indexed by `ExternalImage`.
@@ -182,7 +183,7 @@ impl UiRenderer {
             textures: Vec::new(),
             atlas_texture: None,
             atlas_size: 0,
-            images: HashMap::new(),
+            images: Vec::new(),
             externals: Vec::new(),
             skipped: 0,
             draw_calls: 0,
@@ -225,21 +226,35 @@ impl UiRenderer {
         Texture { bind_group, width, height }
     }
 
-    /// Opens the image `key` (the `source=` string) for an externally-owned
+    /// Opens the image `key` (the `source=` id) for an externally-owned
     /// DISPLAY texture and hands back its handle — the D302 road for live
     /// GPU content in a gogo Image (D10): the owner keeps the texture and
     /// re-encodes it when it changes; the UI samples it like any uploaded
     /// image. Needed for the brush page's live preview (its display cache,
     /// an sRGB8 encode of the preview renderer). Open once, then
-    /// `set_external_image` per frame: the handle is an index, so the
-    /// steady state hashes no key. Opening a key twice returns the same
-    /// handle.
-    pub fn external_image(&mut self, key: &str) -> ExternalImage {
+    /// `set_external_image` per frame — the handle remembers the texture
+    /// identity, so a same-texture frame makes no bind group. Opening a
+    /// key twice returns the same handle.
+    pub fn external_image(&mut self, key: ImageKey) -> ExternalImage {
         if let Some(i) = self.externals.iter().position(|e| e.key == key) {
             return ExternalImage(i as u32);
         }
-        self.externals.push(External { key: key.to_string(), texture: None });
+        self.externals.push(External { key, texture: None });
         ExternalImage((self.externals.len() - 1) as u32)
+    }
+
+    /// The texture slot `key` shows, if it has pixels.
+    fn slot(&self, key: ImageKey) -> Option<TexId> {
+        self.images.get(key.index()).copied().flatten()
+    }
+
+    /// Points `key` at texture slot `tex` (growing the table past the
+    /// build's images for a host-interned key).
+    fn set_slot(&mut self, key: ImageKey, tex: TexId) {
+        if self.images.len() <= key.index() {
+            self.images.resize(key.index() + 1, None);
+        }
+        self.images[key] = Some(tex);
     }
 
     /// Shows `texture` as the opened image. Another texture replaces the
@@ -254,12 +269,13 @@ impl UiRenderer {
             return false;
         }
         let (width, height) = (raw.width(), raw.height());
+        let key: ImageKey = external.key;
         let entry = self.make_entry(device, raw, width, height);
-        match self.images.get(&external.key).copied() {
+        match self.slot(key) {
             Some(slot) if slot != ATLAS => self.textures[slot as usize] = entry,
             _ => {
                 self.textures.push(entry);
-                self.images.insert(external.key.clone(), (self.textures.len() - 1) as TexId);
+                self.set_slot(key, (self.textures.len() - 1) as TexId);
             }
         }
         self.externals[image.0 as usize].texture = Some(raw.clone());
@@ -275,15 +291,15 @@ impl UiRenderer {
         );
     }
 
-    /// Registers an RGBA8 image under `key` (the `source=` string).
-    pub fn add_image(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: &str, rgba: &[u8], width: u32, height: u32) {
+    /// Registers an RGBA8 image under `key` (the `source=` id).
+    pub fn add_image(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: ImageKey, rgba: &[u8], width: u32, height: u32) {
         // sRGB bytes in, sRGB bytes out: the surface is non-sRGB (the canvas
         // blit copies encoded bytes), so an sRGB texture here would be
         // decoded on sample and never re-encoded — every image too dark.
         let (tex, entry) = self.make_texture(device, width, height, wgpu::TextureFormat::Rgba8Unorm);
         Self::write(queue, &tex, rgba, width, height, 4);
         self.textures.push(entry);
-        self.images.insert(key.to_string(), (self.textures.len() - 1) as TexId);
+        self.set_slot(key, (self.textures.len() - 1) as TexId);
     }
 
     /// Uploads the glyph atlas when the engine changed it.
@@ -438,7 +454,7 @@ impl UiRenderer {
                     self.quads.push(Quad { rect: [x, y, (1.5 * epx).max(1.0), h], color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_RECT, 0.0], uv: NO_UV, rot, wedge });
                 }
                 Draw::Image { rect, image, tint, fit } => {
-                    let Some(tex) = self.images.get(page.str(*image)).copied() else {
+                    let Some(tex) = self.slot(*image) else {
                         self.skipped += 1;
                         continue;
                     };
@@ -559,7 +575,7 @@ impl UiRenderer {
         self.quads.len()
     }
 
-    pub fn has_image(&self, key: &str) -> bool {
-        self.images.contains_key(key)
+    pub fn has_image(&self, key: ImageKey) -> bool {
+        self.slot(key).is_some()
     }
 }
