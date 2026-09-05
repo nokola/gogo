@@ -7,6 +7,7 @@
 //! arrives as one quad per stop pair (its `band`); a `RotatePush` turns
 //! every quad until its pop about the given center.
 
+use crate::tex_types::Tex_Display_Srgb_4xU8_RGBA;
 use std::collections::HashMap;
 
 use gogo::draw::{Draw, Fit, GradientKind, TextAlign};
@@ -76,6 +77,9 @@ pub struct UiRenderer {
     atlas_size: u32,
     /// Image key (the `source=` string) → texture slot.
     images: HashMap<String, TexId>,
+    /// Externally-owned textures shown by key (`set_texture_image`): the
+    /// identity last registered, so a same-texture call makes no bind group.
+    externals: HashMap<String, wgpu::Texture>,
     /// Commands with no texture to draw them (a missing image).
     pub skipped: u32,
     pub draw_calls: u32,
@@ -164,6 +168,7 @@ impl UiRenderer {
             atlas_texture: None,
             atlas_size: 0,
             images: HashMap::new(),
+            externals: HashMap::new(),
             skipped: 0,
             draw_calls: 0,
         };
@@ -189,13 +194,48 @@ impl UiRenderer {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
+        let entry = self.make_entry(device, &tex, width, height);
+        (tex, entry)
+    }
+
+    /// A slot over any 2D texture the UI may sample: one bind group with
+    /// the shared sampler.
+    fn make_entry(&self, device: &wgpu::Device, tex: &wgpu::Texture, width: u32, height: u32) -> Texture {
         let view = tex.create_view(&Default::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ui texture"),
             layout: &self.tex_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) }],
         });
-        (tex, Texture { bind_group, width, height })
+        Texture { bind_group, width, height }
+    }
+
+    /// Shows an externally-owned DISPLAY texture as the image `key` (the
+    /// `source=` string) — the D302 road for live GPU content in a gogo
+    /// Image (D10): the owner keeps the texture and re-encodes it when it
+    /// changes; the UI samples it like any uploaded image. Needed for the
+    /// brush page's live preview (its display cache, an sRGB8 encode of the
+    /// preview renderer). Re-registering the same key with another texture
+    /// replaces the slot (the ping-pong renderers swap); the SAME texture
+    /// again is a no-op — no bind group per frame. Returns true when it
+    /// (re)registered. Takes the display newtype: the raw texture never
+    /// leaves this crate (the D202 domain guard).
+    pub fn set_texture_image(&mut self, device: &wgpu::Device, key: &str, texture: &Tex_Display_Srgb_4xU8_RGBA) -> bool {
+        let raw: &wgpu::Texture = &texture.RGBA;
+        if self.externals.get(key).is_some_and(|t| t == raw) {
+            return false;
+        }
+        let (width, height) = (raw.width(), raw.height());
+        let entry = self.make_entry(device, raw, width, height);
+        match self.images.get(key).copied() {
+            Some(slot) if slot != ATLAS => self.textures[slot as usize] = entry,
+            _ => {
+                self.textures.push(entry);
+                self.images.insert(key.to_string(), (self.textures.len() - 1) as TexId);
+            }
+        }
+        self.externals.insert(key.to_string(), raw.clone());
+        true
     }
 
     fn write(queue: &wgpu::Queue, tex: &wgpu::Texture, data: &[u8], width: u32, height: u32, bytes_per_pixel: u32) {
@@ -281,7 +321,7 @@ impl UiRenderer {
                 Draw::Circle { rect, color, border, border_color } => {
                     self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [0.0, border * epx, KIND_CIRCLE, 0.0], uv: NO_UV, rot, wedge });
                 }
-                Draw::Gradient { rect, kind, from, to, angle, band } => {
+                Draw::Gradient { rect, kind, from, to, angle, band, corner } => {
                     let k = match kind {
                         GradientKind::Radial => KIND_RADIAL,
                         GradientKind::Conic => KIND_CONIC,
@@ -292,7 +332,9 @@ impl UiRenderer {
                     // Stops ride the color slots as premultiplied Oklab
                     // (gogo's one mixing law): the shader lerps them raw
                     // and converts the mix back to sRGB per pixel.
-                    self.quads.push(Quad { rect: px(rect), color: gogo::color::oklab_pm_from_rgba(*from).0, border_color: gogo::color::oklab_pm_from_rgba(*to).0, params: [0.0, 0.0, k, (angle - 90.0).to_radians()], uv: [band.0, band.1, 0.0, 0.0], rot, wedge });
+                    // params.x is the rounded-rect radius the shader masks
+                    // EVERY quad by — a Gradient's `corner_radius` (Q9).
+                    self.quads.push(Quad { rect: px(rect), color: gogo::color::oklab_pm_from_rgba(*from).0, border_color: gogo::color::oklab_pm_from_rgba(*to).0, params: [corner * epx, 0.0, k, (angle - 90.0).to_radians()], uv: [band.0, band.1, 0.0, 0.0], rot, wedge });
                 }
                 Draw::Text { rect, text: text_id, key, font_size, color, halign, valign, wrap, font } => {
                     if current_tex != ATLAS {
