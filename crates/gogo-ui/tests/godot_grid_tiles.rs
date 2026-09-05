@@ -71,7 +71,7 @@ impl TextMeasure for Pic {
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> (f32, f32) {
         FixedAdvance.measure(text, font_size, max_width, font)
     }
-    fn image_size(&self, _key: &str) -> Option<(f32, f32)> {
+    fn image_size(&self, _key: gogo::ImageKey) -> Option<(f32, f32)> {
         Some((100.0, 50.0))
     }
 }

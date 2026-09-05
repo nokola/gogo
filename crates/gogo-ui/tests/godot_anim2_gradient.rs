@@ -517,9 +517,14 @@ fn images_are_embedded_at_build_and_a_missing_file_fails_it() {
     let out = dir.join("pages.rs");
     build_pages(&dir.join("ui"), &out, BuildOptions::new(&dir)).unwrap();
     let generated = std::fs::read_to_string(&out).unwrap();
-    assert!(generated.contains("\"res://gogo_lazy_test.png\", include_bytes!"), "{generated}");
-    let (page, _, draws) = scene("View v { Image a source=\"res://gogo_lazy_test.png\" }");
-    assert!(draws.iter().any(|d| matches!(d, Draw::Image { image, .. } if page.str(*image) == "res://gogo_lazy_test.png")), "{draws:#?}");
+    assert!(generated.contains("(\"res://gogo_lazy_test.png\", Some(include_bytes!"), "{generated}");
+    let c = ok("View v { Image a source=\"res://gogo_lazy_test.png\" }");
+    let key = c.images.get("res://gogo_lazy_test.png").expect("a source= is interned");
+    let rt = Runtime::new(&c.page);
+    let res = resolve(&c.page, &rt);
+    let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+    let draws = draw(&c.page, &res, &rects);
+    assert!(draws.iter().any(|d| matches!(d, Draw::Image { image, .. } if *image == key)), "the draw carries the build-wide image id: {draws:#?}");
     let _ = std::fs::remove_dir_all(&dir);
 
     let dir = scratch("missing");
@@ -532,14 +537,16 @@ fn images_are_embedded_at_build_and_a_missing_file_fails_it() {
 /// `_lazy_image_tests` 8226-8231 (lazy.build-ok, both key orders) and
 /// 8244-8246 (lazy.dup-build-ok): `loading=lazy` builds whichever side of
 /// `source=` it sits on, and two Images naming one path share it (one
-/// interned string — the cache-hit half of Godot's dup check).
+/// `ImageKey` in the image table — the cache-hit half of Godot's dup
+/// check); the path is an image id, never a page string.
 #[test]
 fn loading_lazy_builds_in_any_key_order_and_shared_paths_intern_once() {
     ok("View v { Image a source=\"res://gogo_lazy_test.png\", loading=lazy }");
     ok("View v { Image a loading=lazy, source=\"res://gogo_lazy_test.png\" }");
     let c = ok("View v { Column c { Image a source=\"res://gogo_lazy_test.png\", loading=lazy; Image b source=\"res://gogo_lazy_test.png\", loading=lazy } }");
-    let hits = c.page.strings.iter().filter(|s| s.as_str() == "res://gogo_lazy_test.png").count();
-    assert_eq!(hits, 1, "{:?}", c.page.strings);
+    let hits = c.images.names.iter().filter(|s| s.as_str() == "res://gogo_lazy_test.png").count();
+    assert_eq!(hits, 1, "{:?}", c.images.names);
+    assert!(!c.page.strings.iter().any(|s| s == "res://gogo_lazy_test.png"), "an image path is an ImageKey, not a page string: {:?}", c.page.strings);
 }
 
 /// `_lazy_image_tests` 8260 (lazy.bad-value): `loading=` takes `lazy` or

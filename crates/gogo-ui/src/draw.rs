@@ -40,8 +40,9 @@ pub enum Draw {
     /// clockwise), `sweep` degrees, `thickness` the stroke width in epx.
     Arc { rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, from: f32, sweep: f32, thickness: f32 },
     Circle { rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, border: f32, border_color: Color_Straight_Srgb_4xU8_RGBA },
-    /// `image` is the `src` string id; the renderer maps it to a texture.
-    Image { rect: Rect, image: StrId, tint: Color_Straight_Srgb_4xU8_RGBA, fit: Fit },
+    /// `image` is the build-wide image id (`source=`); the renderer
+    /// indexes its texture slots by it.
+    Image { rect: Rect, image: ImageKey, tint: Color_Straight_Srgb_4xU8_RGBA, fit: Fit },
     /// One segment of a gradient over the whole `rect`: `from` → `to`
     /// across the `band` (0..1 along the gradient's run; `(0, 1)` is the
     /// whole run), nothing painted outside it. A gradient with N stops is
@@ -486,12 +487,11 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             }
         }
         Kind::Image => {
-            let src = match res.prop(page, id, PropKey::Source) {
-                Some(Value::VText { text, .. }) => text,
-                Some(Value::VIdent(id)) => id,
-                _ => NO_STR,
+            let src: ImageKey = match res.prop(page, id, PropKey::Source) {
+                Some(Value::VImage(key)) => key,
+                _ => NO_IMAGE,
             };
-            if src != NO_STR {
+            if src != NO_IMAGE {
                 let tint = color(PropKey::Color).unwrap_or(mul_alpha(Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 255]), opacity));
                 let fit = match res.ident(page, id, PropKey::Fit) {
                     Some("cover") => Fit::Cover,

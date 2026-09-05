@@ -106,6 +106,14 @@ id_newtype! {
     /// (`ArrangementName`), so code names a pose, never a number.
     ArrangementId
 }
+id_newtype! {
+    /// An image the pages show (`Image source="…"`): its index in the
+    /// build's `IMAGES` table — one id space for the WHOLE build — and in
+    /// every host table over images (file bytes, header sizes, GPU
+    /// slots). A draw and the renderer pass this, never the path, so
+    /// showing an image hashes no string. `Images` maps a path to it.
+    ImageKey
+}
 impl Default for StrId {
     fn default() -> StrId {
         NO_STR
@@ -138,6 +146,64 @@ pub const BUTTON_FOCUS_RING_EPX: f32 = 2.0;
 pub const NO_STR: StrId = StrId(0);
 /// No translation key: the text is a literal, shown as written.
 pub const NO_KEY: KeyId = KeyId(u32::MAX);
+/// No image: an Image whose `source=""` — drawn as nothing.
+pub const NO_IMAGE: ImageKey = ImageKey(u32::MAX);
+
+/// The image paths a build (or one standalone compile) names, by
+/// `ImageKey`.
+///
+/// Needed because an image id is one space for the whole build: every
+/// page's `source=` indexes the same `IMAGES` table, and a host picture
+/// the pages never named (a brush face thumbnail, `face://3`) interns
+/// here and takes the next id — the renderer's slot table simply grows.
+#[derive(Clone, Debug, Default)]
+pub struct Images {
+    /// By id: the path as the file wrote it (`res://assets/x.png`).
+    pub names: Vec<String>,
+    index: std::collections::HashMap<String, ImageKey>,
+}
+
+impl Images {
+    /// A table over `names` in id order — the host seeds one from the
+    /// build's `IMAGES` so its ids match what the pages carry.
+    pub fn from_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Images {
+        let mut images = Images::default();
+        for name in names {
+            images.intern(name);
+        }
+        images
+    }
+
+    /// The id for `name`, new or existing.
+    pub fn intern(&mut self, name: &str) -> ImageKey {
+        if let Some(&key) = self.index.get(name) {
+            return key;
+        }
+        let key = ImageKey::from_index(self.names.len());
+        self.names.push(name.to_string());
+        self.index.insert(name.to_string(), key);
+        key
+    }
+
+    /// The id `name` already has — a lookup, never a new id.
+    pub fn get(&self, name: &str) -> Option<ImageKey> {
+        self.index.get(name).copied()
+    }
+
+    /// The path behind `key`; `""` for `NO_IMAGE` or an id this table
+    /// never gave.
+    pub fn name(&self, key: ImageKey) -> &str {
+        self.names.get(key.index()).map(String::as_str).unwrap_or("")
+    }
+
+    pub fn len(&self) -> usize {
+        self.names.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
@@ -945,6 +1011,11 @@ pub enum Value {
     /// literal (`locale::display`). A code-set key (`Runtime::set_key`)
     /// carries `text: NO_STR` — its English lives in the build's `KEYS`.
     VText { text: StrId, key: KeyId },
+    /// An image (`source=`): the build-wide id of its path (`Images`).
+    /// Its own kind, not text, so a path is never translated and a draw
+    /// hands the renderer an index, not a string to hash. `NO_IMAGE` for
+    /// `source=""`.
+    VImage(ImageKey),
     /// `$name` — a theme value or widget param, resolved at theme time.
     /// `opacity` overrides the alpha when `Some` (`$accent/0.3`).
     VRef { name: StrId, opacity: Option<f32> },

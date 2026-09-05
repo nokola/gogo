@@ -30,6 +30,11 @@ pub struct CompileOptions<'a> {
     /// emits. `None` (a standalone compile, tests, hot reload of one file)
     /// = the page gets its own table, ids local to it.
     pub keys: Option<&'a std::cell::RefCell<Keys>>,
+    /// The build's image table, shared the same way: a `source=` path is
+    /// one `ImageKey` across every page, indexing the one `IMAGES` table
+    /// the build emits. `None` = the page gets its own table
+    /// (`Compiled::images`), ids local to it.
+    pub images: Option<&'a std::cell::RefCell<Images>>,
     /// The name diagnostics use for THIS file in cross-file facts (G8001
     /// names the file a key was first seen in). `compile_file_with` sets
     /// it; `""` = unknown.
@@ -524,6 +529,8 @@ pub struct Compiler<'a> {
     node_whens: Vec<Vec<WhenTmp>>,
     /// The key table when `options.keys` is `None` (see `CompileOptions`).
     local_keys: Keys,
+    /// The image table when `options.images` is `None`.
+    local_images: Images,
     /// Top-level `when <arrangement> { node.prop = v }`, applied after the tree exists.
     deferred_whens: Vec<(State, Vec<AstItem>, u32)>,
     /// `anim` declarations, compiled after the tree exists (they name
@@ -649,6 +656,9 @@ pub struct Compiled {
     /// `None` (ids local to this page — `keys.names[key]` spells a `VText`
     /// key), empty when the build's shared table took them.
     pub keys: Keys,
+    /// The image table this compile filled, the same way: `images.name(k)`
+    /// spells a `VImage` when the compile stood alone.
+    pub images: Images,
 }
 
 /// `compile` with no host options (no code controls).
@@ -678,6 +688,7 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         use_dirs: Vec::new(),
         node_whens: Vec::new(),
         local_keys: Keys::default(),
+        local_images: Images::default(),
         deferred_whens: Vec::new(),
         anim_decls: Vec::new(),
         style_wearers: HashMap::new(),
@@ -714,7 +725,7 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
     c.page.intern("dark");
     c.document(&doc, true);
     c.finish();
-    Compiled { page: c.page, diags: c.diags, keys: c.local_keys }
+    Compiled { page: c.page, diags: c.diags, keys: c.local_keys, images: c.local_images }
 }
 
 /// The bare color words: `page::PALETTE` plus `transparent`. Aliases are
@@ -762,6 +773,15 @@ impl<'a> Compiler<'a> {
                     None => self.local_keys.get(name).unwrap_or(NO_KEY),
                 }
             }
+        }
+    }
+
+    /// The id of image path `name` — from the build's shared table when
+    /// there is one, else this page's own (see `CompileOptions::images`).
+    fn image_key(&mut self, name: &str) -> ImageKey {
+        match self.options.images {
+            Some(shared) => shared.borrow_mut().intern(name),
+            None => self.local_images.intern(name),
         }
     }
 
@@ -3073,6 +3093,15 @@ impl<'a> Compiler<'a> {
                 }
                 if let (Some(k), true) = (term, is_asset) {
                     self.error("G0023", line, format!("`/{k}` on an asset path — a path is never translated; the key goes on text"));
+                }
+                // An image is its own value: whatever `source=` names (a
+                // host picture like `preview://brush` too), and a literal
+                // naming an image file anywhere (a theme `$icon` a
+                // `source=$icon` reads) — so a draw carries the build-wide
+                // id and never a string.
+                let is_image = key == Some(PropKey::Source) || IMAGE_EXTS.iter().any(|e| lower.ends_with(e));
+                if is_image {
+                    return if text.is_empty() { Value::VImage(NO_IMAGE) } else { Value::VImage(self.image_key(text)) };
                 }
                 let text_id = self.intern(text);
                 let key_id = match term {

@@ -77,8 +77,10 @@ pub trait TextMeasure {
     /// Width and height of `text` at `font_size` epx; wrapped at
     /// `max_width` when given. `font` = the file key from `font=`.
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> (f32, f32);
-    /// A bitmap's own size in pixels, for `aspect=natural` (`None` = unknown).
-    fn image_size(&self, _key: &str) -> Option<(f32, f32)> {
+    /// A bitmap's own size in pixels, for `aspect=natural` (`None` =
+    /// unknown). `key` is the build-wide image id (`Draw::Image` carries
+    /// the same), so a host answers from a table, not a string match.
+    fn image_size(&self, _key: ImageKey) -> Option<(f32, f32)> {
         None
     }
 }
@@ -610,8 +612,8 @@ impl<'a> Lay<'a> {
         let ratio: Option<f32> = match self.res.prop(self.page, id, PropKey::Aspect) {
             Some(Value::VNum(r)) if r > 0.0 => Some(r),
             Some(Value::VIdent(word)) if self.page.str(word) == "natural" => {
-                let key = match self.res.prop(self.page, id, PropKey::Source) {
-                    Some(Value::VText { text, .. }) => Some(self.page.str(text)),
+                let key: Option<ImageKey> = match self.res.prop(self.page, id, PropKey::Source) {
+                    Some(Value::VImage(key)) if key != NO_IMAGE => Some(key),
                     _ => None,
                 };
                 key.and_then(|k| self.text.image_size(k)).filter(|(_, h)| *h > 0.0).map(|(w, h)| w / h)

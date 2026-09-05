@@ -411,15 +411,15 @@ fn both_fill_aspect_is_the_largest_fitting_box_centered_and_live() {
 }
 
 /// A text ruler that also knows one square bitmap (Godot's icon.svg is
-/// square), for `aspect=natural`.
-struct SquareIcon;
+/// square), for `aspect=natural` — the bitmap by its compiled id.
+struct SquareIcon(gogo::ImageKey);
 
 impl TextMeasure for SquareIcon {
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> (f32, f32) {
         FixedAdvance.measure(text, font_size, max_width, font)
     }
-    fn image_size(&self, key: &str) -> Option<(f32, f32)> {
-        (key == "res://icon.svg").then_some((128.0, 128.0))
+    fn image_size(&self, key: gogo::ImageKey) -> Option<(f32, f32)> {
+        (key == self.0).then_some((128.0, 128.0))
     }
 }
 
@@ -432,7 +432,8 @@ fn natural_aspect_sizes_the_hug_parent_from_the_bitmap() {
     let c = ok("View nhost {\n Layers nwrap width=hug, height=hug, halign=left, valign=top {\n  Image nimg source=\"res://icon.svg\", width=200, aspect=natural\n }\n}\n");
     let rt = Runtime::new(&c.page);
     let res = resolve(&c.page, &rt);
-    let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &SquareIcon);
+    let icon = SquareIcon(c.images.get("res://icon.svg").expect("the page's source= is interned"));
+    let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &icon);
     assert_eq!(size_of(&c.page, &rects, "nwrap"), (200.0, 200.0), "{rects:?}");
     assert_eq!(size_of(&c.page, &rects, "nimg"), (200.0, 200.0), "{rects:?}");
 }
