@@ -32,7 +32,7 @@ impl Fx {
         let id = self.page.find(node).unwrap();
         let res = resolve(&self.page, &self.rt);
         let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        let r = rects[id as usize];
+        let r = rects[id.index()];
         let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         let mut ev = self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x, y, t: t0, id: 1 });
         ev.extend(self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x, y, t: t0 + 0.1, id: 1 }));
@@ -130,7 +130,7 @@ fn placeholder_shows_while_empty_and_max_length_caps_typing() {
     {
         let res = resolve(&page, &rt);
         let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        let r = rects[field as usize];
+        let r = rects[field.index()];
         let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         input.touch(&page, &mut rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x, y, t: 0.0, id: 1 });
         input.touch(&page, &mut rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x, y, t: 0.1, id: 1 });
@@ -352,7 +352,7 @@ fn paste_replaces_the_selection_and_max_length_caps_the_result() {
     let field = page.find("f").unwrap();
     let res = resolve(&page, &rt);
     let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    let r = rects[field as usize];
+    let r = rects[field.index()];
     input.touch(&page, &mut rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x: r.x + 5.0, y: r.y + 5.0, t: 0.0, id: 1 });
     input.touch(&page, &mut rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x: r.x + 5.0, y: r.y + 5.0, t: 0.1, id: 1 });
     let ev = input.paste(&mut page, &mut rt, "hello world");
@@ -469,7 +469,7 @@ fn a_handle_drag_moves_its_end() {
     assert_eq!(fx.rt.selection, Some((field, 0, 5)), "hello selected");
     let res = resolve(&fx.page, &fx.rt);
     let rects = layout(&fx.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    let fr = rects[field as usize];
+    let fr = rects[field.index()];
     let hr = sel_handle_rect(fr.y + fr.h, 8.0 + adv() * 5.0, SEL_HANDLE_EPX);
     let (hx, hy) = (hr.x + hr.w / 2.0, hr.y + hr.h / 2.0);
     fx.point(Phase::Down, hx, hy, 41.0, 7);

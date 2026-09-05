@@ -44,7 +44,7 @@ impl Fx {
         let id = self.page.find(node).unwrap();
         let res = resolve(&self.page, &self.rt);
         let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        let r = rects[id as usize];
+        let r = rects[id.index()];
         let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         // Taps sit a second apart: two same-spot taps within the
         // double-click window would word-select in a field.
@@ -59,7 +59,7 @@ impl Fx {
     }
     /// The one node holding the FOCUSED bit (None = no ring anywhere).
     fn ring(&self) -> Option<NodeId> {
-        (0..self.page.nodes.len() as NodeId).find(|n| self.rt.has(*n, FOCUSED))
+        self.page.node_ids().find(|n| self.rt.has(*n, FOCUSED))
     }
     fn hover_xy(&mut self, x: f32, y: f32) {
         let res = resolve(&self.page, &self.rt);
@@ -70,7 +70,7 @@ impl Fx {
         let id = self.id(name);
         let res = resolve(&self.page, &self.rt);
         let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        let r = rects[id as usize];
+        let r = rects[id.index()];
         self.hover_xy(r.x + r.w / 2.0, r.y + r.h / 2.0);
     }
     fn value(&self, name: &str) -> f32 {
@@ -310,7 +310,7 @@ fn a_wheel_tick_steps_the_control_under_the_pointer() {
     let mut fx = Fx::new(ROW_SRC);
     let res = resolve(&fx.page, &fx.rt);
     let rects = layout(&fx.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    let r = rects[fx.id("s") as usize];
+    let r = rects[(fx.id("s")).index()];
     let ev = fx.input.wheel(&fx.page, &mut fx.rt, &res, &rects, r.x + r.w / 2.0, r.y + r.h / 2.0, true);
     assert_eq!(fx.value("s"), 40.0, "up increments");
     assert!(ev.iter().any(|e| matches!(e.kind, EventKind::Change(_))), "{ev:#?}");
@@ -332,12 +332,12 @@ fn key_focus_scrolls_into_view() {
     fx.key(Key::Tab);
     assert_eq!(fx.input.focused(), Some(fx.id("b3")));
     let sc = fx.id("sc");
-    assert!(fx.rt.scroll[sc as usize][1] >= 20.0, "b3 (80..120) pulled into the 100-tall viewport: {:?}", fx.rt.scroll[sc as usize]);
+    assert!(fx.rt.scroll[sc.index()][1] >= 20.0, "b3 (80..120) pulled into the 100-tall viewport: {:?}", fx.rt.scroll[sc.index()]);
     fx.key(Key::Tab);
-    assert!(fx.rt.scroll[sc as usize][1] >= 60.0, "b4 too: {:?}", fx.rt.scroll[sc as usize]);
+    assert!(fx.rt.scroll[sc.index()][1] >= 60.0, "b4 too: {:?}", fx.rt.scroll[sc.index()]);
     fx.key(Key::Tab);
     assert_eq!(fx.input.focused(), Some(fx.id("b1")), "wrap");
-    assert_eq!(fx.rt.scroll[sc as usize][1], 0.0, "scrolled back up for b1");
+    assert_eq!(fx.rt.scroll[sc.index()][1], 0.0, "scrolled back up for b1");
 }
 
 /// The List keyboard cursor (GP28's tail): rows are reachable, arrows
@@ -387,7 +387,7 @@ fn hover_follows_the_mouse_and_lights_the_chain() {
 fn touch_never_hovers() {
     let mut fx = Fx::new(ROW_SRC);
     fx.tap("a");
-    assert!((0..fx.page.nodes.len() as NodeId).all(|n| !fx.rt.has(n, HOVERED)), "a finger leaves no hover");
+    assert!(fx.page.node_ids().all(|n| !fx.rt.has(n, HOVERED)), "a finger leaves no hover");
 }
 
 /// The capture bracket: a mouse press freezes hover — slipping off a
@@ -400,11 +400,11 @@ fn a_mouse_press_captures_hover() {
     assert!(fx.rt.has(fx.id("a"), HOVERED));
     let res = resolve(&fx.page, &fx.rt);
     let rects = layout(&fx.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    let r = rects[fx.id("a") as usize];
+    let r = rects[(fx.id("a")).index()];
     fx.input.touch(&fx.page, &mut fx.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x: r.x + r.w / 2.0, y: r.y + r.h / 2.0, t: 0.0, id: 1 });
     fx.hover_xy(350.0, 700.0);
     assert!(fx.rt.has(fx.id("a"), HOVERED), "the press holds the hovered look off-box");
-    let rs = rects[fx.id("s") as usize];
+    let rs = rects[(fx.id("s")).index()];
     fx.hover_xy(rs.x + rs.w / 2.0, rs.y + rs.h / 2.0);
     assert!(!fx.rt.has(fx.id("s"), HOVERED), "nothing new hovers mid-press");
     fx.input.touch(&fx.page, &mut fx.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x: 350.0, y: 700.0, t: 0.2, id: 1 });

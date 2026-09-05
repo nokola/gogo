@@ -73,10 +73,10 @@ impl Built {
         self.page.find(name).unwrap_or_else(|| panic!("no node {name:?}"))
     }
     fn rect(&self, name: &str) -> Rect {
-        self.rects[self.id(name) as usize]
+        self.rects[(self.id(name)).index()]
     }
     fn placement(&self, name: &str) -> gogo::page::Placement {
-        self.res.placement[self.id(name) as usize]
+        self.res.placement[(self.id(name)).index()]
     }
     /// Lays the page out again after a runtime change (a state, a pose).
     fn relayout(&mut self) {
@@ -257,7 +257,7 @@ fn container_children_keep_the_slot_defaults() {
 #[test]
 fn bare_slot_content_builds() {
     let b = build("widget Holder {\n Layers body {\n  slot\n }\n}\nView v {\n Holder h {\n  Rectangle sc color=#FFFFFFFF\n }\n}\n", 400.0, 400.0);
-    assert_eq!(b.page.nodes[b.id("sc") as usize].kind, Kind::Rectangle);
+    assert_eq!(b.page.nodes[(b.id("sc")).index()].kind, Kind::Rectangle);
 }
 
 /// `_placement_tests` 1582-1584 (`place.dfl-slot-exempt`): content
@@ -280,7 +280,7 @@ fn bare_slot_content_gets_no_fill_default() {
 fn default_fill_survives_an_arrangement_pose() {
     let mut b = build("arrangement lifted\nwhen lifted { bar.margin_bottom = 0 }\nView screen2 {\n Layers bar valign=bottom, height=80, margin_bottom=-30\n}\n", 400.0, 400.0);
     assert_eq!(b.rect("bar"), Rect::new(0.0, 350.0, 400.0, 80.0));
-    b.rt.go_id(0);
+    b.rt.go_id(gogo::ArrangementId::new(0));
     b.relayout();
     assert_eq!(b.rect("bar"), Rect::new(0.0, 320.0, 400.0, 80.0), "the pose moved the pin, the width stayed full");
 }
@@ -344,9 +344,9 @@ fn theme_font_size_inherits_and_local_wins() {
 #[test]
 fn layers_row_column_are_kinds() {
     let b = build("View v { Layers l { Row r { Column c } } }", 100.0, 100.0);
-    assert_eq!(b.page.nodes[b.id("l") as usize].kind, Kind::Layers);
-    assert_eq!(b.page.nodes[b.id("r") as usize].kind, Kind::Row);
-    assert_eq!(b.page.nodes[b.id("c") as usize].kind, Kind::Column);
+    assert_eq!(b.page.nodes[(b.id("l")).index()].kind, Kind::Layers);
+    assert_eq!(b.page.nodes[(b.id("r")).index()].kind, Kind::Row);
+    assert_eq!(b.page.nodes[(b.id("c")).index()].kind, Kind::Column);
 }
 
 /// `_placement_tests` 1688-1707 (`layers.ok`, `layers.min-from-children`,

@@ -279,7 +279,7 @@ pub enum Key {
 /// layout used (the drawn text starts 8 epx into the plate — draw.rs's
 /// inset).
 fn index_from_x(page: &Page, rt: &Runtime, res: &Resolved, rects: &[Rect], measure: &dyn TextMeasure, node: NodeId, x: f32) -> usize {
-    let local = x - (rects[node as usize].x + 8.0);
+    let local = x - (rects[node].x + 8.0);
     let font_size = res.font_size(page, node).unwrap_or(DEFAULT_FONT_SIZE);
     let font_id = res.font(page, node).unwrap_or(crate::page::NO_STR);
     let font = if font_id == crate::page::NO_STR { None } else { Some(page.str(font_id)) };
@@ -306,7 +306,7 @@ fn x_from_index(page: &Page, rt: &Runtime, res: &Resolved, rects: &[Rect], measu
     let chars: Vec<char> = input_text(page, rt, node).chars().collect();
     let s: String = chars[..index.min(chars.len())].iter().collect();
     let (w, _) = measure.measure(&s, font_size, None, font);
-    rects[node as usize].x + 8.0 + w
+    rects[node].x + 8.0 + w
 }
 
 /// The word span at `i`: an alphanumeric/underscore run, else the run of
@@ -339,7 +339,7 @@ fn input_text(page: &Page, rt: &Runtime, node: NodeId) -> String {
 
 /// The `Value` the field's events carry.
 fn text_value(page: &Page, rt: &Runtime, node: NodeId) -> Value {
-    rt.writes.iter().rev().find(|(n, p)| *n == node && p.key == PropKey::Text).map(|(_, p)| p.value).or_else(|| page.prop(node, PropKey::Text)).unwrap_or(Value::VText { text: 0, key: NO_KEY })
+    rt.writes.iter().rev().find(|(n, p)| *n == node && p.key == PropKey::Text).map(|(_, p)| p.value).or_else(|| page.prop(node, PropKey::Text)).unwrap_or(Value::VText { text: NO_STR, key: NO_KEY })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -388,7 +388,7 @@ pub struct Input {
 }
 
 fn event_action(page: &Page, node: NodeId, event: &str) -> Option<Action> {
-    let n = &page.nodes[node as usize];
+    let n = &page.nodes[node];
     let id = page.intern_lookup(event);
     page.handlers[n.handlers.0 as usize..(n.handlers.0 + n.handlers.1) as usize].iter().find(|h| h.event == id).map(|h| h.action)
 }
@@ -399,7 +399,7 @@ fn event_action(page: &Page, node: NodeId, event: &str) -> Option<Action> {
 /// repeat's template and unshown rows and a presence mark are skipped
 /// exactly like a `visibility=` word).
 fn reachable(page: &Page, rt: &Runtime, res: &Resolved, node: NodeId) -> bool {
-    if !page.nodes[node as usize].focusable || rt.disabled(page, node) {
+    if !page.nodes[node].focusable || rt.disabled(page, node) {
         return false;
     }
     let mut n = node;
@@ -407,7 +407,7 @@ fn reachable(page: &Page, rt: &Runtime, res: &Resolved, node: NodeId) -> bool {
         if res.gone(page, n) || res.hidden(page, n) {
             return false;
         }
-        let p = page.nodes[n as usize].parent;
+        let p = page.nodes[n].parent;
         if p == NO_NODE {
             return true;
         }
@@ -423,7 +423,7 @@ fn set_chain(page: &Page, rt: &mut Runtime, node: NodeId, bit: u8, on: bool) {
     let mut n = node;
     loop {
         rt.set_state(n, bit, on);
-        let p = page.nodes[n as usize].parent;
+        let p = page.nodes[n].parent;
         if p == NO_NODE {
             return;
         }
@@ -432,24 +432,24 @@ fn set_chain(page: &Page, rt: &mut Runtime, node: NodeId, bit: u8, on: bool) {
 }
 
 fn scroll_ancestor(page: &Page, node: NodeId) -> Option<NodeId> {
-    let mut n = page.nodes[node as usize].parent;
+    let mut n = page.nodes[node].parent;
     while n != NO_NODE {
-        if matches!(page.nodes[n as usize].kind, Kind::Scroll | Kind::List) {
+        if matches!(page.nodes[n].kind, Kind::Scroll | Kind::List) {
             return Some(n);
         }
-        n = page.nodes[n as usize].parent;
+        n = page.nodes[n].parent;
     }
     None
 }
 
 /// The List a row belongs to — the selection owner a tap reports to.
 fn list_ancestor(page: &Page, node: NodeId) -> Option<NodeId> {
-    let mut n = page.nodes[node as usize].parent;
+    let mut n = page.nodes[node].parent;
     while n != NO_NODE {
-        if page.nodes[n as usize].kind == Kind::List {
+        if page.nodes[n].kind == Kind::List {
             return Some(n);
         }
-        n = page.nodes[n as usize].parent;
+        n = page.nodes[n].parent;
     }
     None
 }
@@ -463,7 +463,7 @@ fn within(page: &Page, node: NodeId, root: NodeId) -> bool {
         if n == root {
             return true;
         }
-        n = page.nodes[n as usize].parent;
+        n = page.nodes[n].parent;
     }
     false
 }
@@ -476,14 +476,14 @@ fn within(page: &Page, node: NodeId, root: NodeId) -> bool {
 fn scroll_taker(page: &Page, res: &Resolved, rects: &[Rect], node: NodeId, vertical: bool) -> Option<NodeId> {
     let mut n = node;
     while n != NO_NODE {
-        if matches!(page.nodes[n as usize].kind, Kind::Scroll | Kind::List) {
+        if matches!(page.nodes[n].kind, Kind::Scroll | Kind::List) {
             let axes = scroll_axes(page, res, n);
             let range = scroll_range(page, res, rects, n);
             if (if vertical { axes.1 } else { axes.0 }) && (if vertical { range[1] } else { range[0] }) > 0.0 {
                 return Some(n);
             }
         }
-        n = page.nodes[n as usize].parent;
+        n = page.nodes[n].parent;
     }
     None
 }
@@ -493,7 +493,7 @@ fn scroll_taker(page: &Page, res: &Resolved, rects: &[Rect], node: NodeId, verti
 /// box, or a List's whole stacked body (a `repeat` stands for its rows;
 /// statics move with them, one doctrine both ways).
 fn scroll_range(page: &Page, res: &Resolved, rects: &[Rect], scroll: NodeId) -> [f32; 2] {
-    let viewport = rects[scroll as usize];
+    let viewport = rects[scroll];
     let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
     let mut any = false;
     let mut kids = res.children(page, scroll);
@@ -501,11 +501,11 @@ fn scroll_range(page: &Page, res: &Resolved, rects: &[Rect], scroll: NodeId) -> 
     while i < kids.len() {
         let c = kids[i];
         i += 1;
-        if page.nodes[c as usize].kind == Kind::Repeat {
+        if page.nodes[c].kind == Kind::Repeat {
             kids.extend(res.children(page, c));
             continue;
         }
-        let r = rects[c as usize];
+        let r = rects[c];
         if r.w <= 0.0 && r.h <= 0.0 {
             continue;
         }
@@ -540,7 +540,7 @@ fn soft(raw: f32, span: f32) -> f32 {
 /// Splits an unclamped position into the clamped offset plus the softened
 /// overscroll the content shows; writes it; returns the raw excess.
 fn apply_accum(rt: &mut Runtime, rects: &[Rect], scroll: NodeId, range: [f32; 2], axes: (bool, bool), accum: &mut [f32; 2]) -> [f32; 2] {
-    let viewport = rects[scroll as usize];
+    let viewport = rects[scroll];
     let mut raw = [0.0f32; 2];
     let mut shown = [0.0f32; 2];
     for i in 0..2 {
@@ -553,8 +553,8 @@ fn apply_accum(rt: &mut Runtime, rects: &[Rect], scroll: NodeId, range: [f32; 2]
         raw[i] = accum[i] - clamped;
         shown[i] = clamped + soft(raw[i], if i == 0 { viewport.w } else { viewport.h });
     }
-    if rt.scroll[scroll as usize] != shown {
-        rt.scroll[scroll as usize] = shown;
+    if rt.scroll[scroll] != shown {
+        rt.scroll[scroll] = shown;
         rt.dirty = true;
     }
     raw
@@ -563,7 +563,7 @@ fn apply_accum(rt: &mut Runtime, rects: &[Rect], scroll: NodeId, range: [f32; 2]
 fn slider_value(page: &Page, res: &Resolved, rects: &[Rect], node: NodeId, x: f32) -> f32 {
     let min = res.num(page, node, PropKey::Min).unwrap_or(0.0);
     let max = res.num(page, node, PropKey::Max).unwrap_or(100.0);
-    let r = rects[node as usize];
+    let r = rects[node];
     // Fraction 0 and 1 park the knob's EDGES at the track's ends, so the
     // value tracks the knob's center.
     let span = r.w - SLIDER_KNOB_EPX;
@@ -589,7 +589,7 @@ fn behavior_at(page: &Page, node: NodeId) -> Option<u32> {
 /// width — shipped SliderPhone drew no thumb, so there is no knob
 /// compensation (its UpdatePercent was `x / width` verbatim).
 fn behavior_value(rects: &[Rect], b: &crate::page::SliderBehavior, x: f32) -> f32 {
-    let r = rects[b.track as usize];
+    let r = rects[b.track];
     let t = if r.w > 0.0 { ((x - r.x) / r.w).clamp(0.0, 1.0) } else { 0.0 };
     b_snap(b, b.min + (b.max - b.min) * t)
 }
@@ -630,8 +630,8 @@ fn value_of(rt: &Runtime, res: &Resolved, page: &Page, node: NodeId) -> f32 {
 /// A Toggle's knob fraction under the finger: the pill sits at the node's
 /// padded left, the knob's edges park at the pill's ends.
 fn toggle_fraction(res: &Resolved, rects: &[Rect], node: NodeId, x: f32) -> f32 {
-    let r = rects[node as usize];
-    let pad = res.placement[node as usize].padding[0];
+    let r = rects[node];
+    let pad = res.placement[node].padding[0];
     let pill_x = r.x + pad;
     let span = TOGGLE_PILL.0 - TOGGLE_KNOB_EPX;
     if span <= 0.0 { 0.0 } else { ((x - pill_x - TOGGLE_KNOB_EPX / 2.0) / span).clamp(0.0, 1.0) }
@@ -751,7 +751,7 @@ impl Input {
                 rt.dirty = true;
             }
         }
-        let focus_kind = self.focus.map(|f| page.nodes[f as usize].kind);
+        let focus_kind = self.focus.map(|f| page.nodes[f].kind);
         let in_field = focus_kind == Some(Kind::Input);
         // GP52: a focused `behavior slider` instance steps on the
         // arrow family — the machine owns those groups (the compile
@@ -953,7 +953,7 @@ impl Input {
         rt.sel_handles = false;
         rt.edit_bar = None;
         self.anchor = None;
-        if page.nodes[f as usize].kind == Kind::Input {
+        if page.nodes[f].kind == Kind::Input {
             let now = input_text(page, rt, f);
             if now != self.committed {
                 self.push_event(rt, events, f, EventKind::Change(text_value(page, rt, f)), event_action(page, f, "change"));
@@ -983,7 +983,7 @@ impl Input {
         // turns it off — re-tapping an already-focused box clears a
         // ring earlier keys put there.
         self.focus_visible = by_key;
-        let in_field = page.nodes[n as usize].kind == Kind::Input;
+        let in_field = page.nodes[n].kind == Kind::Input;
         if in_field {
             if moved {
                 self.committed = input_text(page, rt, n);
@@ -1010,9 +1010,9 @@ impl Input {
     fn scroll_into_view(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], node: NodeId) {
         let mut s = scroll_ancestor(page, node);
         while let Some(sc) = s {
-            let v = rects[sc as usize];
-            let r = rects[node as usize];
-            let mut accum = rt.scroll[sc as usize];
+            let v = rects[sc];
+            let r = rects[node];
+            let mut accum = rt.scroll[sc];
             let before = accum;
             if r.bottom() > v.bottom() {
                 accum[1] += r.bottom() - v.bottom();
@@ -1033,8 +1033,8 @@ impl Input {
                 if self.fling.as_ref().map_or(false, |fl| fl.scroll == sc) {
                     self.fling = None;
                 }
-                if rt.scroll[sc as usize] != accum {
-                    rt.scroll[sc as usize] = accum;
+                if rt.scroll[sc] != accum {
+                    rt.scroll[sc] = accum;
                     rt.dirty = true;
                 }
             }
@@ -1117,7 +1117,7 @@ impl Input {
         if res.bool(page, f, PropKey::TapPulse).unwrap_or(false) {
             rt.tap_pulse(f);
         }
-        match page.nodes[f as usize].kind {
+        match page.nodes[f].kind {
             Kind::Button => {
                 if res.bool(page, f, PropKey::ToggleMode).unwrap_or(false) {
                     let on = !rt.has(f, SELECTED);
@@ -1129,7 +1129,7 @@ impl Input {
             Kind::ListItem => {
                 if let Some(list) = list_ancestor(page, f) {
                     if rt.tap_select(page, list, f) {
-                        self.push_event(rt, events, list, EventKind::Change(Value::VIdent(page.nodes[f as usize].name)), event_action(page, list, "change"));
+                        self.push_event(rt, events, list, EventKind::Change(Value::VIdent(page.nodes[f].name)), event_action(page, list, "change"));
                     }
                 }
                 self.push_event(rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
@@ -1147,18 +1147,18 @@ impl Input {
             }
             Kind::Radio => {
                 let already = rt.has(f, SELECTED);
-                let choice = page.nodes[f as usize].choice;
+                let choice = page.nodes[f].choice;
                 let mut change_action: Option<Action> = None;
                 if choice != NO_CHOICE {
                     for (i, n) in page.nodes.iter().enumerate() {
                         if n.kind == Kind::Radio && n.choice == choice {
-                            rt.set_state(i as NodeId, SELECTED, i as NodeId == f);
+                            rt.set_state(NodeId::from_index(i), SELECTED, NodeId::from_index(i) == f);
                         }
                     }
                     change_action = page.choices[choice as usize].action;
                 }
                 if !already {
-                    self.push_event(rt, events, f, EventKind::Change(Value::VIdent(page.nodes[f as usize].name)), change_action);
+                    self.push_event(rt, events, f, EventKind::Change(Value::VIdent(page.nodes[f].name)), change_action);
                 }
                 self.push_event(rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
             }
@@ -1188,10 +1188,10 @@ impl Input {
             return events;
         }
         while let Some(c) = n {
-            if matches!(page.nodes[c as usize].kind, Kind::Slider | Kind::Toggle) {
+            if matches!(page.nodes[c].kind, Kind::Slider | Kind::Toggle) {
                 break;
             }
-            let p = page.nodes[c as usize].parent;
+            let p = page.nodes[c].parent;
             n = if p == NO_NODE { None } else { Some(p) };
         }
         let Some(c) = n else { return events };
@@ -1199,7 +1199,7 @@ impl Input {
             return events;
         }
         self.grant(page, rt, res, rects, Some(c), false, &mut events);
-        match page.nodes[c as usize].kind {
+        match page.nodes[c].kind {
             Kind::Slider => self.step_slider(page, rt, res, c, if up { Key::Up } else { Key::Down }, &mut events),
             _ => self.set_toggle(page, rt, res, c, up, &mut events),
         }
@@ -1219,7 +1219,7 @@ impl Input {
     /// The focused field's selected text — the shell's copy door reads
     /// it (gogo never touches a clipboard itself).
     pub fn selected_text(&self, page: &Page, rt: &Runtime) -> Option<String> {
-        let f = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input)?;
+        let f = self.focus.filter(|f| page.nodes[*f].kind == Kind::Input)?;
         let (lo, hi) = self.selection()?;
         Some(input_text(page, rt, f).chars().skip(lo).take(hi - lo).collect())
     }
@@ -1232,7 +1232,7 @@ impl Input {
     /// only takes text in.
     pub fn paste(&mut self, page: &mut Page, rt: &mut Runtime, paste: &str) -> Vec<Event> {
         let mut events = Vec::new();
-        let Some(f) = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input) else { return events };
+        let Some(f) = self.focus.filter(|f| page.nodes[*f].kind == Kind::Input) else { return events };
         let mut text: Vec<char> = input_text(page, rt, f).chars().collect();
         self.caret = self.caret.min(text.len());
         self.anchor = self.anchor.map(|a| a.min(text.len())).filter(|a| *a != self.caret);
@@ -1262,7 +1262,7 @@ impl Input {
     /// nothing happens.
     pub fn delete_selection(&mut self, page: &mut Page, rt: &mut Runtime) -> Vec<Event> {
         let mut events = Vec::new();
-        let Some(f) = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input) else { return events };
+        let Some(f) = self.focus.filter(|f| page.nodes[*f].kind == Kind::Input) else { return events };
         let Some((lo, hi)) = self.selection() else { return events };
         let mut text: Vec<char> = input_text(page, rt, f).chars().collect();
         let hi = hi.min(text.len());
@@ -1290,7 +1290,7 @@ impl Input {
     /// (GPAR112): `None` when no Input holds the caret. No selection =
     /// a collapsed span at the caret.
     pub fn ime_seed(&self, page: &Page, rt: &Runtime) -> Option<(String, usize, usize)> {
-        let f = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input)?;
+        let f = self.focus.filter(|f| page.nodes[*f].kind == Kind::Input)?;
         let (lo, hi) = self.selection().unwrap_or((self.caret, self.caret));
         Some((input_text(page, rt, f), lo, hi))
     }
@@ -1304,7 +1304,7 @@ impl Input {
     /// focus-loss doors still commit once per genuine change).
     pub fn ime_replace(&mut self, page: &mut Page, rt: &mut Runtime, text: &str, start: usize, end: usize) -> Vec<Event> {
         let mut events = Vec::new();
-        let Some(f) = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input) else { return events };
+        let Some(f) = self.focus.filter(|f| page.nodes[*f].kind == Kind::Input) else { return events };
         let cap = match page.prop(f, PropKey::MaxLength) {
             Some(Value::VNum(n)) if n > 0.0 => n as usize,
             _ => usize::MAX,
@@ -1360,7 +1360,7 @@ impl Input {
     /// Tab's next stop: the reachable boxes in FILE order, wrapping;
     /// nothing focused enters at the first (Shift-Tab at the last).
     fn tab_target(&self, page: &Page, rt: &Runtime, res: &Resolved, back: bool) -> Option<NodeId> {
-        let list: Vec<NodeId> = (0..page.nodes.len() as NodeId).filter(|n| reachable(page, rt, res, *n)).collect();
+        let list: Vec<NodeId> = page.node_ids().filter(|n| reachable(page, rt, res, *n)).collect();
         let pos = self.focus.and_then(|f| list.iter().position(|n| *n == f));
         match (pos, back) {
             (Some(i), false) => Some(list[(i + 1) % list.len()]),
@@ -1377,14 +1377,14 @@ impl Input {
     /// columns.
     fn arrow_target(&self, page: &Page, rt: &Runtime, res: &Resolved, rects: &[Rect], dx: f32, dy: f32) -> Option<NodeId> {
         let f = self.focus?;
-        let fr = rects[f as usize];
+        let fr = rects[f];
         let (cx, cy) = (fr.x + fr.w / 2.0, fr.y + fr.h / 2.0);
         let mut best: Option<(f32, NodeId)> = None;
-        for n in 0..page.nodes.len() as NodeId {
+        for n in page.node_ids() {
             if n == f || !reachable(page, rt, res, n) {
                 continue;
             }
-            let r = rects[n as usize];
+            let r = rects[n.index()];
             let (ex, ey) = (r.x + r.w / 2.0 - cx, r.y + r.h / 2.0 - cy);
             let ahead = ex * dx + ey * dy;
             if ahead <= 0.5 {
@@ -1402,7 +1402,7 @@ impl Input {
     /// edit bar's All (the shell answers that tap), same result as
     /// Ctrl+A. Returns false when no field holds focus.
     pub fn select_all(&mut self, page: &Page, rt: &mut Runtime) -> bool {
-        let Some(f) = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input) else { return false };
+        let Some(f) = self.focus.filter(|f| page.nodes[*f].kind == Kind::Input) else { return false };
         let len = input_text(page, rt, f).chars().count();
         self.anchor = Some(0).filter(|_| len > 0);
         self.caret = len;
@@ -1426,10 +1426,10 @@ impl Input {
                 // adjusts that end and never reaches the page (the bar
                 // stays up; adjusting is not dismissing).
                 let mut grabbed: Option<(NodeId, bool)> = None;
-                if let Some(f) = self.focus.filter(|f| page.nodes[*f as usize].kind == Kind::Input) {
+                if let Some(f) = self.focus.filter(|f| page.nodes[*f].kind == Kind::Input) {
                     if rt.sel_handles {
                         if let Some((lo, hi)) = self.selection() {
-                            let bottom = rects[f as usize].y + rects[f as usize].h;
+                            let bottom = rects[f].y + rects[f].h;
                             let xlo = x_from_index(page, rt, res, rects, measure, f, lo);
                             let xhi = x_from_index(page, rt, res, rects, measure, f, hi);
                             let grab = |x: f32| {
@@ -1478,7 +1478,7 @@ impl Input {
                         let axes = scroll_axes(page, res, f.scroll);
                         apply_accum(rt, rects, f.scroll, range, axes, &mut accum);
                         caught_accum = Some((f.scroll, accum));
-                        self.expected = Some((f.scroll, rt.scroll[f.scroll as usize]));
+                        self.expected = Some((f.scroll, rt.scroll[f.scroll]));
                         (f.v[0].powi(2) + f.v[1].powi(2)).sqrt() >= CATCH_SPEED || raw != [0.0, 0.0]
                     }
                     fling => {
@@ -1492,7 +1492,7 @@ impl Input {
                     self.blur(page, rt, &mut events);
                     return events;
                 };
-                let kind = page.nodes[node as usize].kind;
+                let kind = page.nodes[node].kind;
                 if rt.disabled(page, node) {
                     return events;
                 }
@@ -1504,7 +1504,7 @@ impl Input {
                 let (node, kind) = match behavior {
                     Some(i) => {
                         let root = page.behaviors[i as usize].root;
-                        (root, page.nodes[root as usize].kind)
+                        (root, page.nodes[root].kind)
                     }
                     None => (node, kind),
                 };
@@ -1513,7 +1513,7 @@ impl Input {
                 // D129 — only caret controls warrant a tap ring), off
                 // to nothing otherwise (GPAR112 — the focus-loss commit
                 // door: Enter, blur; once per genuine change).
-                self.grant(page, rt, res, rects, Some(node).filter(|n| page.nodes[*n as usize].focusable), false, &mut events);
+                self.grant(page, rt, res, rects, Some(node).filter(|n| page.nodes[*n].focusable), false, &mut events);
                 if kind == Kind::Input && self.focus == Some(node) {
                     // The press puts the caret where it LANDED (it used
                     // to jump to the end of the text); a second press
@@ -1537,7 +1537,7 @@ impl Input {
                 }
                 let raw = event_action(page, node, "pointer");
                 if let Some(action) = raw {
-                    let r = rects[node as usize];
+                    let r = rects[node];
                     self.push_event(rt, &mut events, node, EventKind::Pointer { phase: Phase::Down, x: t.x - r.x, y: t.y - r.y }, Some(action));
                     self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum: [0.0; 2], value_from: 0.0, behavior: None, toggle_moved: false, release_owed: false, raw });
                     return events;
@@ -1586,7 +1586,7 @@ impl Input {
                 // the pan continues from the pull, not from the edge.
                 let accum = match (scroll, caught_accum) {
                     (Some(s), Some((cs, a))) if s == cs => a,
-                    (Some(s), _) => rt.scroll[s as usize],
+                    (Some(s), _) => rt.scroll[s],
                     (None, _) => [0.0; 2],
                 };
                 self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum, value_from, behavior, toggle_moved: false, release_owed: pressed, raw: None });
@@ -1609,7 +1609,7 @@ impl Input {
                     // here, and a raw owner hears the cancel (it would
                     // otherwise keep its grab until the next touch).
                     if let Some(action) = p.raw {
-                        let r = rects[p.node as usize];
+                        let r = rects[p.node];
                         self.push_event(rt, &mut events, p.node, EventKind::Pointer { phase: Phase::Cancel, x: t.x - r.x, y: t.y - r.y }, Some(action));
                     }
                     self.release(page, rt, &mut events, &mut p);
@@ -1618,7 +1618,7 @@ impl Input {
                     return events;
                 }
                 if let Some(action) = p.raw {
-                    let r = rects[p.node as usize];
+                    let r = rects[p.node];
                     self.push_event(rt, &mut events, p.node, EventKind::Pointer { phase: Phase::Move, x: t.x - r.x, y: t.y - r.y }, Some(action));
                     p.last = (t.x, t.y);
                     p.last_t = t.t;
@@ -1648,7 +1648,7 @@ impl Input {
                                 p.panning = true;
                                 self.release(page, rt, &mut events, &mut p);
                                 self.cancel_press(page, rt, &mut events, &p);
-                                p.accum = rt.scroll[scroll as usize];
+                                p.accum = rt.scroll[scroll];
                             }
                             None => p.scroll = None,
                         }
@@ -1723,14 +1723,14 @@ impl Input {
                             p.accum[1] -= delta.1;
                         }
                         apply_accum(rt, rects, scroll, range, axes, &mut p.accum);
-                        self.expected = Some((scroll, rt.scroll[scroll as usize]));
+                        self.expected = Some((scroll, rt.scroll[scroll]));
                     }
                 }
                 if p.kind.is_press_surface() && !p.panning && !p.caught_fling {
                     // Slide-off clears the press, slide-back re-arms it. The
                     // node's OWN rect decides, not the top-most hit — a
                     // plate opening over it mid-press is not a slide-off.
-                    let inside = rects[p.node as usize].contains(t.x, t.y);
+                    let inside = rects[p.node].contains(t.x, t.y);
                     rt.set_state(p.node, HELD, inside);
                 }
                 p.last = (t.x, t.y);
@@ -1755,7 +1755,7 @@ impl Input {
                 }
                 self.press = None;
                 if let Some(action) = p.raw {
-                    let r = rects[p.node as usize];
+                    let r = rects[p.node];
                     self.push_event(rt, &mut events, p.node, EventKind::Pointer { phase: t.phase, x: t.x - r.x, y: t.y - r.y }, Some(action));
                     return events;
                 }
@@ -1783,7 +1783,7 @@ impl Input {
                         if speed >= FLING_MIN_SPEED || raw != [0.0, 0.0] {
                             self.fling = Some(Fling { scroll, v, accum });
                         }
-                        self.expected = Some((scroll, rt.scroll[scroll as usize]));
+                        self.expected = Some((scroll, rt.scroll[scroll]));
                     }
                     return events;
                 }
@@ -1796,7 +1796,7 @@ impl Input {
                 }
                 // Released inside = inside the pressed node's OWN rect (a dialog
                 // opening under the finger does not turn the tap into a miss).
-                let inside = rects[p.node as usize].contains(t.x, t.y) && !(rt.disabled(page, p.node) || res.gone(page, p.node) || res.hidden(page, p.node));
+                let inside = rects[p.node].contains(t.x, t.y) && !(rt.disabled(page, p.node) || res.gone(page, p.node) || res.hidden(page, p.node));
                 // `tap_pulse=true`: the press feedback plays on the completed
                 // tap (the shipped `button.Pressed += Fx.TapPulse` hook —
                 // Godot's `pressed` fires on release, inside), a turnstile
@@ -1847,7 +1847,7 @@ impl Input {
                         // toggling-surface order above).
                         if let Some(list) = list_ancestor(page, p.node) {
                             if rt.tap_select(page, list, p.node) {
-                                self.push_event(rt, &mut events, list, EventKind::Change(Value::VIdent(page.nodes[p.node as usize].name)), event_action(page, list, "change"));
+                                self.push_event(rt, &mut events, list, EventKind::Change(Value::VIdent(page.nodes[p.node].name)), event_action(page, list, "change"));
                             }
                         }
                         self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
@@ -1881,18 +1881,18 @@ impl Input {
                         // is refused at build (G0069). Re-tapping the current
                         // pick stays pressed and reports nothing.
                         let already = rt.has(p.node, SELECTED);
-                        let choice = page.nodes[p.node as usize].choice;
+                        let choice = page.nodes[p.node].choice;
                         let mut change_action: Option<Action> = None;
                         if choice != NO_CHOICE {
                             for (i, n) in page.nodes.iter().enumerate() {
                                 if n.kind == Kind::Radio && n.choice == choice {
-                                    rt.set_state(i as NodeId, SELECTED, i as NodeId == p.node);
+                                    rt.set_state(NodeId::from_index(i), SELECTED, NodeId::from_index(i) == p.node);
                                 }
                             }
                             change_action = page.choices[choice as usize].action;
                         }
                         if !already {
-                            self.push_event(rt, &mut events, p.node, EventKind::Change(Value::VIdent(page.nodes[p.node as usize].name)), change_action);
+                            self.push_event(rt, &mut events, p.node, EventKind::Change(Value::VIdent(page.nodes[p.node].name)), change_action);
                         }
                         self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                     }
@@ -1931,7 +1931,7 @@ impl Input {
         }
         let Some(mut f) = self.fling else { return false };
         if let Some((s, expected)) = self.expected {
-            if s == f.scroll && rt.scroll[s as usize] != expected {
+            if s == f.scroll && rt.scroll[s] != expected {
                 self.fling = None;
                 self.expected = None;
                 return false;
@@ -1939,7 +1939,7 @@ impl Input {
         }
         let axes = scroll_axes(page, res, f.scroll);
         let range = scroll_range(page, res, rects, f.scroll);
-        let before = rt.scroll[f.scroll as usize];
+        let before = rt.scroll[f.scroll];
         for i in 0..2 {
             let on = if i == 0 { axes.0 } else { axes.1 };
             if !on {
@@ -1956,17 +1956,17 @@ impl Input {
             f.accum[i] += f.v[i] * dt;
         }
         let raw = apply_accum(rt, rects, f.scroll, range, axes, &mut f.accum);
-        let moved = rt.scroll[f.scroll as usize] != before;
+        let moved = rt.scroll[f.scroll] != before;
         let speed = (f.v[0].powi(2) + f.v[1].powi(2)).sqrt();
         if speed < FLING_MIN_SPEED && (raw[0].powi(2) + raw[1].powi(2)).sqrt() < 0.75 {
             // Landed: exactly on the clamped position, nothing left to do.
             let mut accum = [f.accum[0].clamp(0.0, range[0]), f.accum[1].clamp(0.0, range[1])];
             apply_accum(rt, rects, f.scroll, range, axes, &mut accum);
-            self.expected = Some((f.scroll, rt.scroll[f.scroll as usize]));
+            self.expected = Some((f.scroll, rt.scroll[f.scroll]));
             self.fling = None;
             return moved;
         }
-        self.expected = Some((f.scroll, rt.scroll[f.scroll as usize]));
+        self.expected = Some((f.scroll, rt.scroll[f.scroll]));
         self.fling = Some(f);
         true
     }
@@ -2020,7 +2020,7 @@ mod tests {
         let b = fx.page.find("b").unwrap();
         let (_, rects) = fx.lay();
         fx.rt.glide(rects.clone());
-        let r = rects[b as usize];
+        let r = rects[b];
         let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         fx.touch(Phase::Down, x, y, 0.0);
         assert_eq!(fx.rt.tap_pulse_angle(b), 0.0, "a press alone swings nothing (shipped: the pulse rode `pressed`, the completed tap)");
@@ -2030,7 +2030,7 @@ mod tests {
         let angle = fx.rt.tap_pulse_angle(b);
         assert!((angle - crate::runtime::TAP_PULSE_ANGLE_DEG).abs() < 0.01, "fully out at the end of the out phase: {angle}");
         let res = resolve(&fx.page, &fx.rt);
-        let m = res.motion[b as usize];
+        let m = res.motion[b];
         assert!((m.scale[0] - angle.to_radians().cos()).abs() < 1e-4, "{m:?}");
         assert_eq!(m.scale[1], 1.0, "a turnstile keeps its height");
         // The drawn left edge: a center-pivot shrink puts it at x + (w - w*sx)/2; translate.x takes that back.
@@ -2040,7 +2040,7 @@ mod tests {
         assert_eq!(fx.rt.tap_pulse_angle(b), 0.0, "disarmed");
         assert!(!fx.rt.animating());
         let res = resolve(&fx.page, &fx.rt);
-        assert_eq!(res.motion[b as usize], crate::anim::Motion::IDENTITY, "no standing transform after the swing");
+        assert_eq!(res.motion[b], crate::anim::Motion::IDENTITY, "no standing transform after the swing");
         // A second tap mid-swing restarts the node's swing (one live play per target).
         fx.touch(Phase::Down, x, y, 1.0);
         fx.touch(Phase::Up, x, y, 1.1);
@@ -2053,7 +2053,7 @@ mod tests {
         let mut plain = Fx::new("View v { Button b width=200, height=50 }");
         let b2 = plain.page.find("b").unwrap();
         let (_, rects) = plain.lay();
-        let r = rects[b2 as usize];
+        let r = rects[b2];
         plain.touch(Phase::Down, r.x + 1.0, r.y + 1.0, 0.0);
         plain.touch(Phase::Up, r.x + 1.0, r.y + 1.0, 0.1);
         assert!(!plain.rt.animating());
@@ -2069,24 +2069,24 @@ mod tests {
         let src = "control S $value=0, $min=0, $max=10 {\n behavior slider by $value in $min..$max\n Layers width=fill, height=20 { slot track width=fill, height=fill { Rectangle width=fill, height=fill } }\n}\nView v {\n Column {\n  S a width=fill\n  Layers b interactive=true, width=fill, height=40, on:pointer=raw\n  Button c tap_pulse=true, width=fill, height=30\n  Button d width=fill, height=30\n }\n}\n";
         let mut fx = Fx::new(src);
         let (a, b, c, d) = (fx.page.find("a").unwrap(), fx.page.find("b").unwrap(), fx.page.find("c").unwrap(), fx.page.find("d").unwrap());
-        assert!(fx.page.nodes[a as usize].subtree_end > b, "the precondition: b's index sits inside a's range");
+        assert!(fx.page.subtree_end(a) > b, "the precondition: b's index sits inside a's range");
         assert!(!fx.page.is_under(b, a) && fx.page.is_under(a, a));
         let (_, rects) = fx.lay();
-        let rb = rects[b as usize];
+        let rb = rects[b];
         let ev = fx.touch(Phase::Down, rb.x + 5.0, rb.y + 5.0, 0.0);
         assert!(ev.iter().all(|e| e.node == b && matches!(e.kind, EventKind::Pointer { .. })), "the raw surface's own pointer, not the slider's drag: {ev:?}");
         fx.touch(Phase::Up, rb.x + 5.0, rb.y + 5.0, 0.1);
         // A swing on c: d's drawn rect stands where the layout put it.
         fx.rt.glide(rects.clone());
-        let rc = rects[c as usize];
+        let rc = rects[c];
         fx.touch(Phase::Down, rc.x + 5.0, rc.y + 5.0, 1.0);
         fx.touch(Phase::Up, rc.x + 5.0, rc.y + 5.0, 1.1);
         fx.rt.tick(&mut fx.page, 0.04);
         let res = resolve(&fx.page, &fx.rt);
-        assert!(res.motion[c as usize].scale[0] < 1.0, "c swings");
+        assert!(res.motion[c].scale[0] < 1.0, "c swings");
         let drawn = crate::draw::moved_rects(&fx.page, &res, &rects).expect("something moves");
-        assert_eq!(drawn[d as usize], rects[d as usize], "d is not under c");
-        assert_ne!(drawn[c as usize], rects[c as usize]);
+        assert_eq!(drawn[d], rects[d], "d is not under c");
+        assert_ne!(drawn[c], rects[c]);
     }
 
     #[test]
@@ -2175,23 +2175,23 @@ mod tests {
         fx.touch(Phase::Move, 50.0, 20.0, 0.02);
         assert!(!fx.rt.has(a, HELD), "past the deadzone the Scroll owns the gesture");
         // The pan starts from where the deadzone broke, not from the press.
-        assert_eq!(fx.rt.scroll[s as usize][1], 25.0);
+        assert_eq!(fx.rt.scroll[s][1], 25.0);
         let ev = fx.touch(Phase::Up, 50.0, 10.0, 0.03);
         assert!(ev.is_empty(), "a pan never activates");
         assert!(fx.input.fling.is_some());
-        let before = fx.rt.scroll[s as usize][1];
+        let before = fx.rt.scroll[s][1];
         assert!(fx.tick(0.016));
-        assert!(fx.rt.scroll[s as usize][1] > before, "the glide keeps going");
+        assert!(fx.rt.scroll[s][1] > before, "the glide keeps going");
         // Content is 400 tall in a 200 viewport: past 200 only by the soft
         // give, and the spring brings it home.
         let mut peak = 0.0f32;
         for _ in 0..400 {
             fx.tick(0.016);
-            peak = peak.max(fx.rt.scroll[s as usize][1]);
+            peak = peak.max(fx.rt.scroll[s][1]);
         }
         assert!(peak <= 250.0, "overscroll is capped at a quarter viewport: {peak}");
         assert!(fx.input.fling.is_none());
-        assert_eq!(fx.rt.scroll[s as usize][1], 200.0, "landed exactly on the edge");
+        assert_eq!(fx.rt.scroll[s][1], 200.0, "landed exactly on the edge");
         // Touching a FAST-gliding list stops it without pressing what is under the finger.
         fx.input.fling = Some(Fling { scroll: s, v: [0.0, -500.0], accum: [0.0, 100.0] });
         fx.touch(Phase::Down, 50.0, 50.0, 2.0);
@@ -2255,7 +2255,7 @@ mod tests {
         fx.touch(Phase::Down, 200.0, 20.0, 0.0);
         fx.touch(Phase::Move, 240.0, 22.0, 0.1);
         fx.touch(Phase::Move, 280.0, 24.0, 0.2);
-        assert_eq!(fx.rt.scroll[page as usize], [0.0, 0.0], "a sideways drag never scrolls the page");
+        assert_eq!(fx.rt.scroll[page], [0.0, 0.0], "a sideways drag never scrolls the page");
         let ev = fx.touch(Phase::Up, 280.0, 24.0, 0.3);
         let changed = ev.iter().find_map(|e| if let EventKind::Change(Value::VNum(v)) = e.kind { Some(v) } else { None }).unwrap_or_else(|| panic!("the slider changed: {ev:?}"));
         assert!(changed > 65.0 && changed < 75.0, "{changed}");
@@ -2268,7 +2268,7 @@ mod tests {
         }
         fx.touch(Phase::Move, 102.0, -10.0, 1.1);
         fx.touch(Phase::Move, 104.0, -50.0, 1.2);
-        assert!(fx.rt.scroll[page as usize][1] > 0.0, "the page took the drag");
+        assert!(fx.rt.scroll[page][1] > 0.0, "the page took the drag");
         {
             let (res, _) = fx.lay();
             assert_eq!(value_of(&fx.rt, &res, &fx.page, s), changed, "the slider is back where the finger found it");
@@ -2281,7 +2281,7 @@ mod tests {
         fx.touch(Phase::Move, 130.0, 62.0, 0.1);
         fx.touch(Phase::Move, 160.0, 64.0, 0.2);
         assert!(fx.rt.has(b, HELD), "the button keeps a sideways drag");
-        assert_eq!(fx.rt.scroll[page as usize], [0.0, 0.0]);
+        assert_eq!(fx.rt.scroll[page], [0.0, 0.0]);
         let ev = fx.touch(Phase::Up, 160.0, 64.0, 0.3);
         assert!(ev.iter().any(|e| e.kind == EventKind::Activate), "{ev:?}");
         // Nested: a horizontal strip inside the vertical page.
@@ -2292,14 +2292,14 @@ mod tests {
         fx.touch(Phase::Down, 100.0, 30.0, 0.0);
         fx.touch(Phase::Move, 102.0, -10.0, 0.1);
         fx.touch(Phase::Move, 104.0, -50.0, 0.2);
-        assert!(fx.rt.scroll[page as usize][1] > 0.0, "up on the strip scrolls the page");
-        assert_eq!(fx.rt.scroll[strip as usize], [0.0, 0.0]);
+        assert!(fx.rt.scroll[page][1] > 0.0, "up on the strip scrolls the page");
+        assert_eq!(fx.rt.scroll[strip], [0.0, 0.0]);
         let mut fx = Fx::new(nested);
         fx.touch(Phase::Down, 300.0, 30.0, 0.0);
         fx.touch(Phase::Move, 260.0, 32.0, 0.1);
         fx.touch(Phase::Move, 220.0, 34.0, 0.2);
-        assert!(fx.rt.scroll[strip as usize][0] > 0.0, "sideways on the strip scrolls the strip");
-        assert_eq!(fx.rt.scroll[page as usize], [0.0, 0.0], "and not the page");
+        assert!(fx.rt.scroll[strip][0] > 0.0, "sideways on the strip scrolls the strip");
+        assert_eq!(fx.rt.scroll[page], [0.0, 0.0], "and not the page");
     }
 
     /// GPAR59: on every toggling surface `change` lands before `activate`
@@ -2312,7 +2312,7 @@ mod tests {
         let (_, rects) = fx.lay();
         for name in ["k", "tb", "t", "r2"] {
             let n = fx.page.find(name).unwrap();
-            let r = rects[n as usize];
+            let r = rects[n];
             fx.touch(Phase::Down, r.x + 5.0, r.y + r.h / 2.0, 0.0);
             let ev = fx.touch(Phase::Up, r.x + 5.0, r.y + r.h / 2.0, 0.1);
             let order: Vec<&str> = ev.iter().filter_map(|e| match e.kind { EventKind::Change(_) => Some("change"), EventKind::Activate => Some("activate"), _ => None }).collect();
@@ -2399,11 +2399,11 @@ mod tests {
         let b = fx.page.find("b").unwrap();
         fx.touch(Phase::Down, 100.0, 20.0, 0.0);
         fx.touch(Phase::Move, 102.0, -20.0, 0.1);
-        let y0 = fx.rt.scroll[page as usize][1];
+        let y0 = fx.rt.scroll[page][1];
         assert!(y0 > 0.0, "panning");
         fx.rt.set_visible(&mut fx.page, b, false);
         fx.touch(Phase::Move, 104.0, -60.0, 0.2);
-        assert!(fx.rt.scroll[page as usize][1] > y0, "the pan continues after the child hid");
+        assert!(fx.rt.scroll[page][1] > y0, "the pan continues after the child hid");
     }
 
     #[test]
@@ -2438,8 +2438,8 @@ mod tests {
         let mut fx = Fx::new("View v { Toggle t text=\"x\", halign=left, valign=top }");
         let t = fx.page.find("t").unwrap();
         let (res, rects) = fx.lay();
-        let tr = rects[t as usize];
-        let pad = res.placement[t as usize].padding[0];
+        let tr = rects[t];
+        let pad = res.placement[t].padding[0];
         fx.touch(Phase::Down, tr.x + pad + 5.0, tr.y + 5.0, 1.0);
         let ev = fx.touch(Phase::Up, tr.x + pad + 5.0, tr.y + 5.0, 1.1);
         assert!(fx.rt.has(t, SELECTED));
@@ -2486,7 +2486,7 @@ mod tests {
         let d = fx.page.find("d").unwrap();
         assert!(fx.rt.has(a, SELECTED));
         let (_, rects) = fx.lay();
-        let rd = rects[d as usize];
+        let rd = rects[d];
         fx.touch(Phase::Down, rd.x + 5.0, rd.y + 5.0, 0.0);
         let ev = fx.touch(Phase::Up, rd.x + 5.0, rd.y + 5.0, 0.1);
         assert!(fx.rt.has(d, SELECTED) && !fx.rt.has(a, SELECTED), "the cousin in the Row cleared");
@@ -2517,7 +2517,7 @@ mod tests {
         assert!(fx.rt.has(b, HELD));
         fx.touch(Phase::Up, 10.0, 10.0, 1.1);
         let (_, rects) = fx.lay();
-        let sr = rects[s as usize];
+        let sr = rects[s];
         fx.touch(Phase::Down, sr.x + 8.0, sr.y + 8.0, 2.0);
         fx.touch(Phase::Move, sr.x + 100.0, sr.y + 8.0, 2.1);
         fx.rt.set_state(s, DISABLED, true);
@@ -2546,9 +2546,9 @@ mod tests {
         let mut fx = Fx::new("arrangement open\nView v { Button b width=100, height=40, halign=left, valign=top, on:activate=toggle(open) }");
         fx.touch(Phase::Down, 10.0, 10.0, 0.0);
         fx.touch(Phase::Up, 10.0, 10.0, 0.1);
-        assert_eq!(fx.rt.arrangement, 0);
+        assert_eq!(fx.rt.arrangement, ArrangementId::new(0));
         fx.touch(Phase::Down, 10.0, 10.0, 1.0);
         fx.touch(Phase::Up, 10.0, 10.0, 1.1);
-        assert_eq!(fx.rt.arrangement, u32::MAX);
+        assert_eq!(fx.rt.arrangement, BASE);
     }
 }

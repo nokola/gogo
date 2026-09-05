@@ -118,7 +118,7 @@ fn superseded_player_keeps_its_clock_and_hands_over_the_base() {
     let mut rt = Runtime::new(&page);
     rt.show(&mut page, a, false);
     rt.tick(&mut page, 0.1);
-    rt.play(&page, blink, Finish::Nothing);
+    rt.play_id(&page, blink, Finish::Nothing);
     rt.tick(&mut page, 0.3);
     assert!(!resolve(&page, &rt).gone(&page, a), "blink done, fade still has 0.6 s to run");
     rt.tick(&mut page, 0.65);
@@ -126,21 +126,21 @@ fn superseded_player_keeps_its_clock_and_hands_over_the_base() {
 
     // A partly superseded player stops writing the channel it lost.
     let mut rt = Runtime::new(&page);
-    rt.play(&page, slide, Finish::Nothing);
+    rt.play_id(&page, slide, Finish::Nothing);
     rt.tick(&mut page, 0.2);
-    rt.play(&page, hold, Finish::Nothing);
+    rt.play_id(&page, hold, Finish::Nothing);
     rt.tick(&mut page, 0.3);
-    assert!((rt.motion[a as usize].opacity - 0.8).abs() < 1e-4, "slide no longer writes opacity: {}", rt.motion[a as usize].opacity);
-    assert!((rt.motion[a as usize].translate[0] - 50.0).abs() < 1e-3, "slide still slides: {}", rt.motion[a as usize].translate[0]);
+    assert!((rt.motion[a.index()].opacity - 0.8).abs() < 1e-4, "slide no longer writes opacity: {}", rt.motion[a.index()].opacity);
+    assert!((rt.motion[a.index()].translate[0] - 50.0).abs() < 1e-3, "slide still slides: {}", rt.motion[a.index()].translate[0]);
 
     // The taker inherits the true base: stop(restore) goes back to 1.0.
     let mut rt = Runtime::new(&page);
-    rt.play(&page, fade, Finish::Nothing);
+    rt.play_id(&page, fade, Finish::Nothing);
     rt.tick(&mut page, 0.5);
-    rt.play(&page, blink, Finish::Nothing);
+    rt.play_id(&page, blink, Finish::Nothing);
     rt.tick(&mut page, 0.05);
-    rt.stop(blink, true);
-    assert_eq!(rt.motion[a as usize].opacity, 1.0, "restored to the pre-fade value, not fade's mid-flight 0.5");
+    rt.stop_id(blink, true);
+    assert_eq!(rt.motion[a.index()].opacity, 1.0, "restored to the pre-fade value, not fade's mid-flight 0.5");
 }
 
 /// GPAR37: a written ceiling is hard — a capped box keeps the cap and
@@ -154,15 +154,15 @@ fn a_written_ceiling_clips_what_pokes_past_it() {
     let res = resolve(page, &rt);
     let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
     let list = draw(page, &res, &rects);
-    let plate = rects[page.find("plate").unwrap() as usize];
-    let l = rects[page.find("l").unwrap() as usize];
+    let plate = rects[(page.find("plate").unwrap()).index()];
+    let l = rects[(page.find("l").unwrap()).index()];
     assert_eq!(plate.w, 100.0, "the cap holds: {plate:?}");
     assert!(l.w > 100.0, "the label keeps the width its text needs (text does not bend to a box): {l:?}");
     let clips: Vec<Rect> = list.iter().filter_map(|d| if let Draw::ClipPush(r) = d { Some(*r) } else { None }).collect();
     assert!(clips.contains(&plate), "the capped plate clips: {clips:?}");
-    assert!(clips.contains(&rects[page.find("cap").unwrap() as usize]), "a capped Label cuts its text: {clips:?}");
+    assert!(clips.contains(&rects[(page.find("cap").unwrap()).index()]), "a capped Label cuts its text: {clips:?}");
     assert_eq!(clips.len(), 2, "the uncapped box clips nothing: {clips:?}");
-    assert_eq!(rects[page.find("loose").unwrap() as usize].w, 300.0, "an unwritten size grows around its content");
+    assert_eq!(rects[(page.find("loose").unwrap()).index()].w, 300.0, "an unwritten size grows around its content");
 }
 
 /// GPAR40 (exact half): an exact-sized box cuts a child that pokes past it
@@ -178,7 +178,7 @@ fn an_exact_size_clips_but_a_written_overhang_stays() {
     let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
     let list = draw(page, &res, &rects);
     let clips: Vec<Rect> = list.iter().filter_map(|d| if let Draw::ClipPush(r) = d { Some(*r) } else { None }).collect();
-    let rect = |n: &str| rects[page.find(n).unwrap() as usize];
+    let rect = |n: &str| rects[(page.find(n).unwrap()).index()];
     assert_eq!(rect("box").w, 100.0);
     assert!(clips.contains(&rect("box")), "an exact box cuts the poking child: {clips:?}");
     assert!(!clips.contains(&rect("hang")), "a negative-margin hang is written: {clips:?}");
@@ -202,7 +202,7 @@ fn a_filler_inside_a_written_box_takes_the_box() {
     let rt = Runtime::new(page);
     let res = resolve(page, &rt);
     let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 60.0), &FixedAdvance);
-    let rect = |n: &str| rects[page.find(n).unwrap() as usize];
+    let rect = |n: &str| rects[(page.find(n).unwrap()).index()];
     assert_eq!(rect("box").h, 80.0);
     assert_eq!(rect("filler").h, 80.0, "the filler takes the written 80: {:?}", rect("filler"));
     assert_eq!(rect("deeper").h, 80.0, "written flows down through fillers: {:?}", rect("deeper"));
@@ -214,7 +214,7 @@ fn a_filler_inside_a_written_box_takes_the_box() {
     let rt = Runtime::new(page);
     let res = resolve(page, &rt);
     let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 60.0), &FixedAdvance);
-    let free = rects[page.find("free").unwrap() as usize];
+    let free = rects[(page.find("free").unwrap()).index()];
     assert_eq!(free.h, 150.0, "a filler of the viewport still floors at its content: {free:?}");
     assert_eq!(rect("hfill").h, 150.0, "a hug box is sized by content, so is its filler: {:?}", rect("hfill"));
     assert_eq!(rect("floored").h, 100.0, "a min_height floor is a written number and wins: {:?}", rect("floored"));
@@ -234,7 +234,7 @@ fn a_negative_margin_hangs_out_and_is_not_claimed() {
     let rt = Runtime::new(page);
     let res = resolve(page, &rt);
     let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 380.0), &FixedAdvance);
-    let rect = |n: &str| rects[page.find(n).unwrap() as usize];
+    let rect = |n: &str| rects[(page.find(n).unwrap()).index()];
     assert_eq!(rect("plate").w, 70.0, "the hanging 30 is not claimed: {:?}", rect("plate"));
     assert_eq!(rect("r").w, 100.0, "the child is still 100 wide and hangs out: {:?}", rect("r"));
     assert_eq!(rect("plate2").w, 130.0, "a positive margin is space to keep: {:?}", rect("plate2"));
@@ -254,7 +254,7 @@ fn offscreen_names_shoved_nodes_not_parked_ones() {
     let rt = Runtime::new(page);
     let res = resolve(page, &rt);
     let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
-    let names: Vec<&str> = gogo::layout::offscreen(page, &res, &rects, Rect::new(0.0, 0.0, 400.0, 400.0)).iter().map(|id| page.str(page.nodes[*id as usize].name)).collect();
+    let names: Vec<&str> = gogo::layout::offscreen(page, &res, &rects, Rect::new(0.0, 0.0, 400.0, 400.0)).iter().map(|id| page.str(page.nodes[id.index()].name)).collect();
     assert_eq!(names, vec!["low"], "{rects:?}");
 }
 
@@ -271,7 +271,7 @@ fn margins_never_stretch_a_hug_box() {
     let rt = Runtime::new(page);
     let res = resolve(page, &rt);
     let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
-    let rect = |n: &str| rects[page.find(n).unwrap() as usize];
+    let rect = |n: &str| rects[(page.find(n).unwrap()).index()];
     let card = rect("card");
     assert_eq!(card.w, 50.0, "hug keeps its content width: {card:?}");
     assert_eq!(card.x, 8.0, "pinned 8 in from the near edge: {card:?}");
@@ -289,7 +289,7 @@ fn margins_never_stretch_a_hug_box() {
 fn scale_shrinks_glyphs_corners_and_borders_with_the_box() {
     let c = ok("arrangement small\nView v {\n Button b text=\"OK\", width=100, height=40, halign=left, valign=top, corner_radius=8, border_thickness=2, border_color=#FF0000FF, font_size=20\n}\nwhen small { b.scale = 0.5 }\n");
     let mut rt = Runtime::new(&c.page);
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     let list = draws(&c.page, &rt);
     // The plate: half the box (about its center), half the corner, half the border.
     let plate = list
@@ -325,7 +325,7 @@ fn clipped_overflow_is_not_hit_testable() {
     let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
     let b = page.find("b").unwrap();
     let b2 = page.find("b2").unwrap();
-    assert_eq!(rects[b as usize].w, 300.0, "the Button keeps its written width");
+    assert_eq!(rects[b.index()].w, 300.0, "the Button keeps its written width");
     assert_eq!(hit(page, &res, &rects, 50.0, 20.0, false), Some(b), "the visible half taps");
     assert_eq!(hit(page, &res, &rects, 250.0, 20.0, false), None, "the clipped half takes no taps");
     assert_eq!(hit(page, &res, &rects, 250.0, 120.0, false), Some(b2), "under a hug parent the same spot still taps");
@@ -342,7 +342,7 @@ fn hit_follows_the_drawn_rect_during_motion() {
     let b = page.find("b").unwrap();
     let mut rt = Runtime::new(&page);
     let slide = page.intern("slide");
-    rt.play(&page, slide, Finish::Nothing);
+    rt.play_id(&page, slide, Finish::Nothing);
     rt.tick(&mut page, 0.5);
     let res = resolve_animated(&page, &mut rt);
     let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);

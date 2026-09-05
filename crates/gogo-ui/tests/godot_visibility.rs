@@ -42,7 +42,7 @@ fn lay(page: &Page, rt: &Runtime, w: f32, h: f32) -> (Resolved, Vec<Rect>) {
 }
 
 fn rect_of(page: &Page, rects: &[Rect], name: &str) -> Rect {
-    rects[page.find(name).unwrap_or_else(|| panic!("no node {name}")) as usize]
+    rects[(page.find(name).unwrap_or_else(|| panic!("no node {name}"))).index()]
 }
 
 fn size_of(page: &Page, rects: &[Rect], name: &str) -> (f32, f32) {
@@ -115,7 +115,7 @@ fn slot_keeping_space_only_works_under_containers_too() {
     let rt = Runtime::new(&c.page);
     let res = resolve(&c.page, &rt);
     let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
-    let after = rects[c.page.find("after").unwrap() as usize];
+    let after = rects[(c.page.find("after").unwrap()).index()];
     assert_eq!(after.y, 10.0, "the seat holds its 10-epx slot: {rects:?}");
 }
 

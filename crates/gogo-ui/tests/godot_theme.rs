@@ -116,7 +116,7 @@ impl Fx {
     }
 
     fn rect(&self, name: &str) -> Rect {
-        self.rects[self.id(name) as usize]
+        self.rects[(self.id(name)).index()]
     }
 
     fn font(&self, name: &str) -> String {
@@ -140,7 +140,7 @@ impl Fx {
             .find_map(|d| match d {
                 Draw::Text { text, key, .. } => {
                     let shown = display(&self.page, self.rt.locale.as_deref(), *text, *key);
-                    let name = if *key == NO_KEY { String::new() } else { self.keys.names[*key as usize].clone() };
+                    let name = if *key == NO_KEY { String::new() } else { self.keys.names[key.index()].clone() };
                     shown.starts_with(starts).then(|| (shown.to_string(), name))
                 }
                 _ => None,
@@ -232,7 +232,7 @@ fn numeric_theme_value_feeds_font_size_through_a_chain() {
 fn numeric_theme_value_feeds_length_props() {
     let src = "$rowFont = 14\n$rowFont2 = $rowFont\nView v { Label t text=\"x\", font_size=$rowFont2, min_width=$rowFont, halign=left, valign=top }\n";
     let fx = Fx::new(src);
-    assert_eq!(fx.res.placement[fx.id("t") as usize].min_width, 14.0);
+    assert_eq!(fx.res.placement[(fx.id("t")).index()].min_width, 14.0);
     assert_eq!(fx.rect("t").w, 14.0, "{:?}", fx.rect("t"));
 }
 
@@ -364,7 +364,7 @@ fn theme_block_refuses_layout_props_and_stray_entries() {
 #[test]
 fn style_props_apply_and_local_props_win() {
     let fx = Fx::new("style Tool min_height=36, text=\"styled\"\nView v { Column c {\n    Button a .Tool\n    Button b .Tool text=\"local wins\"\n} }\n");
-    assert_eq!(fx.res.placement[fx.id("a") as usize].min_height, 36.0);
+    assert_eq!(fx.res.placement[(fx.id("a")).index()].min_height, 36.0);
     assert_eq!(fx.text("a"), "styled");
     assert_eq!(fx.text("b"), "local wins");
 }
@@ -582,7 +582,7 @@ fn literal_shows_and_the_key_rides_with_the_text() {
 fn locale_table_translates_and_falls_back() {
     static XX: &[(&str, &str)] = &[("trGreet", "hello"), ("trBye", "goodbye"), ("4by3", "4:3")];
     let src = "View v { Column c {\n    Label a text=\"hello\"/trGreet\n    Label b text=\"goodbye\"/trBye\n    Label d text=\"4:3\"/4by3\n} }\n";
-    let mut fx = Fx::with_locale(src, Locale::build(XX, &[(0, "bonjour"), (2, "4:3-XX")]));
+    let mut fx = Fx::with_locale(src, Locale::build(XX, &[(gogo::KeyId::new(0), "bonjour"), (gogo::KeyId::new(2), "4:3-XX")]));
     assert_eq!(fx.keys.names, ["trGreet", "trBye", "4by3"], "the ids the table above indexes");
     assert_eq!(fx.drawn_text("bonjour"), ("bonjour".to_string(), "trGreet".to_string()), "trGreet translated");
     assert_eq!(fx.drawn_text("goodbye").0, "goodbye", "a key the table lacks falls back to the literal");
@@ -967,8 +967,8 @@ fn knob_instance_line_builds() {
 #[test]
 fn instance_line_size_arg_sizes_the_instance() {
     let fx = Fx::new("widget W {\n    Layers body { Rectangle r 10x10 }\n}\nView v { W k 96x96, halign=left, valign=top }\n");
-    let root = fx.res.children(&fx.page, 0)[0];
-    let r = fx.rects[root as usize];
+    let root = fx.res.children(&fx.page, NodeId::new(0))[0];
+    let r = fx.rects[root.index()];
     assert_eq!((r.w, r.h), (96.0, 96.0), "{r:?}");
 }
 

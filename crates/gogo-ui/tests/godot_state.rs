@@ -64,7 +64,7 @@ impl Fx {
         let rt = Runtime::new(&c.page);
         Fx { page: c.page, rt, input: Input::new() }
     }
-    fn id(&self, name: &str) -> u32 {
+    fn id(&self, name: &str) -> gogo::NodeId {
         self.page.find(name).unwrap_or_else(|| panic!("no node {name:?}"))
     }
     /// The frame's values with tweens applied (the Godot `_process` view).
@@ -81,7 +81,7 @@ impl Fx {
         draw(&self.page, &res, &rects)
     }
     fn rect(&mut self, name: &str) -> Rect {
-        let id = self.id(name) as usize;
+        let id = (self.id(name)).index();
         self.lay().1[id]
     }
     /// Godot's `for i in 20: st._process(0.016)`.
@@ -125,7 +125,7 @@ fn rgba(hex: u32) -> Option<Color_Straight_Srgb_4xU8_RGBA> {
 fn style_whens_attach_and_selected_round_trips() {
     let mut fx = Fx::new("style Gallery {\n    transition any -> selected duration=0.1, easing=cubic_out\n    when held background=#FFFFFF22\n    when selected background=#E51400FF\n}\nView v { Button row .Gallery toggle=true, text=\"paint\" }");
     let row = fx.id("row");
-    let node = fx.page.nodes[row as usize];
+    let node = fx.page.nodes[row.index()];
     let states: Vec<State> = fx.page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize].iter().map(|w| w.state).collect();
     assert!(states.contains(&State::Held) && states.contains(&State::Selected), "{states:?}");
     let rule = fx.page.transitions.iter().find(|t| t.node == row && t.to == Some(State::Selected)).copied();
@@ -147,7 +147,7 @@ fn style_whens_attach_and_selected_round_trips() {
 fn node_level_when_builds_and_attaches() {
     let c = ok("View v { Button b text=\"x\" {\n    when held background=#B00020FF\n} }");
     let b = c.page.find("b").unwrap();
-    let node = c.page.nodes[b as usize];
+    let node = c.page.nodes[b.index()];
     // held (authored) + the injected default focus ring (D129, GP26).
     assert_eq!(node.whens.1, 2, "{:?}", c.page.whens);
     assert_eq!(c.page.whens[node.whens.0 as usize].state, State::Held);
@@ -221,7 +221,7 @@ fn press_anim_transitions_build() {
 #[ignore = "GP31: not ported: `transition … anim=` never plays"]
 fn press_anim_plays_and_the_exit_reverts_the_scale() {
     let mut fx = Fx::new("style Press {\n    transition duration=0.08\n    when held background=#FFFFFFFF\n    transition any -> held anim=shrink\n}\nanim shrink { b.scale to=0.2, duration=0.1 }\nView v { Button b .Press text=\"press\", halign=left, valign=top }");
-    let b = fx.id("b") as usize;
+    let b = (fx.id("b")).index();
     fx.touch(Phase::Down, 5.0, 5.0, 0.0);
     fx.rt.tick(&mut fx.page, 0.2);
     fx.res();
@@ -239,7 +239,7 @@ fn press_anim_plays_and_the_exit_reverts_the_scale() {
 #[ignore = "GP31: not ported: `transition … anim=` never plays"]
 fn repress_mid_revert_adopts_the_true_base() {
     let mut fx = Fx::new("style Press2 {\n    transition duration=0.3\n    when held background=#FFFFFFFF\n    transition any -> held anim=shrink2\n}\nanim shrink2 { b.scale to=0.2, duration=0.1 }\nView v { Button b .Press2 text=\"press\", halign=left, valign=top }");
-    let b = fx.id("b") as usize;
+    let b = (fx.id("b")).index();
     fx.touch(Phase::Down, 5.0, 5.0, 0.0);
     fx.rt.tick(&mut fx.page, 0.2);
     fx.res();
@@ -350,11 +350,11 @@ fn padded_button_keeps_its_padding_through_a_press() {
     let p = fx.id("p");
     fx.rt.set_state(p, HELD, true);
     let res = fx.res();
-    assert_eq!(res.placement[p as usize].padding, [10.0; 4]);
+    assert_eq!(res.placement[p.index()].padding, [10.0; 4]);
     assert_eq!(fx.background("p"), rgba(0x00FF00FF));
     fx.rt.set_state(p, HELD, false);
     let res = fx.res();
-    assert_eq!(res.placement[p as usize].padding, [10.0; 4]);
+    assert_eq!(res.placement[p.index()].padding, [10.0; 4]);
     assert_eq!(fx.background("p"), None);
 }
 
@@ -486,7 +486,7 @@ fn transition_endpoint_alone_wires_held() {
 #[ignore = "GP31: not ported: `transition … anim=` never plays"]
 fn transition_endpoint_alone_plays_its_anim() {
     let mut fx = Fx::new(PULSE);
-    let sb = fx.id("saveButton") as usize;
+    let sb = (fx.id("saveButton")).index();
     let r = fx.rect("saveButton");
     fx.touch(Phase::Down, r.x + 5.0, r.y + 5.0, 0.0);
     fx.rt.tick(&mut fx.page, 0.06);
@@ -519,7 +519,7 @@ fn widget_instances_are_named_and_body_names_scoped() {
 fn widget_scoped_style_and_transition_anim_land_per_instance() {
     let c = ok("widget FxButton $text=\"\" {\n    anim pressFx {\n        caption.translate.x { key t=0, v=0; key t=0.1, v=3; key t=0.2, v=0 }\n    }\n    style Root background=#1F1F1FFF {\n        transition any -> held duration=0.05, anim=pressFx\n        when held background=#E51400FF\n    }\n    Button signals .Root {\n        Label caption text=$text\n    }\n}\nView v { Row r {\n    FxButton one text=\"Paint\"\n    FxButton two text=\"Undo\"\n} }");
     let one = c.page.find("one").unwrap();
-    let node = c.page.nodes[one as usize];
+    let node = c.page.nodes[one.index()];
     assert!(node.whens.1 >= 1, "the style's when landed on the instance root");
     let rule = c.page.transitions.iter().find(|t| t.node == one && t.to == Some(State::Held)).copied();
     assert!(matches!(rule, Some(t) if c.page.str(t.anim).ends_with("pressFx")), "{:?}", c.page.transitions);
@@ -711,7 +711,7 @@ fn stretchy_and_scrolled_sizes_stay_quiet() {
 #[test]
 fn explain_facts_placement_and_caps() {
     let mut fx = Fx::new("View v { Layers l { Button fab 50x50, halign=right, valign=bottom, margin=16 } }");
-    let fab = fx.id("fab") as usize;
+    let fab = (fx.id("fab")).index();
     let (res, rects) = fx.lay();
     let p = res.placement[fab];
     assert_eq!((p.halign, p.valign), (Align::End, Align::End), "{p:?}");
@@ -721,8 +721,8 @@ fn explain_facts_placement_and_caps() {
     assert_eq!(rects[fab], Rect::new(334.0, 334.0, 50.0, 50.0), "{:?}", rects[fab]);
 
     let mut fx = Fx::new("View v { Layers l {\n    Panel plate width=hug, max_width=fill, halign=center, valign=top,\n            margin_left=12, margin_right=12 { Label t text=\"x\" }\n    Panel numbox width=hug, max_width=90, valign=top { Label u text=\"y\" }\n} }");
-    let plate = fx.id("plate") as usize;
-    let numbox = fx.id("numbox") as usize;
+    let plate = (fx.id("plate")).index();
+    let numbox = (fx.id("numbox")).index();
     let res = fx.res();
     assert!(res.placement[plate].max_width_fill, "{:?}", res.placement[plate]);
     assert_eq!(res.placement[numbox].max_width, Some(90.0), "{:?}", res.placement[numbox]);

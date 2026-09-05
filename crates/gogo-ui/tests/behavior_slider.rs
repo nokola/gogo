@@ -183,7 +183,7 @@ fn the_fill_and_the_live_label_follow() {
     assert_eq!(frac, Some(1.0), "the fill follows to the end");
     fx.rt.tick(&mut fx.page, 0.016);
     let lab = fx.page.find("s/lab").unwrap();
-    let shown = fx.rt.owned_text[lab as usize];
+    let shown = fx.rt.owned_text[lab.index()];
     assert_ne!(shown, gogo::page::NO_STR, "the label rewrote");
     assert_eq!(fx.page.str(shown), "10");
 }

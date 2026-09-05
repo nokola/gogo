@@ -61,16 +61,16 @@ impl Fx {
         (res, rects)
     }
 
-    fn id(&self, name: &str) -> u32 {
+    fn id(&self, name: &str) -> gogo::NodeId {
         self.page.find(name).unwrap_or_else(|| panic!("no node named `{name}`"))
     }
 
     fn rect(&self, name: &str) -> Rect {
-        self.lay().1[self.id(name) as usize]
+        self.lay().1[self.id(name)]
     }
 
-    fn name_of(&self, id: u32) -> String {
-        self.page.str(self.page.nodes[id as usize].name).to_string()
+    fn name_of(&self, id: gogo::NodeId) -> String {
+        self.page.str(self.page.nodes[id].name).to_string()
     }
 
     /// The name of the node a touch at (x, y) lands on (`any` = the

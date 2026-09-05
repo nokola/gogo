@@ -81,12 +81,12 @@ fn drawn_texts(page: &Page) -> Vec<String> {
 fn text_of(page: &Page, id: NodeId) -> String {
     match page.prop(id, PropKey::Text) {
         Some(Value::VText { text, .. }) => page.str(text).to_string(),
-        other => panic!("node {id} has no text: {other:?}"),
+        other => panic!("node {id:?} has no text: {other:?}"),
     }
 }
 
 fn kids(page: &Page, id: NodeId) -> Vec<NodeId> {
-    page.children(id).map(|i| i as NodeId).collect()
+    page.children(id).collect()
 }
 
 fn find(page: &Page, name: &str) -> NodeId {
@@ -118,14 +118,14 @@ fn widget_instance_params_passthrough_and_bare_slot() {
     let c = ok(&format!("{LABELED_SLIDER}LabeledSlider sizeSlider label=\"Size\", min=1, max=300, value=80, min_width=240\n"));
     let p = &c.page;
     let root = find(p, "sizeSlider");
-    assert_eq!(p.nodes[root as usize].kind, Kind::Column, "{:?}", p.nodes[root as usize]);
-    assert_eq!(p.nodes[root as usize].placement.min_width, 240.0, "{:?}", p.nodes[root as usize].placement);
+    assert_eq!(p.nodes[root.index()].kind, Kind::Column, "{:?}", p.nodes[root.index()]);
+    assert_eq!(p.nodes[root.index()].placement.min_width, 240.0, "{:?}", p.nodes[root.index()].placement);
     let children = kids(p, root);
     assert_eq!(children.len(), 2, "{children:?}");
     let (label, slider) = (children[0], children[1]);
-    assert_eq!(p.nodes[label as usize].kind, Kind::Label);
+    assert_eq!(p.nodes[label.index()].kind, Kind::Label);
     assert_eq!(text_of(p, label), "Size");
-    assert_eq!(p.nodes[slider as usize].kind, Kind::Slider);
+    assert_eq!(p.nodes[slider.index()].kind, Kind::Slider);
     assert_eq!(p.prop(slider, PropKey::Max), Some(Value::VNum(300.0)), "{:?}", p.node_props(slider));
     assert_eq!(p.prop(slider, PropKey::Value), Some(Value::VNum(80.0)), "{:?}", p.node_props(slider));
     // The `signals` surface: an instance-line `on:change=` binds to the
@@ -133,7 +133,7 @@ fn widget_instance_params_passthrough_and_bare_slot() {
     let c = ok(&format!("{LABELED_SLIDER}View v {{ LabeledSlider sizeSlider label=\"Size\", min=1, max=300, value=80, on:change=sizeChanged }}\n"));
     let p = &c.page;
     let slider = kids(p, find(p, "sizeSlider"))[1];
-    let handlers = &p.handlers[p.nodes[slider as usize].handlers.0 as usize..(p.nodes[slider as usize].handlers.0 + p.nodes[slider as usize].handlers.1) as usize];
+    let handlers = &p.handlers[p.nodes[slider.index()].handlers.0 as usize..(p.nodes[slider.index()].handlers.0 + p.nodes[slider.index()].handlers.1) as usize];
     assert!(handlers.iter().any(|h| p.str(h.event) == "change" && matches!(h.action, gogo::page::Action::Named(n) if p.str(n) == "sizeChanged")), "{handlers:?}");
 
     let c = ok("widget Card $title=\"?\" {\n Column {\n  Label text=$title\n  slot\n }\n}\nCard c title=\"Box\" { Button inner text=\"In the slot\" }\n");
@@ -141,7 +141,7 @@ fn widget_instance_params_passthrough_and_bare_slot() {
     let card = find(p, "c");
     let children = kids(p, card);
     assert_eq!(children.len(), 2, "{children:?}");
-    assert_eq!(p.nodes[children[1] as usize].kind, Kind::Button);
+    assert_eq!(p.nodes[children[1].index()].kind, Kind::Button);
     assert_eq!(text_of(p, children[1]), "In the slot");
     assert_eq!(children[1], find(p, "inner"), "an instance child keeps its own (unscoped) name");
 }
@@ -161,12 +161,12 @@ fn signals_node_change_auto_wires_under_the_instance_name() {
     let mut input = Input::new();
     let (res, rects) = lay(p, &rt);
     let slider = kids(p, find(p, "sizeSlider"))[1];
-    let s = rects[slider as usize];
+    let s = rects[slider.index()];
     input.touch(p, &mut rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x: s.x + s.w * 0.5, y: s.y + s.h * 0.5, t: 0.0, id: 1 });
     let ev = input.touch(p, &mut rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x: s.x + s.w * 0.5, y: s.y + s.h * 0.5, t: 0.1, id: 1 });
     let change = ev.iter().find(|e| matches!(e.kind, gogo::EventKind::Change(_))).unwrap_or_else(|| panic!("{ev:?}"));
-    let routable = change.action.is_some() || p.str(p.nodes[change.node as usize].name) == "sizeSlider";
-    assert!(routable, "the change must reach a handler named after the instance: {change:?}, node name {:?}", p.str(p.nodes[change.node as usize].name));
+    let routable = change.action.is_some() || p.str(p.nodes[change.node.index()].name) == "sizeSlider";
+    assert!(routable, "the change must reach a handler named after the instance: {change:?}, node name {:?}", p.str(p.nodes[change.node.index()].name));
 }
 
 /// `widget.cycle` 3098-3102: two widgets that instance each other are a
@@ -205,24 +205,24 @@ fn widget_body_names_resolve_per_instance() {
     let p = &c.page;
     let av = find(p, "a/valueLabel");
     let bv = find(p, "b/valueLabel");
-    assert_eq!(p.nodes[av as usize].kind, Kind::Label);
-    assert_eq!(p.nodes[bv as usize].kind, Kind::Label);
+    assert_eq!(p.nodes[av.index()].kind, Kind::Label);
+    assert_eq!(p.nodes[bv.index()].kind, Kind::Label);
     assert_ne!(av, bv);
     assert_eq!(text_of(p, find(p, "a/captionLabel")), "A");
     assert_eq!(text_of(p, find(p, "b/captionLabel")), "B");
     let a = find(p, "a");
-    assert_eq!(p.nodes[a as usize].kind, Kind::Layers, "the flat instance name is the body root");
-    assert_eq!(p.nodes[av as usize].parent, a);
+    assert_eq!(p.nodes[a.index()].kind, Kind::Layers, "the flat instance name is the body root");
+    assert_eq!(p.nodes[av.index()].parent, a);
     assert_eq!(p.find("a/nosuch"), None);
     assert_eq!(p.find("nosuch/valueLabel"), None);
     // Nested: the inner INSTANCE root is one level down, its internals
     // behind its own prefix.
     let inner = find(p, "out/innerInst");
-    assert_eq!(p.nodes[inner as usize].kind, Kind::Layers);
-    assert_eq!(p.nodes[inner as usize].parent, find(p, "out"));
+    assert_eq!(p.nodes[inner.index()].kind, Kind::Layers);
+    assert_eq!(p.nodes[inner.index()].parent, find(p, "out"));
     let inner_caption = find(p, "out/innerInst/captionLabel");
     assert_eq!(text_of(p, inner_caption), "in");
-    assert_eq!(p.nodes[inner_caption as usize].parent, inner);
+    assert_eq!(p.nodes[inner_caption.index()].parent, inner);
 }
 
 /// `lookup.root-self` 3134: Godot resolves the body root's OWN name
@@ -248,7 +248,7 @@ fn two_hop_lookup_resolves_here() {
     let c = ok(&format!("{LOOKUP_WIDGETS}View v {{ Outer out }}\n"));
     let l = c.page.find("out/innerInst/captionLabel");
     assert!(l.is_some(), "{:?}", c.page.nodes.iter().map(|n| c.page.str(n.name)).collect::<Vec<_>>());
-    assert_eq!(c.page.nodes[l.unwrap() as usize].kind, Kind::Label);
+    assert_eq!(c.page.nodes[l.unwrap().index()].kind, Kind::Label);
 }
 
 /// `lookup.view-ok`, `lookup.view-inner` 3150-3159: the `lookup_view.gogo`
@@ -259,8 +259,8 @@ fn lookup_view_fixture_names_its_inner_label() {
     let c = ok("widget MiniSlider $caption=\"\" {\n Layers root interactive=true, touch_target=off, height=40 {\n  Label captionLabel text=$caption\n  Label valueLabel\n }\n}\n\nView visibility=visible {\n Column {\n  MiniSlider row caption=\"Size\"\n }\n}\n");
     let p = &c.page;
     let v = find(p, "row/valueLabel");
-    assert_eq!(p.nodes[v as usize].kind, Kind::Label);
-    assert_eq!(p.nodes[v as usize].parent, find(p, "row"));
+    assert_eq!(p.nodes[v.index()].kind, Kind::Label);
+    assert_eq!(p.nodes[v.index()].parent, find(p, "row"));
 }
 
 // -------------------------------------------------------------- _slot_tests
@@ -278,19 +278,19 @@ fn named_slot_is_a_clipped_passive_region_holding_its_default() {
     let children = kids(p, root);
     assert_eq!(children.len(), 2, "{children:?}");
     let header = children[0];
-    assert_eq!(p.nodes[header as usize].kind, Kind::Slot, "{:?}", p.nodes[header as usize]);
+    assert_eq!(p.nodes[header.index()].kind, Kind::Slot, "{:?}", p.nodes[header.index()]);
     assert_eq!(header, find(p, "c/header"));
     let inside = kids(p, header);
     assert_eq!(inside.len(), 1, "{inside:?}");
-    assert_eq!(p.nodes[inside[0] as usize].kind, Kind::Label);
+    assert_eq!(p.nodes[inside[0].index()].kind, Kind::Label);
     assert_eq!(text_of(p, inside[0]), "Untitled");
-    assert_eq!(p.nodes[children[1] as usize].kind, Kind::Label);
+    assert_eq!(p.nodes[children[1].index()].kind, Kind::Label);
     assert_eq!(text_of(p, children[1]), "body");
     // Passive + clipped: a touch over the region falls through; the draw
     // list clips to the region's rect.
     let rt = Runtime::new(p);
     let (res, rects) = lay(p, &rt);
-    let h = rects[header as usize];
+    let h = rects[header.index()];
     assert_eq!(hit(p, &res, &rects, h.x + 1.0, h.y + 1.0, false), None);
     let list = draw(p, &res, &rects);
     assert!(list.iter().any(|d| matches!(d, Draw::ClipPush(r) if *r == h)), "{list:#?}");
@@ -318,7 +318,7 @@ fn slot_line_box_props_land_on_the_region() {
     let track = find(p, "t/track");
     assert_eq!(p.prop(track, PropKey::Background), Some(Value::VColor(Color_Straight_Srgb_4xU8_RGBA([0x33, 0x22, 0x11, 0xFF]))), "{:?}", p.node_props(track));
     assert_eq!(p.prop(track, PropKey::CornerRadius), Some(Value::VNum(2.0)), "{:?}", p.node_props(track));
-    let pl = p.nodes[track as usize].placement;
+    let pl = p.nodes[track.index()].placement;
     assert_eq!(pl.padding, [3.0; 4], "{pl:?}");
     assert_eq!(pl.height, gogo::page::Len::Exact(4.0), "{pl:?}");
 }
@@ -349,8 +349,8 @@ fn slot_padding_insets_the_fill_child() {
     let c = ok("widget Pad {\n Layers {\n  slot area padding=8 { Rectangle inner color=#FFFFFFFF }\n }\n}\nPad p\n");
     let p = &c.page;
     let rects = rects_of(p);
-    let area = rects[find(p, "p/area") as usize];
-    let inner = rects[find(p, "p/inner") as usize];
+    let area = rects[(find(p, "p/area")).index()];
+    let inner = rects[(find(p, "p/inner")).index()];
     assert_eq!((inner.x, inner.right()), (area.x + 8.0, area.right() - 8.0), "area {area:?} inner {inner:?}");
     assert_eq!((inner.y, inner.bottom()), (area.y + 8.0, area.bottom() - 8.0), "area {area:?} inner {inner:?}");
 }
@@ -365,9 +365,9 @@ fn slot_minimum_is_content_plus_padding() {
     let c = ok("widget MinCard {\n Column {\n  slot icon padding=6 { Rectangle 20x10, color=#FFFFFFFF }\n }\n}\nView v { MinCard m halign=left, valign=top }\n");
     let p = &c.page;
     let rects = rects_of(p);
-    let icon = rects[find(p, "m/icon") as usize];
+    let icon = rects[(find(p, "m/icon")).index()];
     assert_eq!((icon.w, icon.h), (32.0, 22.0), "{rects:?}");
-    let m = rects[find(p, "m") as usize];
+    let m = rects[(find(p, "m")).index()];
     assert_eq!((m.w, m.h), (32.0, 22.0), "{rects:?}");
 }
 
@@ -384,11 +384,11 @@ fn nested_slot_declaration_survives_a_fill() {
     let p = &c.page;
     let track = find(p, "b/track");
     let children = kids(p, track);
-    assert_eq!(children.len(), 3, "{:?}", children.iter().map(|i| (p.nodes[*i as usize].kind, p.str(p.nodes[*i as usize].name))).collect::<Vec<_>>());
+    assert_eq!(children.len(), 3, "{:?}", children.iter().map(|i| (p.nodes[i.index()].kind, p.str(p.nodes[i.index()].name))).collect::<Vec<_>>());
     assert_eq!(children[0], find(p, "tick1"));
     assert_eq!(children[1], find(p, "tick2"));
     let thumb = children[2];
-    assert_eq!(p.nodes[thumb as usize].kind, Kind::Slot);
+    assert_eq!(p.nodes[thumb.index()].kind, Kind::Slot);
     assert_eq!(thumb, find(p, "b/thumb"));
     assert_eq!(kids(p, thumb).len(), 1, "the nested slot keeps its default Circle");
 }
@@ -461,14 +461,14 @@ fn value_param_reaches_the_label_and_the_slot_fractions() {
     let p = &c.page;
     let progress = find(p, "gain/progress");
     let thumb = find(p, "gain/thumb");
-    assert_eq!(p.nodes[progress as usize].auto, Auto::Length(0.25));
-    assert_eq!(p.nodes[thumb as usize].auto, Auto::Position(0.25));
+    assert_eq!(p.nodes[progress.index()].auto, Auto::Length(0.25));
+    assert_eq!(p.nodes[thumb.index()].auto, Auto::Position(0.25));
     let rects = rects_of(p);
-    let track = rects[find(p, "gain/track") as usize];
+    let track = rects[(find(p, "gain/track")).index()];
     assert_eq!((track.x, track.w), (0.0, 200.0), "{rects:?}");
-    assert_eq!(rects[progress as usize].w, 50.0, "{rects:?}");
-    assert_eq!(rects[thumb as usize].x, 47.0, "{rects:?}");
-    assert_eq!(rects[thumb as usize].w, 12.0, "{rects:?}");
+    assert_eq!(rects[progress.index()].w, 50.0, "{rects:?}");
+    assert_eq!(rects[thumb.index()].x, 47.0, "{rects:?}");
+    assert_eq!(rects[thumb.index()].w, 12.0, "{rects:?}");
     let texts = drawn_texts(p);
     assert!(texts.iter().any(|t| t.starts_with("25")), "{texts:?}");
 }
@@ -497,8 +497,8 @@ fn value_write_moves_the_couplings_with_a_glide() {
     assert!(!rt.animating(), "past the 0.12 s rule the glide has landed");
     let res = resolve_animated(&page, &mut rt);
     let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    assert!((rects[progress as usize].w - 150.0).abs() < 1e-3, "{rects:?}");
-    assert!((rects[thumb as usize].x - 141.0).abs() < 1e-3, "{rects:?}");
+    assert!((rects[progress.index()].w - 150.0).abs() < 1e-3, "{rects:?}");
+    assert!((rects[thumb.index()].x - 141.0).abs() < 1e-3, "{rects:?}");
 }
 
 /// `ctl.key-increment` 3468-3474: a RIGHT key on the focused control steps
@@ -563,7 +563,7 @@ fn presence_slot_is_gone_while_its_state_is_off() {
     let c = ok("control Marker $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n state marked\n Layers {\n  slot track height=10 {\n   slot mark automatic=presence by marked { Circle 6x6, color=#FFFFFFFF }\n  }\n }\n}\nMarker m 100x10\n");
     let p = &c.page;
     let mark = find(p, "m/mark");
-    assert_eq!(p.nodes[mark as usize].auto, Auto::Presence(false));
+    assert_eq!(p.nodes[mark.index()].auto, Auto::Presence(false));
     let rt = Runtime::new(p);
     let (res, rects) = lay(p, &rt);
     assert!(res.gone(p, mark));
@@ -657,8 +657,8 @@ fn fill_width_content_is_fine_in_a_sized_position_slot() {
     let p = &c.page;
     let rects = rects_of(p);
     let thumb = find(p, "b/thumb");
-    assert_eq!(rects[thumb as usize].w, 20.0, "{rects:?}");
-    assert_eq!(rects[kids(p, thumb)[0] as usize].w, 20.0, "{rects:?}");
+    assert_eq!(rects[thumb.index()].w, 20.0, "{rects:?}");
+    assert_eq!(rects[(kids(p, thumb)[0]).index()].w, 20.0, "{rects:?}");
 }
 
 /// `ctl.err-d9` 3596-3603: `state hover` names a built-in — it must be
@@ -793,8 +793,8 @@ fn coupling_clauses_continue_after_a_trailing_comma() {
     let c = ok("control CC $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n Layers {\n  slot track height=24 {\n   slot p width=20, automatic=position,\n     by $value in $min..$max { Circle 6x6 }\n  }\n }\n}\nCC c 100x24\n");
     let p = &c.page;
     let slot = find(p, "c/p");
-    assert_eq!(p.nodes[slot as usize].auto, Auto::Position(0.0));
-    assert_eq!(p.nodes[slot as usize].placement.width, gogo::page::Len::Exact(20.0));
+    assert_eq!(p.nodes[slot.index()].auto, Auto::Position(0.0));
+    assert_eq!(p.nodes[slot.index()].placement.width, gogo::page::Len::Exact(20.0));
 }
 
 /// `d134.g3002-note-quotes` 3715-3716: a `style … for=Fader,

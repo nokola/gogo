@@ -68,7 +68,7 @@ fn lay(page: &Page, rt: &Runtime, w: f32, h: f32) -> (Resolved, Vec<Rect>) {
 }
 
 fn rect(page: &Page, rects: &[Rect], name: &str) -> Rect {
-    rects[page.find(name).unwrap_or_else(|| panic!("no node {name}")) as usize]
+    rects[(page.find(name).unwrap_or_else(|| panic!("no node {name}"))).index()]
 }
 
 fn id(page: &Page, name: &str) -> NodeId {
@@ -105,7 +105,7 @@ fn view_fixture_builds_with_its_include_and_a_broken_file_does_not() {
     let (res, _) = lay(&page, &rt, 400.0, 800.0);
     let swatch = id(&page, "swatch");
     assert_eq!(res.color(&page, swatch, PropKey::Color), Some(Color_Straight_Srgb_4xU8_RGBA([0xEB, 0x64, 0x28, 0xFF])), "the include's $swatchTest reaches the swatch");
-    assert!(res.gone(&page, 0), "the root's `visibility=gone` holds");
+    assert!(res.gone(&page, gogo::NodeId::new(0)), "the root's `visibility=gone` holds");
     let root = res.placement[0];
     assert_eq!(root.valign, Align::End, "{root:?}");
     assert_eq!(root.margin[3], Some(72.0), "{root:?}");
@@ -121,10 +121,10 @@ fn view_fixture_builds_with_its_include_and_a_broken_file_does_not() {
 fn panel_root_component_is_the_styled_box() {
     let c = ok(COMPONENT_BOX);
     let page = c.page;
-    assert_eq!(page.find("box"), Some(0), "the root IS the box: no wrapper node");
+    assert_eq!(page.find("box"), Some(gogo::NodeId::new(0)), "the root IS the box: no wrapper node");
     let rt = Runtime::new(&page);
     let (res, rects) = lay(&page, &rt, 400.0, 300.0);
-    assert_eq!(res.color(&page, 0, PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([0x11, 0x22, 0x33, 0xFF])));
+    assert_eq!(res.color(&page, gogo::NodeId::new(0), PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([0x11, 0x22, 0x33, 0xFF])));
     assert_eq!(res.placement[0].padding, [8.0, 8.0, 8.0, 8.0], "{:?}", res.placement[0]);
     assert_eq!((rects[0].w, rects[0].h), (120.0, 40.0), "{rects:?}");
 }
@@ -189,9 +189,9 @@ fn hug_box_grows_and_shrinks_back_with_its_text() {
     let back = lay(&page, &rt, 400.0, 300.0).1[0];
     assert!((back.w - base.w).abs() < 0.5, "{back:?} vs {base:?}");
     // Written while gone, measured on show.
-    rt.set_visible(&mut page, 0, false);
+    rt.set_visible(&mut page, gogo::NodeId::new(0), false);
     rt.set_text(&mut page, words, "a considerably longer line of words than before");
-    rt.set_visible(&mut page, 0, true);
+    rt.set_visible(&mut page, gogo::NodeId::new(0), true);
     let shown = lay(&page, &rt, 400.0, 300.0).1[0];
     assert!((shown.w - grown.w).abs() < 0.5, "{shown:?} vs {grown:?}");
     rt.set_text(&mut page, words, "short");
@@ -321,8 +321,8 @@ fn list_rows_touch() {
     let items = rt.items(&page, t);
     assert_eq!(items.len(), 2);
     let (_, r) = lay(&page, &rt, 400.0, 800.0);
-    let first = r[items[0] as usize];
-    let second = r[items[1] as usize];
+    let first = r[items[0].index()];
+    let second = r[items[1].index()];
     assert!(first.h > 0.0, "{first:?}");
     assert_eq!(second.y, first.bottom(), "rows touch: {first:?} {second:?}");
 }
@@ -539,10 +539,10 @@ fn registered_code_control_builds_and_an_unknown_name_is_refused() {
     assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let demo = id(&page, "demo");
-    assert_eq!(page.nodes[demo as usize].kind, Kind::Custom);
-    assert_eq!(page.str(page.nodes[demo as usize].type_name), "TestCustomControl");
+    assert_eq!(page.nodes[demo.index()].kind, Kind::Custom);
+    assert_eq!(page.str(page.nodes[demo.index()].type_name), "TestCustomControl");
     let (_, r) = lay(&page, &Runtime::new(&page), 400.0, 400.0);
-    assert_eq!(r[demo as usize].w, 200.0, "{r:?}");
+    assert_eq!(r[demo.index()].w, 200.0, "{r:?}");
     let unknown = compile_with("View v {\n    NoSuchControl demo width=200\n}\n", &|_| None, options);
     assert!(unknown.diags.iter().any(|d| d.code == "G7011"), "{:#?}", unknown.diags);
     assert!(gogo::has_errors(&unknown.diags));

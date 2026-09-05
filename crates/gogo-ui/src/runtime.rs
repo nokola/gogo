@@ -52,14 +52,23 @@ pub const SELECTED: u8 = 16;
 pub const DISABLED: u8 = 32;
 
 /// `base` — no arrangement active.
-pub const BASE: u32 = u32::MAX;
+pub use crate::page::{ArrangementId, BASE};
 
 /// A page build's typed arrangement handle (`enum Arrangement` in the
 /// generated module) — `Runtime::go`/`toggle` take one, so a misspelled
 /// arrangement is a rustc error (GPAR27, the E7 typed-handles design;
 /// `Key`/`KeyName` is the translation-key half).
 pub trait ArrangementName: Copy {
-    fn id(self) -> u32;
+    fn id(self) -> ArrangementId;
+}
+
+/// A page build's typed anim handle (`enum Anim` in the generated module,
+/// one variant per `anim` the file declares) — `Runtime::play` / `stop` /
+/// `is_playing` take one, so a misspelled anim is a rustc error and no
+/// code-behind interns an anim name per frame. The `*_id` forms take the
+/// anim's `StrId` for a runtime-compiled page (tests, hot reload).
+pub trait AnimName: Copy {
+    fn id(self) -> StrId;
 }
 
 /// One field value a repeat item carries — the leaf types the shipped
@@ -117,17 +126,17 @@ struct Pool {
 
 /// A repeat's pool, created on first touch.
 fn new_pool(page: &Page, repeat: NodeId) -> Pool {
-    let mut empties: Vec<NodeId> = page.children(repeat).map(|i| i as NodeId).filter(|c| page.nodes[*c as usize].kind == Kind::Empty).collect();
+    let mut empties: Vec<NodeId> = page.children(repeat).filter(|c| page.nodes[*c].kind == Kind::Empty).collect();
     // A List-level `empty { }` (D128) is this repeat's zero-items view
     // too: it hides once rows exist — and its spacing slot goes with it —
     // exactly like the repeat's own block (GPAR96).
-    let mut a = page.nodes[repeat as usize].parent;
+    let mut a = page.nodes[repeat].parent;
     while a != NO_NODE {
-        if page.nodes[a as usize].kind == Kind::List {
-            empties.extend(page.children(a).map(|i| i as NodeId).filter(|c| page.nodes[*c as usize].kind == Kind::Empty));
+        if page.nodes[a].kind == Kind::List {
+            empties.extend(page.children(a).filter(|c| page.nodes[*c].kind == Kind::Empty));
             break;
         }
-        a = page.nodes[a as usize].parent;
+        a = page.nodes[a].parent;
     }
     Pool { repeat, slots: Vec::new(), live: Vec::new(), keyed: Vec::new(), scratch: Vec::new(), empties }
 }
@@ -207,7 +216,8 @@ struct AutoGlide {
 }
 
 pub struct Runtime {
-    pub arrangement: u32,
+    /// The pose in force (`BASE` = the rest pose); ask `arrangement_is`.
+    pub arrangement: ArrangementId,
     pub variant: StrId,
     /// Active `screen.<class>` words.
     pub screen: Vec<StrId>,
@@ -263,7 +273,7 @@ pub struct Runtime {
     pools: Vec<Pool>,
     /// How many arrangements the page declares — `go_id`'s refusal
     /// bound (an unknown index keeps the pose, GPAR27).
-    arrangement_count: u32,
+    arrangement_count: usize,
     /// Raised control states: (control root, declared state name) —
     /// `set_custom` writes, `when <name>` conditions read (GPAR116).
     customs: Vec<(NodeId, StrId)>,
@@ -341,9 +351,9 @@ pub struct Runtime {
     toggle: Vec<bool>,
     /// Arrangements flipped by `go_instant` whose changes have not yet
     /// resolved — their flip arms no tweens, glides or rule anims.
-    instant_flips: Vec<u32>,
+    instant_flips: Vec<ArrangementId>,
     /// The flip awaiting `arrangement_settled` (the shipped signal).
-    pending_settle: Option<u32>,
+    pending_settle: Option<ArrangementId>,
     /// Per node: the string slot a code `set_text` owns (`NO_STR` = none
     /// yet). Needed so a label that changes every few frames (a stats
     /// line) rewrites ONE string in place instead of interning a new one
@@ -390,7 +400,7 @@ impl Runtime {
             state_anims: Vec::new(),
             finished: Vec::new(),
             pools: Vec::new(),
-            arrangement_count: page.arrangements.len() as u32,
+            arrangement_count: page.arrangements.len(),
             customs: Vec::new(),
             list_sel: Vec::new(),
             vis_seen: Vec::new(),
@@ -453,10 +463,10 @@ impl Runtime {
                     if self.last_rects[i] != rects[i] {
                         // The node's own pose-pair rule times its share;
                         // duration 0 snaps (GPAR72).
-                        let (d, e) = self.glide_node_rules.iter().find(|(n, _, _)| *n == i as NodeId).map(|(_, d, e)| (*d, *e)).unwrap_or((duration, easing));
-                        self.rect_tweens.retain(|t| t.0 != i as NodeId);
+                        let (d, e) = self.glide_node_rules.iter().find(|(n, _, _)| *n == NodeId::from_index(i)).map(|(_, d, e)| (*d, *e)).unwrap_or((duration, easing));
+                        self.rect_tweens.retain(|t| t.0 != NodeId::from_index(i));
                         if d > 0.0 {
-                            self.rect_tweens.push((i as NodeId, self.last_rects[i], rects[i], self.glide_late.min(d), d, e));
+                            self.rect_tweens.push((NodeId::from_index(i), self.last_rects[i], rects[i], self.glide_late.min(d), d, e));
                         }
                     }
                 }
@@ -464,10 +474,10 @@ impl Runtime {
         }
         for (node, from, to, elapsed, duration, easing) in &mut self.rect_tweens {
             // A relayout (a resize, a text change) moves the target with it.
-            *to = rects[*node as usize];
+            *to = rects[*node];
             let t = easing.apply((*elapsed / *duration).min(1.0));
             let lerp = |a: f32, b: f32| a + (b - a) * t;
-            shown[*node as usize] = Rect::new(lerp(from.x, to.x), lerp(from.y, to.y), lerp(from.w, to.w), lerp(from.h, to.h));
+            shown[*node] = Rect::new(lerp(from.x, to.x), lerp(from.y, to.y), lerp(from.w, to.w), lerp(from.h, to.h));
         }
         self.glide_late = 0.0;
         self.rect_tweens.retain(|t| t.3 < t.4);
@@ -477,7 +487,12 @@ impl Runtime {
 
     /// Plays `anim` on this page (`play(name)`); a newer player owns the
     /// channels it animates (WPF SnapshotAndReplace).
-    pub fn play(&mut self, page: &Page, anim: StrId, finish: Finish) {
+    pub fn play<A: AnimName>(&mut self, page: &Page, anim: A, finish: Finish) {
+        self.play_id(page, anim.id(), finish);
+    }
+
+    /// `play` by the anim's string id, for a runtime-compiled page.
+    pub fn play_id(&mut self, page: &Page, anim: StrId, finish: Finish) {
         // What each channel shows right now: a held end pose, else the
         // layer of the player that owns it, else what the last resolve
         // showed (the ladder). Computed here so a play needs no frame in
@@ -486,11 +501,11 @@ impl Runtime {
         live.resize(page.nodes.len(), Motion::IDENTITY);
         for p in self.players.iter().filter(|p| !p.stopped) {
             for (node, channel) in &p.owns {
-                live[*node as usize].set(*channel, self.motion[*node as usize].get(*channel));
+                live[*node].set(*channel, self.motion[*node].get(*channel));
             }
         }
         for (node, channel, v) in &self.held {
-            live[*node as usize].set(*channel, *v);
+            live[*node].set(*channel, *v);
         }
         // GP40 prop lanes: what each lane SHOWS right now. One resolve
         // answers it all (`compose_anim` already lays held poses and
@@ -544,11 +559,11 @@ impl Runtime {
     }
 
     fn play_action(&mut self, page: &Page, node: NodeId, event: &str, finish: Finish) -> bool {
-        let n = &page.nodes[node as usize];
+        let n = &page.nodes[node];
         let id = page.intern_lookup(event);
         let action = page.handlers[n.handlers.0 as usize..(n.handlers.0 + n.handlers.1) as usize].iter().find(|h| h.event == id).map(|h| h.action);
         if let Some(Action::Play(anim)) = action {
-            self.play(page, anim, finish);
+            self.play_id(page, anim, finish);
             return true;
         }
         false
@@ -575,7 +590,7 @@ impl Runtime {
         }
         // This flip is answered — the `when`-flip watcher in
         // `resolve_animated` (GP19) must not play the anims a second time.
-        if let Some(seen) = self.vis_seen.get_mut(node as usize) {
+        if let Some(seen) = self.vis_seen.get_mut(node.index()) {
             *seen = visible;
         }
     }
@@ -603,18 +618,18 @@ impl Runtime {
     pub fn play_entrances(&mut self, page: &Page) {
         let res = resolve(page, self);
         let unseen: Vec<bool> = (0..page.nodes.len()).map(|i| {
-            matches!(res.ident(page, i as NodeId, PropKey::Visibility), Some("gone") | Some("hidden") | Some("space_only"))
+            matches!(res.ident(page, NodeId::from_index(i), PropKey::Visibility), Some("gone") | Some("hidden") | Some("space_only"))
         }).collect();
         drop(res);
         for i in 0..page.nodes.len() {
-            let mut n = i as NodeId;
+            let mut n = NodeId::from_index(i);
             let mut hidden = false;
             loop {
-                if unseen[n as usize] {
+                if unseen[n] {
                     hidden = true;
                     break;
                 }
-                let parent = page.nodes[n as usize].parent;
+                let parent = page.nodes[n].parent;
                 if parent == NO_NODE {
                     break;
                 }
@@ -623,7 +638,7 @@ impl Runtime {
             if hidden {
                 continue;
             }
-            self.play_action(page, i as NodeId, "show", Finish::Nothing);
+            self.play_action(page, NodeId::from_index(i), "show", Finish::Nothing);
         }
     }
 
@@ -642,7 +657,7 @@ impl Runtime {
         for p in &self.pools {
             for s in &p.live {
                 let root = p.slots[*s as usize];
-                if node >= root && node < page.nodes[root as usize].subtree_end {
+                if node >= root && node < page.subtree_end(root) {
                     return p.keyed[*s as usize].as_ref().map(|(k, _)| k);
                 }
             }
@@ -675,37 +690,37 @@ impl Runtime {
     /// past `capacity=` only when the data does.
     pub fn set_items(&mut self, page: &mut Page, repeat: NodeId, items: &[Item]) -> Result<(), String> {
         let Some(info) = page.repeats.iter().find(|r| r.node == repeat).copied() else {
-            return Err(format!("G9101: `{}` is not a repeat with a template", page.str(page.nodes[repeat as usize].name)));
+            return Err(format!("G9101: `{}` is not a repeat with a template", page.str(page.nodes[repeat].name)));
         };
         if !info.keyed {
-            return Err(format!("G9101: `{}` is not a keyed repeat — a counted repeat takes `set_count`", page.str(page.nodes[repeat as usize].name)));
+            return Err(format!("G9101: `{}` is not a keyed repeat — a counted repeat takes `set_count`", page.str(page.nodes[repeat].name)));
         }
         // Keys first; every refusal returns before anything mutates, so
         // the last good rows stand.
         let leaf = |i: usize| -> Result<&ItemValue, String> {
             match (&items[i], info.by) {
                 (Item::Value(v), by) if by == NO_STR => Ok(v),
-                (Item::Record(_), by) if by == NO_STR => Err(format!("G9102: repeat `{}` refused items — `by $item` keys the item itself; a record keys by field (`by $item.<field>`)", page.str(page.nodes[repeat as usize].name))),
+                (Item::Record(_), by) if by == NO_STR => Err(format!("G9102: repeat `{}` refused items — `by $item` keys the item itself; a record keys by field (`by $item.<field>`)", page.str(page.nodes[repeat].name))),
                 (Item::Record(r), by) => match r.iter().find(|(k, _)| *k == page.str(by)) {
                     Some((_, v)) => Ok(v),
-                    None => Err(format!("G9102: repeat `{}` refused items — item {i} has no `{}` field", page.str(page.nodes[repeat as usize].name), page.str(by))),
+                    None => Err(format!("G9102: repeat `{}` refused items — item {i} has no `{}` field", page.str(page.nodes[repeat].name), page.str(by))),
                 },
-                (Item::Value(_), by) => Err(format!("G9102: repeat `{}` refused items — `by` walks `{}` into a plain value; field access needs a record", page.str(page.nodes[repeat as usize].name), page.str(by))),
+                (Item::Value(_), by) => Err(format!("G9102: repeat `{}` refused items — `by` walks `{}` into a plain value; field access needs a record", page.str(page.nodes[repeat].name), page.str(by))),
             }
         };
         for i in 0..items.len() {
             let v = leaf(i)?;
             match v {
                 ItemValue::Str(_) | ItemValue::Int(_) => {}
-                ItemValue::Num(_) => return Err(format!("G9102: repeat `{}` refused items — item {i}'s key is a float; keys are strings or whole numbers", page.str(page.nodes[repeat as usize].name))),
-                _ => return Err(format!("G9102: repeat `{}` refused items — item {i}'s key must be a string or a whole number", page.str(page.nodes[repeat as usize].name))),
+                ItemValue::Num(_) => return Err(format!("G9102: repeat `{}` refused items — item {i}'s key is a float; keys are strings or whole numbers", page.str(page.nodes[repeat].name))),
+                _ => return Err(format!("G9102: repeat `{}` refused items — item {i}'s key must be a string or a whole number", page.str(page.nodes[repeat].name))),
             }
             if i > 0 && std::mem::discriminant(leaf(0)?) != std::mem::discriminant(v) {
-                return Err(format!("G9102: repeat `{}` refused items — mixed key types (strings and whole numbers)", page.str(page.nodes[repeat as usize].name)));
+                return Err(format!("G9102: repeat `{}` refused items — mixed key types (strings and whole numbers)", page.str(page.nodes[repeat].name)));
             }
             for j in 0..i {
                 if leaf(j)? == v {
-                    return Err(format!("G9103: repeat `{}` refused items — duplicate key {v:?} (items {j} and {i}); every row keys uniquely", page.str(page.nodes[repeat as usize].name)));
+                    return Err(format!("G9103: repeat `{}` refused items — duplicate key {v:?} (items {j} and {i}); every row keys uniquely", page.str(page.nodes[repeat].name)));
                 }
             }
         }
@@ -721,7 +736,7 @@ impl Runtime {
                 };
                 if !ok {
                     let why = if fname.is_empty() { "structures don't bind whole — bind a field (`$item.<field>`)".to_string() } else { format!("no field `{fname}`") };
-                    return Err(format!("G9101: repeat `{}` refused items — the item template failed for item {i}: {why}", page.str(page.nodes[repeat as usize].name)));
+                    return Err(format!("G9101: repeat `{}` refused items — the item template failed for item {i}: {why}", page.str(page.nodes[repeat].name)));
                 }
             }
         }
@@ -753,15 +768,15 @@ impl Runtime {
         // The selection is kept BY KEY across reconciles (list.reorder-keeps):
         // re-assert it over the fresh rows; absent keys stay INERT in the
         // List's memory and re-attach when their item returns.
-        let mut a = page.nodes[repeat as usize].parent;
+        let mut a = page.nodes[repeat].parent;
         while a != NO_NODE {
-            if page.nodes[a as usize].kind == Kind::List {
+            if page.nodes[a].kind == Kind::List {
                 if self.list_sel.iter().any(|(n, _)| *n == a) {
                     self.apply_selected(page, a);
                 }
                 break;
             }
-            a = page.nodes[a as usize].parent;
+            a = page.nodes[a].parent;
         }
         self.dirty = true;
         Ok(())
@@ -795,7 +810,7 @@ impl Runtime {
             Some(Value::VIdent(w)) => page.str(w),
             _ => "one",
         };
-        let name = page.str(page.nodes[list as usize].name);
+        let name = page.str(page.nodes[list].name);
         if mode == "off" {
             return Err(format!("G9104: `{name}` has select=off — no selection to write (activation still fires)"));
         }
@@ -911,8 +926,8 @@ impl Runtime {
         let (s0, sc) = info.sites;
         for si in s0..s0 + sc {
             let site = page.bind_sites[si as usize];
-            let node = root + site.node_off;
-            let key = page.props[(page.nodes[node as usize].props.0 + site.prop_off) as usize].key;
+            let node = root.offset(site.node_off);
+            let key = page.props[(page.nodes[node.index()].props.0 + site.prop_off) as usize].key;
             let lv_idx = match item {
                 Item::Record(r) => {
                     let fname = page.str(site.field);
@@ -1009,12 +1024,12 @@ impl Runtime {
     fn grow_pool(&mut self, page: &mut Page, pi: usize, info: &RepeatInfo) -> u32 {
         let idx = self.pools[pi].slots.len() as u32;
         let root = page.clone_subtree(info.template);
-        let rep = page.str(page.nodes[info.node as usize].name).to_string();
+        let rep = page.str(page.nodes[info.node].name).to_string();
         let from = format!("{rep}/item");
         let to = format!("{rep}/{idx}");
-        let end = page.nodes[root as usize].subtree_end;
-        for ni in root..end {
-            let nm = page.nodes[ni as usize].name;
+        let end = page.subtree_end(root);
+        for ni in NodeId::range(root, end) {
+            let nm = page.nodes[ni].name;
             if nm == NO_STR {
                 continue;
             }
@@ -1027,15 +1042,15 @@ impl Runtime {
                 continue;
             };
             let id = page.intern(&renamed);
-            page.nodes[ni as usize].name = id;
+            page.nodes[ni].name = id;
         }
         // The template's own anims (a mark's delete/appear) exist once,
         // aimed at template nodes — each slot takes its copy, aimed at
         // its own nodes under the slot's name. Needed because a host
         // plays them per row (`play("<rep>/2/item/delete")`); without
         // the copy the play finds nothing and "finishes" the same frame.
-        let t_end = page.nodes[info.template as usize].subtree_end;
-        let delta = root - info.template;
+        let t_end = page.subtree_end(info.template);
+        let delta: u32 = root.index() as u32 - info.template.index() as u32;
         let heads: Vec<AnimHead> = page.anim_heads.iter().filter(|h| {
             let s = page.str(h.anim);
             s.starts_with(&from) && s.as_bytes().get(from.len()).is_none_or(|b| *b == b'/')
@@ -1047,7 +1062,7 @@ impl Runtime {
             for mut t in tracks {
                 t.anim = id;
                 if t.node >= info.template && t.node < t_end {
-                    t.node += delta;
+                    t.node = t.node.offset(delta);
                 }
                 page.anims.push(t);
             }
@@ -1060,7 +1075,12 @@ impl Runtime {
     }
 
     /// Is `anim` mid-play?
-    pub fn is_playing(&self, anim: StrId) -> bool {
+    pub fn is_playing<A: AnimName>(&self, anim: A) -> bool {
+        self.is_playing_id(anim.id())
+    }
+
+    /// `is_playing` by the anim's string id, for a runtime-compiled page.
+    pub fn is_playing_id(&self, anim: StrId) -> bool {
         self.players.iter().any(|p| p.anim == anim && !p.stopped)
     }
 
@@ -1080,7 +1100,12 @@ impl Runtime {
     /// Stops `anim` (WPF Storyboard.Stop): `restore` puts every channel it
     /// owns back to its pre-play value; the player's finish action does
     /// not run. Nothing happens when it is not playing.
-    pub fn stop(&mut self, anim: StrId, restore: bool) {
+    pub fn stop<A: AnimName>(&mut self, anim: A, restore: bool) {
+        self.stop_id(anim.id(), restore);
+    }
+
+    /// `stop` by the anim's string id, for a runtime-compiled page.
+    pub fn stop_id(&mut self, anim: StrId, restore: bool) {
         let mut any = false;
         for p in self.players.iter_mut().filter(|p| p.anim == anim) {
             p.stop(restore, &mut self.motion, &mut self.prop_anim);
@@ -1100,7 +1125,7 @@ impl Runtime {
             } else {
                 // Left where it is: the current values stand as held ends.
                 for (node, channel) in &p.owns {
-                    self.held.push((*node, *channel, self.motion[*node as usize].get(*channel)));
+                    self.held.push((*node, *channel, self.motion[*node].get(*channel)));
                 }
                 for (node, key) in &p.owns_props {
                     if let Some(v) = get_pval(&self.prop_anim, *node, *key) {
@@ -1139,7 +1164,7 @@ impl Runtime {
                     continue;
                 }
                 self.held.retain(|h| !(h.0 == n && h.1 == channel));
-                self.motion[n as usize].set(channel, base);
+                self.motion[n].set(channel, base);
                 if base_held {
                     self.held.push((n, channel, base));
                 }
@@ -1225,12 +1250,12 @@ impl Runtime {
                     // a code write here would outrank it forever (GPAR57).
                     self.set_visible(page, node, false);
                 }
-                self.motion[node as usize] = Motion::IDENTITY;
+                self.motion[node] = Motion::IDENTITY;
                 // The hide anim may have moved DESCENDANTS too — every
                 // driven channel goes back to identity, or the re-show
                 // finds them displaced (GPAR110, gogo_visibility_fx.gd).
                 for (n, channel) in owns {
-                    self.motion[n as usize].set(channel, Motion::IDENTITY.get(channel));
+                    self.motion[n].set(channel, Motion::IDENTITY.get(channel));
                 }
                 // Prop lanes release outright on a hide: the layer entry
                 // goes and the ladder look comes back for the re-show.
@@ -1246,9 +1271,9 @@ impl Runtime {
                 for (node, channel) in owns {
                     self.held.retain(|h| !(h.0 == node && h.1 == channel));
                     if self.visible_now(page, node) {
-                        self.held.push((node, channel, self.motion[node as usize].get(channel)));
+                        self.held.push((node, channel, self.motion[node].get(channel)));
                     } else {
-                        self.motion[node as usize].set(channel, Motion::IDENTITY.get(channel));
+                        self.motion[node].set(channel, Motion::IDENTITY.get(channel));
                     }
                 }
                 for (node, key) in owns_props {
@@ -1274,11 +1299,11 @@ impl Runtime {
     pub fn set_prop(&mut self, node: NodeId, key: PropKey, value: Value) {
         // GP37: `selected` DERIVES from a Toggle's value — a code write
         // of `value=1` selects (the shipped tgl.derive-on).
-        if key == PropKey::Value && self.toggle.get(node as usize).copied().unwrap_or(false) {
+        if key == PropKey::Value && self.toggle.get(node.index()).copied().unwrap_or(false) {
             if let Value::VNum(v) = value {
                 let on = v >= 0.5;
                 if self.has(node, SELECTED) != on {
-                    let s = &mut self.states[node as usize];
+                    let s = &mut self.states[node];
                     if on { *s |= SELECTED } else { *s &= !SELECTED }
                     self.dirty = true;
                     self.changes.push(if on { (node, None, Some(State::Selected)) } else { (node, Some(State::Selected), None) });
@@ -1307,12 +1332,12 @@ impl Runtime {
     /// node may show the same words); later writes rewrite that slot in
     /// place. A same-text write changes nothing.
     pub fn set_text(&mut self, page: &mut Page, node: NodeId, text: &str) {
-        let owned = self.owned_text[node as usize];
+        let owned = self.owned_text[node];
         let id = if owned != NO_STR {
-            if page.strings[owned as usize] == text {
+            if page.strings[owned] == text {
                 return;
             }
-            let slot = &mut page.strings[owned as usize];
+            let slot = &mut page.strings[owned];
             slot.clear();
             slot.push_str(text);
             self.dirty = true;
@@ -1322,8 +1347,8 @@ impl Runtime {
                 page.strings.push(String::new());
             }
             page.strings.push(text.to_string());
-            let id = (page.strings.len() - 1) as StrId;
-            self.owned_text[node as usize] = id;
+            let id = StrId::from_index((page.strings.len() - 1));
+            self.owned_text[node] = id;
             id
         };
         self.set_prop(node, PropKey::Text, Value::VText { text: id, key: NO_KEY });
@@ -1380,7 +1405,7 @@ impl Runtime {
     /// typo cannot silently do nothing.
     pub fn set_custom(&mut self, page: &Page, root: NodeId, state: &str, on: bool) -> Result<(), String> {
         let sid = page.intern_lookup(state);
-        let name = page.str(page.nodes[root as usize].name);
+        let name = page.str(page.nodes[root].name);
         if sid == NO_STR || !page.custom_states.iter().any(|(n, s)| *n == root && *s == sid) {
             return Err(format!("`{state}` is not a declared state of `{name}` — its `state` line names them"));
         }
@@ -1436,7 +1461,7 @@ impl Runtime {
     }
 
     pub fn set_state(&mut self, node: NodeId, bit: u8, on: bool) {
-        let s = &mut self.states[node as usize];
+        let s = &mut self.states[node];
         let before = *s;
         if on {
             *s |= bit;
@@ -1450,10 +1475,10 @@ impl Runtime {
                 // old pick clears, silently (this pick's flip is the one
                 // genuine transition, the shipped code-write-reports read).
                 if on {
-                    let choice = self.radio_choice.get(node as usize).copied().unwrap_or(NO_CHOICE);
+                    let choice = self.radio_choice.get(node.index()).copied().unwrap_or(NO_CHOICE);
                     if choice != NO_CHOICE {
                         for i in 0..self.states.len() {
-                            if i as NodeId != node && self.radio_choice[i] == choice {
+                            if NodeId::from_index(i) != node && self.radio_choice[i] == choice {
                                 self.states[i] &= !SELECTED;
                             }
                         }
@@ -1463,7 +1488,7 @@ impl Runtime {
                 // `selected=false` puts the value back to 0. Only a
                 // wrong-side code-written value is rewritten, so a live
                 // drag's fraction (already on the right side) keeps.
-                if self.toggle.get(node as usize).copied().unwrap_or(false) {
+                if self.toggle.get(node.index()).copied().unwrap_or(false) {
                     let wrong_side = self.writes.iter().any(|(n, p)| *n == node && p.key == PropKey::Value && matches!(p.value, Value::VNum(v) if (v >= 0.5) != on));
                     if wrong_side {
                         self.set_prop(node, PropKey::Value, Value::VNum(if on { 1.0 } else { 0.0 }));
@@ -1483,7 +1508,7 @@ impl Runtime {
     }
 
     pub fn has(&self, node: NodeId, bit: u8) -> bool {
-        self.states[node as usize] & bit != 0
+        self.states[node] & bit != 0
     }
 
     /// Bumps `node`'s paint order among its siblings (the shipped
@@ -1509,7 +1534,7 @@ impl Runtime {
             if self.has(n, DISABLED) {
                 return true;
             }
-            let parent = page.nodes[n as usize].parent;
+            let parent = page.nodes[n].parent;
             if parent == NO_NODE {
                 return false;
             }
@@ -1524,11 +1549,17 @@ impl Runtime {
         self.go_id(arrangement.id());
     }
 
-    /// `go` for a runtime-compiled page (tests, hot reload), by the
-    /// arrangement's index. An index the page never declared is refused
+    /// Is `arrangement` the pose in force? (`rt.arrangement_is(Arrangement::Wide)`.)
+    pub fn arrangement_is<A: ArrangementName>(&self, arrangement: A) -> bool {
+        self.arrangement == arrangement.id()
+    }
+
+    /// `go` by the arrangement's id — a pose saved earlier from
+    /// `Runtime::arrangement`, or an index on a runtime-compiled page
+    /// (tests, hot reload). An index the page never declared is refused
     /// and the pose KEEPS (the addon's printerr + early return, GPAR27).
-    pub fn go_id(&mut self, arrangement: u32) {
-        if arrangement != BASE && arrangement >= self.arrangement_count {
+    pub fn go_id(&mut self, arrangement: ArrangementId) {
+        if arrangement != BASE && arrangement.index() >= self.arrangement_count {
             return;
         }
         if self.arrangement != arrangement {
@@ -1561,8 +1592,8 @@ impl Runtime {
         self.go_instant_id(arrangement.id());
     }
 
-    /// `go_instant` by index, for a runtime-compiled page.
-    pub fn go_instant_id(&mut self, arrangement: u32) {
+    /// `go_instant` by id, for a runtime-compiled page.
+    pub fn go_instant_id(&mut self, arrangement: ArrangementId) {
         let before = self.arrangement;
         self.go_id(arrangement);
         if self.arrangement != before {
@@ -1575,7 +1606,7 @@ impl Runtime {
     /// tweens and glides have all landed — an instant flip settles on the
     /// first call after its resolve. `None` while motion is still going
     /// (or nothing flipped).
-    pub fn arrangement_settled(&mut self) -> Option<u32> {
+    pub fn arrangement_settled(&mut self) -> Option<ArrangementId> {
         if self.pending_settle.is_some() && self.changes.is_empty() && !self.animating() {
             return self.pending_settle.take();
         }
@@ -1587,8 +1618,8 @@ impl Runtime {
         self.toggle_id(arrangement.id());
     }
 
-    /// `toggle` by index, for a runtime-compiled page.
-    pub fn toggle_id(&mut self, arrangement: u32) {
+    /// `toggle` by id, for a runtime-compiled page.
+    pub fn toggle_id(&mut self, arrangement: ArrangementId) {
         let target = if self.arrangement == arrangement { BASE } else { arrangement };
         self.go_id(target);
     }
@@ -1628,7 +1659,7 @@ impl Runtime {
                     if self.customs.iter().any(|(cn, cs)| *cn == n && *cs == s) {
                         return true;
                     }
-                    n = page.nodes[n as usize].parent;
+                    n = page.nodes[n].parent;
                 }
                 false
             }
@@ -1700,7 +1731,7 @@ impl Resolved {
             .find(|(n, p)| *n == node && p.key == key)
             .map(|(_, p)| p.value)
             .or_else(|| page.prop(node, key))
-            .or_else(|| page.kind_default(page.nodes[node as usize].kind, key, self.variant))?;
+            .or_else(|| page.kind_default(page.nodes[node].kind, key, self.variant))?;
         Some(deref(page, self.variant, raw))
     }
 
@@ -1796,13 +1827,13 @@ impl Resolved {
             if let Some(v) = own {
                 return Some(deref(page, self.variant, v));
             }
-            let parent = page.nodes[n as usize].parent;
+            let parent = page.nodes[n].parent;
             if parent == NO_NODE {
                 break;
             }
             n = parent;
         }
-        page.kind_default(page.nodes[node as usize].kind, key, self.variant).or_else(|| page.kind_default(Kind::Label, key, self.variant)).map(|v| deref(page, self.variant, v))
+        page.kind_default(page.nodes[node].kind, key, self.variant).or_else(|| page.kind_default(Kind::Label, key, self.variant)).map(|v| deref(page, self.variant, v))
     }
 
     /// `font_size=`: own, inherited, or the kind default.
@@ -1828,7 +1859,7 @@ impl Resolved {
         if page.repeats.iter().any(|r| r.template == node) {
             return true;
         }
-        if let Auto::Presence(baked) = page.nodes[node as usize].auto {
+        if let Auto::Presence(baked) = page.nodes[node].auto {
             // GP33: the mark exists iff its driving state holds — live,
             // through `set_custom` on the control root.
             let on = self.presence.iter().find(|(n, _)| *n == node).map(|(_, b)| *b).unwrap_or(baked);
@@ -1847,11 +1878,11 @@ impl Resolved {
     /// The nodes laid out and drawn under `id`: its own children that no
     /// `when` seated elsewhere, plus whoever is seated here.
     pub fn children(&self, page: &Page, id: NodeId) -> Vec<NodeId> {
-        let mut out: Vec<NodeId> = page.children(id).map(|i| i as NodeId).filter(|c| self.seat.get(*c as usize).copied().unwrap_or(NO_NODE) == NO_NODE).collect();
-        if page.nodes[id as usize].kind == Kind::Seat {
-            out.extend(self.seat.iter().enumerate().filter(|(_, s)| **s == id).map(|(i, _)| i as NodeId));
+        let mut out: Vec<NodeId> = page.children(id).filter(|c| self.seat.get(c.index()).copied().unwrap_or(NO_NODE) == NO_NODE).collect();
+        if page.nodes[id].kind == Kind::Seat {
+            out.extend(self.seat.iter().enumerate().filter(|(_, s)| **s == id).map(|(i, _)| NodeId::from_index(i)));
         }
-        if page.nodes[id as usize].kind == Kind::Repeat {
+        if page.nodes[id].kind == Kind::Repeat {
             if let Some((_, rows)) = self.repeat_rows.iter().find(|(r, _)| *r == id) {
                 out.extend(rows.iter().copied());
             }
@@ -1931,16 +1962,16 @@ fn compose_anim(page: &Page, rt: &Runtime, r: &mut Resolved) {
             Channel::ColorA => r.overrides.push((node, Prop { key: PropKey::ColorA, value: Value::VNum(v) })),
             Channel::RevealX => r.overrides.push((node, Prop { key: PropKey::RevealX, value: Value::VNum(v) })),
             Channel::RevealY => r.overrides.push((node, Prop { key: PropKey::RevealY, value: Value::VNum(v) })),
-            _ => r.motion[node as usize].set(channel, v),
+            _ => r.motion[node].set(channel, v),
         }
-        r.anim_owned[node as usize] |= channel.bit();
+        r.anim_owned[node] |= channel.bit();
     };
     for (node, channel, v) in &rt.held {
         apply(*node, *channel, *v);
     }
     for p in rt.players.iter().filter(|p| !p.stopped) {
         for (node, channel) in &p.owns {
-            apply(*node, *channel, rt.motion[*node as usize].get(*channel));
+            apply(*node, *channel, rt.motion[*node].get(*channel));
         }
     }
     // The `tap_pulse` turnstile: the swing's projected width on `scale.x`,
@@ -1951,7 +1982,7 @@ fn compose_anim(page: &Page, rt: &Runtime, r: &mut Resolved) {
     // for that one frame.
     for p in &rt.pulses {
         let sx: f32 = p.angle().to_radians().cos();
-        let w: f32 = rt.last_rects.get(p.node as usize).map(|r| r.w).unwrap_or(0.0);
+        let w: f32 = rt.last_rects.get(p.node.index()).map(|r| r.w).unwrap_or(0.0);
         apply(p.node, Channel::ScaleX, sx);
         apply(p.node, Channel::TranslateX, -(1.0 - sx) * w / 2.0);
     }
@@ -1987,7 +2018,7 @@ fn apply_prop_lane(page: &Page, r: &mut Resolved, node: NodeId, key: PropKey, v:
 impl Resolved {
     /// Does an anim own this channel on this node right now?
     pub fn anim_owns(&self, node: NodeId, channel: Channel) -> bool {
-        self.anim_owned.get(node as usize).is_some_and(|b| b & channel.bit() != 0)
+        self.anim_owned.get(node.index()).is_some_and(|b| b & channel.bit() != 0)
     }
 
     /// Does an anim own this PROP lane (GP40) right now?
@@ -2001,7 +2032,7 @@ impl Resolved {
         if let Some((_, f)) = self.auto.iter().find(|(n, _)| *n == node) {
             return *f;
         }
-        match page.nodes[node as usize].auto {
+        match page.nodes[node].auto {
             Auto::Length(f) | Auto::Position(f) | Auto::Arc { frac: f, .. } | Auto::Angle { frac: f, .. } => f,
             _ => 1.0,
         }
@@ -2011,7 +2042,7 @@ impl Resolved {
 fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
     let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], anim_owned_props: Vec::new(), placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), auto: Vec::new(), presence: Vec::new(), caret: rt.caret, selection: rt.selection, sel_handles: rt.sel_handles };
     for (i, node) in page.nodes.iter().enumerate() {
-        let id = i as NodeId;
+        let id = NodeId::from_index(i);
         let mut placement = node.placement;
         // The text-only Button gets air around its label — a kind default,
         // like its font size; a Button holding its own content spells its
@@ -2037,7 +2068,7 @@ fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
     // Code writes win over states.
     for (id, p) in &rt.writes {
         if p.key.is_placement() {
-            apply_placement(&mut r.placement[*id as usize], page, *p);
+            apply_placement(&mut r.placement[*id], page, *p);
         } else {
             r.overrides.push((*id, *p));
         }
@@ -2074,7 +2105,7 @@ fn fold_seats_and_motion(page: &Page, r: &mut Resolved) {
     for (id, p) in &r.overrides {
         match p.key {
             PropKey::SeatOf => {
-                r.seat[*id as usize] = match p.value {
+                r.seat[*id] = match p.value {
                     Value::VIdent(name) if page.str(name) == "home" => NO_NODE,
                     Value::VIdent(name) => page.find(page.str(name)).unwrap_or(NO_NODE),
                     _ => NO_NODE,
@@ -2082,7 +2113,7 @@ fn fold_seats_and_motion(page: &Page, r: &mut Resolved) {
             }
             PropKey::Scale | PropKey::ScaleX | PropKey::ScaleY | PropKey::TranslateX | PropKey::TranslateY | PropKey::Rotate => {
                 let Value::VNum(n) = p.value else { continue };
-                let m = &mut r.motion[*id as usize];
+                let m = &mut r.motion[*id];
                 match p.key {
                     PropKey::Scale => m.scale = [n, n],
                     PropKey::ScaleX => m.scale[0] = n,
@@ -2107,7 +2138,7 @@ fn fold_seats_and_motion(page: &Page, r: &mut Resolved) {
 fn kind_visual_default(page: &Page, node: NodeId, key: PropKey) -> Option<Value> {
     match key {
         PropKey::Opacity => Some(Value::VNum(1.0)),
-        PropKey::Background if page.nodes[node as usize].kind == Kind::Button => Some(Value::VColor(crate::draw::DEFAULT_BUTTON_BACKGROUND)),
+        PropKey::Background if page.nodes[node].kind == Kind::Button => Some(Value::VColor(crate::draw::DEFAULT_BUTTON_BACKGROUND)),
         _ => None,
     }
 }
@@ -2250,7 +2281,7 @@ fn placement_value(p: &Placement, key: PropKey) -> Option<Value> {
 
 /// An automatic slot's compile-baked rest fraction (GP33).
 fn baked_frac(page: &Page, node: NodeId) -> f32 {
-    match page.nodes[node as usize].auto {
+    match page.nodes[node].auto {
         Auto::Length(f) | Auto::Position(f) | Auto::Arc { frac: f, .. } | Auto::Angle { frac: f, .. } => f,
         _ => 0.0,
     }
@@ -2301,7 +2332,7 @@ fn find_rule(page: &Page, node: NodeId, from: Option<State>, to: Option<State>) 
 /// `when_writes`, for a PROP lane (GP40): does the flip's `when` write
 /// this very key?
 fn when_writes_key(page: &Page, node: NodeId, key: PropKey, who: NodeId) -> bool {
-    let n = &page.nodes[node as usize];
+    let n = &page.nodes[node];
     page.whens[n.whens.0 as usize..(n.whens.0 + n.whens.1) as usize].iter().any(|w| {
         let owner = if w.of == NO_NODE { node } else { w.of };
         let node_state = matches!(w.state, State::Held | State::Hovered | State::Focused | State::FocusWithin | State::Selected | State::StateDisabled);
@@ -2313,7 +2344,7 @@ fn when_writes_key(page: &Page, node: NodeId, key: PropKey, who: NodeId) -> bool
 /// Does a `when` on `node` that the flip on `who` (`NO_NODE` = the view:
 /// an arrangement or screen word) turns on or off write `channel`?
 fn when_writes(page: &Page, node: NodeId, channel: Channel, who: NodeId) -> bool {
-    let n = &page.nodes[node as usize];
+    let n = &page.nodes[node];
     page.whens[n.whens.0 as usize..(n.whens.0 + n.whens.1) as usize].iter().any(|w| {
         let owner = if w.of == NO_NODE { node } else { w.of };
         let node_state = matches!(w.state, State::Held | State::Hovered | State::Focused | State::FocusWithin | State::Selected | State::StateDisabled);
@@ -2354,7 +2385,7 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
             if let Some(rule) = find_rule(page, *who, *from, *to) {
                 if rule.anim != NO_STR {
                     rt.end_state_anims(*who, to.unwrap());
-                    rt.play(page, rule.anim, Finish::Nothing);
+                    rt.play_id(page, rule.anim, Finish::Nothing);
                     let displaced = rt.players.last().map(|p| p.owned_bases()).unwrap_or_default();
                     let displaced_props = rt.players.last().map(|p| p.owned_bases_props()).unwrap_or_default();
                     rt.state_anims.push((*who, to.unwrap(), rule.anim, displaced, displaced_props));
@@ -2377,7 +2408,7 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
         // The ladder's own word, before the mid-hide override — the
         // override must not hide the flip it exists to serve.
         let own: Vec<bool> = (0..n).map(|i| {
-            let id = i as NodeId;
+            let id = NodeId::from_index(i);
             !page.repeats.iter().any(|rp| rp.template == id)
                 && match page.nodes[i].auto {
                     // GP33: presence follows its live state, not the bake.
@@ -2388,13 +2419,13 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
         }).collect();
         let baselined = rt.vis_seen.len().min(n);
         for i in 0..n {
-            let id = i as NodeId;
+            let id = NodeId::from_index(i);
             let mut a = id;
             let now = loop {
-                if !own[a as usize] {
+                if !own[a] {
                     break false;
                 }
-                let parent = page.nodes[a as usize].parent;
+                let parent = page.nodes[a].parent;
                 if parent == NO_NODE {
                     break true;
                 }
@@ -2454,8 +2485,8 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
             // of the flip (GPAR72) — collected here, read by `glide`.
             rt.glide_node_rules.clear();
             for i in 0..page.nodes.len() {
-                if let Some(nr) = find_rule(page, i as NodeId, *from, *to).filter(|t| t.from.is_some() && t.to.is_some()) {
-                    rt.glide_node_rules.push((i as NodeId, nr.duration, ease_of(&nr)));
+                if let Some(nr) = find_rule(page, NodeId::from_index(i), *from, *to).filter(|t| t.from.is_some() && t.to.is_some()) {
+                    rt.glide_node_rules.push((NodeId::from_index(i), nr.duration, ease_of(&nr)));
                 }
             }
             let view = find_rule(page, NO_NODE, *from, *to);
@@ -2468,7 +2499,7 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
     }
     if !changes.is_empty() && !rt.last.is_empty() {
         for (i, node) in page.nodes.iter().enumerate() {
-            let id = i as NodeId;
+            let id = NodeId::from_index(i);
             let _ = node;
             for key in ANIMATABLE {
                 // GP40, user call: anim beats transition — a lane a
@@ -2562,7 +2593,7 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
     for t in &rt.tweens {
         let v = t.value();
         if t.key.is_placement() {
-            apply_placement(&mut r.placement[t.node as usize], page, Prop { key: t.key, value: v });
+            apply_placement(&mut r.placement[t.node], page, Prop { key: t.key, value: v });
         } else {
             r.overrides.push((t.node, Prop { key: t.key, value: v }));
         }
@@ -2573,7 +2604,7 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
     // What shows now, per node — the live value a new play starts from.
     rt.shown.resize(page.nodes.len(), Motion::IDENTITY);
     for i in 0..page.nodes.len() {
-        let id = i as NodeId;
+        let id = NodeId::from_index(i);
         let mut m = r.motion[i];
         m.opacity = r.num(page, id, PropKey::Opacity).unwrap_or(1.0);
         m.color_a = r.color(page, id, PropKey::Color).map(|c| c.0[3] as f32 / 255.0).unwrap_or(1.0);
@@ -2582,7 +2613,7 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
     // Remember what is displayed now.
     rt.last.clear();
     for i in 0..page.nodes.len() {
-        let id = i as NodeId;
+        let id = NodeId::from_index(i);
         for key in ANIMATABLE {
             let v = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)) };
             if let Some(v) = v {
@@ -2666,18 +2697,18 @@ mod tests {
         let bar = page.find("bar").unwrap();
         let mut rt = Runtime::new(&page);
         resolve_animated(&page, &mut rt);
-        rt.go_id(0);
+        rt.go_id(ArrangementId::new(0));
         resolve_animated(&page, &mut rt);
         rt.tick(&mut page, 0.5);
         let r = resolve_animated(&page, &mut rt);
-        assert_eq!(r.placement[bar as usize].width, Len::Exact(200.0));
+        assert_eq!(r.placement[bar].width, Len::Exact(200.0));
         // The entrance: translate pinned at -40 from play start, halfway at 0.25 s.
         rt.play_entrances(&page);
-        assert_eq!(rt.motion[bar as usize].translate[0], -40.0);
+        assert_eq!(rt.motion[bar].translate[0], -40.0);
         rt.tick(&mut page, 0.25);
-        assert!((rt.motion[bar as usize].translate[0] + 20.0).abs() < 0.01);
+        assert!((rt.motion[bar].translate[0] + 20.0).abs() < 0.01);
         rt.tick(&mut page, 0.3);
-        assert_eq!(rt.motion[bar as usize].translate[0], 0.0);
+        assert_eq!(rt.motion[bar].translate[0], 0.0);
         assert!(rt.players.is_empty());
     }
 }

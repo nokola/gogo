@@ -29,23 +29,23 @@ fn composed_when_needs_both_halves() {
     let page = c.page;
     let p = page.find("p").unwrap();
     let mut rt = Runtime::new(&page);
-    let width = |page: &gogo::Page, rt: &Runtime| resolve(page, rt).placement[p as usize].width;
+    let width = |page: &gogo::Page, rt: &Runtime| resolve(page, rt).placement[p.index()].width;
     assert_eq!(width(&page, &rt), gogo::page::Len::Exact(100.0));
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     assert_eq!(width(&page, &rt), gogo::page::Len::Exact(100.0), "the arrangement alone must not pose");
     rt.set_screen(&page, gogo::Orientation::Landscape, gogo::ScreenClass::LotsOfSpace);
     assert_eq!(width(&page, &rt), gogo::page::Len::Exact(300.0));
-    rt.go_id(u32::MAX);
+    rt.go_id(gogo::BASE);
     assert_eq!(width(&page, &rt), gogo::page::Len::Exact(100.0), "the class alone must not pose");
     assert!(codes("View v { Panel p { when screen.huge { width = 1 } } }").contains(&"G0036".to_string()));
     assert!(codes("View v { Panel p { when screen.landscape screen.portrait { width = 1 } } }").contains(&"G0038".to_string()));
     // A pair (two conditions) outranks every single; the singles rank
     // equal — between them the later line in the file wins (E2 flatten,
     // 2026-08-31; pinned in godot_arrangement.rs).
-    assert!(State::ArrangementScreen(0, 0).priority() > State::Arrangement(0).priority());
-    assert_eq!(State::ScreenPair(0, 0).priority(), State::ArrangementScreen(0, 0).priority());
-    assert_eq!(State::Arrangement(0).priority(), State::ScreenClass(0).priority());
-    assert_eq!(State::ScreenClass(0).priority(), State::ScreenOrientation(0).priority());
+    assert!(State::ArrangementScreen(gogo::ArrangementId::new(0), gogo::StrId::new(0)).priority() > State::Arrangement(gogo::ArrangementId::new(0)).priority());
+    assert_eq!(State::ScreenPair(gogo::StrId::new(0), gogo::StrId::new(0)).priority(), State::ArrangementScreen(gogo::ArrangementId::new(0), gogo::StrId::new(0)).priority());
+    assert_eq!(State::Arrangement(gogo::ArrangementId::new(0)).priority(), State::ScreenClass(gogo::StrId::new(0)).priority());
+    assert_eq!(State::ScreenClass(gogo::StrId::new(0)).priority(), State::ScreenOrientation(gogo::StrId::new(0)).priority());
 }
 
 /// GP3 + GP4: three stops with an `@0.94` plateau draw as three segments
@@ -84,12 +84,12 @@ fn anim_headers_and_key_timing() {
         anim pop {\n c.scale.x to=2, duration=0.5, autoreverse=true\n}\n";
     let c = ok(src);
     let mut page = c.page;
-    let a = page.find("a").unwrap() as usize;
-    let b = page.find("b").unwrap() as usize;
-    let cc = page.find("c").unwrap() as usize;
+    let a = (page.find("a").unwrap()).index();
+    let b = (page.find("b").unwrap()).index();
+    let cc = (page.find("c").unwrap()).index();
     let mut rt = Runtime::new(&page);
     let blink = page.intern_lookup("blink");
-    rt.play(&page, blink, Finish::Nothing);
+    rt.play_id(&page, blink, Finish::Nothing);
     assert!(rt.tick(&mut page, 0.05));
     assert_eq!(rt.motion[a].opacity, 0.0, "a jump key holds the previous value until its own t");
     rt.tick(&mut page, 0.1);
@@ -97,24 +97,24 @@ fn anim_headers_and_key_timing() {
     rt.tick(&mut page, 0.2);
     assert_eq!(rt.motion[a].opacity, 0.0);
     assert!(rt.tick(&mut page, 5.0), "forever: still moving long past the chain's length");
-    assert!(rt.is_playing(blink));
+    assert!(rt.is_playing_id(blink));
     // The clock wrapped: 5.35 s into a 0.3 s loop is 0.25 → 1; 0.1 later is 0.05 → 0.
     assert_eq!(rt.motion[a].opacity, 1.0);
     rt.tick(&mut page, 0.1);
     assert_eq!(rt.motion[a].opacity, 0.0);
 
     let fast = page.intern_lookup("fast");
-    rt.play(&page, fast, Finish::Nothing);
+    rt.play_id(&page, fast, Finish::Nothing);
     rt.tick(&mut page, 0.25);
     assert!((rt.motion[b].translate[0] - 50.0).abs() < 1e-3, "speed=2: half way after a quarter second");
 
     let pop = page.intern_lookup("pop");
-    rt.play(&page, pop, Finish::Nothing);
+    rt.play_id(&page, pop, Finish::Nothing);
     rt.tick(&mut page, 0.5);
     assert!((rt.motion[cc].scale[0] - 2.0).abs() < 1e-3);
     rt.tick(&mut page, 0.5);
     assert!((rt.motion[cc].scale[0] - 1.0).abs() < 1e-3, "autoreverse returns home");
-    assert!(!rt.is_playing(pop));
+    assert!(!rt.is_playing_id(pop));
 }
 
 /// GP5: the crop page's `bounces=1, bounciness=2.4` reach the track as
@@ -141,7 +141,7 @@ fn rotate_reaches_the_draw_list() {
     let c = ok("arrangement flipped\nView v {\n Rectangle arrow width=20, height=10, halign=left, valign=top\n}\nwhen flipped { arrow.rotate = 180 }\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     let res = resolve(&page, &rt);
     let rects = layout(&page, &res, Rect::new(0.0, 0.0, 100.0, 100.0), &FixedAdvance);
     let draws = draw(&page, &res, &rects);
@@ -157,21 +157,21 @@ fn rotate_reaches_the_draw_list() {
 fn stop_restores_and_entrances_respect_gone_ancestors() {
     let c = ok("View v {\n Rectangle a width=10, height=10\n Panel hidden visibility=gone { Rectangle inner width=10, height=10, on:show=play(enter) }\n}\nanim flash repeat=forever { a.opacity to=0.2, duration=1 }\nanim enter { inner.opacity from=0, to=1, duration=1 }\n");
     let mut page = c.page;
-    let a = page.find("a").unwrap() as usize;
-    let inner = page.find("inner").unwrap() as usize;
+    let a = (page.find("a").unwrap()).index();
+    let inner = (page.find("inner").unwrap()).index();
     let mut rt = Runtime::new(&page);
     let flash = page.intern_lookup("flash");
-    rt.play(&page, flash, Finish::Nothing);
+    rt.play_id(&page, flash, Finish::Nothing);
     rt.tick(&mut page, 0.5);
     assert!((rt.motion[a].opacity - 0.6).abs() < 1e-3);
-    rt.stop(flash, true);
+    rt.stop_id(flash, true);
     assert_eq!(rt.motion[a].opacity, 1.0, "restored to the pre-play value");
-    assert!(!rt.is_playing(flash));
+    assert!(!rt.is_playing_id(flash));
     assert!(!rt.tick(&mut page, 0.1));
 
     rt.play_entrances(&page);
     let enter = page.intern_lookup("enter");
-    assert!(!rt.is_playing(enter), "no entrance under a gone ancestor");
+    assert!(!rt.is_playing_id(enter), "no entrance under a gone ancestor");
     assert_eq!(rt.motion[inner].opacity, 1.0);
     let _ = (NO_NODE, PropKey::Opacity, Value::VNum(0.0), resolve_animated);
 }
@@ -203,15 +203,15 @@ fn finished_anims_reach_the_host_once() {
     let fade = page.intern_lookup("fade");
     let blink = page.intern_lookup("blink");
     let mut rt = Runtime::new(&page);
-    rt.play(&page, fade, Finish::Nothing);
+    rt.play_id(&page, fade, Finish::Nothing);
     rt.tick(&mut page, 0.1);
     assert!(rt.take_finished().is_empty(), "mid-flight is not finished");
     rt.tick(&mut page, 0.2);
     let done = rt.take_finished();
     assert_eq!(done.iter().map(|a| page.str(*a)).collect::<Vec<_>>(), ["fade"]);
     assert!(rt.take_finished().is_empty(), "drained");
-    rt.play(&page, blink, Finish::Nothing);
-    rt.stop(blink, true);
+    rt.play_id(&page, blink, Finish::Nothing);
+    rt.stop_id(blink, true);
     rt.tick(&mut page, 1.0);
     assert!(rt.take_finished().is_empty(), "a stopped anim never reports");
 }

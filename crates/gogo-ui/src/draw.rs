@@ -112,7 +112,7 @@ pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
     if page.nodes.is_empty() {
         return out;
     }
-    walk(page, res, rects, 0, 1.0, &mut out);
+    walk(page, res, rects, NodeId::new(0), 1.0, &mut out);
     out
 }
 
@@ -136,7 +136,7 @@ fn text_align(page: &Page, res: &Resolved, id: NodeId, key: PropKey, default: Te
 /// Does a `when disabled` on this node (its own or a style's) write
 /// `opacity`? Then the file decides the disabled look, not the built-in.
 fn authored_disabled_opacity(page: &Page, id: NodeId) -> bool {
-    let n = &page.nodes[id as usize];
+    let n = &page.nodes[id];
     page.whens[n.whens.0 as usize..(n.whens.0 + n.whens.1) as usize]
         .iter()
         .any(|w| w.state == State::StateDisabled && page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize].iter().any(|p| p.key == PropKey::Opacity))
@@ -157,18 +157,18 @@ fn authored_disabled_opacity(page: &Page, id: NodeId) -> bool {
 /// disagree (GPAR37): draw pushes the clip and `hit` rejects a point a
 /// clipping ancestor cut — a button's clipped half takes no taps.
 pub(crate) fn clips(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId) -> bool {
-    let node = &page.nodes[id as usize];
-    let pl = &res.placement[id as usize];
+    let node = &page.nodes[id];
+    let pl = &res.placement[id];
     let written_x = pl.max_width.is_some() || pl.max_width_fill || matches!(pl.width, Len::Exact(_));
     let written_y = pl.max_height.is_some() || pl.max_height_fill || matches!(pl.height, Len::Exact(_));
     let written_overflow = (written_x || written_y)
         && (node.kind == Kind::Label || {
-            let own = rects[id as usize];
+            let own = rects[id];
             let neg = |m: Option<f32>| m.map_or(false, |v| v < 0.0);
             page.children(id).any(|c| {
                 let r = rects[c];
                 let pc = &res.placement[c];
-                if res.gone(page, c as NodeId) || res.bool(page, c as NodeId, PropKey::Overlay).unwrap_or(false) {
+                if res.gone(page, c) || res.bool(page, c, PropKey::Overlay).unwrap_or(false) {
                     return false;
                 }
                 let px = written_x && ((r.x < own.x - 0.01 && !neg(pc.margin[0])) || (r.x + r.w > own.x + own.w + 0.01 && !neg(pc.margin[2])));
@@ -183,10 +183,10 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     if res.gone(page, id) || res.hidden(page, id) {
         return;
     }
-    let node = &page.nodes[id as usize];
-    let motion = res.motion.get(id as usize).copied().unwrap_or(crate::anim::Motion::IDENTITY);
+    let node = &page.nodes[id];
+    let motion = res.motion.get(id.index()).copied().unwrap_or(crate::anim::Motion::IDENTITY);
     let pivot = pivot_frac(page, res, id);
-    let rect = moved(rects[id as usize], &motion, pivot);
+    let rect = moved(rects[id], &motion, pivot);
     // `scale` means the whole picture at that size (Godot's canvas
     // transform, GPAR43): the rects shrink in the child shift below, and
     // the sizes that come from props, not rects — glyph size, corner
@@ -194,7 +194,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     // end. Without the second half, `when held scale=0.9` on a captioned
     // button keeps full-size text poking out of a 90 % plate.
     let scaled_from = if motion.scale != [1.0, 1.0] { Some(out.len()) } else { None };
-    let state: u8 = res.states.get(id as usize).copied().unwrap_or(0);
+    let state: u8 = res.states.get(id.index()).copied().unwrap_or(0);
     // One value per node: the ladder's `opacity` (declared, `when`, code)
     // with the built-in disabled dim as its bottom rung — an authored
     // `when disabled opacity=` replaces the dim, a plain `opacity=` does
@@ -228,7 +228,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     // at build (G2002), so no fallback reads it.
     let text_color = || res.font_color(page, id).map(|c| mul_alpha(c, opacity)).unwrap_or(mul_alpha(DEFAULT_TEXT_COLOR, opacity));
     // Text sits inside the node's padding and border (WPF Padding).
-    let pad = res.placement[id as usize].padding;
+    let pad = res.placement[id].padding;
     let text_rect = rect.inset(pad[0] + border, pad[1] + border, pad[2] + border, pad[3] + border);
     // A templated Check/Radio/Toggle (a body of its own) is a blank toggle
     // surface: no chrome unless the file paints it.
@@ -544,7 +544,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                 if sn == id {
                     let (stext, skey) = match res.prop(page, id, PropKey::Text) {
                         Some(Value::VText { text, key }) => (text, key),
-                        _ => (0, NO_KEY),
+                        _ => (NO_STR, NO_KEY),
                     };
                     let sel_color = color(PropKey::SelectionColor).unwrap_or(mul_alpha(Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 64]), opacity));
                     out.push(Draw::Selection { rect: text_rect.inset(8.0, 0.0, 8.0, 0.0), text: stext, key: skey, font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE), font: res.font(page, id).unwrap_or(NO_STR), lo, hi, color: sel_color });
@@ -578,7 +578,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                 if cn == id {
                     let (ctext, ckey) = match res.prop(page, id, PropKey::Text) {
                         Some(Value::VText { text, key }) => (text, key),
-                        _ => (0, NO_KEY),
+                        _ => (NO_STR, NO_KEY),
                     };
                     out.push(Draw::Caret { rect: text_rect.inset(8.0, 0.0, 8.0, 0.0), text: ctext, key: ckey, font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE), font: res.font(page, id).unwrap_or(NO_STR), index, color: text_color() });
                 }
@@ -592,8 +592,8 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
         // transform (scale about this node's `pivot=` point, default the
         // center — the same fixed point `moved` held for the node itself).
         let mut moved_rects: Vec<Rect> = rects.to_vec();
-        let (cx, cy) = (rects[id as usize].x + rects[id as usize].w * pivot.0, rects[id as usize].y + rects[id as usize].h * pivot.1);
-        for i in (id as usize + 1)..node.subtree_end as usize {
+        let (cx, cy) = (rects[id].x + rects[id].w * pivot.0, rects[id].y + rects[id].h * pivot.1);
+        for i in (id.index() + 1)..node.subtree_end as usize {
             let r = rects[i];
             moved_rects[i] = Rect::new(cx + (r.x - cx) * motion.scale[0] + motion.translate[0], cy + (r.y - cy) * motion.scale[1] + motion.translate[1], r.w * motion.scale[0], r.h * motion.scale[1]);
         }
@@ -617,11 +617,11 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
         while i < kids.len() {
             let c = kids[i];
             i += 1;
-            if page.nodes[c as usize].kind == Kind::Repeat {
+            if page.nodes[c].kind == Kind::Repeat {
                 kids.extend(res.children(page, c));
                 continue;
             }
-            let r = rects[c as usize];
+            let r = rects[c];
             if r.w <= 0.0 && r.h <= 0.0 {
                 continue;
             }
@@ -633,7 +633,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
         }
         let (content_w, content_h) = if any { (hi[0] - lo[0], hi[1] - lo[1]) } else { (0.0, 0.0) };
         let grabber = mul_alpha(SCROLL_GRABBER, opacity);
-        let offset = res.scroll.get(id as usize).copied().unwrap_or([0.0, 0.0]);
+        let offset = res.scroll.get(id.index()).copied().unwrap_or([0.0, 0.0]);
         if content_h > rect.h {
             let len = (rect.h * rect.h / content_h).max(8.0);
             let y = rect.y + (rect.h - len) * (offset[1] / (content_h - rect.h)).clamp(0.0, 1.0);
@@ -731,13 +731,13 @@ pub(crate) fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option
         }
         // Ancestors sit at lower indices, so nested motions compose in
         // walk order like the draw pass.
-        let p = pivot_frac(page, res, i as NodeId);
+        let p = pivot_frac(page, res, NodeId::from_index(i));
         let (cx, cy) = (out[i].x + out[i].w * p.0, out[i].y + out[i].h * p.1);
         // The range bounds the scan; membership is by ancestry — a later
         // sibling's subtree shares the range (Node::subtree_end), and a
         // swinging button must not drag its neighbours' hit rects along.
         for j in i..page.nodes[i].subtree_end as usize {
-            if !page.is_under(j as NodeId, i as NodeId) {
+            if !page.is_under(NodeId::from_index(j), NodeId::from_index(i)) {
                 continue;
             }
             let r = out[j];
@@ -780,13 +780,13 @@ pub fn hit(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: boo
             let m = &res.motion[i];
             if m.rotate != 0.0 {
                 let r = rects[i];
-                let pv = pivot_frac(page, res, i as NodeId);
+                let pv = pivot_frac(page, res, NodeId::from_index(i));
                 let (cx, cy) = (r.x + r.w * pv.0, r.y + r.h * pv.1);
                 let (s, c) = (-m.rotate).to_radians().sin_cos();
                 let (dx, dy) = (x - cx, y - cy);
                 pts[i] = (cx + dx * c - dy * s, cy + dx * s + dy * c);
             } else if i > 0 {
-                pts[i] = pts[page.nodes[i].parent as usize];
+                pts[i] = pts[page.nodes[i].parent.index()];
             }
         }
         Some(pts)
@@ -804,9 +804,9 @@ fn hit_laid_at(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any:
         return None;
     }
     let mut order: Vec<NodeId> = Vec::with_capacity(page.nodes.len());
-    paint_order(page, res, 0, &mut order);
+    paint_order(page, res, NodeId::new(0), &mut order);
     for id in order.into_iter().rev() {
-        let i = id as usize;
+        let i = id.index();
         let (px, py) = pts.and_then(|p| p.get(i).copied()).unwrap_or((x, y));
         if !rects[i].contains(px, py) {
             continue;
@@ -831,21 +831,21 @@ fn hit_laid_at(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any:
             }
             // GP33: an arc wedge cuts input the way it cuts pixels — the
             // hit area is what's visible (§4.5).
-            if let crate::page::Auto::Arc { from, sweep, .. } = page.nodes[a as usize].auto {
-                let ra = rects[a as usize];
+            if let crate::page::Auto::Arc { from, sweep, .. } = page.nodes[a].auto {
+                let ra = rects[a];
                 if !wedge_contains(x - (ra.x + ra.w / 2.0), y - (ra.y + ra.h / 2.0), from, sweep * res.auto_frac(page, a)) {
                     ok = false;
                     break;
                 }
             }
-            let parent = page.nodes[a as usize].parent;
+            let parent = page.nodes[a].parent;
             if parent == NO_NODE {
                 break;
             }
             // A clipping ancestor cuts input at its own rectangle the
             // same way it cuts pixels (GPAR37) — Scroll viewports,
             // `clip_contents=true` and written-size overflow alike.
-            if clips(page, res, rects, parent) && !rects[parent as usize].contains(x, y) {
+            if clips(page, res, rects, parent) && !rects[parent].contains(x, y) {
                 ok = false;
                 break;
             }
@@ -944,7 +944,7 @@ mod tests {
         let rt = Runtime::new(&c.page);
         let res = resolve(&c.page, &rt);
         let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-        let own = rects[c.page.find("c").unwrap() as usize];
+        let own = rects[c.page.find("c").unwrap().index()];
         assert_eq!((own.w, own.h), (100.0, 40.0), "{own:?}");
         let list = draw(&c.page, &res, &rects);
         let disc = list.iter().find_map(|d| if let Draw::Circle { rect, .. } = d { Some(*rect) } else { None }).unwrap();
@@ -959,7 +959,7 @@ mod tests {
 /// writes its one, later wins. Values follow `$refs` through the theme.
 fn corner_set(page: &Page, res: &Resolved, id: NodeId) -> [f32; 4] {
     let mut c = [0.0f32; 4];
-    let node = &page.nodes[id as usize];
+    let node = &page.nodes[id];
     let apply = |c: &mut [f32; 4], key: PropKey, value: Value| {
         let v = match crate::runtime::deref(page, res.variant, value) {
             Value::VNum(v) => v,

@@ -61,7 +61,7 @@ fn relay(page: &Page, rt: &Runtime, w: f32, h: f32) -> Vec<Rect> {
 }
 
 fn rect(p: &Page, r: &[Rect], name: &str) -> Rect {
-    r[p.find(name).unwrap_or_else(|| panic!("no node {name}")) as usize]
+    r[(p.find(name).unwrap_or_else(|| panic!("no node {name}"))).index()]
 }
 
 /// A fake bitmap for `aspect=natural`: every image is 100×50 px.

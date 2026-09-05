@@ -52,16 +52,16 @@ fn base_is_the_rest_end_of_a_builtin_flip_and_home_mirrors_it() {
     let bar = page.find("bar").unwrap();
     let mut rt = Runtime::new(&page);
     resolve_animated(&page, &mut rt);
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     resolve_animated(&page, &mut rt);
     rt.tick(&mut page, 1.0);
     let r = resolve_animated(&page, &mut rt);
-    assert_eq!(r.placement[bar as usize].width, Len::Exact(300.0));
+    assert_eq!(r.placement[bar.index()].width, Len::Exact(300.0));
     rt.go_id(BASE);
     resolve_animated(&page, &mut rt);
     rt.tick(&mut page, 0.5);
     let r = resolve_animated(&page, &mut rt);
-    assert_eq!(r.placement[bar as usize].width, Len::Exact(200.0), "home glides back on the mirrored rule, no snap");
+    assert_eq!(r.placement[bar.index()].width, Len::Exact(200.0), "home glides back on the mirrored rule, no snap");
 }
 
 /// GPAR45 (decided 2026-08-31): `empty { }` holds one child — with two,
@@ -161,7 +161,7 @@ fn a_transition_rule_has_one_arrow_and_names_its_from_end() {
     assert!(codes("arrangement a\narrangement b\ntransition a b -> base duration=0.1\nView v { Rectangle r }").contains(&"G0034".to_string()));
     assert!(codes("View v { Button b text=\"x\" { transition -> held duration=0.1 } }").contains(&"G0034".to_string()));
     let c = ok("arrangement wide\ntransition wide -> any duration=0.2\nView v { Rectangle r }");
-    assert_eq!(c.page.transitions[0].from, Some(State::Arrangement(0)));
+    assert_eq!(c.page.transitions[0].from, Some(State::Arrangement(gogo::ArrangementId::new(0))));
     assert_eq!(c.page.transitions[0].to, None);
 }
 

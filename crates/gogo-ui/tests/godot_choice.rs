@@ -62,20 +62,20 @@ impl Fx {
         let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
         (res, rects)
     }
-    fn id(&self, name: &str) -> u32 {
+    fn id(&self, name: &str) -> gogo::NodeId {
         self.page.find(name).unwrap_or_else(|| panic!("no node {name:?}"))
     }
     fn selected(&self, name: &str) -> bool {
         self.rt.has(self.id(name), SELECTED)
     }
     fn choice_of(&self, name: &str) -> u32 {
-        self.page.nodes[self.id(name) as usize].choice
+        self.page.nodes[(self.id(name)).index()].choice
     }
     /// A finger down and up at the node's center (Godot's `_conf_press` pair).
     fn tap(&mut self, name: &str, t: f64) -> Vec<Event> {
         let n = self.id(name);
         let (res, rects) = self.lay();
-        let r = rects[n as usize];
+        let r = rects[n.index()];
         let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x, y, t, id: 1 });
         self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x, y, t: t + 0.1, id: 1 })
@@ -180,7 +180,7 @@ fn choice_on_change_relays_the_radio_name() {
 #[test]
 fn check_is_never_grouped() {
     let fx = Fx::new("View v { Check c text=\"on?\" }");
-    assert_eq!(fx.page.nodes[fx.id("c") as usize].kind, Kind::Check);
+    assert_eq!(fx.page.nodes[(fx.id("c")).index()].kind, Kind::Check);
     assert_eq!(fx.choice_of("c"), NO_CHOICE);
 }
 
@@ -314,7 +314,7 @@ fn background_recolors_the_bodied_radio_slate() {
     let fx = Fx::new("View v {\n Column {\n  choice t {\n   Radio a 20x20, background=#FF0000FF { Circle tRing 10x10 }\n   Radio b 20x20 { Circle uRing 10x10 }\n  }\n }\n}\n");
     let list = fx.draws();
     let (_, rects) = fx.lay();
-    let ra = rects[fx.id("a") as usize];
+    let ra = rects[(fx.id("a")).index()];
     assert!(list.iter().any(|d| matches!(d, Draw::Quad { rect, color, .. } if *rect == ra && *color == Color_Straight_Srgb_4xU8_RGBA([255, 0, 0, 255]))), "{list:#?}");
     assert_eq!(count(&list, |d| matches!(d, Draw::Quad { .. })), 1, "the untinted Radio stays blank: {list:#?}");
 }

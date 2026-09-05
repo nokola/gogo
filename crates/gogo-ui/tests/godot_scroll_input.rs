@@ -76,7 +76,7 @@ impl Fx {
     }
 
     fn rect(&self, name: &str) -> Rect {
-        self.lay().1[self.id(name) as usize]
+        self.lay().1[(self.id(name)).index()]
     }
 
     fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) -> Vec<Event> {
@@ -90,7 +90,7 @@ impl Fx {
     }
 
     fn scroll(&self, name: &str) -> [f32; 2] {
-        self.rt.scroll[self.id(name) as usize]
+        self.rt.scroll[(self.id(name)).index()]
     }
 
     fn axes(&self, name: &str) -> (bool, bool) {
@@ -339,7 +339,7 @@ fn list_takes_bars_and_redirects_allow_to_layout() {
 fn scroll_tap_deadzone_pan_fling_overscroll_spring_and_axis_lock() {
     let mut fx = Fx::new(TALL_LIST);
     let sv = fx.id("sv");
-    assert_eq!(fx.page.nodes[sv as usize].kind, Kind::Scroll);
+    assert_eq!(fx.page.nodes[sv.index()].kind, Kind::Scroll);
     // tap: tracked, then passed through untouched
     fx.touch(Phase::Down, 50.0, 80.0, 0.0);
     assert!(fx.input.is_pressed());
@@ -368,7 +368,7 @@ fn scroll_tap_deadzone_pan_fling_overscroll_spring_and_axis_lock() {
     assert!(fx.input.is_gliding());
     fx.input.reset(&fx.page, &mut fx.rt);
     // pulling past the top shows a softened content offset...
-    fx.rt.scroll[sv as usize] = [0.0, 0.0];
+    fx.rt.scroll[sv.index()] = [0.0, 0.0];
     let top = fx.rect("list").y;
     fx.touch(Phase::Down, 50.0, 20.0, 3.0);
     fx.touch(Phase::Move, 50.0, 30.0, 3.01);
@@ -539,7 +539,7 @@ fn accessibility_name_translates_by_its_key() {
     assert_eq!(c.keys.names, ["undoA11y"]);
     let tb = c.page.find("tb").unwrap();
     let v = c.page.prop(tb, PropKey::AccessibilityName);
-    let locale = gogo::Locale::build(XX, &[(0, "Undo-XX")]);
+    let locale = gogo::Locale::build(XX, &[(gogo::KeyId::new(0), "Undo-XX")]);
     let shown = match v {
         Some(Value::VText { text, key }) => gogo::locale::display(&c.page, Some(&locale), text, key),
         other => panic!("{other:?}"),
@@ -644,10 +644,10 @@ fn stranded(fx: &Fx) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for (i, n) in fx.page.nodes.iter().enumerate() {
         let name = fx.page.str(n.name);
-        if fx.rt.has(i as NodeId, HELD) {
+        if fx.rt.has(NodeId::from_index(i), HELD) {
             out.push(format!("{name}: held"));
         }
-        if fx.rt.has(i as NodeId, HOVERED) {
+        if fx.rt.has(NodeId::from_index(i), HOVERED) {
             out.push(format!("{name}: hovered"));
         }
     }
@@ -707,7 +707,7 @@ fn motion_pumps_run_exactly_while_something_moves() {
     let mut fx = Fx::new(STATE_VIEW);
     assert!(!fx.rt.animating() && !fx.input.is_gliding());
     let _ = resolve_animated(&fx.page, &mut fx.rt);
-    fx.rt.go_id(0);
+    fx.rt.go_id(gogo::ArrangementId::new(0));
     let _ = resolve_animated(&fx.page, &mut fx.rt);
     assert!(fx.rt.animating(), "a timed arrangement flip pumps while gliding");
     fx.rt.tick(&mut fx.page, 0.5);
@@ -765,11 +765,11 @@ const ENTRANCE: &str = "anim appear { box.opacity from=0.0, to=1.0, duration=0.5
 fn a_root_landing_visible_plays_its_show_anim_once() {
     let c = ok(ENTRANCE);
     let mut page = c.page;
-    let bx = page.find("box").unwrap() as usize;
+    let bx = (page.find("box").unwrap()).index();
     let appear = page.intern_lookup("appear");
     let mut rt = Runtime::new(&page);
     rt.play_entrances(&page);
-    assert!(rt.is_playing(appear), "appearing plays the show anim");
+    assert!(rt.is_playing_id(appear), "appearing plays the show anim");
     rt.tick(&mut page, 0.016);
     assert!(rt.motion[bx].opacity < 0.99, "the from= is asserted: {}", rt.motion[bx].opacity);
     // suppressed: no entrance asked for, none plays
@@ -777,7 +777,7 @@ fn a_root_landing_visible_plays_its_show_anim_once() {
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
     assert!(!rt.tick(&mut page, 0.016));
-    assert!(!rt.is_playing(appear));
+    assert!(!rt.is_playing_id(appear));
     assert_eq!(rt.motion[bx].opacity, 1.0);
     // a hidden root is state, not a trigger; the SHOW flip plays
     let c = ok(&ENTRANCE.replace("viewRoot on:show", "viewRoot visibility=gone, on:show"));
@@ -786,9 +786,9 @@ fn a_root_landing_visible_plays_its_show_anim_once() {
     let appear = page.intern_lookup("appear");
     let mut rt = Runtime::new(&page);
     rt.play_entrances(&page);
-    assert!(!rt.is_playing(appear), "a hidden root plays no entrance");
+    assert!(!rt.is_playing_id(appear), "a hidden root plays no entrance");
     rt.show(&mut page, root, true);
-    assert!(rt.is_playing(appear), "the show flip plays");
+    assert!(rt.is_playing_id(appear), "the show flip plays");
 }
 
 /// The Godot hide-restart fixture: a fade-in entrance and a two-channel
@@ -802,7 +802,7 @@ const DRIFT: &str = "anim fadein { box.opacity from=0.0, to=1.0, duration=0.5 }\
 fn a_hide_mid_journey_reads_the_mid_values() {
     let c = ok(DRIFT);
     let mut page = c.page;
-    let bx = page.find("box").unwrap() as usize;
+    let bx = (page.find("box").unwrap()).index();
     let root = page.find("driftRoot").unwrap();
     let mut rt = Runtime::new(&page);
     rt.play_entrances(&page);
@@ -823,7 +823,7 @@ fn a_hide_mid_journey_reads_the_mid_values() {
 fn a_restarted_hide_restores_the_as_built_values_on_finish() {
     let c = ok(DRIFT);
     let mut page = c.page;
-    let bx = page.find("box").unwrap() as usize;
+    let bx = (page.find("box").unwrap()).index();
     let root = page.find("driftRoot").unwrap();
     let mut rt = Runtime::new(&page);
     rt.play_entrances(&page);

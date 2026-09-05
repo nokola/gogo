@@ -551,7 +551,7 @@ impl Player {
             let track_from = t.from.and_then(Value::as_num);
             let track_to = t.to.as_num().unwrap_or(0.0);
             for channel in channels {
-                let shown = live.get(t.node as usize).map(|m| m.get(channel)).unwrap_or(Motion::IDENTITY.get(channel));
+                let shown = live.get(t.node.index()).map(|m| m.get(channel)).unwrap_or(Motion::IDENTITY.get(channel));
                 let base_held = held.iter().any(|h| h.0 == t.node && h.1 == channel);
                 let first_on_channel = !tracks.iter().any(|x| x.node == t.node && x.channel == channel);
                 let from = if t.current {
@@ -560,7 +560,7 @@ impl Player {
                     // The channel is this player's from now on: the layer
                     // starts at the pinned `from=`, else at what shows, so
                     // taking ownership never jumps the picture.
-                    layer[t.node as usize].set(channel, track_from.unwrap_or(shown));
+                    layer[t.node].set(channel, track_from.unwrap_or(shown));
                     track_from
                 } else {
                     None
@@ -652,12 +652,12 @@ impl Player {
         for track in &mut self.tracks {
             if t < track.start {
                 if let Some(f) = track.lead_in_from {
-                    motion[track.node as usize].set(track.channel, f);
+                    motion[track.node].set(track.channel, f);
                 }
                 continue;
             }
             if track.from.is_none() {
-                track.from = Some(motion[track.node as usize].get(track.channel));
+                track.from = Some(motion[track.node].get(track.channel));
             }
             let from = track.from.unwrap_or(track.to);
             let local = t - track.start;
@@ -669,7 +669,7 @@ impl Player {
             } else {
                 lerp(from, track.to, track.easing.apply((local / track.duration).min(1.0)))
             };
-            motion[track.node as usize].set(track.channel, value);
+            motion[track.node].set(track.channel, value);
         }
     }
 
@@ -700,7 +700,7 @@ impl Player {
         if restore {
             for track in &self.tracks {
                 if self.owns.contains(&(track.node, track.channel)) {
-                    layer[track.node as usize].set(track.channel, track.base);
+                    layer[track.node].set(track.channel, track.base);
                 }
             }
             for track in &self.ptracks {
@@ -755,7 +755,7 @@ mod tests {
 
     #[test]
     fn tween_lerps_numbers_and_colors() {
-        let mut t = Tween { node: 0, key: PropKey::Opacity, from: Value::VNum(0.0), to: Value::VNum(1.0), elapsed: 0.0, duration: 1.0, easing: Easing::LINEAR };
+        let mut t = Tween { node: NodeId::new(0), key: PropKey::Opacity, from: Value::VNum(0.0), to: Value::VNum(1.0), elapsed: 0.0, duration: 1.0, easing: Easing::LINEAR };
         t.elapsed = 0.25;
         assert_eq!(t.value(), Value::VNum(0.25));
         // Colors mix under the one law (premultiplied Oklab, crate::color)

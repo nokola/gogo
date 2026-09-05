@@ -39,7 +39,7 @@ impl Fx {
     }
 
     fn focused(&self) -> Option<NodeId> {
-        (0..self.page.nodes.len() as NodeId).find(|n| self.rt.has(*n, FOCUSED))
+        self.page.node_ids().find(|n| self.rt.has(*n, FOCUSED))
     }
 }
 

@@ -25,8 +25,8 @@ pub use draw::{Draw, Fit, GradientKind, TextAlign, draw, hit};
 pub use input::{Event, EventKind, Input, Key, MOUSE_ID, Mods, Phase, Touch};
 pub use layout::{FixedAdvance, Rect, TextMeasure, layout};
 pub use locale::{KeyName, Keys, Locale};
-pub use runtime::ArrangementName;
-pub use page::{Kind, KeyId, NO_KEY, NO_NODE, NO_STR, NodeId, Orientation, Page, PropKey, Color_Straight_Srgb_4xU8_RGBA, ScreenClass, StaticPage, StrId, Value};
+pub use runtime::{AnimName, ArrangementName};
+pub use page::{ArrangementId, BASE, Kind, KeyId, NO_KEY, NO_NODE, NO_STR, NodeId, Orientation, Page, PropKey, Color_Straight_Srgb_4xU8_RGBA, ScreenClass, StaticPage, StrId, Value};
 pub use anim::{Easing, Finish, Motion};
 pub use runtime::{Resolved, Runtime, resolve, resolve_animated};
 
@@ -145,6 +145,8 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
     let mut modules: Vec<String> = Vec::new();
     let mut images: Vec<String> = Vec::new();
     let mut fonts: Vec<String> = Vec::new();
+    // Every compiled page, for the build-wide `<Widget>Names` structs.
+    let mut compiled_pages: Vec<(String, Page)> = Vec::new();
     for path in &entries {
         let module = path.file_stem().and_then(|s| s.to_str()).unwrap_or("page").replace('-', "_");
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -186,8 +188,12 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
             }
         }
         println!("cargo:rerun-if-changed={}", path.display());
-        source.push_str(&emit::emit_rust(&compiled.page, &module));
+        match emit::emit_rust(&compiled.page, &module) {
+            Ok(code) => source.push_str(&code),
+            Err(e) => errors.push_str(&format!("{}: {e}", path.display())),
+        }
         source.push('\n');
+        compiled_pages.push((module, compiled.page));
     }
     // The built-in edit bar page, compiled with the app's key table so
     // its labels join the app's translation keys (`cut`, `copy`,
@@ -203,8 +209,20 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
             }
         }
         modules.push(EDIT_BAR_MODULE.to_string());
-        source.push_str(&emit::emit_rust(&compiled.page, EDIT_BAR_MODULE));
+        match emit::emit_rust(&compiled.page, EDIT_BAR_MODULE) {
+            Ok(code) => source.push_str(&code),
+            Err(e) => errors.push_str(&e),
+        }
         source.push('\n');
+        compiled_pages.push((EDIT_BAR_MODULE.to_string(), compiled.page));
+    }
+    // One `<Widget>Names` struct per widget the build instances.
+    {
+        let pages: Vec<(&str, &Page)> = compiled_pages.iter().map(|(m, p)| (m.as_str(), p)).collect();
+        match emit::emit_widget_names(&pages) {
+            Ok(code) => source.push_str(&code),
+            Err(e) => errors.push_str(&e),
+        }
     }
     // Every page by file stem, for a `--page <stem>` pick at runtime.
     source.push_str("/// (file stem, page) for every page in `ui/`.\npub static PAGES: &[(&str, &gogo::page::StaticPage)] = &[\n");

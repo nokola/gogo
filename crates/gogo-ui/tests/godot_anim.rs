@@ -107,7 +107,7 @@ fn dotted_path_is_node_plus_channel_and_play_call_wires() {
     assert_eq!(t.len(), 1, "{t:#?}");
     assert_eq!(t[0].node, page.find("listBrush").unwrap());
     assert_eq!(page.str(t[0].channel), "translate.x");
-    let p = &page.nodes[page.find("p").unwrap() as usize];
+    let p = &page.nodes[(page.find("p").unwrap()).index()];
     let show = page.intern_lookup("show");
     let handlers: Vec<&gogo::page::OnHandler> = page.handlers[p.handlers.0 as usize..(p.handlers.0 + p.handlers.1) as usize].iter().collect();
     let play = handlers.iter().find(|h| h.event == show).map(|h| h.action);
@@ -251,21 +251,21 @@ fn dotted_line_outside_an_anim_is_refused() {
 fn play_runs_to_the_end_and_stop_restores_the_pre_play_value() {
     let c = ok("anim slide {\n box.translate.x from=0, to=100, duration=1.0\n}\nView host { Rectangle box }\n");
     let mut page = c.page;
-    let b = page.find("box").unwrap() as usize;
+    let b = (page.find("box").unwrap()).index();
     let slide = anim_id(&page, "slide");
     let mut rt = Runtime::new(&page);
-    rt.play(&page, slide, Finish::Nothing);
-    assert!(rt.is_playing(slide));
+    rt.play_id(&page, slide, Finish::Nothing);
+    assert!(rt.is_playing_id(slide));
     rt.tick(&mut page, 0.5);
     assert!(near(rt.motion[b].translate[0], 50.0, 0.01), "{:?}", rt.motion[b]);
-    assert!(rt.is_playing(slide));
+    assert!(rt.is_playing_id(slide));
     rt.tick(&mut page, 0.6);
     assert!(near(rt.motion[b].translate[0], 100.0, 0.01), "{:?}", rt.motion[b]);
-    assert!(!rt.is_playing(slide));
+    assert!(!rt.is_playing_id(slide));
     // stop(restore) on a second play: back to where play #1 left it.
-    rt.play(&page, slide, Finish::Nothing);
+    rt.play_id(&page, slide, Finish::Nothing);
     rt.tick(&mut page, 0.5);
-    rt.stop(slide, true);
+    rt.stop_id(slide, true);
     assert!(near(rt.motion[b].translate[0], 100.0, 0.01), "{:?}", rt.motion[b]);
 }
 
@@ -280,28 +280,28 @@ fn play_runs_to_the_end_and_stop_restores_the_pre_play_value() {
 fn from_current_pins_the_live_value_and_handoff_keeps_the_true_base() {
     let c = ok("anim go {\n hbox.translate.x from=0, to=100, duration=1.0\n}\nanim back {\n hbox.translate.x from=current, to=0, duration=1.0\n}\nView hhost { Rectangle hbox }\n");
     let mut page = c.page;
-    let h = page.find("hbox").unwrap() as usize;
+    let h = (page.find("hbox").unwrap()).index();
     let back_tracks = tracks(&page, "back");
     assert!(back_tracks[0].current && back_tracks[0].from.is_none(), "{back_tracks:#?}");
     let go = anim_id(&page, "go");
     let back = anim_id(&page, "back");
     let mut rt = Runtime::new(&page);
-    rt.play(&page, go, Finish::Nothing);
-    assert!(rt.is_playing(go));
+    rt.play_id(&page, go, Finish::Nothing);
+    assert!(rt.is_playing_id(go));
     rt.tick(&mut page, 0.5);
     assert!(near(rt.motion[h].translate[0], 50.0, 0.01), "{:?}", rt.motion[h]);
-    rt.play(&page, back, Finish::Nothing);
-    assert!(rt.is_playing(back));
+    rt.play_id(&page, back, Finish::Nothing);
+    assert!(rt.is_playing_id(back));
     rt.tick(&mut page, 0.0);
     assert!(near(rt.motion[h].translate[0], 50.0, 0.01), "pins the live value: {:?}", rt.motion[h]);
     // The takeover strips the old run's channel; its clock lives on (Godot
     // ticked the players one by one, Rust ticks them all — so this is
     // checked before the next half second runs `go`'s clock out).
     let old = rt.players.iter().find(|p| p.anim == go).expect("the old run keeps its clock");
-    assert!(old.owns.is_empty() && rt.is_playing(go), "owns={:?}", old.owns);
+    assert!(old.owns.is_empty() && rt.is_playing_id(go), "owns={:?}", old.owns);
     rt.tick(&mut page, 0.5);
     assert!(near(rt.motion[h].translate[0], 25.0, 0.01), "continues from the live value: {:?}", rt.motion[h]);
-    rt.stop(back, true);
+    rt.stop_id(back, true);
     assert!(near(rt.motion[h].translate[0], 0.0, 0.001), "restores the true base: {:?}", rt.motion[h]);
 }
 
@@ -334,14 +334,14 @@ fn current_arithmetic_is_refused() {
 fn delayed_open_start_reads_the_live_value_and_a_loop_replays_it() {
     let c = ok("anim bob {\n dbox.translate.y to=-20, duration=0.5, easing=expo_out\n then dbox.translate.y to=0, duration=0.5, easing=expo_in\n}\nanim bobLoop repeat=forever {\n dbox.translate.y to=-20, duration=0.5, easing=expo_out\n then dbox.translate.y to=0, duration=0.5, easing=expo_in\n}\nView dhost { Rectangle dbox }\n");
     let mut page = c.page;
-    let d = page.find("dbox").unwrap() as usize;
+    let d = (page.find("dbox").unwrap()).index();
     let lanes = tracks(&page, "bob");
     assert_eq!(lanes.len(), 2, "{lanes:#?}");
     assert!(near(lanes[0].start, 0.0, 1e-6) && near(lanes[1].start, 0.5, 1e-6), "{lanes:#?}");
     let bob = anim_id(&page, "bob");
     let mut rt = Runtime::new(&page);
-    rt.play(&page, bob, Finish::Nothing);
-    assert!(rt.is_playing(bob));
+    rt.play_id(&page, bob, Finish::Nothing);
+    assert!(rt.is_playing_id(bob));
     rt.tick(&mut page, 0.25);
     assert!(near(rt.motion[d].translate[1], -14.62115, 0.005), "up-mid: {:?}", rt.motion[d]);
     rt.tick(&mut page, 0.25);
@@ -350,17 +350,17 @@ fn delayed_open_start_reads_the_live_value_and_a_loop_replays_it() {
     assert!(near(rt.motion[d].translate[1], -14.62115, 0.005), "down-mid must glide from -20, not snap from 0: {:?}", rt.motion[d]);
     rt.tick(&mut page, 0.3);
     assert!(near(rt.motion[d].translate[1], 0.0, 0.001), "lands: {:?}", rt.motion[d]);
-    assert!(!rt.is_playing(bob));
+    assert!(!rt.is_playing_id(bob));
 
     let bob_loop = anim_id(&page, "bobLoop");
-    rt.play(&page, bob_loop, Finish::Nothing);
-    assert!(rt.is_playing(bob_loop));
+    rt.play_id(&page, bob_loop, Finish::Nothing);
+    assert!(rt.is_playing_id(bob_loop));
     for _ in 0..7 {
         rt.tick(&mut page, 0.25); // lands at t=1.75: second lap, mid-down
     }
     assert!(near(rt.motion[d].translate[1], -14.62115, 0.005), "loop wrap glides: {:?}", rt.motion[d]);
-    assert!(rt.is_playing(bob_loop));
-    rt.stop(bob_loop, false);
+    assert!(rt.is_playing_id(bob_loop));
+    rt.stop_id(bob_loop, false);
 }
 
 /// `_anim_tests` 5358-5366 (anim.visfx-ok, anim.visfx-attached): a node
@@ -376,7 +376,7 @@ fn show_and_hide_wires_on_a_panel_build_and_run() {
     let appear = anim_id(&page, "appear");
     let mut rt = Runtime::new(&page);
     rt.show(&mut page, panel, false);
-    assert!(rt.is_playing(appear), "the hide wire plays the anim first");
+    assert!(rt.is_playing_id(appear), "the hide wire plays the anim first");
     assert!(!resolve(&page, &rt).gone(&page, panel), "still shown while the anim runs");
     rt.tick(&mut page, 0.25);
     assert!(resolve(&page, &rt).gone(&page, panel), "gone when the anim finishes");
@@ -416,9 +416,9 @@ fn show_hide_on_the_view_root_builds_and_plays() {
     let mut rt = Runtime::new(&page);
     assert!(resolve(&page, &rt).gone(&page, root));
     rt.show(&mut page, root, true);
-    assert!(rt.is_playing(fade_in));
+    assert!(rt.is_playing_id(fade_in));
     assert!(!resolve(&page, &rt).gone(&page, root));
-    assert_eq!(rt.motion[root as usize].opacity, 0.0, "pinned from=0 at play start");
+    assert_eq!(rt.motion[root.index()].opacity, 0.0, "pinned from=0 at play start");
 }
 
 /// `_anim_tests` 5403-5418 (anim.public-build, anim.public-play,
@@ -430,15 +430,15 @@ fn show_hide_on_the_view_root_builds_and_plays() {
 fn public_play_is_playing_and_stop_reach_the_player() {
     let c = ok("anim slide {\n box.translate.x from=0, to=100, duration=1.0\n}\n\nView playRoot {\n Rectangle box\n}\n");
     let mut page = c.page;
-    let b = page.find("box").unwrap() as usize;
+    let b = (page.find("box").unwrap()).index();
     let slide = anim_id(&page, "slide");
     let mut rt = Runtime::new(&page);
-    rt.play(&page, slide, Finish::Nothing);
-    assert!(rt.is_playing(slide));
+    rt.play_id(&page, slide, Finish::Nothing);
+    assert!(rt.is_playing_id(slide));
     rt.tick(&mut page, 0.5);
     assert!(rt.motion[b].translate[0] > 0.0, "{:?}", rt.motion[b]);
-    rt.stop(slide, true);
-    assert!(!rt.is_playing(slide));
+    rt.stop_id(slide, true);
+    assert!(!rt.is_playing_id(slide));
     assert!(near(rt.motion[b].translate[0], 0.0, 0.001), "{:?}", rt.motion[b]);
 }
 
@@ -452,12 +452,12 @@ fn public_play_is_playing_and_stop_reach_the_player() {
 fn restart_hands_the_channel_to_the_new_player_and_the_old_clock_lives_on() {
     let c = ok("anim slide {\n box.translate.x from=0, to=100, duration=1.0\n}\n\nView playRoot {\n Rectangle box\n}\n");
     let mut page = c.page;
-    let b = page.find("box").unwrap() as usize;
+    let b = (page.find("box").unwrap()).index();
     let slide = anim_id(&page, "slide");
     let mut rt = Runtime::new(&page);
-    rt.play(&page, slide, Finish::Nothing);
+    rt.play_id(&page, slide, Finish::Nothing);
     rt.tick(&mut page, 0.5);
-    rt.play(&page, slide, Finish::Nothing);
+    rt.play_id(&page, slide, Finish::Nothing);
     let writers: Vec<usize> = rt.players.iter().filter(|p| p.anim == slide && !p.owns.is_empty()).map(|p| p.owns.len()).collect();
     assert_eq!(writers, vec![1], "exactly one player writes the channel: {:#?}", rt.players);
     assert_eq!(rt.players.iter().filter(|p| p.anim == slide).count(), 2, "the replaced player keeps its clock (GPAR52)");
@@ -465,7 +465,7 @@ fn restart_hands_the_channel_to_the_new_player_and_the_old_clock_lives_on() {
     rt.tick(&mut page, 0.5);
     assert!(near(rt.motion[b].translate[0], 50.0, 0.01), "{:?}", rt.motion[b]);
     rt.tick(&mut page, 0.6);
-    assert!(!rt.is_playing(slide), "both clocks have run out");
+    assert!(!rt.is_playing_id(slide), "both clocks have run out");
 }
 
 // ------------------------------------------------------------ _motion_tests
@@ -479,16 +479,16 @@ fn restart_hands_the_channel_to_the_new_player_and_the_old_clock_lives_on() {
 fn pop_reads_halfway_values_and_ends_at_identity() {
     let c = ok("anim pop {\n box.scale { key t=0, v=0.9; key t=0.2, v=1.0 }\n and box.rotate { key t=0, v=10; key t=0.2, v=0 }\n and box.opacity from=0.5, to=1.0, duration=0.2\n}\nView host { Rectangle box }\n");
     let mut page = c.page;
-    let b = page.find("box").unwrap() as usize;
+    let b = (page.find("box").unwrap()).index();
     let pop = anim_id(&page, "pop");
     let mut rt = Runtime::new(&page);
-    rt.play(&page, pop, Finish::Nothing);
+    rt.play_id(&page, pop, Finish::Nothing);
     rt.tick(&mut page, 0.1);
     assert!(near(rt.motion[b].scale[0], 0.95, 0.001), "{:?}", rt.motion[b]);
     assert!(near(rt.motion[b].rotate, 5.0, 0.001), "{:?}", rt.motion[b]);
     assert!(near(rt.motion[b].opacity, 0.75, 0.001), "{:?}", rt.motion[b]);
     rt.tick(&mut page, 0.2);
-    assert!(!rt.is_playing(pop));
+    assert!(!rt.is_playing_id(pop));
     assert_eq!(rt.motion[b].scale, [1.0, 1.0], "{:?}", rt.motion[b]);
     assert!(near(rt.motion[b].rotate, 0.0, 1e-6), "{:?}", rt.motion[b]);
 }
@@ -513,13 +513,13 @@ fn hidden_target_is_reset_when_the_anim_ends() {
     let b = page.find("box").unwrap();
     let off = anim_id(&page, "off");
     let mut rt = Runtime::new(&page);
-    rt.play(&page, off, Finish::Nothing);
+    rt.play_id(&page, off, Finish::Nothing);
     rt.tick(&mut page, 0.1);
     let hidden = page.intern("hidden");
     rt.set_prop(b, PropKey::Visibility, Value::VIdent(hidden));
     rt.tick(&mut page, 0.2);
-    assert!(!rt.is_playing(off));
-    assert_eq!(rt.motion[b as usize], Motion::IDENTITY, "{:?}", rt.motion[b as usize]);
+    assert!(!rt.is_playing_id(off));
+    assert_eq!(rt.motion[b.index()], Motion::IDENTITY, "{:?}", rt.motion[b.index()]);
 }
 
 /// `_motion_tests` 5470-5504 (motion.speed-build, motion.speed-2x,
@@ -534,22 +534,22 @@ fn hidden_target_is_reset_when_the_anim_ends() {
 fn global_motion_speed_scales_time_and_infinite_completes_at_once() {
     let c = ok("anim slide { box.opacity from=0.0, to=1.0, duration=1.0 }\nanim spin repeat=forever { box.opacity { key t=0, v=0.25; key t=0.5, v=1.0 } }\nView host { Rectangle box }\n");
     let mut page = c.page;
-    let b = page.find("box").unwrap() as usize;
+    let b = (page.find("box").unwrap()).index();
     let slide = anim_id(&page, "slide");
     let spin = anim_id(&page, "spin");
     let mut rt = Runtime::new(&page);
     // No `Runtime::set_motion_speed` exists: with the per-anim speed at 1
     // the ×2 expectation below is what the knob would have to produce.
-    rt.play(&page, slide, Finish::Nothing);
+    rt.play_id(&page, slide, Finish::Nothing);
     rt.tick(&mut page, 0.25);
     assert!(near(rt.motion[b].opacity, 0.5, 0.001), "2x: {:?}", rt.motion[b]);
-    rt.stop(slide, false);
-    rt.play(&page, slide, Finish::Nothing);
+    rt.stop_id(slide, false);
+    rt.play_id(&page, slide, Finish::Nothing);
     let alive = rt.tick(&mut page, 0.016);
-    assert!(!alive && !rt.is_playing(slide) && near(rt.motion[b].opacity, 1.0, 1e-5), "instant completes: {:?}", rt.motion[b]);
-    rt.play(&page, spin, Finish::Nothing);
+    assert!(!alive && !rt.is_playing_id(slide) && near(rt.motion[b].opacity, 1.0, 1e-5), "instant completes: {:?}", rt.motion[b]);
+    rt.play_id(&page, spin, Finish::Nothing);
     rt.tick(&mut page, 0.016);
-    assert!(rt.is_playing(spin) && near(rt.motion[b].opacity, 0.25, 1e-5), "instant forever holds base: {:?}", rt.motion[b]);
+    assert!(rt.is_playing_id(spin) && near(rt.motion[b].opacity, 0.25, 1e-5), "instant forever holds base: {:?}", rt.motion[b]);
     let _ = page.intern_lookup("spin");
 }
 
@@ -655,19 +655,19 @@ fn when_held_scale_is_timed_by_the_transition_rule() {
     resolve_animated(&page, &mut rt);
     rt.tick(&mut page, 0.1);
     let r = resolve_animated(&page, &mut rt);
-    assert!(near(r.motion[b as usize].scale[0], 0.75, 0.02), "mid: {:?}", r.motion[b as usize]);
+    assert!(near(r.motion[b.index()].scale[0], 0.75, 0.02), "mid: {:?}", r.motion[b.index()]);
     for _ in 0..20 {
         rt.tick(&mut page, 0.016);
     }
     let r = resolve_animated(&page, &mut rt);
-    assert!(near(r.motion[b as usize].scale[1], 0.5, 0.001), "held: {:?}", r.motion[b as usize]);
+    assert!(near(r.motion[b.index()].scale[1], 0.5, 0.001), "held: {:?}", r.motion[b.index()]);
     rt.set_state(b, HELD, false);
     resolve_animated(&page, &mut rt);
     for _ in 0..30 {
         rt.tick(&mut page, 0.016);
     }
     let r = resolve_animated(&page, &mut rt);
-    assert_eq!(r.motion[b as usize].scale, [1.0, 1.0], "released: {:?}", r.motion[b as usize]);
+    assert_eq!(r.motion[b.index()].scale, [1.0, 1.0], "released: {:?}", r.motion[b.index()]);
     // A tap released before the first tick: no motion parked behind.
     rt.set_state(b, HELD, true);
     rt.set_state(b, HELD, false);
@@ -675,7 +675,7 @@ fn when_held_scale_is_timed_by_the_transition_rule() {
         rt.tick(&mut page, 0.016);
     }
     let r = resolve_animated(&page, &mut rt);
-    assert_eq!(r.motion[b as usize], Motion::IDENTITY, "quick tap: {:?}", r.motion[b as usize]);
+    assert_eq!(r.motion[b.index()], Motion::IDENTITY, "quick tap: {:?}", r.motion[b.index()]);
     assert!(!rt.animating());
 }
 
@@ -689,15 +689,15 @@ fn when_held_motion_snaps_without_a_rule_and_reaches_a_child() {
     let c = ok("style Snap { when held translate.x=10, flash.scale=0.5 }\nView v { Button s .Snap text=\"y\" { Rectangle flash } }\n");
     let page = c.page;
     let s = page.find("s").unwrap();
-    let flash = page.find("flash").unwrap() as usize;
+    let flash = (page.find("flash").unwrap()).index();
     let mut rt = Runtime::new(&page);
     rt.set_state(s, HELD, true);
     let r = resolve(&page, &rt);
-    assert!(near(r.motion[s as usize].translate[0], 10.0, 1e-6), "{:?}", r.motion[s as usize]);
+    assert!(near(r.motion[s.index()].translate[0], 10.0, 1e-6), "{:?}", r.motion[s.index()]);
     assert_eq!(r.motion[flash].scale, [0.5, 0.5], "{:?}", r.motion[flash]);
     rt.set_state(s, HELD, false);
     let r = resolve(&page, &rt);
-    assert_eq!(r.motion[s as usize], Motion::IDENTITY, "{:?}", r.motion[s as usize]);
+    assert_eq!(r.motion[s.index()], Motion::IDENTITY, "{:?}", r.motion[s.index()]);
     assert_eq!(r.motion[flash], Motion::IDENTITY, "{:?}", r.motion[flash]);
 }
 
@@ -708,9 +708,9 @@ fn when_held_motion_snaps_without_a_rule_and_reaches_a_child() {
 fn an_arrangement_can_hold_motion() {
     let c = ok("arrangement zoomed\nwhen zoomed { menu.scale=0.9 }\ntransition any -> zoomed duration=0.1\nView v { Column menu { Button b text=\"m\" } }\n");
     let page = c.page;
-    let menu = page.find("menu").unwrap() as usize;
+    let menu = (page.find("menu").unwrap()).index();
     let mut rt = Runtime::new(&page);
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     let r = resolve(&page, &rt);
     assert_eq!(r.motion[menu].scale, [0.9, 0.9], "{:?}", r.motion[menu]);
 }
@@ -760,7 +760,7 @@ fn rounded_style_reaches_the_drawn_quad() {
     let rects = layout(&page, &r, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
     let list = draw(&page, &r, &rects);
     let quad = list.iter().find_map(|d| match d {
-        Draw::Quad { rect, color, corner, .. } if *rect == rects[eb as usize] => Some((*color, *corner)),
+        Draw::Quad { rect, color, corner, .. } if *rect == rects[eb.index()] => Some((*color, *corner)),
         _ => None,
     });
     assert_eq!(quad, Some((Color_Straight_Srgb_4xU8_RGBA([0x22, 0x22, 0x22, 0x99]), 6.0)), "{list:#?}");
@@ -787,10 +787,10 @@ fn unknown_style_and_a_response_reaching_a_missing_node_are_refused() {
 fn a_repeat_wrap_lead_in_re_asserts_the_pinned_from() {
     let c = ok("anim looped repeat=forever {\n abox.translate.x from=5, to=50, duration=0.5\n then bbox.translate.x from=7, to=30, duration=0.5\n}\nView v { Row r { Rectangle abox; Rectangle bbox } }\n");
     let mut page = c.page;
-    let b = page.find("bbox").unwrap() as usize;
+    let b = (page.find("bbox").unwrap()).index();
     let looped = anim_id(&page, "looped");
     let mut rt = Runtime::new(&page);
-    rt.play(&page, looped, Finish::Nothing);
+    rt.play_id(&page, looped, Finish::Nothing);
     rt.tick(&mut page, 0.0);
     assert!(near(rt.motion[b].translate[0], 7.0, 0.01), "the lead-in holds the pinned from: {:?}", rt.motion[b]);
     rt.tick(&mut page, 0.75);
@@ -809,12 +809,12 @@ fn a_target_hidden_mid_anim_ends_at_identity_with_no_held_pose() {
     let bx = page.find("sbox").unwrap();
     let slide = anim_id(&page, "slide");
     let mut rt = Runtime::new(&page);
-    rt.play(&page, slide, Finish::Nothing);
+    rt.play_id(&page, slide, Finish::Nothing);
     rt.tick(&mut page, 0.1);
     rt.set_visible(&mut page, bx, false);
     rt.tick(&mut page, 0.2);
-    assert!(!rt.is_playing(slide));
-    assert!(near(rt.motion[bx as usize].translate[0], 0.0, 0.001), "identity, not the end pose: {:?}", rt.motion[bx as usize]);
+    assert!(!rt.is_playing_id(slide));
+    assert!(near(rt.motion[bx.index()].translate[0], 0.0, 0.001), "identity, not the end pose: {:?}", rt.motion[bx.index()]);
     assert!(!rt.held.iter().any(|h| h.0 == bx), "nothing held for a hidden box: {:?}", rt.held);
 }
 
@@ -826,7 +826,7 @@ fn a_hide_anim_restores_its_displaced_descendant_on_finish() {
     let c = ok("anim out {\n child.translate.x to=100, duration=0.2\n}\nView v { Panel host on:hide=play(out) { Rectangle child } }\n");
     let mut page = c.page;
     let host = page.find("host").unwrap();
-    let child = page.find("child").unwrap() as usize;
+    let child = (page.find("child").unwrap()).index();
     let mut rt = Runtime::new(&page);
     rt.show(&mut page, host, false);
     rt.tick(&mut page, 0.1);
@@ -853,24 +853,24 @@ fn a_when_visibility_flip_plays_hide_deferred_and_show() {
     let u = page.find("u").unwrap();
     let mut rt = Runtime::new(&page);
     resolve_animated(&page, &mut rt); // baseline: initial visibility is state, not a trigger
-    assert!(!rt.is_playing(anim_id(&page, "tout")));
+    assert!(!rt.is_playing_id(anim_id(&page, "tout")));
     rt.set_state(t, DISABLED, true);
     rt.set_state(u, DISABLED, true);
     let r = resolve_animated(&page, &mut rt);
     assert!(!r.gone(&page, t), "t keeps drawing while its hide anim plays");
     assert!(r.gone(&page, u), "no hide anim: u hides at once");
-    assert!(rt.is_playing(anim_id(&page, "tout")), "the hide anim plays");
+    assert!(rt.is_playing_id(anim_id(&page, "tout")), "the hide anim plays");
     rt.tick(&mut page, 0.1);
     resolve_animated(&page, &mut rt);
-    assert!(rt.motion[t as usize].translate[0] > 10.0, "the hide anim is driving t: {:?}", rt.motion[t as usize]);
+    assert!(rt.motion[t.index()].translate[0] > 10.0, "the hide anim is driving t: {:?}", rt.motion[t.index()]);
     rt.tick(&mut page, 0.3);
     let r = resolve_animated(&page, &mut rt);
     assert!(r.gone(&page, t), "hide-finish: the when's gone shows");
-    assert!(near(rt.motion[t as usize].translate[0], 0.0, 0.001), "displaced channel restored: {:?}", rt.motion[t as usize]);
+    assert!(near(rt.motion[t.index()].translate[0], 0.0, 0.001), "displaced channel restored: {:?}", rt.motion[t.index()]);
     rt.set_state(t, DISABLED, false);
     let r = resolve_animated(&page, &mut rt);
     assert!(!r.gone(&page, t), "the when released — no code write parked gone");
-    assert!(rt.is_playing(anim_id(&page, "tin")), "reappearing plays the show anim");
+    assert!(rt.is_playing_id(anim_id(&page, "tin")), "reappearing plays the show anim");
 }
 
 /// GP19 (gogo_visibility_fx.gd `_on_visibility_changed`): showing while a
@@ -890,8 +890,8 @@ fn a_show_mid_when_hide_cancels_the_hide() {
     rt.set_state(t, DISABLED, false);
     let r = resolve_animated(&page, &mut rt);
     assert!(!r.gone(&page, t), "t is back");
-    assert!(!rt.is_playing(anim_id(&page, "tout")), "the hide anim is cancelled");
-    assert!(rt.is_playing(anim_id(&page, "tin")), "the show anim plays from current values");
+    assert!(!rt.is_playing_id(anim_id(&page, "tout")), "the hide anim is cancelled");
+    assert!(rt.is_playing_id(anim_id(&page, "tin")), "the show anim plays from current values");
     rt.tick(&mut page, 0.3);
     let r = resolve_animated(&page, &mut rt);
     assert!(!r.gone(&page, t), "still drawn after everything settles");
@@ -907,10 +907,10 @@ fn entrances_skip_nodes_the_page_does_not_draw() {
     let page = c.page;
     let mut rt = Runtime::new(&page);
     rt.play_entrances(&page);
-    assert!(rt.is_playing(anim_id(&page, "popA")), "a drawn node gets its entrance");
-    assert!(!rt.is_playing(anim_id(&page, "popB")), "gone gets none");
-    assert!(!rt.is_playing(anim_id(&page, "popC")), "space_only gets none");
-    assert!(!rt.is_playing(anim_id(&page, "popD")), "posed space_only at boot gets none");
+    assert!(rt.is_playing_id(anim_id(&page, "popA")), "a drawn node gets its entrance");
+    assert!(!rt.is_playing_id(anim_id(&page, "popB")), "gone gets none");
+    assert!(!rt.is_playing_id(anim_id(&page, "popC")), "space_only gets none");
+    assert!(!rt.is_playing_id(anim_id(&page, "popD")), "posed space_only at boot gets none");
 }
 
 /// GPAR109 (`_wiring/_anim` 4934, 5541 family): `transition any -> held
@@ -926,12 +926,12 @@ fn a_transition_anim_plays_on_the_flip_and_reverts_on_state_end() {
     let mut rt = Runtime::new(&page);
     rt.set_state(bx, HELD, true);
     resolve_animated(&page, &mut rt);
-    assert!(rt.is_playing(press), "entering the state plays the named anim");
+    assert!(rt.is_playing_id(press), "entering the state plays the named anim");
     rt.tick(&mut page, 0.3);
-    assert!(!rt.is_playing(press));
-    assert!(near(rt.motion[bx as usize].translate[1], -10.0, 0.01), "the end pose stands while held: {:?}", rt.motion[bx as usize]);
+    assert!(!rt.is_playing_id(press));
+    assert!(near(rt.motion[bx.index()].translate[1], -10.0, 0.01), "the end pose stands while held: {:?}", rt.motion[bx.index()]);
     rt.set_state(bx, HELD, false);
     resolve_animated(&page, &mut rt);
-    assert!(near(rt.motion[bx as usize].translate[1], 0.0, 0.001), "the state's end restores the displaced channel: {:?}", rt.motion[bx as usize]);
+    assert!(near(rt.motion[bx.index()].translate[1], 0.0, 0.001), "the state's end restores the displaced channel: {:?}", rt.motion[bx.index()]);
     assert!(!rt.held.iter().any(|h| h.0 == bx), "no standing pose survives the exit: {:?}", rt.held);
 }

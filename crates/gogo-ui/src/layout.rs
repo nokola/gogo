@@ -154,22 +154,33 @@ pub fn layout(page: &Page, res: &Resolved, viewport: Rect, text: &dyn TextMeasur
     let mut lay = Lay { page, res, text, rects: vec![Rect::ZERO; page.nodes.len()], written: vec![[false; 2]; page.nodes.len()], memo: RefCell::new(HashMap::new()) };
     if !page.nodes.is_empty() {
         // The viewport is not a number the author wrote.
-        lay.place(0, viewport, [false, false]);
+        lay.place(NodeId::new(0), viewport, [false, false]);
     }
     // GP40 reveal on a STRETCHED axis: the shown extent is factor × the
     // node's OWN extent, never the parent's grant (the shipped D93 rule) —
     // hug axes already carry the scaled measure, a stretch clamps back.
-    for i in 0..page.nodes.len() {
-        let id = i as NodeId;
+    // A `fill` axis has no own extent (a bare Rectangle measures 0): it
+    // shows the fraction of what it was GRANTED — the slider fill bar,
+    // `reveal_x` = the value's share of the track (user call 2026-09-05;
+    // before this the bar was 0 wide at every value and no pin looked).
+    for id in page.node_ids() {
         let fx = res.num(page, id, PropKey::RevealX).map(|f| f.clamp(0.0, 1.0));
         let fy = res.num(page, id, PropKey::RevealY).map(|f| f.clamp(0.0, 1.0));
-        if fx.map(|f| f < 1.0).unwrap_or(false) {
-            let (sw, _) = lay.size_at(id, Some(lay.rects[i].w));
-            lay.rects[i].w = lay.rects[i].w.min(sw);
+        if let Some(f) = fx.filter(|f| *f < 1.0) {
+            if matches!(lay.placement(id).width, Len::Fill(_)) {
+                lay.rects[id].w *= f;
+            } else {
+                let (sw, _) = lay.size_at(id, Some(lay.rects[id].w));
+                lay.rects[id].w = lay.rects[id].w.min(sw);
+            }
         }
-        if fy.map(|f| f < 1.0).unwrap_or(false) {
-            let (_, sh) = lay.size_at(id, Some(lay.rects[i].w));
-            lay.rects[i].h = lay.rects[i].h.min(sh);
+        if let Some(f) = fy.filter(|f| *f < 1.0) {
+            if matches!(lay.placement(id).height, Len::Fill(_)) {
+                lay.rects[id].h *= f;
+            } else {
+                let (_, sh) = lay.size_at(id, Some(lay.rects[id].w));
+                lay.rects[id].h = lay.rects[id].h.min(sh);
+            }
         }
     }
     lay.rects
@@ -184,11 +195,11 @@ enum Axis {
 
 impl<'a> Lay<'a> {
     fn node(&self, id: NodeId) -> &Node {
-        &self.page.nodes[id as usize]
+        &self.page.nodes[id]
     }
 
     fn placement(&self, id: NodeId) -> &Placement {
-        &self.res.placement[id as usize]
+        &self.res.placement[id]
     }
 
     fn gone(&self, id: NodeId) -> bool {
@@ -744,12 +755,12 @@ impl<'a> Lay<'a> {
             None => (x, y, w, h),
         };
         let rect = Rect::new(x, y, w, h);
-        self.rects[id as usize] = rect;
+        self.rects[id] = rect;
         // What this box hands its own children: a written size or cap is
         // the author's number; a box that merely fills passes on what it
         // was given; a hug box is sized by content, not by a number.
         let fills = |len: Len, align: Align| matches!(len, Len::Fill(_)) || (len == Len::Unset && align == Align::AlignUnset);
-        self.written[id as usize] = [
+        self.written[id] = [
             matches!(p.width, Len::Exact(_)) || p.max_width.is_some() || p.max_width_fill || (fills(p.width, p.halign) && written[0]),
             matches!(p.height, Len::Exact(_)) || p.max_height.is_some() || p.max_height_fill || (fills(p.height, p.valign) && written[1]),
         ];
@@ -772,12 +783,12 @@ impl<'a> Lay<'a> {
             // and margins never bind here.
             Kind::Seat => {
                 for c in self.visible_children(id) {
-                    self.rects[c as usize] = inner;
+                    self.rects[c] = inner;
                     self.place_children(c, inner);
                 }
             }
             _ => {
-                let written = self.written[id as usize];
+                let written = self.written[id];
                 for c in self.visible_children(id) {
                     self.place(c, inner, written);
                 }
@@ -808,7 +819,7 @@ impl<'a> Lay<'a> {
             let size = sizes[i];
             let node = self.node(*c);
             if node.kind == Kind::Gap {
-                self.rects[*c as usize] = if axis == Axis::Y { Rect::new(inner.x, cursor, inner.w, size) } else { Rect::new(cursor, inner.y, size, inner.h) };
+                self.rects[*c] = if axis == Axis::Y { Rect::new(inner.x, cursor, inner.w, size) } else { Rect::new(cursor, inner.y, size, inner.h) };
                 cursor += size + spacing;
                 continue;
             }
@@ -842,14 +853,14 @@ impl<'a> Lay<'a> {
             };
             let rect = if axis == Axis::Y {
                 let (min_w, _) = self.size_at(*c, Some(inner.w));
-                let (x, w) = free_axis(inner.x, inner.w, p.width, p.halign, None, None, min_w, p.min_width, p.max_width, p.max_width_fill, self.written[id as usize][0]);
+                let (x, w) = free_axis(inner.x, inner.w, p.width, p.halign, None, None, min_w, p.min_width, p.max_width, p.max_width_fill, self.written[id][0]);
                 Rect::new(x, main_pos, w, main_size)
             } else {
                 let (_, min_h) = self.size_final(*c, main_size);
-                let (y, h) = free_axis(inner.y, inner.h, p.height, p.valign, None, None, min_h, p.min_height, p.max_height, p.max_height_fill, self.written[id as usize][1]);
+                let (y, h) = free_axis(inner.y, inner.h, p.height, p.valign, None, None, min_h, p.min_height, p.max_height, p.max_height_fill, self.written[id][1]);
                 Rect::new(main_pos, y, main_size, h)
             };
-            self.rects[*c as usize] = rect;
+            self.rects[*c] = rect;
             self.place_children(*c, rect);
             cursor += size + spacing;
         }
@@ -886,7 +897,7 @@ impl<'a> Lay<'a> {
                     };
                     let (cx, cw) = free_axis(x, col.height, p.width, p.halign, None, None, w, p.min_width, p.max_width, false, false);
                     let rect = Rect::new(cx, y, cw, h);
-                    self.rects[c as usize] = rect;
+                    self.rects[c] = rect;
                     self.place_children(c, rect);
                     y += h + spacing;
                 }
@@ -919,7 +930,7 @@ impl<'a> Lay<'a> {
                 };
                 let (cy, ch) = free_axis(y, row.height, p.height, p.valign, None, None, h, p.min_height, p.max_height, false, false);
                 let rect = Rect::new(x, cy, w, ch);
-                self.rects[c as usize] = rect;
+                self.rects[c] = rect;
                 self.place_children(c, rect);
                 x += w + spacing;
             }
@@ -955,7 +966,7 @@ impl<'a> Lay<'a> {
             let span = if full { cols } else { (self.res.num(self.page, c, PropKey::Span).unwrap_or(1.0).max(1.0) as usize).min(cols) };
             let w = if full {
                 inner_w
-            } else if let Len::Exact(fw) = self.res.placement[c as usize].width {
+            } else if let Len::Exact(fw) = self.res.placement[c].width {
                 fw
             } else {
                 unit * span as f32 + spacing * (span as f32 - 1.0)
@@ -1005,7 +1016,7 @@ impl<'a> Lay<'a> {
             // cell to the row.
             let h = own_h;
             let rect = Rect::new(inner.x + r.x, inner.y + r.y, r.w, h);
-            self.rects[c as usize] = rect;
+            self.rects[c] = rect;
             self.place_children(c, rect);
         }
     }
@@ -1048,7 +1059,7 @@ impl<'a> Lay<'a> {
             let w = if sx { inner.w.max(min_w) } else { inner.w };
             let h = if sy { inner.h.max(min_h) } else { inner.h };
             let frame = Rect::new(inner.x - if sx { offset[0] } else { 0.0 }, inner.y - if sy { offset[1] } else { 0.0 }, w, h);
-            let written = self.written[id as usize];
+            let written = self.written[id];
             self.place(c, frame, [!sx && written[0], !sy && written[1]]);
         }
     }
@@ -1109,7 +1120,7 @@ impl<'a> Lay<'a> {
     fn res_scroll(&self, _id: NodeId) -> [f32; 2] {
         // Scroll offsets live in the Runtime; the caller folds them into
         // `Resolved` through `Resolved::scroll` when present.
-        self.res.scroll.get(_id as usize).copied().unwrap_or([0.0, 0.0])
+        self.res.scroll.get(_id.index()).copied().unwrap_or([0.0, 0.0])
     }
 
     fn scroll_axes(&self, id: NodeId) -> (bool, bool) {
@@ -1144,7 +1155,7 @@ impl<'a> Lay<'a> {
         let mut out = Vec::new();
         for (ri, r) in rows.iter().enumerate() {
             let mut track = 0usize;
-            for c in self.page.children(*r).map(|i| i as NodeId) {
+            for c in self.page.children(*r) {
                 if self.node(c).kind == Kind::Skip {
                     track += 1;
                     continue;
@@ -1254,7 +1265,7 @@ impl<'a> Lay<'a> {
         let mut y = inner.y;
         for (ri, r) in rows.iter().enumerate() {
             row_y.push(y);
-            self.rects[*r as usize] = Rect::new(inner.x, y, inner.w, row_size[ri]);
+            self.rects[*r] = Rect::new(inner.x, y, inner.w, row_size[ri]);
             y += row_size[ri] + spacing;
         }
         for cell in &cells {
@@ -1447,7 +1458,7 @@ fn free_axis(start: f32, extent: f32, len: Len, align: Align, m_near: Option<f32
 /// the triad (a hug axis is content-sized, nothing to scroll). The one
 /// rule for layout and input.
 pub fn scroll_axes_of(page: &Page, res: &Resolved, id: NodeId) -> (bool, bool) {
-        if page.nodes[id as usize].kind == Kind::List {
+        if page.nodes[id].kind == Kind::List {
             // A List self-scrolls on its layout's axis (D121/D128): a
             // `layout Row` strip pans sideways, everything else scrolls
             // down; statics pan with the rows either way.
@@ -1463,7 +1474,7 @@ pub fn scroll_axes_of(page: &Page, res: &Resolved, id: NodeId) -> (bool, bool) {
         // D138: no `allow=` — the sizing triad infers. A hug axis is
         // content-sized, nothing left to scroll (disabled); a capped hug
         // scrolls past its cap; every other mode scrolls (GP36).
-        let p = &res.placement[id as usize];
+        let p = &res.placement[id];
         let sx = !matches!(p.width, Len::Hug(_)) || p.max_width.is_some();
         let sy = !matches!(p.height, Len::Hug(_)) || p.max_height.is_some();
         (sx, sy)
@@ -1485,7 +1496,7 @@ mod tests {
     }
 
     fn rect(p: &Page, r: &[Rect], name: &str) -> Rect {
-        r[p.find(name).unwrap() as usize]
+        r[p.find(name).unwrap().index()]
     }
 
     #[test]
@@ -1661,7 +1672,7 @@ mod tests {
         let res = resolve(&c.page, &rt);
         let r = layout(&c.page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
         assert_eq!(rect(&c.page, &r, "bar").w, 100.0);
-        rt.go_id(0);
+        rt.go_id(ArrangementId::new(0));
         let res = resolve(&c.page, &rt);
         let r = layout(&c.page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
         assert_eq!(rect(&c.page, &r, "bar").w, 300.0);
@@ -1686,7 +1697,7 @@ mod tests {
 /// A List whose rows sit in a `layout Row` strip — the one form that
 /// pans sideways (D128). The strip is the Row child holding the repeat.
 fn list_is_row(page: &Page, id: NodeId) -> bool {
-    page.children(id).any(|c| page.nodes[c].kind == Kind::Row && page.children(c as NodeId).any(|g| page.nodes[g].kind == Kind::Repeat))
+    page.children(id).any(|c| page.nodes[c].kind == Kind::Row && page.children(c).any(|g| page.nodes[g].kind == Kind::Repeat))
 }
 
 /// The D123 no-height nudge (the addon's runtime `starved` flag): the
@@ -1698,7 +1709,7 @@ fn list_is_row(page: &Page, id: NodeId) -> bool {
 pub fn starved(page: &Page, res: &Resolved, rt: &crate::runtime::Runtime, rects: &[Rect]) -> Vec<NodeId> {
     let mut out = Vec::new();
     for i in 0..page.nodes.len() {
-        let id = i as NodeId;
+        let id = NodeId::from_index(i);
         if page.nodes[i].kind != Kind::List || res.gone(page, id) || res.hidden(page, id) {
             continue;
         }
@@ -1712,14 +1723,14 @@ pub fn starved(page: &Page, res: &Resolved, rt: &crate::runtime::Runtime, rects:
         let rows = rt.list_rows(page, id);
         let mut fixed = 0.0f32;
         for c in res.children(page, id) {
-            let n = &page.nodes[c as usize];
+            let n = &page.nodes[c];
             if matches!(n.kind, Kind::Repeat | Kind::ListItem) || res.gone(page, c) {
                 continue;
             }
-            fixed += rects[c as usize].h;
+            fixed += rects[c].h;
         }
         let room = rects[i].h - fixed;
-        let ask = rows.first().map(|r| rects[*r as usize].h).unwrap_or(1.0).max(1.0);
+        let ask = rows.first().map(|r| rects[*r].h).unwrap_or(1.0).max(1.0);
         if room + 0.01 < ask {
             out.push(id);
         }
@@ -1730,7 +1741,7 @@ pub fn starved(page: &Page, res: &Resolved, rt: &crate::runtime::Runtime, rects:
 pub fn offscreen(page: &Page, res: &Resolved, rects: &[Rect], viewport: Rect) -> Vec<NodeId> {
     let mut out: Vec<NodeId> = Vec::new();
     if !page.nodes.is_empty() {
-        offscreen_walk(page, res, rects, viewport, 0, &mut out);
+        offscreen_walk(page, res, rects, viewport, NodeId::new(0), &mut out);
     }
     out
 }
@@ -1739,9 +1750,9 @@ fn offscreen_walk(page: &Page, res: &Resolved, rects: &[Rect], vp: Rect, id: Nod
     if res.gone(page, id) || res.hidden(page, id) {
         return;
     }
-    let r = rects[id as usize];
+    let r = rects[id];
     if r.w > 0.0 && r.h > 0.0 {
-        let m = res.placement[id as usize].margin;
+        let m = res.placement[id].margin;
         let neg = |m: Option<f32>| m.map_or(false, |v| v < 0.0);
         let left = r.x + r.w <= vp.x;
         let right = r.x >= vp.x + vp.w;
@@ -1756,7 +1767,7 @@ fn offscreen_walk(page: &Page, res: &Resolved, rects: &[Rect], vp: Rect, id: Nod
             return;
         }
     }
-    if page.nodes[id as usize].kind == Kind::Scroll {
+    if page.nodes[id].kind == Kind::Scroll {
         return;
     }
     for c in page.children(id) {

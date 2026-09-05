@@ -37,7 +37,7 @@ fn scene(src: &str) -> (Page, Vec<Rect>, Vec<Draw>) {
 }
 
 fn rect_of(page: &Page, rects: &[Rect], name: &str) -> Rect {
-    rects[page.find(name).unwrap_or_else(|| panic!("no node {name}")) as usize]
+    rects[(page.find(name).unwrap_or_else(|| panic!("no node {name}"))).index()]
 }
 
 fn quads(draws: &[Draw]) -> Vec<(Rect, Color_Straight_Srgb_4xU8_RGBA, f32)> {

@@ -59,7 +59,7 @@ fn lay(page: &Page, rt: &Runtime, w: f32, h: f32) -> (Resolved, Vec<Rect>) {
 }
 
 fn rect(page: &Page, rects: &[Rect], name: &str) -> Rect {
-    rects[page.find(name).unwrap_or_else(|| panic!("no node `{name}`")) as usize]
+    rects[(page.find(name).unwrap_or_else(|| panic!("no node `{name}`"))).index()]
 }
 
 fn near(a: f32, b: f32) -> bool {
@@ -150,7 +150,7 @@ fn seat_measures_its_occupant_by_declared_width_intent() {
     let c = ok("arrangement seated\nView v {\n Column col halign=left, valign=top, width=100 {\n  Row hugRow height=30 { seat hugSeat }\n  Row hugnRow height=30 { seat hugnSeat }\n  seat fillSeat\n }\n Panel hugOcc { Label hugLbl text=\"a reseated line with room to wrap\", wrap=true }\n Panel hugnOcc width=hug(2) { Label hugnLbl text=\"a reseated line with room to wrap\", wrap=true }\n Panel fillOcc width=fill { Label fillLbl text=\"a reseated line with room to wrap\", wrap=true }\n}\nwhen seated {\n hugOcc.seat = hugSeat\n hugnOcc.seat = hugnSeat\n fillOcc.seat = fillSeat\n}\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     let (_, rects) = lay(&page, &rt, 400.0, 400.0);
     // 33 chars × 8.25 = 272.25 unwrapped.
     let unwrapped = 272.25;
@@ -179,7 +179,7 @@ fn a_fill_occupant_in_a_row_seat_reports_wrapped() {
     let c = ok("arrangement seated\nView v {\n Column col halign=left, valign=top, width=100 {\n  Row fillRow height=30 { seat fillSeat }\n }\n Panel fillOcc width=fill { Label fillLbl text=\"a reseated line with room to wrap\", wrap=true }\n}\nwhen seated { fillOcc.seat = fillSeat }\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     let (_, rects) = lay(&page, &rt, 400.0, 400.0);
     let fill_seat = rect(&page, &rects, "fillSeat");
     assert!(fill_seat.w < 272.25 * 0.5, "fill occupant should wrap: {fill_seat:?}");
@@ -192,7 +192,7 @@ fn a_fill_occupant_in_a_row_seat_reports_wrapped() {
 fn declared_width_words_are_recorded() {
     let c = ok("View v {\n Row host {\n  Panel a width=fill, height=10\n  Panel b width=hug(2), height=10\n  Panel c width=60, height=10\n }\n}\n");
     let page = c.page;
-    let width = |n: &str| page.nodes[page.find(n).unwrap() as usize].placement.width;
+    let width = |n: &str| page.nodes[(page.find(n).unwrap()).index()].placement.width;
     assert_eq!(width("a"), Len::Fill(1.0));
     assert_eq!(width("b"), Len::Hug(2.0));
     assert_eq!(width("c"), Len::Exact(60.0));
@@ -590,12 +590,12 @@ fn crossed_band_refuses_and_a_floor_beside_an_exact_size_builds_and_clamps() {
     let c = ok("View v { Layers { Panel p size=100x40, min_height=50, halign=left, valign=top } }");
     let rt = Runtime::new(&c.page);
     let (_res, rects) = lay(&c.page, &rt, 400.0, 800.0);
-    let p = c.page.find("p").unwrap() as usize;
+    let p = (c.page.find("p").unwrap()).index();
     assert_eq!((rects[p].w, rects[p].h), (100.0, 50.0), "the floor beats the smaller written height");
     let c = ok("View v { Column { Panel q width=100, height=40, min_width=120 } }");
     let rt = Runtime::new(&c.page);
     let (_res, rects) = lay(&c.page, &rt, 400.0, 800.0);
-    let q = c.page.find("q").unwrap() as usize;
+    let q = (c.page.find("q").unwrap()).index();
     assert_eq!(rects[q].w, 120.0, "the clamp holds on a stack child too");
 }
 
@@ -797,13 +797,13 @@ fn a_capped_layers_under_a_column_follows_content_between_floor_and_cap() {
     };
     let (h, y) = row_and_below(&rt);
     assert!(near(h, 30.0) && near(y, 30.0), "floor: row={h} below={y}");
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     let (h, y) = row_and_below(&rt);
     assert!(near(h, 45.0) && near(y, 45.0), "follows: row={h} below={y}");
-    rt.go_id(1);
+    rt.go_id(gogo::ArrangementId::new(1));
     let (h, y) = row_and_below(&rt);
     assert!(near(h, 60.0) && near(y, 60.0), "cap binds: row={h} below={y}");
-    rt.go_id(u32::MAX);
+    rt.go_id(gogo::BASE);
     let (h, y) = row_and_below(&rt);
     assert!(near(h, 30.0) && near(y, 30.0), "shrinks back: row={h} below={y}");
 }
@@ -817,7 +817,7 @@ fn content_past_a_container_cap_is_clipped_not_overdrawn() {
     let c = ok(CCAP_SRC);
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go_id(1);
+    rt.go_id(gogo::ArrangementId::new(1));
     let (res, rects) = lay(&page, &rt, 40.0, 120.0);
     let row = rect(&page, &rects, "ccRow");
     let content = rect(&page, &rects, "ccContent");
@@ -859,7 +859,7 @@ fn a_seated_glyph_stays_put_when_its_minimum_changes() {
     let (_, rects) = lay(&page, &rt, 200.0, 200.0);
     let glyph = rect(&page, &rects, "seatGlyph");
     assert!(near(glyph.x, 17.0) && near(glyph.y, 43.0), "{glyph:?}");
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     let (_, rects) = lay(&page, &rt, 200.0, 200.0);
     let glyph = rect(&page, &rects, "seatGlyph");
     assert!(near(glyph.x, 17.0) && near(glyph.y, 43.0) && near(glyph.h, 4.0), "{glyph:?}");

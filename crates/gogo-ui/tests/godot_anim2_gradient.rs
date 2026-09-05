@@ -83,7 +83,7 @@ fn lanes(page: &Page, anim: &str) -> Vec<Lane> {
         .iter()
         .filter(|t| t.anim == id)
         .map(|t| Lane {
-            node: page.str(page.nodes[t.node as usize].name).to_string(),
+            node: page.str(page.nodes[t.node.index()].name).to_string(),
             channel: page.str(t.channel).to_string(),
             from: t.from.and_then(gogo::page::Value::as_num),
             to: t.to.as_num().unwrap_or(f32::NAN),
@@ -130,7 +130,7 @@ fn circles(draws: &[Draw]) -> Vec<(Rect, Color_Straight_Srgb_4xU8_RGBA, f32, Col
 }
 
 fn rect_of(page: &Page, rects: &[Rect], name: &str) -> Rect {
-    rects[page.find(name).unwrap() as usize]
+    rects[(page.find(name).unwrap()).index()]
 }
 
 // ------------------------------------------------- _structured_anim_tests
@@ -158,11 +158,11 @@ fn each_staggers_its_wearers_and_disarms_at_the_end() {
     // pinned-from: slide's translate has an authored from, pop has none.
     assert_eq!(lane(&all, "a", "translate.y").from, Some(40.0));
     assert_eq!(pop.from, None);
-    let a = page.find("a").unwrap() as usize;
-    let b = page.find("b").unwrap() as usize;
+    let a = (page.find("a").unwrap()).index();
+    let b = (page.find("b").unwrap()).index();
     let mut rt = Runtime::new(&page);
     let fancy = page.intern_lookup("fancy");
-    rt.play(&page, fancy, Finish::Nothing);
+    rt.play_id(&page, fancy, Finish::Nothing);
     rt.tick(&mut page, 0.05);
     // b-held-from-y / b-held-from-a: b's pinned from-values hold before its stagger.
     assert!(near(rt.motion[b].translate[1], 40.0), "{:?}", rt.motion[b]);
@@ -174,7 +174,7 @@ fn each_staggers_its_wearers_and_disarms_at_the_end() {
     assert!(rt.motion[a].scale[0] > 1.0, "{:?}", rt.motion[a]);
     rt.tick(&mut page, 0.3);
     // done + identity-disarmed.
-    assert!(!rt.is_playing(fancy));
+    assert!(!rt.is_playing_id(fancy));
     assert!(near(rt.motion[a].scale[0], 1.0) && near(rt.motion[b].translate[1], 0.0) && near(rt.motion[a].opacity, 1.0) && near(rt.motion[b].opacity, 1.0), "a {:?} b {:?}", rt.motion[a], rt.motion[b]);
 }
 
@@ -187,15 +187,15 @@ fn each_staggers_its_wearers_and_disarms_at_the_end() {
 fn per_line_autoreverse_goes_out_and_back() {
     let c = ok("anim pulse { box.opacity to=0.5, duration=0.1, autoreverse=true }\nView host { Rectangle box }\n");
     let mut page = c.page;
-    let b = page.find("box").unwrap() as usize;
+    let b = (page.find("box").unwrap()).index();
     let mut rt = Runtime::new(&page);
     let pulse = page.intern_lookup("pulse");
-    rt.play(&page, pulse, Finish::Nothing);
+    rt.play_id(&page, pulse, Finish::Nothing);
     rt.tick(&mut page, 0.1);
     assert!(near(rt.motion[b].opacity, 0.5), "mid: {}", rt.motion[b].opacity);
     rt.tick(&mut page, 0.11);
     assert!(near(rt.motion[b].opacity, 1.0), "back: {}", rt.motion[b].opacity);
-    assert!(!rt.is_playing(pulse));
+    assert!(!rt.is_playing_id(pulse));
 }
 
 /// `_structured_anim_tests` 7867-7874 + 7954 (each.err-bare-in-anim,

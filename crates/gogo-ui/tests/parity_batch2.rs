@@ -34,7 +34,7 @@ fn plate_alpha(page: &Page, rt: &mut Runtime, node: &str) -> u8 {
     let list = draw(page, &res, &rects);
     list.iter()
         .find_map(|d| match d {
-            Draw::Quad { rect, color, .. } if *rect == rects[id as usize] => Some(color.0[3]),
+            Draw::Quad { rect, color, .. } if *rect == rects[id.index()] => Some(color.0[3]),
             _ => None,
         })
         .unwrap_or_else(|| panic!("no plate for {node}: {list:#?}"))
@@ -54,14 +54,14 @@ fn an_anim_assigns_opacity_instead_of_multiplying() {
     let page = c.page;
     let mut rt = Runtime::new(&page);
     { let a = plate_alpha(&page, &mut rt, "r"); assert!(about(a, 0.5), "declared: alpha {a}"); }
-    rt.play(&page, anim_id(&page, "flash"), Finish::Nothing);
+    rt.play_id(&page, anim_id(&page, "flash"), Finish::Nothing);
     let mut p = page.clone();
     rt.tick(&mut p, 0.1);
     let mid = plate_alpha(&page, &mut rt, "r");
     assert!(mid > 128 + 20 && mid < 255 - 20, "half way up from 0.5 toward 1, not toward 0.5×1: {mid}");
     rt.tick(&mut p, 0.2);
     { let a = plate_alpha(&page, &mut rt, "r"); assert!(about(a, 1.0), "the anim reaches 1, and the end pose stands: alpha {a}"); }
-    assert!(!rt.is_playing(anim_id(&page, "flash")));
+    assert!(!rt.is_playing_id(anim_id(&page, "flash")));
     let res = resolve(&page, &rt);
     assert!(res.anim_owns(page.find("r").unwrap(), Channel::Opacity), "a finished anim's end pose is held");
 }
@@ -74,7 +74,7 @@ fn color_a_fades_the_fill_not_the_node() {
     let c = ok("anim appear {\n scrim.color.a from=0, to=0.69, duration=0\n}\nView v {\n Rectangle scrim color=#000000B0, width=200, height=100, halign=left, valign=top { Label l text=\"x\", font_size=12, halign=left, valign=top }\n}\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.play(&page, anim_id(&page, "appear"), Finish::Nothing);
+    rt.play_id(&page, anim_id(&page, "appear"), Finish::Nothing);
     let mut p = page.clone();
     rt.tick(&mut p, 0.05);
     let res = resolve_animated(&page, &mut rt);
@@ -82,7 +82,7 @@ fn color_a_fades_the_fill_not_the_node() {
     let list = draw(&page, &res, &rects);
     let scrim = page.find("scrim").unwrap();
     let plate = list.iter().find_map(|d| match d {
-        Draw::Quad { rect, color, .. } if *rect == rects[scrim as usize] => Some(color.0[3]),
+        Draw::Quad { rect, color, .. } if *rect == rects[scrim.index()] => Some(color.0[3]),
         _ => None,
     }).unwrap();
     assert!(about(plate, 0.69), "the fill's alpha is the anim's 0.69, not 0.69 × 0.69: {plate}");
@@ -104,20 +104,20 @@ fn stop_restore_returns_to_the_ladder() {
     let chain = anim_id(&page, "chain");
     let mut rt = Runtime::new(&page);
     let mut p = page.clone();
-    rt.play(&page, chain, Finish::Nothing);
+    rt.play_id(&page, chain, Finish::Nothing);
     rt.tick(&mut p, 0.25);
-    assert!(rt.is_playing(chain));
-    rt.stop(chain, true);
+    assert!(rt.is_playing_id(chain));
+    rt.stop_id(chain, true);
     { let a = plate_alpha(&page, &mut rt, "b"); assert!(about(a, 0.7), "back to the declared 0.7 — not the first track's pinned from=1, not the anim's current value: alpha {a}"); }
     // A held state is the ladder now: restore lands there.
     let b = page.find("b").unwrap();
     rt.set_state(b, HELD, true);
     let _ = resolve_animated(&page, &mut rt);
-    rt.play(&page, chain, Finish::Nothing);
+    rt.play_id(&page, chain, Finish::Nothing);
     rt.tick(&mut p, 0.15);
-    rt.play(&page, chain, Finish::Nothing);
+    rt.play_id(&page, chain, Finish::Nothing);
     rt.tick(&mut p, 0.05);
-    rt.stop(chain, true);
+    rt.stop_id(chain, true);
     { let a = plate_alpha(&page, &mut rt, "b"); assert!(about(a, 0.5), "the `when held` 0.5 is what the ladder says: alpha {a}"); }
 }
 
@@ -135,25 +135,25 @@ fn an_anim_outranks_a_when_while_it_plays_and_holds_until_the_next_writer() {
     let mut p = page.clone();
     rt.set_state(b, HELD, true);
     let res = resolve_animated(&page, &mut rt);
-    assert_eq!(res.motion[b as usize].scale, [0.9, 0.9], "the when holds 0.9");
-    rt.play(&page, pop, Finish::Nothing);
+    assert_eq!(res.motion[b.index()].scale, [0.9, 0.9], "the when holds 0.9");
+    rt.play_id(&page, pop, Finish::Nothing);
     rt.tick(&mut p, 0.1);
     let res = resolve_animated(&page, &mut rt);
-    assert!(res.motion[b as usize].scale[0] > 0.95, "the anim owns scale while it plays (from 0.9 toward 1.2): {:?}", res.motion[b as usize]);
+    assert!(res.motion[b.index()].scale[0] > 0.95, "the anim owns scale while it plays (from 0.9 toward 1.2): {:?}", res.motion[b.index()]);
     rt.tick(&mut p, 0.2);
     let res = resolve_animated(&page, &mut rt);
-    assert!((res.motion[b as usize].scale[0] - 1.2).abs() < 0.001, "the end pose stands after the anim ends: {:?}", res.motion[b as usize]);
+    assert!((res.motion[b.index()].scale[0] - 1.2).abs() < 0.001, "the end pose stands after the anim ends: {:?}", res.motion[b.index()]);
     // The next writer: the `when held` flips off — its scale response is
     // that property's writer, so the held end yields to the ladder (1.0).
     rt.set_state(b, HELD, false);
     let res = resolve_animated(&page, &mut rt);
-    assert_eq!(res.motion[b as usize].scale, [1.0, 1.0], "the flip took the channel back: {:?}", res.motion[b as usize]);
+    assert_eq!(res.motion[b.index()].scale, [1.0, 1.0], "the flip took the channel back: {:?}", res.motion[b.index()]);
     // A code write is a writer too.
-    rt.play(&page, pop, Finish::Nothing);
+    rt.play_id(&page, pop, Finish::Nothing);
     rt.tick(&mut p, 0.3);
     rt.set_prop(b, PropKey::Scale, Value::VNum(1.0));
     let res = resolve_animated(&page, &mut rt);
-    assert_eq!(res.motion[b as usize].scale, [1.0, 1.0], "{:?}", res.motion[b as usize]);
+    assert_eq!(res.motion[b.index()].scale, [1.0, 1.0], "{:?}", res.motion[b.index()]);
 }
 
 /// Spec, Handoff law: a FINISHED anim's held end pose is a standing value
@@ -166,12 +166,12 @@ fn a_held_end_pose_is_the_base_of_a_replay() {
     let vanish = anim_id(&page, "vanish");
     let mut rt = Runtime::new(&page);
     let mut p = page.clone();
-    rt.play(&page, vanish, Finish::Nothing);
+    rt.play_id(&page, vanish, Finish::Nothing);
     rt.tick(&mut p, 0.2);
     { let a = plate_alpha(&page, &mut rt, "r"); assert!(about(a, 0.0), "faded out and held: alpha {a}"); }
-    rt.play(&page, vanish, Finish::Nothing);
+    rt.play_id(&page, vanish, Finish::Nothing);
     rt.tick(&mut p, 0.05);
-    rt.stop(vanish, true);
+    rt.stop_id(vanish, true);
     { let a = plate_alpha(&page, &mut rt, "r"); assert!(about(a, 0.0), "restore returns to the held end pose, not to the declared 1: alpha {a}"); }
 }
 

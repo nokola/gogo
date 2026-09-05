@@ -103,9 +103,9 @@ impl Fx {
     }
     fn rect(&self, name: &str) -> Rect {
         let (_, rects) = self.lay();
-        rects[self.node(name) as usize]
+        rects[(self.node(name)).index()]
     }
-    fn node(&self, name: &str) -> u32 {
+    fn node(&self, name: &str) -> gogo::NodeId {
         self.page.find(name).unwrap_or_else(|| panic!("no node {name:?}"))
     }
     fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) -> Vec<Event> {
@@ -386,7 +386,7 @@ fn render_theme_entry_style_applies() {
 #[test]
 fn render_shadowing_a_builtin_kind_is_refused() {
     let c = build("control Slider $value=0 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n Layers { slot track { } }\n}\nView v { Slider s value=1 }");
-    assert!(gogo::has_errors(&c.diags), "shadowing a built-in is an error; got kind {:?}", c.page.nodes[c.page.find("s").unwrap() as usize].kind);
+    assert!(gogo::has_errors(&c.diags), "shadowing a built-in is an error; got kind {:?}", c.page.nodes[(c.page.find("s").unwrap()).index()].kind);
 }
 
 /// `_render_tests` 4283-4284 (`render.err-nativelook-in-user-tree`):
@@ -404,7 +404,7 @@ fn render_nativelook_is_not_a_kind() {
 fn render_widget_internal_slider_is_addressable() {
     let fx = Fx::new("widget VolumeRow {\n    Column {\n        Slider inner value=30, step=10\n    }\n}\nView v { VolumeRow r }");
     let inner = fx.node("r/inner");
-    assert_eq!(fx.page.nodes[inner as usize].kind, Kind::Slider);
+    assert_eq!(fx.page.nodes[inner.index()].kind, Kind::Slider);
     assert_eq!(fx.value("r/inner"), 30.0);
 }
 
@@ -728,7 +728,7 @@ fn wiring_unknown_handler_name_is_the_hosts_rustc_error() {
     let c = build("View v { Button b on:activate=OnPaintButtonPresed }");
     assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
     let b = c.page.find("b").unwrap();
-    let h = c.page.handlers[c.page.nodes[b as usize].handlers.0 as usize];
+    let h = c.page.handlers[c.page.nodes[b.index()].handlers.0 as usize];
     assert!(matches!(h.action, Action::Named(id) if c.page.str(id) == "OnPaintButtonPresed"));
 }
 
@@ -756,7 +756,7 @@ fn wiring_emit_relays_from_button_widget_and_slider() {
     let ev = fx.tap(d.x + 5.0, d.y + 5.0, 0.0);
     assert_eq!(ev.iter().filter(|e| is_relay(e)).count(), 1, "{ev:?}");
     let r = fx.rect("row");
-    assert_eq!(fx.page.nodes[fx.node("row") as usize].kind, Kind::Button, "the instance name lands on the signals node");
+    assert_eq!(fx.page.nodes[(fx.node("row")).index()].kind, Kind::Button, "the instance name lands on the signals node");
     let ev = fx.tap(r.x + 5.0, r.y + 5.0, 1.0);
     assert_eq!(ev.iter().filter(|e| is_relay(e)).count(), 1, "{ev:?}");
     let a = fx.rect("amount");

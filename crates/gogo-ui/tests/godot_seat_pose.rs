@@ -73,14 +73,14 @@ impl Fx {
     }
 
     fn rect(&self, name: &str) -> Rect {
-        self.lay().1[self.id(name) as usize]
+        self.lay().1[(self.id(name)).index()]
     }
 
     /// The names of the nodes laid out under `parent`, in layout order
     /// (Godot: `get_parent()` + `get_index()`).
     fn children_of(&self, parent: &str) -> Vec<String> {
         let (res, _) = self.lay();
-        res.children(&self.page, self.id(parent)).iter().map(|c| self.page.str(self.page.nodes[*c as usize].name).to_string()).collect()
+        res.children(&self.page, self.id(parent)).iter().map(|c| self.page.str(self.page.nodes[c.index()].name).to_string()).collect()
     }
 
     /// `set_screen_class("landscapeSmall")` etc. `None` = Godot's `""`:
@@ -181,7 +181,7 @@ fn seat_move_targets_a_declared_seat() {
 fn untimed_arrangement_may_move_a_seat() {
     let mut fx = Fx::new("arrangement o\nwhen o { m.seat = s }\nView v { Row r halign=left, valign=top, height=20 { Column h { Rectangle m 10x10 }; seat s } }");
     assert_eq!(fx.children_of("h"), vec!["m"]);
-    fx.rt.go_id(0);
+    fx.rt.go_id(gogo::ArrangementId::new(0));
     assert_eq!(fx.children_of("s"), vec!["m"], "{:?}", fx.lay().1);
 }
 
@@ -197,7 +197,7 @@ fn timed_arrangement_seat_move_builds_and_applies() {
     let tail = "when o { m.seat = s }\nView v { Row r halign=left, valign=top, height=20 { Column h { Rectangle m 10x10 }; seat s } }";
     for rule in ["transition base -> o duration=0.1", "transition duration=0.1", "transition any -> base duration=0.1"] {
         let mut fx = Fx::new(&format!("arrangement o\n{rule}\n{tail}"));
-        fx.rt.go_id(0);
+        fx.rt.go_id(gogo::ArrangementId::new(0));
         assert_eq!(fx.children_of("s"), vec!["m"], "rule `{rule}`: {:?}", fx.lay().1);
     }
 }
@@ -226,9 +226,9 @@ fn one_occupant_per_seat() {
 #[test]
 fn two_arrangements_may_share_a_seat() {
     let mut fx = Fx::new("arrangement o\narrangement p\nwhen o { m.seat = s }\nwhen p { m2.seat = s }\nView v { Row r halign=left, valign=top, height=20 { Column h { Rectangle m 10x10; Rectangle m2 10x10 }; seat s } }");
-    fx.rt.go_id(0);
+    fx.rt.go_id(gogo::ArrangementId::new(0));
     assert_eq!(fx.children_of("s"), vec!["m"]);
-    fx.rt.go_id(1);
+    fx.rt.go_id(gogo::ArrangementId::new(1));
     assert_eq!(fx.children_of("s"), vec!["m2"]);
 }
 
@@ -281,19 +281,19 @@ fn seat_move_and_restore_lifecycle() {
     assert_eq!(fx.rect("sideSeat").w, 20.0, "seat.occupied-min: {:?}", fx.rect("sideSeat"));
     assert_eq!(fx.rect("mover").w, 20.0, "{:?}", fx.rect("mover"));
     // The composed pair outranks the class alone and drops with the arrangement.
-    fx.rt.go_id(0);
+    fx.rt.go_id(gogo::ArrangementId::new(0));
     assert_eq!(fx.children_of("pairSeat"), vec!["mover"], "seat.pair-wins");
-    fx.rt.go_id(u32::MAX);
+    fx.rt.go_id(gogo::BASE);
     assert_eq!(fx.children_of("sideSeat"), vec!["mover"], "seat.pair-drops");
     // `= home` (D238): parent AND index while the class move still holds.
-    fx.rt.go_id(1);
+    fx.rt.go_id(gogo::ArrangementId::new(1));
     assert_eq!(fx.children_of("homeCol"), vec!["mover", "trail"], "seat.home-target");
-    fx.rt.go_id(u32::MAX);
+    fx.rt.go_id(gogo::BASE);
     assert_eq!(fx.children_of("sideSeat"), vec!["mover"], "seat.home-target-drops");
     // A plain arrangement claim vs the class's sideSeat: equal rank (one
     // condition each), the LATER line wins — `when lifted` sits below
     // `when screen.landscapeSmall` in the fixture...
-    fx.rt.go_id(2);
+    fx.rt.go_id(gogo::ArrangementId::new(2));
     assert_eq!(fx.children_of("liftSeat"), vec!["mover"], "seat.later-single-wins");
     // ...its composed claim (two conditions) outranks the plain one...
     fx.class(Some(ScreenClass::PortraitSmall));
@@ -302,7 +302,7 @@ fn seat_move_and_restore_lifecycle() {
     fx.class(None);
     assert_eq!(fx.children_of("liftSeat"), vec!["mover"], "seat.arrangement-no-class");
     // ...and dropping the arrangement sends mover home (parent AND index).
-    fx.rt.go_id(u32::MAX);
+    fx.rt.go_id(gogo::BASE);
     assert_eq!(fx.children_of("homeCol"), vec!["mover", "trail"], "seat.arrangement-drops-home");
     fx.class(Some(ScreenClass::LandscapeSmall));
     assert_eq!(fx.children_of("sideSeat"), vec!["mover"], "seat.class-reapplies-after-arrangement");
@@ -345,8 +345,8 @@ fn untimed_arrangement_reanchor_restores_the_span() {
     let mut fx = Fx::new(ARRANGEMENT_ANCHOR);
     let span = fx.rect("card");
     assert!(span.x == 10.0 && span.w == 180.0, "aanchor.base-span: {span:?}");
-    fx.rt.go_id(0);
-    fx.rt.go_id(u32::MAX);
+    fx.rt.go_id(gogo::ArrangementId::new(0));
+    fx.rt.go_id(gogo::BASE);
     let back = fx.rect("card");
     assert!(back.x == 10.0 && back.w == 180.0, "aanchor.restores: {back:?}");
 }
@@ -358,7 +358,7 @@ fn untimed_arrangement_reanchor_restores_the_span() {
 #[test]
 fn docked_pose_drops_the_base_pins() {
     let mut fx = Fx::new(ARRANGEMENT_ANCHOR);
-    fx.rt.go_id(0);
+    fx.rt.go_id(gogo::ArrangementId::new(0));
     let docked = fx.rect("card");
     assert!(docked.x == 10.0 && docked.w == 40.0, "aanchor.docked: {docked:?}");
 }
@@ -437,11 +437,11 @@ fn poses_resize_stack_children_and_restore() {
     fx.class(Some(ScreenClass::LandscapeSmall));
     assert!(near(w(&fx, "lead"), 60.0, 0.5) && near(w(&fx, "mid"), 80.0, 0.5) && near(w(&fx, "btn"), 70.0, 0.5) && near(w(&fx, "tail"), 90.0, 0.5), "flow.posed: lead={} mid={} btn={} tail={}", w(&fx, "lead"), w(&fx, "mid"), w(&fx, "btn"), w(&fx, "tail"));
     assert!(near(w(&fx, "card"), 300.0, 0.5), "flow.card-unposed: {}", w(&fx, "card"));
-    fx.rt.go_id(0);
+    fx.rt.go_id(gogo::ArrangementId::new(0));
     assert!(near(w(&fx, "lead"), 90.0, 0.5) && near(w(&fx, "tail"), 60.0, 0.5), "flow.pair-wins: lead={} tail={}", w(&fx, "lead"), w(&fx, "tail"));
     let card = fx.rect("card");
     assert!(near(card.x, 200.0, 0.5) && near(card.w, 100.0, 0.5), "flow.pair-align: {card:?}");
-    fx.rt.go_id(u32::MAX);
+    fx.rt.go_id(gogo::BASE);
     assert!(near(w(&fx, "lead"), 60.0, 0.5), "flow.pair-drops: {}", w(&fx, "lead"));
     assert!(near(w(&fx, "card"), 300.0, 0.5), "flow.card-restores: {}", w(&fx, "card"));
     fx.class(None);
@@ -512,11 +512,11 @@ fn posed_sizes_move_the_real_box() {
 fn declared_floor_stands_under_a_posed_width() {
     let mut fx = Fx::new("arrangement abc\narrangement xyz\nwhen abc { floored.width = 40 }\nwhen xyz { floored.width = 20 }\nView v { Layers floored min_width=30, width=50, height=20, halign=left, valign=center }");
     assert_eq!(fx.rect("floored").w, 50.0, "psize.base");
-    fx.rt.go_id(0);
+    fx.rt.go_id(gogo::ArrangementId::new(0));
     assert!(near(fx.rect("floored").w, 40.0, 0.5), "psize.floor-under: {:?}", fx.rect("floored"));
-    fx.rt.go_id(1);
+    fx.rt.go_id(gogo::ArrangementId::new(1));
     assert!(near(fx.rect("floored").w, 30.0, 0.5), "psize.floor-wins: {:?}", fx.rect("floored"));
-    fx.rt.go_id(u32::MAX);
+    fx.rt.go_id(gogo::BASE);
     assert_eq!(fx.rect("floored").w, 50.0, "psize.floor-restores");
 }
 
@@ -530,7 +530,7 @@ fn declared_floor_stands_under_a_posed_width() {
 fn timed_grow_glides_the_box_both_ways() {
     let c = ok(POSE_SIZE_VIEW);
     let mut page = c.page;
-    let g = page.find("grower").unwrap() as usize;
+    let g = (page.find("grower").unwrap()).index();
     let mut rt = Runtime::new(&page);
     let frame = |rt: &mut Runtime, page: &mut Page, dt: f32| -> Rect {
         rt.tick(page, dt);
@@ -539,11 +539,11 @@ fn timed_grow_glides_the_box_both_ways() {
         rt.glide(rects)[g]
     };
     assert_eq!(frame(&mut rt, &mut page, 0.0).w, 80.0);
-    rt.go_id(2);
+    rt.go_id(gogo::ArrangementId::new(2));
     assert_eq!(frame(&mut rt, &mut page, 0.0).w, 80.0, "psize.raise-deferred: no snap to 120 up front");
     assert_eq!(frame(&mut rt, &mut page, 0.6).w, 120.0, "psize.raise-lands");
     assert!(!rt.animating());
-    rt.go_id(u32::MAX);
+    rt.go_id(gogo::BASE);
     // The shrink starts from the full 120 (the room Godot lowers the stamp
     // for) and is under way a tenth of a second later.
     assert_eq!(frame(&mut rt, &mut page, 0.0).w, 120.0, "psize.lower-immediate: the shrink starts from the full box");
@@ -579,17 +579,19 @@ fn natural_label_height() -> f32 {
     Fx::new("View v { Column c halign=left, valign=top { Label hello text=\"Hello, Gogo\" } }").rect("hello").h
 }
 
-/// `_reveal_tests` 7666-7685 (`reveal.err-root`, `reveal.err-free-parent`,
-/// `reveal.err-range`, `reveal.err-type`, `reveal.err-when-undeclared`,
-/// `reveal.err-anim-undeclared`, `reveal.own-scope-builds`,
-/// `reveal.anim-validates`): `reveal_x`/`reveal_y` need a container
-/// parent, take a fraction 0..1, and a `when`/`anim` may only drive a
-/// declared channel.
+/// `_reveal_tests` 7666-7685 (`reveal.err-range`, `reveal.err-type`,
+/// `reveal.err-when-undeclared`, `reveal.err-anim-undeclared`,
+/// `reveal.own-scope-builds`, `reveal.anim-validates`): `reveal_x`/
+/// `reveal_y` take a fraction 0..1, and a `when`/`anim` may only drive a
+/// declared channel. DIVERGENCE from the addon (`reveal.err-root`,
+/// `reveal.err-free-parent`; user call 2026-09-05): a reveal needs no
+/// container parent — under a free parent (Layers, Panel, the root) the
+/// node's OWN box shrinks to the fraction from its alignment edge (a
+/// Rectangle fill bar under a Layers needs no wrapper Row), see
+/// `reveal_under_a_free_parent_shrinks_the_own_box`.
 #[test]
 fn reveal_load_rules() {
     let a = accepted(&[
-        ("root", "Panel root reveal_y=0 { Label a text=\"x\" }"),
-        ("free parent", "View v { Layers l width=100, height=100 { Label a text=\"x\", reveal_y=0 } }"),
         ("range", "View v { Column { Label a text=\"x\", reveal_y=2 } }"),
         ("type", "View v { Column { Label a text=\"x\", reveal_y=maybe } }"),
         ("when undeclared", "arrangement o\nwhen o { a.reveal_y = 1 }\nView v { Column { Label a text=\"x\" } }"),
@@ -598,6 +600,24 @@ fn reveal_load_rules() {
     let own = build("View v { Column { Button b text=\"x\", reveal_y=1 { when held reveal_y=0.5 } } }").diags;
     let animed = build("anim p { a.reveal_y from=0, to=1, duration=0.1 }\nView v { Column { Label a text=\"x\", reveal_y=0 } }").diags;
     assert!(a.is_empty() && !gogo::has_errors(&own) && !gogo::has_errors(&animed), "Rust builds: {a:?}; own-scope diags {own:#?}; anim diags {animed:#?}");
+    let free = build("View v { Layers l width=100, height=100 { Label a text=\"x\", reveal_y=0 } }").diags;
+    let root = build("Panel root reveal_y=0 { Label a text=\"x\" }").diags;
+    assert!(!gogo::has_errors(&free) && !gogo::has_errors(&root), "a free parent and the root take a reveal: {free:#?} {root:#?}");
+}
+
+/// A reveal under a free parent (the user call 2026-09-05, the brush
+/// page's slider fill): the node's own box takes the fraction of its
+/// stretched width from its left edge — a Rectangle `reveal_x=0.3` in a
+/// 100-wide Layers is 30 wide at the Layers' x, siblings untouched.
+#[test]
+fn reveal_under_a_free_parent_shrinks_the_own_box() {
+    let fx = Fx::new("View v { Layers l width=100, height=20 { Rectangle back width=fill, height=fill, color=black; Rectangle fill width=fill, height=fill, color=white, reveal_x=0.3 } }");
+    let (_, rects) = fx.lay();
+    let l = rects[fx.id("l")];
+    let fill = rects[fx.id("fill")];
+    let back = rects[fx.id("back")];
+    assert!(fill.x == l.x && near(fill.w, 30.0, 0.01), "the fill is 30 of 100 from the left: {fill:?} in {l:?}");
+    assert_eq!(back.w, 100.0, "a sibling under the free parent keeps its own grant");
 }
 
 /// `_reveal_tests` 7693-7762 (`reveal.build`, `reveal.concealed-min`,
@@ -623,23 +643,23 @@ fn reveal_pose_tweens_the_layout_space() {
         (res, shown)
     };
     let (_, r) = frame(&mut rt, &mut page, 0.0);
-    assert!(r[hello as usize].h == 0.0 && r[hello as usize].w > 0.0, "reveal.concealed-min: {:?}", r[hello as usize]);
-    rt.go_id(0);
+    assert!(r[hello.index()].h == 0.0 && r[hello.index()].w > 0.0, "reveal.concealed-min: {:?}", r[hello.index()]);
+    rt.go_id(gogo::ArrangementId::new(0));
     let (_, r) = frame(&mut rt, &mut page, 0.05);
-    assert!(r[hello as usize].h > 0.0 && r[hello as usize].h < nat, "reveal.tween-midway: {:?}", r[hello as usize]);
+    assert!(r[hello.index()].h > 0.0 && r[hello.index()].h < nat, "reveal.tween-midway: {:?}", r[hello.index()]);
     let (res, r) = frame(&mut rt, &mut page, 0.3);
-    assert!(near(r[hello as usize].h, nat, 0.01) && res.num(&page, hello, PropKey::Opacity) == Some(1.0), "reveal.open/open-min: {:?} opacity {:?}", r[hello as usize], res.num(&page, hello, PropKey::Opacity));
-    rt.go_id(u32::MAX);
+    assert!(near(r[hello.index()].h, nat, 0.01) && res.num(&page, hello, PropKey::Opacity) == Some(1.0), "reveal.open/open-min: {:?} opacity {:?}", r[hello.index()], res.num(&page, hello, PropKey::Opacity));
+    rt.go_id(gogo::BASE);
     let (_, r) = frame(&mut rt, &mut page, 0.3);
-    assert_eq!(r[hello as usize].h, 0.0, "reveal.home");
+    assert_eq!(r[hello.index()].h, 0.0, "reveal.home");
     // The disclosure button composes with toggle(): a tap opens.
     let (res, r) = frame(&mut rt, &mut page, 0.0);
-    let b = r[more as usize];
+    let b = r[more.index()];
     let mut input = Input::new();
     input.touch(&page, &mut rt, &res, &r, &FixedAdvance, Touch { phase: Phase::Down, x: b.x + 5.0, y: b.y + 5.0, t: 1.0, id: 1 });
     let ev = input.touch(&page, &mut rt, &res, &r, &FixedAdvance, Touch { phase: Phase::Up, x: b.x + 5.0, y: b.y + 5.0, t: 1.1, id: 1 });
     assert!(ev.iter().any(|e| e.kind == EventKind::Activate), "{ev:?}");
-    assert_eq!(rt.arrangement, 0, "reveal.toggle-opens");
+    assert_eq!(rt.arrangement, gogo::ArrangementId::new(0), "reveal.toggle-opens");
     // A gone child earns nothing.
     rt.set_visible(&mut page, hello, false);
     let (res, _) = frame(&mut rt, &mut page, 0.0);

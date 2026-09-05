@@ -59,15 +59,15 @@ struct Laid {
 
 impl Laid {
     fn rect(&self, name: &str) -> Rect {
-        self.rects[self.id(name) as usize]
+        self.rects[(self.id(name)).index()]
     }
-    fn id(&self, name: &str) -> u32 {
+    fn id(&self, name: &str) -> gogo::NodeId {
         self.page.find(name).unwrap_or_else(|| panic!("no node {name:?}"))
     }
     fn draws(&self) -> Vec<Draw> {
         draw(&self.page, &self.res, &self.rects)
     }
-    fn hit(&self, x: f32, y: f32) -> Option<u32> {
+    fn hit(&self, x: f32, y: f32) -> Option<gogo::NodeId> {
         hit(&self.page, &self.res, &self.rects, x, y, false)
     }
     fn center(&self, name: &str) -> (f32, f32) {
@@ -187,7 +187,7 @@ fn parser_errors() {
 fn resolver_basics_stack_build() {
     let l = lay("View v {\n Column panel spacing=8 {\n  Label title text=\"Hi\", vertical_alignment=center\n  Slider vol min=1, max=300, value=80\n  Rectangle fill\n }\n}\n");
     let panel = l.id("panel");
-    assert_eq!(l.page.nodes[panel as usize].kind, Kind::Column);
+    assert_eq!(l.page.nodes[panel.index()].kind, Kind::Column);
     assert_eq!(l.res.num(&l.page, panel, PropKey::Spacing), Some(8.0));
     for name in ["panel", "title", "vol", "fill"] {
         assert!(l.page.find(name).is_some(), "named {name}");
@@ -650,7 +650,7 @@ fn cookbook_hidden_holds_space() {
 fn extends_inherits_and_overrides() {
     let c = ok("style BaseLook min_height=36, background=#112233FF\nstyle Warn extends=BaseLook, background=#AA0000FF\nView v { Button b .Warn }\n");
     let b = c.page.find("b").unwrap();
-    assert_eq!(c.page.nodes[b as usize].placement.min_height, 36.0, "inherited");
+    assert_eq!(c.page.nodes[b.index()].placement.min_height, 36.0, "inherited");
     assert_eq!(c.page.prop(b, PropKey::Background), Some(Value::VColor(Color_Straight_Srgb_4xU8_RGBA([0xAA, 0, 0, 0xFF]))), "overridden");
 }
 
@@ -661,9 +661,9 @@ fn extends_inherits_and_overrides() {
 fn extends_three_level_chain_with_whens() {
     let c = ok("style A min_height=20 { when hovered background=#22222200 }\nstyle B extends=A, min_width=30 { when held background=#11111100 }\nstyle C extends=B { when held background=#33333300 }\nView v { Button b .C }\n");
     let b = c.page.find("b").unwrap();
-    let pl = c.page.nodes[b as usize].placement;
+    let pl = c.page.nodes[b.index()].placement;
     assert_eq!((pl.min_width, pl.min_height), (30.0, 20.0));
-    let (wf, wn) = c.page.nodes[b as usize].whens;
+    let (wf, wn) = c.page.nodes[b.index()].whens;
     let whens = &c.page.whens[wf as usize..(wf + wn) as usize];
     assert!(whens.iter().any(|w| w.state == State::Hovered), "{whens:#?}");
     let held = whens.iter().filter(|w| w.state == State::Held).last().unwrap_or_else(|| panic!("{whens:#?}"));
@@ -689,7 +689,7 @@ fn extends_across_uses() {
     let c = compile("uses \"fixtures/theme_inc.gogo\"\nstyle Local extends=TestPanel, min_height=99\nView v { Column c .Local }\n", &loader);
     assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
     let col = c.page.find("c").unwrap();
-    assert_eq!(c.page.nodes[col as usize].placement.min_height, 99.0);
+    assert_eq!(c.page.nodes[col.index()].placement.min_height, 99.0);
     assert_eq!(c.page.prop(col, PropKey::Spacing), Some(Value::VNum(8.0)), "inherited across uses");
 }
 
@@ -810,7 +810,7 @@ fn vocab_view_is_not_a_widget_body() {
 fn vocab_gap_in_a_column() {
     let l = lay("View v { Column c { Label a text=\"x\"; gap 12; Label b text=\"y\" } }");
     let col = l.id("c");
-    let mid = l.page.children(col).nth(1).unwrap() as u32;
+    let mid = (l.page.children(col).nth(1).unwrap()).index() as u32;
     assert_eq!(l.page.nodes[mid as usize].kind, Kind::Gap);
     assert_eq!((l.page.nodes[mid as usize].gap, l.page.nodes[mid as usize].gap_fill), (12.0, false));
     assert!(near(l.rect("b").y - l.rect("a").bottom(), 12.0), "a={:?} b={:?}", l.rect("a"), l.rect("b"));

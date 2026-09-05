@@ -78,14 +78,14 @@ fn texts(page: &Page, rt: &Runtime) -> Vec<String> {
 fn label_of(page: &Page, item: NodeId) -> NodeId {
     let mut n = item;
     loop {
-        let kids = page.children(n);
-        if kids.is_empty() {
+        let mut kids = page.children(n);
+        if kids.len() == 0 {
             return n;
         }
         if let Some(l) = kids.clone().find(|c| page.nodes[*c].kind == Kind::Label) {
-            return l as NodeId;
+            return l;
         }
-        n = kids.start as NodeId;
+        n = kids.next().expect("a child");
     }
 }
 
@@ -129,7 +129,7 @@ impl Fx {
     }
     /// A tap at the middle of `node` (Godot's `_conf_press(at, true/false)`).
     fn tap(&mut self, node: NodeId, t: f64) -> Vec<Event> {
-        let r = self.rects()[node as usize];
+        let r = self.rects()[node.index()];
         let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         let mut ev = self.touch(Phase::Down, x, y, t);
         ev.extend(self.touch(Phase::Up, x, y, t + 0.1));
@@ -164,19 +164,19 @@ const TASKS: &str = r#"View v {
 fn repeat_stack_shows_items_by_count() {
     let mut fx = Fx::new(TASKS);
     let tasks = fx.page.find("tasks").expect("repeat.registered");
-    assert_eq!(fx.page.nodes[tasks as usize].kind, Kind::Repeat);
+    assert_eq!(fx.page.nodes[tasks.index()].kind, Kind::Repeat);
     let r = fx.rects();
-    assert_eq!((r[tasks as usize].w, r[tasks as usize].h), (0.0, 0.0), "repeat.marker: the repeat itself takes no room: {:?}", r[tasks as usize]);
-    let header = fx.page.find("header").unwrap() as usize;
-    let footer = fx.page.find("footer").unwrap() as usize;
+    assert_eq!((r[tasks.index()].w, r[tasks.index()].h), (0.0, 0.0), "repeat.marker: the repeat itself takes no room: {:?}", r[tasks.index()]);
+    let header = (fx.page.find("header").unwrap()).index();
+    let footer = (fx.page.find("footer").unwrap()).index();
     assert_eq!(texts(&fx.page, &fx.rt), ["Tasks", "none yet", "end"], "repeat.initial-empty");
     fx.fill("tasks", &["a", "b", "c"]);
     assert_eq!(texts(&fx.page, &fx.rt), ["Tasks", "a", "b", "c", "end"], "repeat.order");
     let r = fx.rects();
     let items = fx.items("tasks");
     // The items sit between the statics, spaced like siblings (4).
-    assert_eq!(r[items[0] as usize].y, r[header].bottom() + 4.0, "{r:?}");
-    assert_eq!(r[footer].y, r[items[2] as usize].bottom() + 4.0, "{r:?}");
+    assert_eq!(r[items[0].index()].y, r[header].bottom() + 4.0, "{r:?}");
+    assert_eq!(r[footer].y, r[items[2].index()].bottom() + 4.0, "{r:?}");
     fx.fill("tasks", &["c", "b", "a"]);
     assert_eq!(texts(&fx.page, &fx.rt), ["Tasks", "c", "b", "a", "end"], "repeat.reorder");
     fx.fill("tasks", &[]);
@@ -217,7 +217,7 @@ fn keyed_repeat_takes_items_and_binds_fields() {
     let rects = fx.rects();
     let items = fx.rt.items(&fx.page, r);
     assert_eq!(items.len(), 3);
-    assert!(rects[items[1] as usize].y > rects[items[0] as usize].y && rects[items[1] as usize].h == 20.0, "rows lay out as the Column's own children: {:?}", &rects[items[0] as usize..]);
+    assert!(rects[items[1].index()].y > rects[items[0].index()].y && rects[items[1].index()].h == 20.0, "rows lay out as the Column's own children: {:?}", &rects[items[0].index()..]);
     fx.rt.set_items(&mut fx.page, r, &[]).unwrap();
     assert_eq!(texts(&fx.page, &fx.rt), ["Presets", "none", "end"], "zero rows shows the empty text again");
     fx.rt.set_items(&mut fx.page, r, &[rec(9, "back")]).unwrap();
@@ -529,12 +529,12 @@ fn list_builds_as_a_spaced_stack() {
     let shown = texts(&fx.page, &fx.rt);
     assert!(shown.starts_with(&["Tasks".to_string()]) && shown.ends_with(&["a".to_string(), "b".to_string(), "c".to_string()]), "rows in order after the header: {shown:?}");
     let items = fx.items("tasks");
-    assert!(items.iter().all(|i| fx.page.nodes[*i as usize].kind == Kind::ListItem && Kind::ListItem.is_free()), "list.row-roots");
+    assert!(items.iter().all(|i| fx.page.nodes[i.index()].kind == Kind::ListItem && Kind::ListItem.is_free()), "list.row-roots");
     let r = fx.rects();
-    let picker = fx.page.find("picker").unwrap() as usize;
-    assert_eq!(r[items[1] as usize].y, r[items[0] as usize].bottom() + 2.0, "list.spacing: {r:?}");
-    assert_eq!(r[items[2] as usize].y, r[items[1] as usize].bottom() + 2.0, "list.spacing: {r:?}");
-    let shown_rows: Vec<Rect> = items[..3].iter().map(|i| r[*i as usize]).collect();
+    let picker = (fx.page.find("picker").unwrap()).index();
+    assert_eq!(r[items[1].index()].y, r[items[0].index()].bottom() + 2.0, "list.spacing: {r:?}");
+    assert_eq!(r[items[2].index()].y, r[items[1].index()].bottom() + 2.0, "list.spacing: {r:?}");
+    let shown_rows: Vec<Rect> = items[..3].iter().map(|i| r[i.index()]).collect();
     assert!(r[picker].w > 150.0 && shown_rows.iter().all(|row| row.w == r[picker].w), "list.rows-full-width: picker={:?} rows={shown_rows:?}", r[picker]);
 }
 
@@ -602,8 +602,8 @@ fn list_self_scrolls_and_expands_by_default() {
     let rows: Vec<&str> = rows_owned.iter().map(String::as_str).collect();
     fx.fill("tasks", &rows);
     let r = fx.rects();
-    let picker = fx.page.find("picker").unwrap() as usize;
-    let outer = fx.page.find("outer").unwrap() as usize;
+    let picker = (fx.page.find("picker").unwrap()).index();
+    let outer = (fx.page.find("outer").unwrap()).index();
     assert_eq!(r[picker].bottom(), r[outer].bottom(), "list.expands-default: an unplaced List fills the column's leftover room: {:?} in {:?}", r[picker], r[outer]);
     // list.scroll-starts-top + .scrolls: a drag on the rows pans the body.
     assert_eq!(fx.rt.scroll[picker], [0.0, 0.0], "list.scroll-starts-top");
@@ -616,7 +616,7 @@ fn list_self_scrolls_and_expands_by_default() {
     // and the statics pan with them, one doctrine both ways.
     let items = fx.items("tasks");
     let after = fx.rects();
-    assert!(after[items[0] as usize].y < r[items[0] as usize].y - 50.0, "the first row slid up: {:?} -> {:?}", r[items[0] as usize], after[items[0] as usize]);
+    assert!(after[items[0].index()].y < r[items[0].index()].y - 50.0, "the first row slid up: {:?} -> {:?}", r[items[0].index()], after[items[0].index()]);
 }
 
 /// `_list_tests` 12829-12841 (`list.reorder-keeps`, `.rebuild-rechecks`,
@@ -711,11 +711,11 @@ fn bare_row_default_looks() {
     let mut fx = Fx::new(PICKER);
     fx.fill("tasks", &["a", "b", "c"]);
     let items = fx.items("tasks");
-    let row0 = fx.rects()[items[0] as usize];
+    let row0 = fx.rects()[items[0].index()];
     let plate = |fx: &Fx, i: usize| -> Option<[u8; 4]> {
         let res = resolve(&fx.page, &fx.rt);
         let rects = lay(&fx.page, &fx.rt);
-        let r = rects[items[i] as usize];
+        let r = rects[items[i].index()];
         draw(&fx.page, &res, &rects).iter().find_map(|d| match d {
             Draw::Quad { rect, color, .. } if *rect == r => Some(color.0),
             _ => None,
@@ -772,7 +772,7 @@ fn styled_row_restyles_on_selected_and_held() {
     let rects = fx.rects();
     let accent = palette_color("accent").expect("accent").0;
     let plate = draw(&fx.page, &res, &rects).iter().find_map(|d| match d {
-        Draw::Quad { rect, color, .. } if *rect == rects[y as usize] => Some(*color),
+        Draw::Quad { rect, color, .. } if *rect == rects[y.index()] => Some(*color),
         _ => None,
     });
     assert!(matches!(plate, Some(c) if c.0[..3] == accent[..3] && c.0[3] > 0), "list.checked-bg-renders: {plate:?} vs accent {accent:?}");
@@ -780,7 +780,7 @@ fn styled_row_restyles_on_selected_and_held() {
     fx.rt.set_state(x, SELECTED, true);
     assert!((fx.opacity(y) - 1.0).abs() < 1e-3, "list.checked-unstyles: {}", fx.opacity(y));
     // held outranks selected while the press holds x; release unwinds.
-    let r = rects[x as usize];
+    let r = rects[x.index()];
     let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
     fx.touch(Phase::Down, cx, cy, 0.0);
     assert!((fx.opacity(x) - 0.7).abs() < 1e-3, "list.pressed-arms: {}", fx.opacity(x));
@@ -881,13 +881,13 @@ fn select_off_refuses_writes_and_drops_the_checked_default() {
     let plate = |fx: &Fx| -> Option<[u8; 4]> {
         let res = resolve(&fx.page, &fx.rt);
         let rects = lay(&fx.page, &fx.rt);
-        let r = rects[items[0] as usize];
+        let r = rects[items[0].index()];
         draw(&fx.page, &res, &rects).iter().find_map(|d| match d {
             Draw::Quad { rect, color, .. } if *rect == r => Some(color.0),
             _ => None,
         })
     };
-    let r = fx.rects()[items[0] as usize];
+    let r = fx.rects()[items[0].index()];
     fx.touch(Phase::Down, r.x + 10.0, r.y + r.h / 2.0, 1.0);
     assert_eq!(plate(&fx), Some([255, 255, 255, 38]), "the held default stays under off");
     fx.touch(Phase::Up, r.x + 10.0, r.y + r.h / 2.0, 1.1);
@@ -904,7 +904,7 @@ fn select_off_refuses_writes_and_drops_the_checked_default() {
 fn hug_list_is_its_content() {
     let mut fx = Fx::new("View v { Column hmenu width=200, height=400, halign=left, valign=top { Button b1 text=\"New Game\"; List hugger height=hug, spacing=2 { empty { } repeat tasks capacity=4 { ListItem { Label text=\"\" } } } } }");
     fx.fill("tasks", &["one", "two"]);
-    let hugger = fx.page.find("hugger").unwrap() as usize;
+    let hugger = (fx.page.find("hugger").unwrap()).index();
     let h2 = fx.rects()[hugger].h;
     assert!(h2 > 20.0, "list.hug-sizes-to-content: {h2}");
     fx.fill("tasks", &["one", "two", "three", "four"]);
@@ -913,7 +913,7 @@ fn hug_list_is_its_content() {
     let items = fx.items("tasks");
     // The box ends with its last row — it does not stretch to the column's
     // 400 (Godot: size_flags_vertical != EXPAND_FILL).
-    assert_eq!(r[hugger].bottom(), r[items[3] as usize].bottom(), "list.hug-no-stretch: {r:?}");
+    assert_eq!(r[hugger].bottom(), r[items[3].index()].bottom(), "list.hug-no-stretch: {r:?}");
     assert!(r[hugger].bottom() < 200.0, "list.hug-no-stretch: not the column's leftover: {r:?}");
 }
 
@@ -951,7 +951,7 @@ fn viewport_list_starved_by_a_hug_parent_warns() {
 fn max_height_caps_a_hug_list() {
     let mut fx = Fx::new("View v { Column mx halign=left, valign=top { List capped height=hug, max_height=64, spacing=0 { empty { } repeat tasks capacity=12 { ListItem { Label text=\"\" } } } } }");
     fx.fill("tasks", &["one"]);
-    let capped = fx.page.find("capped").unwrap() as usize;
+    let capped = (fx.page.find("capped").unwrap()).index();
     let h = fx.rects()[capped].h;
     assert!(h > 5.0 && h < 64.0, "list.maxheight-under-cap-hugs: {h}");
     let many_owned: Vec<String> = (0..12).map(|i| format!("t{i}")).collect();
@@ -980,14 +980,14 @@ fn max_height_scrolls_past_the_cap_and_needs_hug() {
     let many: Vec<&str> = many_owned.iter().map(String::as_str).collect();
     fx.fill("tasks", &many);
     let capped = fx.page.find("capped").unwrap();
-    let r = fx.rects()[capped as usize];
+    let r = fx.rects()[capped.index()];
     assert_eq!(r.h, 64.0);
     fx.touch(Phase::Down, r.x + 20.0, r.bottom() - 5.0, 0.0);
     fx.touch(Phase::Move, r.x + 20.0, r.bottom() - 55.0, 0.05);
     fx.touch(Phase::Up, r.x + 20.0, r.bottom() - 55.0, 0.1);
-    assert!(fx.rt.scroll[capped as usize][1] > 10.0, "list.maxheight-scrolls-past-cap: {:?}", fx.rt.scroll[capped as usize]);
+    assert!(fx.rt.scroll[capped.index()][1] > 10.0, "list.maxheight-scrolls-past-cap: {:?}", fx.rt.scroll[capped.index()]);
     let items = fx.items("tasks");
-    assert!(fx.rects()[items[0] as usize].y < r.y, "the first row slid up past the box top: {:?} vs {r:?}", fx.rects()[items[0] as usize]);
+    assert!(fx.rects()[items[0].index()].y < r.y, "the first row slid up past the box top: {:?} vs {r:?}", fx.rects()[items[0].index()]);
 }
 
 /// `_list_tests` 13194-13203 + 13212-13241 (`list.starve-ok`,
@@ -999,8 +999,8 @@ fn fixed_content_sizes_the_box() {
     assert!(builds("View v { Column smenu { Button sb text=\"x\"; List starving { empty { } repeat t capacity=1 { ListItem { Label text=\"\" } } }; List sized height=100 { empty { } repeat u capacity=1 { ListItem { Label text=\"\" } } } } }"), "list.starve-ok");
     let fx = Fx::new("View v { Column fmenu halign=left, valign=top { Button fb text=\"x\"; List headed { Label text=\"Tasks:\"; empty { Label none text=\"none yet\" }; repeat t capacity=3 { ListItem padding=12 { Label text=\"\" } } } } }");
     let r = fx.rects();
-    let headed = fx.page.find("headed").unwrap() as usize;
-    let none = fx.page.find("none").unwrap() as usize;
+    let headed = (fx.page.find("headed").unwrap()).index();
+    let none = (fx.page.find("none").unwrap()).index();
     assert!(r[headed].h > 20.0 && r[none].h > 0.0, "list.fixed-content-shows: headed={:?} none={:?}", r[headed], r[none]);
     assert!(texts(&fx.page, &fx.rt).contains(&"none yet".to_string()), "{:?}", texts(&fx.page, &fx.rt));
 }
@@ -1061,22 +1061,22 @@ fn layout_kind_picks_the_items_panel() {
     let chips: Vec<&str> = chips_owned.iter().map(String::as_str).collect();
     fx.fill("chips", &chips);
     let repeat = fx.page.find("chips").unwrap();
-    let panel = fx.page.nodes[repeat as usize].parent;
+    let panel = fx.page.nodes[repeat.index()].parent;
     let strip = fx.page.find("strip").unwrap();
-    assert_eq!(fx.page.nodes[panel as usize].kind, Kind::Row, "list.layout-row-panel");
-    assert_eq!(fx.page.nodes[panel as usize].parent, strip, "the panel sits inside the List");
+    assert_eq!(fx.page.nodes[panel.index()].kind, Kind::Row, "list.layout-row-panel");
+    assert_eq!(fx.page.nodes[panel.index()].parent, strip, "the panel sits inside the List");
     let items = fx.items("chips");
     let r = fx.rects();
-    assert!(r[items[1] as usize].x > r[items[0] as usize].x && r[items[1] as usize].y == r[items[0] as usize].y, "list.layout-row-parents: side by side: {:?}", items.iter().map(|i| r[*i as usize]).collect::<Vec<_>>());
-    assert_eq!(r[strip as usize].w, 120.0, "list.layout-row-hug-caps: {:?}", r[strip as usize]);
+    assert!(r[items[1].index()].x > r[items[0].index()].x && r[items[1].index()].y == r[items[0].index()].y, "list.layout-row-parents: side by side: {:?}", items.iter().map(|i| r[i.index()]).collect::<Vec<_>>());
+    assert_eq!(r[strip.index()].w, 120.0, "list.layout-row-hug-caps: {:?}", r[strip.index()]);
 
     let page = ok("View v { List g { empty { } layout Flow spacing=4 { repeat t capacity=2 { ListItem { Label text=\"x\" } } } } }");
     let t = page.find("t").unwrap();
-    assert_eq!(page.nodes[page.nodes[t as usize].parent as usize].kind, Kind::Flow, "list.layout-flow-panel");
-    assert_eq!(page.nodes[page.nodes[t as usize].parent as usize].parent, page.find("g").unwrap(), "list.layout-flow-parents");
+    assert_eq!(page.nodes[(page.nodes[t.index()].parent).index()].kind, Kind::Flow, "list.layout-flow-panel");
+    assert_eq!(page.nodes[(page.nodes[t.index()].parent).index()].parent, page.find("g").unwrap(), "list.layout-flow-parents");
     let page = ok("View v { List m2 { empty { } layout Tiles cols=2 { repeat t capacity=2 { ListItem { Label text=\"x\" } } } } }");
     let t = page.find("t").unwrap();
-    assert_eq!(page.nodes[page.nodes[t as usize].parent as usize].kind, Kind::Tiles, "list.layout-tiles-panel");
+    assert_eq!(page.nodes[(page.nodes[t.index()].parent).index()].kind, Kind::Tiles, "list.layout-tiles-panel");
 }
 
 /// `_list_tests` 13309-13312 (`list.layout-row-scrolls`): a Row strip
@@ -1088,16 +1088,16 @@ fn layout_row_strip_scrolls_sideways() {
     let chips: Vec<&str> = chips_owned.iter().map(String::as_str).collect();
     fx.fill("chips", &chips);
     let strip = fx.page.find("strip").unwrap();
-    let r = fx.rects()[strip as usize];
+    let r = fx.rects()[strip.index()];
     assert_eq!(r.w, 120.0, "the cap bounds the hug: {r:?}");
     fx.touch(Phase::Down, r.right() - 10.0, r.y + r.h / 2.0, 0.0);
     fx.touch(Phase::Move, r.right() - 90.0, r.y + r.h / 2.0, 0.05);
     fx.touch(Phase::Up, r.right() - 90.0, r.y + r.h / 2.0, 0.1);
-    assert!(fx.rt.scroll[strip as usize][0] > 10.0, "list.layout-row-scrolls: {:?}", fx.rt.scroll[strip as usize]);
+    assert!(fx.rt.scroll[strip.index()][0] > 10.0, "list.layout-row-scrolls: {:?}", fx.rt.scroll[strip.index()]);
     let items = fx.items("chips");
-    let before = fx.rects()[items[0] as usize];
+    let before = fx.rects()[items[0].index()];
     let _ = before;
-    assert!(fx.rects()[items[0] as usize].x < r.x, "the first chip slid left out of view: {:?}", fx.rects()[items[0] as usize]);
+    assert!(fx.rects()[items[0].index()].x < r.x, "the first chip slid left out of view: {:?}", fx.rects()[items[0].index()]);
 }
 
 /// `_list_tests` 13332-13347 (`list.err-empty-missing`, `.err-empty-inner`,
@@ -1207,5 +1207,5 @@ fn listitem_is_a_drawn_box_and_an_authored_height_wins() {
     assert!(builds(src), "list.listitem-box-props: {:?}", codes(src));
     let fx = Fx::new("View v { Column c height=400, halign=left, valign=top { List sized height=90 { empty { } repeat t capacity=1 { ListItem { Label text=\"\" } } } } }");
     let r = fx.rects();
-    assert_eq!(r[fx.page.find("sized").unwrap() as usize].h, 90.0, "list.height-wins: {r:?}");
+    assert_eq!(r[(fx.page.find("sized").unwrap()).index()].h, 90.0, "list.height-wins: {r:?}");
 }

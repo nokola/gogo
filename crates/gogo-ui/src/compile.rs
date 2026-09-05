@@ -250,9 +250,9 @@ enum SlotTarget {
 }
 
 /// A node-level transition's node before flattening assigns the real id.
-const PENDING_NODE: NodeId = u32::MAX - 1;
+const PENDING_NODE: NodeId = NodeId::new(u32::MAX - 1);
 /// A `for=` widget response whose host is found once the tree exists.
-const HOST_PENDING: NodeId = u32::MAX - 2;
+const HOST_PENDING: NodeId = NodeId::new(u32::MAX - 2);
 
 /// Per-anim compile state threaded through `anim_chain` (D136): the decl
 /// table (so a `play` step can pull a later decl in early), the shared
@@ -2265,7 +2265,7 @@ impl<'a> Compiler<'a> {
             }
             let Some((key, alpha)) = prop_lane(w) else { continue };
             if lanes.iter().any(|(n, k, a)| *n == t.node && *k == key && *a != alpha) {
-                let nm = self.page.str(self.page.nodes[t.node as usize].name).to_string();
+                let nm = self.page.str(self.page.nodes[t.node].name).to_string();
                 let bw = w.strip_suffix(".a").unwrap_or(w);
                 errs.push(format!("{nm} animates both the whole `{bw}` and `{bw}.a` — the lane has one writer; pick one spelling"));
             } else if !lanes.contains(&(t.node, key, alpha)) {
@@ -2277,7 +2277,7 @@ impl<'a> Compiler<'a> {
                 continue;
             }
             if seen.contains(&(t.node, t.channel)) {
-                let nm = self.page.str(self.page.nodes[t.node as usize].name).to_string();
+                let nm = self.page.str(self.page.nodes[t.node].name).to_string();
                 let ch = self.page.str(t.channel).to_string();
                 errs.push(format!("two steps pin `from=` on {nm}.{ch} — both hold from play start and would fight from frame one"));
             } else {
@@ -2302,7 +2302,7 @@ impl<'a> Compiler<'a> {
         let mut made: HashMap<(StrId, NodeId), StrId> = HashMap::new();
         for ti in 0..self.page.transitions.len() {
             let t = self.page.transitions[ti];
-            if t.anim == NO_STR || t.node == NO_NODE || t.node >= self.page.nodes.len() as NodeId {
+            if t.anim == NO_STR || t.node == NO_NODE || t.node >= NodeId::from_index(self.page.nodes.len()) {
                 continue;
             }
             if !self.self_lanes.iter().any(|(a, _)| *a == t.anim) {
@@ -2312,7 +2312,7 @@ impl<'a> Compiler<'a> {
             let new_id = match made.get(&(t.anim, node)) {
                 Some(id) => *id,
                 None => {
-                    let wearer = self.page.str(self.page.nodes[node as usize].name).to_string();
+                    let wearer = self.page.str(self.page.nodes[node].name).to_string();
                     let full = format!("{wearer}/{}", self.page.str(t.anim));
                     let new_id = self.intern(&full);
                     if let Some(h) = self.page.anim_heads.iter().find(|h| h.anim == t.anim).copied() {
@@ -2439,7 +2439,7 @@ impl<'a> Compiler<'a> {
                             }
                         } else if let Some(nm) = &target {
                             let found = if nm == "self" {
-                                if scope.is_empty() { if self.page.nodes.is_empty() { None } else { Some(0) } } else { self.page.find(scope) }
+                                if scope.is_empty() { if self.page.nodes.is_empty() { None } else { Some(NodeId::new(0)) } } else { self.page.find(scope) }
                             } else if scope.is_empty() {
                                 self.page.find(nm).or_else(|| self.root_aliases.get(nm.as_str()).and_then(|t| self.page.find(t)))
                             } else {
@@ -2558,7 +2558,7 @@ impl<'a> Compiler<'a> {
                             }
                             Some((sname, ch)) => {
                                 let full = format!("{scope}/{sname}");
-                                if self.page.find(&full).map(|id| self.page.nodes[id as usize].kind) != Some(Kind::Slot) {
+                                if self.page.find(&full).map(|id| self.page.nodes[id].kind) != Some(Kind::Slot) {
                                     let slots: Vec<String> = self.page.nodes.iter().filter(|nd| nd.kind == Kind::Slot && nd.name != NO_STR).map(|nd| self.page.str(nd.name).to_string()).filter(|nm| nm.starts_with(&format!("{scope}/"))).map(|nm| nm.rsplit('/').next().unwrap_or_default().to_string()).collect();
                                     self.error("G0060", step.line, format!("`{path}`: no slot named `{sname}` in this control{}", if slots.is_empty() { String::new() } else { format!(" — its slots: {}", slots.join(", ")) }));
                                     continue;
@@ -2613,7 +2613,7 @@ impl<'a> Compiler<'a> {
                         if scope.is_empty() {
                             // Page scope: `self` is the file's root
                             // (GPAR86, the addon's reading).
-                            if self.page.nodes.is_empty() { None } else { Some(0) }
+                            if self.page.nodes.is_empty() { None } else { Some(NodeId::new(0)) }
                         } else {
                             self.page.find(scope)
                         }
@@ -2643,7 +2643,7 @@ impl<'a> Compiler<'a> {
                             self.error("G0063", step.line, format!("`.a` moves a color's alpha alone — `{base_word}` isn't a color word"));
                             continue;
                         }
-                        if !self.check_prop_kind(&base_word, key, self.page.nodes[node as usize].kind, step.line) {
+                        if !self.check_prop_kind(&base_word, key, self.page.nodes[node].kind, step.line) {
                             continue;
                         }
                     }
@@ -2820,7 +2820,7 @@ impl<'a> Compiler<'a> {
             return Some(None);
         }
         if word == "base" {
-            return Some(Some(State::Arrangement(u32::MAX)));
+            return Some(Some(State::Arrangement(BASE)));
         }
         self.state_from_word(word, line, node == NO_NODE).map(Some)
     }
@@ -2899,9 +2899,9 @@ impl<'a> Compiler<'a> {
                 }
             }
             _ => {
-                let id = self.page.strings.iter().position(|s| s == word).map(|i| i as StrId);
+                let id = self.page.strings.iter().position(|s| s == word).map(|i| StrId::from_index(i));
                 match id.and_then(|id| self.page.arrangements.iter().position(|a| *a == id)) {
-                    Some(i) => State::Arrangement(i as u32),
+                    Some(i) => State::Arrangement(ArrangementId::from_index(i)),
                     None => {
                         let hint = if top_level {
                             let pool: Vec<String> = self.page.arrangements.iter().map(|a| self.page.str(*a).to_string()).collect();
@@ -3729,6 +3729,9 @@ impl<'a> Compiler<'a> {
             if def.control && def.state_builtins.iter().any(|w| w == "focused") {
                 t.node.focusable = true;
             }
+            // The root remembers its widget: the page build emits one
+            // `<Widget>Names` struct per widget from these roots.
+            t.node.widget = self.intern(&n.type_word);
             self.prefix.pop();
             self.fills.pop();
             self.scopes.pop();
@@ -4131,15 +4134,6 @@ impl<'a> Compiler<'a> {
                     if fights {
                         self.error("G4003", p.line, format!("'{}' is driven by `live(...)` AND held by a `when` on this node — two writers would fight on every flip", p.key));
                     }
-                }
-            }
-            if p.key == "reveal_x" || p.key == "reveal_y" {
-                // Reveal grows/collapses the space a CONTAINER hands out
-                // — under a free parent nothing closes up, the fraction
-                // would read as a working disclosure and do nothing.
-                let container = matches!(parent_kind, Some(k) if k.is_stack() || matches!(k, Kind::Flow | Kind::Grid | Kind::GridRow | Kind::Tiles | Kind::List));
-                if !container {
-                    self.error("G1017", p.line, format!("`{}=` needs a container parent (Column, Row, Flow, Grid, Tiles, List) — the reveal collapses the space the parent hands out", p.key));
                 }
             }
             if p.key == "seat" {
@@ -4846,7 +4840,7 @@ impl<'a> Compiler<'a> {
         // (the addon's focus_mode=none + lint pair).
         node.focusable = (node.focusable || matches!(node.kind, Kind::Button | Kind::Check | Kind::Toggle | Kind::Radio | Kind::ListItem | Kind::Slider | Kind::Input))
             && !props.iter().any(|p| p.key == PropKey::KeyboardTarget && matches!(p.value, Value::VIdent(w) if self.page.str(w) == "off"));
-        let id = self.page.nodes.len() as NodeId;
+        let id = NodeId::from_index(self.page.nodes.len());
         if let Some((root, min, max, state)) = driver {
             self.pending_drivers.push((id, root, min, max, state));
         }
@@ -4876,8 +4870,8 @@ impl<'a> Compiler<'a> {
             // nearest press surface above), exactly like its `when` lines.
             t.node = if t.node == HOST_PENDING {
                 let mut a = parent;
-                while a != NO_NODE && !self.page.nodes[a as usize].kind.is_press_surface() {
-                    a = self.page.nodes[a as usize].parent;
+                while a != NO_NODE && !self.page.nodes[a].kind.is_press_surface() {
+                    a = self.page.nodes[a].parent;
                 }
                 if a == NO_NODE { id } else { a }
             } else {
@@ -4896,11 +4890,11 @@ impl<'a> Compiler<'a> {
             let cid = self.push_slot(child.node, child.props, child.handlers, child.whens, child.transitions, child.custom_states, child.key_claim, child.wearing, child.driver, child.live, id);
             slots.push((cid, child.children));
         }
-        self.page.nodes[id as usize].children = (first, count);
+        self.page.nodes[id].children = (first, count);
         for (cid, rest) in slots {
             self.place_children(cid, rest);
         }
-        self.page.nodes[id as usize].subtree_end = self.page.nodes.len() as u32;
+        self.page.nodes[id].subtree_end = self.page.nodes.len() as u32;
     }
 
     fn gap(&mut self, node: &mut Node, n: &AstNode, parent_kind: Option<Kind>) {
@@ -4984,11 +4978,11 @@ impl<'a> Compiler<'a> {
                             if name == "toggle" {
                                 self.error("G0050", p.line, "`toggle(base)` — base is home, use `go(base)`");
                             }
-                            u32::MAX
+                            BASE
                         } else {
                             let id = self.intern(arg);
                             match self.page.arrangements.iter().position(|a| *a == id) {
-                                Some(i) => i as u32,
+                                Some(i) => ArrangementId::from_index(i),
                                 None => {
                                     self.error("G0051", p.line, format!("`{name}({arg})`: unknown arrangement"));
                                     return None;
@@ -5019,12 +5013,12 @@ impl<'a> Compiler<'a> {
     /// is a container, and a move never enters its own subtree. `Some` =
     /// the seat's name id (`home` included); `None` = refused, error out.
     fn seat_move_ok(&mut self, occupant: NodeId, prop: &Prop, line: u32) -> Option<StrId> {
-        let oname = self.page.str(self.page.nodes[occupant as usize].name).to_string();
+        let oname = self.page.str(self.page.nodes[occupant].name).to_string();
         let Value::VIdent(vid) = prop.value else {
             self.error("G1016", line, format!("`{oname}.seat` names a declared seat — `{oname}.seat = sideSeat`"));
             return None;
         };
-        if self.page.nodes[occupant as usize].kind == Kind::Seat {
+        if self.page.nodes[occupant].kind == Kind::Seat {
             self.error("G1016", line, "a seat can't be reseated — move the occupant node");
             return None;
         }
@@ -5035,7 +5029,7 @@ impl<'a> Compiler<'a> {
         if vname == "home" {
             return Some(vid);
         }
-        let target = self.page.find(&vname).filter(|s| self.page.nodes[*s as usize].kind == Kind::Seat);
+        let target = self.page.find(&vname).filter(|s| self.page.nodes[*s].kind == Kind::Seat);
         let Some(sid) = target else {
             let seats: Vec<String> = self.page.nodes.iter().filter(|nn| nn.kind == Kind::Seat && nn.name != NO_STR).map(|nn| self.page.str(nn.name).to_string()).collect();
             let hint = if seats.is_empty() { "declare one inside a container: `seat sideSeat`".to_string() } else { format!("the declared seats: {}", seats.join(", ")) };
@@ -5051,7 +5045,7 @@ impl<'a> Compiler<'a> {
                 self.error("G1016", line, format!("seat '{vname}' sits inside '{oname}' — a node can't move into its own subtree"));
                 return None;
             }
-            p = self.page.nodes[p as usize].parent;
+            p = self.page.nodes[p].parent;
         }
         Some(vid)
     }
@@ -5416,16 +5410,16 @@ impl<'a> Compiler<'a> {
                 continue;
             }
             let Some(node) = self.page.nodes.iter().position(|n| n.name == name && n.kind == Kind::Repeat) else { continue };
-            let node = node as NodeId;
-            let template = self.page.children(node).map(|i| i as NodeId).find(|c| self.page.nodes[*c as usize].kind != Kind::Empty);
+            let node = NodeId::from_index(node);
+            let template = self.page.children(node).find(|c| self.page.nodes[*c].kind != Kind::Empty);
             if let Some(template) = template {
                 let first = self.page.bind_sites.len() as u32;
-                let t_end = self.page.nodes[template as usize].subtree_end;
-                for ni in template..t_end {
-                    let (p0, pc) = self.page.nodes[ni as usize].props;
+                let t_end = self.page.subtree_end(template);
+                for ni in NodeId::range(template, t_end) {
+                    let (p0, pc) = self.page.nodes[ni].props;
                     for k in 0..pc {
                         if let Value::VItem(f) = self.page.props[(p0 + k) as usize].value {
-                            self.page.bind_sites.push(BindSite { node_off: ni - template, prop_off: k, field: f });
+                            self.page.bind_sites.push(BindSite { node_off: ni.index() as u32 - template.index() as u32, prop_off: k, field: f });
                         }
                     }
                 }
@@ -5446,7 +5440,7 @@ impl<'a> Compiler<'a> {
             if !self.page.handlers[hf as usize..(hf + hn) as usize].iter().any(|h| h.event == pointer_ev) {
                 continue;
             }
-            if self.page.prop(i as NodeId, PropKey::Interactive) != Some(Value::VBool(true)) {
+            if self.page.prop(NodeId::from_index(i), PropKey::Interactive) != Some(Value::VBool(true)) {
                 let line = node.line;
                 self.error("G0073", line, "`on:pointer` needs `interactive=true` on the same node — passive boxes are transparent to input, always; the wire alone claims nothing");
             }
@@ -5495,7 +5489,7 @@ impl<'a> Compiler<'a> {
                     self.error("G0060", *l, format!("`{key}`: no node named `{node_name}`"));
                     continue;
                 };
-                let kind = self.page.nodes[id as usize].kind;
+                let kind = self.page.nodes[id].kind;
                 let ap = AstProp { key: prop_name.to_string(), value: value.clone(), line: *l };
                 if let Some(prop) = {
                     self.in_when += 1;
@@ -5513,9 +5507,9 @@ impl<'a> Compiler<'a> {
                     // One entry per BLOCK (state + line), not per state: two
                     // `when open` blocks straddling a competing block must
                     // each keep their own line for the later-line tie-break.
-                    match self.node_whens[id as usize].iter_mut().find(|w| w.state == state && w.line == line) {
+                    match self.node_whens[id].iter_mut().find(|w| w.state == state && w.line == line) {
                         Some(w) => w.props.push(prop),
-                        None => self.node_whens[id as usize].push(WhenTmp { state, line, props: vec![prop], descendants: Vec::new(), host: false, styled: false }),
+                        None => self.node_whens[id].push(WhenTmp { state, line, props: vec![prop], descendants: Vec::new(), host: false, styled: false }),
                     }
                 }
             }
@@ -5530,13 +5524,13 @@ impl<'a> Compiler<'a> {
             if nd.kind != Kind::Label || !matches!(nd.placement.width, Len::Fill(_)) {
                 continue;
             }
-            if self.page.prop(i as NodeId, PropKey::Wrap) != Some(Value::VBool(true)) {
+            if self.page.prop(NodeId::from_index(i), PropKey::Wrap) != Some(Value::VBool(true)) {
                 continue;
             }
             let mut a = nd.parent;
             let mut sliver = false;
             while a != NO_NODE {
-                let ap = self.page.nodes[a as usize].placement;
+                let ap = self.page.nodes[a].placement;
                 match ap.width {
                     Len::Exact(_) | Len::Fill(_) => break,
                     Len::Hug(_) => {
@@ -5551,7 +5545,7 @@ impl<'a> Compiler<'a> {
                             sliver = true;
                             break;
                         }
-                        a = self.page.nodes[a as usize].parent;
+                        a = self.page.nodes[a].parent;
                     }
                 }
             }
@@ -5588,7 +5582,7 @@ impl<'a> Compiler<'a> {
                 let clash = ka == kb || (ka.is_placement() && kb.is_placement()) || (ka == PropKey::SeatOf && kb == PropKey::SeatOf);
                 if clash {
                     vocab_done.push(na);
-                    let nname = self.page.str(self.page.nodes[na as usize].name).to_string();
+                    let nname = self.page.str(self.page.nodes[na].name).to_string();
                     self.error("G3005", la, format!("'{nname}' is posed from BOTH screen vocabularies — an orientation and a class can hold at the same time, so the earlier line would never win; pick one vocabulary, or say the intersection: `when screen.<orientation> screen.<class> {{ … }}`"));
                 }
             }
@@ -5608,11 +5602,11 @@ impl<'a> Compiler<'a> {
                     continue;
                 }
                 if oa == ob {
-                    let oname = self.page.str(self.page.nodes[oa as usize].name).to_string();
+                    let oname = self.page.str(self.page.nodes[oa].name).to_string();
                     self.error("G1016", la, format!("two `when` blocks both set '{oname}.seat' under conditions that can hold together"));
                 } else if sa == sb && sa != home_id {
                     let sname = self.page.str(sa).to_string();
-                    let bname = self.page.str(self.page.nodes[ob as usize].name).to_string();
+                    let bname = self.page.str(self.page.nodes[ob].name).to_string();
                     self.error("G1016", la, format!("seat '{sname}' already receives '{bname}' — one occupant per seat"));
                 }
             }
@@ -5658,12 +5652,12 @@ impl<'a> Compiler<'a> {
             // own contract states (`when dragging slot.thumb.…` on a
             // Fader answers the FADER, not some surface above it).
             let is_watchable = |me: &Self, id: NodeId| {
-                me.page.nodes[id as usize].kind.is_press_surface()
-                    || (me.page.nodes[id as usize].name != NO_STR && me.control_scopes.contains(me.page.str(me.page.nodes[id as usize].name)))
+                me.page.nodes[id].kind.is_press_surface()
+                    || (me.page.nodes[id].name != NO_STR && me.control_scopes.contains(me.page.str(me.page.nodes[id].name)))
             };
-            let mut of_node = owner as NodeId;
-            while of_node != NO_NODE && !is_watchable(self, of_node) && self.page.nodes[of_node as usize].parent != NO_NODE {
-                of_node = self.page.nodes[of_node as usize].parent;
+            let mut of_node = NodeId::from_index(owner);
+            while of_node != NO_NODE && !is_watchable(self, of_node) && self.page.nodes[of_node].parent != NO_NODE {
+                of_node = self.page.nodes[of_node].parent;
             }
             let host = w.host;
             whens[target].push(w);
@@ -5676,7 +5670,7 @@ impl<'a> Compiler<'a> {
             if self.page.nodes[id].kind != Kind::Gradient {
                 continue;
             }
-            let count = self.page.prop(id as NodeId, PropKey::Stops).map_or(0, |v| self.page.list(v).len());
+            let count = self.page.prop(NodeId::from_index(id), PropKey::Stops).map_or(0, |v| self.page.list(v).len());
             for w in list {
                 for pr in &w.props {
                     let n = match pr.key {
@@ -5695,8 +5689,8 @@ impl<'a> Compiler<'a> {
             for j in 0..of[i].len() {
                 if of[i][j] == HOST_PENDING {
                     let mut a = self.page.nodes[i].parent;
-                    while a != NO_NODE && !self.page.nodes[a as usize].kind.is_press_surface() {
-                        a = self.page.nodes[a as usize].parent;
+                    while a != NO_NODE && !self.page.nodes[a].kind.is_press_surface() {
+                        a = self.page.nodes[a].parent;
                     }
                     of[i][j] = a;
                 }
@@ -5707,19 +5701,19 @@ impl<'a> Compiler<'a> {
         // law) — refused rather than laid out 0-wide.
         for i in 0..self.page.nodes.len() {
             let node = &self.page.nodes[i];
-            if !matches!(self.page.prop(i as NodeId, PropKey::Overlay), Some(Value::VBool(true))) {
+            if !matches!(self.page.prop(NodeId::from_index(i), PropKey::Overlay), Some(Value::VBool(true))) {
                 continue;
             }
             let parent = node.parent;
             if parent == NO_NODE {
                 continue;
             }
-            let pp = &self.page.nodes[parent as usize].placement;
+            let pp = &self.page.nodes[parent].placement;
             let siblings_size: [bool; 2] = {
-                let p = &self.page.nodes[parent as usize];
+                let p = &self.page.nodes[parent];
                 let mut any = [false, false];
-                for s in p.children.0..p.children.0 + p.children.1 {
-                    if s as usize == i || matches!(self.page.prop(s, PropKey::Overlay), Some(Value::VBool(true))) {
+                for s in self.page.children(parent) {
+                    if s.index() == i || matches!(self.page.prop(s, PropKey::Overlay), Some(Value::VBool(true))) {
                         continue;
                     }
                     any = [true, true];
@@ -5741,7 +5735,7 @@ impl<'a> Compiler<'a> {
         for (i, list) in whens.iter().enumerate() {
             for (j, w) in list.iter().enumerate() {
                 if !w.host {
-                    let owner = if of[i][j] == NO_NODE { i as NodeId } else { of[i][j] };
+                    let owner = if of[i][j] == NO_NODE { NodeId::from_index(i) } else { of[i][j] };
                     authored.push((owner, w.state));
                 }
             }
@@ -5791,7 +5785,7 @@ impl<'a> Compiler<'a> {
             }
             let parent = self.page.nodes[i].parent;
             let in_stack = parent != NO_NODE && {
-                let k = self.page.nodes[parent as usize].kind;
+                let k = self.page.nodes[parent].kind;
                 k.is_stack() || matches!(k, Kind::Flow | Kind::Grid | Kind::GridRow | Kind::Tiles)
             };
             if !in_stack {
@@ -5846,18 +5840,18 @@ impl<'a> Compiler<'a> {
             let line = node.line;
             if node.kind == Kind::ListItem {
                 let parent = node.parent;
-                let ok = parent != NO_NODE && self.page.nodes[parent as usize].kind == Kind::Repeat && {
-                    let mut a = self.page.nodes[parent as usize].parent;
+                let ok = parent != NO_NODE && self.page.nodes[parent].kind == Kind::Repeat && {
+                    let mut a = self.page.nodes[parent].parent;
                     let mut in_list = false;
                     while a != NO_NODE {
-                        if self.page.nodes[a as usize].kind == Kind::List {
+                        if self.page.nodes[a].kind == Kind::List {
                             in_list = true;
                             break;
                         }
-                        if !matches!(self.page.nodes[a as usize].kind, Kind::Row | Kind::Flow | Kind::Tiles | Kind::Column) {
+                        if !matches!(self.page.nodes[a].kind, Kind::Row | Kind::Flow | Kind::Tiles | Kind::Column) {
                             break;
                         }
-                        a = self.page.nodes[a as usize].parent;
+                        a = self.page.nodes[a].parent;
                     }
                     in_list
                 };
@@ -5869,20 +5863,18 @@ impl<'a> Compiler<'a> {
             if node.kind != Kind::List {
                 continue;
             }
-            let list = i as NodeId;
-            let (c0, cc) = node.children;
+            let list = NodeId::from_index(i);
             let mut empties = 0u32;
             let mut repeats: Vec<NodeId> = Vec::new();
-            for c in c0..c0 + cc {
-                match self.page.nodes[c as usize].kind {
+            for c in self.page.children(list).collect::<Vec<NodeId>>() {
+                match self.page.nodes[c].kind {
                     Kind::Empty => empties += 1,
                     Kind::Repeat => repeats.push(c),
-                    Kind::Slot => self.error("G9013", self.page.nodes[c as usize].line, "a List has no slots — its rows come from the `repeat`, its statics sit in the body"),
+                    Kind::Slot => self.error("G9013", self.page.nodes[c].line, "a List has no slots — its rows come from the `repeat`, its statics sit in the body"),
                     // the `layout` panel: rows one level down
                     Kind::Row | Kind::Flow | Kind::Tiles | Kind::Column => {
-                        let (g0, gc) = self.page.nodes[c as usize].children;
-                        for g in g0..g0 + gc {
-                            if self.page.nodes[g as usize].kind == Kind::Repeat {
+                        for g in self.page.children(c) {
+                            if self.page.nodes[g].kind == Kind::Repeat {
                                 repeats.push(g);
                             }
                         }
@@ -5901,12 +5893,11 @@ impl<'a> Compiler<'a> {
                 _ => self.error("G9010", line, "a List holds exactly one `repeat` — its selection and rows are one roster"),
             }
             for r in &repeats {
-                let (r0, rc) = self.page.nodes[*r as usize].children;
                 let mut roots = 0u32;
                 let mut root: Option<NodeId> = None;
-                for c in r0..r0 + rc {
-                    match self.page.nodes[c as usize].kind {
-                        Kind::Empty => self.error("G9016", self.page.nodes[c as usize].line, "in a List the zero-items view lives at the LIST level — move `empty { }` beside the repeat, not inside it"),
+                for c in self.page.children(*r).collect::<Vec<NodeId>>() {
+                    match self.page.nodes[c].kind {
+                        Kind::Empty => self.error("G9016", self.page.nodes[c].line, "in a List the zero-items view lives at the LIST level — move `empty { }` beside the repeat, not inside it"),
                         _ => {
                             roots += 1;
                             root = Some(c);
@@ -5914,16 +5905,15 @@ impl<'a> Compiler<'a> {
                     }
                 }
                 if roots > 1 {
-                    self.error("G9011", self.page.nodes[*r as usize].line, "a List row has ONE root — wrap the parts in a single `ListItem { … }`");
+                    self.error("G9011", self.page.nodes[*r].line, "a List row has ONE root — wrap the parts in a single `ListItem { … }`");
                 } else if let Some(root) = root {
-                    if self.page.nodes[root as usize].kind != Kind::ListItem {
-                        self.error("G9011", self.page.nodes[root as usize].line, "a List row's root is a `ListItem` — the one tap-and-select surface per row; wrap this in one (`ListItem { … }`)");
+                    if self.page.nodes[root].kind != Kind::ListItem {
+                        self.error("G9011", self.page.nodes[root].line, "a List row's root is a `ListItem` — the one tap-and-select surface per row; wrap this in one (`ListItem { … }`)");
                     } else {
                         // G9014 (advisory): the List flips SELECTED on the
                         // ROW root — a `when selected` below it never fires.
-                        let end = self.page.nodes[root as usize].subtree_end;
-                        for d in root + 1..end {
-                            let (w0, wc) = self.page.nodes[d as usize].whens;
+                        for d in self.page.subtree_scan(root).collect::<Vec<NodeId>>() {
+                            let (w0, wc) = self.page.nodes[d].whens;
                             for w in &self.page.whens[w0 as usize..(w0 + wc) as usize] {
                                 if w.state != State::Selected {
                                     continue;
@@ -5933,10 +5923,10 @@ impl<'a> Compiler<'a> {
                                 // root both fire — only a passive box's
                                 // dead condition warns.
                                 let watched = if w.of == NO_NODE { d as NodeId } else { w.of };
-                                if watched == root || self.page.nodes[watched as usize].kind.is_press_surface() {
+                                if watched == root || self.page.nodes[watched].kind.is_press_surface() {
                                     continue;
                                 }
-                                self.warning("G9014", self.page.nodes[d as usize].line, "`when selected` below the row's root never fires — the List checks the ListItem; style the root (or watch it: the row's own state)");
+                                self.warning("G9014", self.page.nodes[d.index()].line, "`when selected` below the row's root never fires — the List checks the ListItem; style the root (or watch it: the row's own state)");
                                 break;
                             }
                         }
@@ -5945,12 +5935,12 @@ impl<'a> Compiler<'a> {
             }
             // G9015 (advisory): a viewport List whose ancestors provably
             // hand it its minimum — near zero — before any sized box.
-            let pl = &self.page.nodes[list as usize].placement;
+            let pl = &self.page.nodes[list].placement;
             let hug_scroll = matches!(pl.height, Len::Hug(_));
             if !hug_scroll {
-                let mut a = self.page.nodes[list as usize].parent;
+                let mut a = self.page.nodes[list].parent;
                 while a != NO_NODE {
-                    let an = &self.page.nodes[a as usize];
+                    let an = &self.page.nodes[a];
                     if matches!(an.placement.height, Len::Exact(_)) || an.placement.min_height > 0.0 {
                         break;
                     }
@@ -5982,11 +5972,11 @@ impl<'a> Compiler<'a> {
             let mut off = false;
             let mut a = self.page.nodes[i].parent;
             while a != NO_NODE {
-                if self.page.nodes[a as usize].kind == Kind::List {
+                if self.page.nodes[a].kind == Kind::List {
                     off = matches!(self.page.prop(a, PropKey::Select), Some(Value::VIdent(w)) if self.page.str(w) == "off");
                     break;
                 }
-                a = self.page.nodes[a as usize].parent;
+                a = self.page.nodes[a].parent;
             }
             let (w0, wc) = self.page.nodes[i].whens;
             let styled = |st: State| self.page.whens[w0 as usize..(w0 + wc) as usize].iter().any(|w| w.state == st);
@@ -6063,8 +6053,7 @@ impl<'a> Compiler<'a> {
         // finger maps over.
         for pb in std::mem::take(&mut self.pending_behaviors) {
             let Some(rid) = self.page.find(&pb.path) else { continue };
-            let end = self.page.nodes[rid as usize].subtree_end;
-            let track = (rid..end).find(|i| self.page.nodes[*i as usize].kind == Kind::Slot && self.page.str(self.page.nodes[*i as usize].name).rsplit('/').next() == Some("track"));
+            let track = NodeId::range(rid, self.page.subtree_end(rid)).find(|i| self.page.nodes[*i].kind == Kind::Slot && self.page.str(self.page.nodes[*i].name).rsplit('/').next() == Some("track"));
             let Some(track) = track else {
                 self.error("G0082", pb.line, "`behavior slider` maps the finger over a `slot track` — the control body declares none");
                 continue;
@@ -6082,14 +6071,14 @@ impl<'a> Compiler<'a> {
     /// pose would conjure a disclosure the resting layout never shows.
     fn reveal_channel_guard(&mut self) {
         let declared = |page: &Page, node: NodeId, key: PropKey| {
-            let n = &page.nodes[node as usize];
+            let n = &page.nodes[node];
             page.props[n.props.0 as usize..(n.props.0 + n.props.1) as usize].iter().any(|p| p.key == key)
         };
         let mut errs: Vec<(u32, String)> = Vec::new();
         for (i, n) in self.page.nodes.iter().enumerate() {
             for w in &self.page.whens[n.whens.0 as usize..(n.whens.0 + n.whens.1) as usize] {
                 for p in &self.page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize] {
-                    if matches!(p.key, PropKey::RevealX | PropKey::RevealY) && !declared(&self.page, i as NodeId, p.key) {
+                    if matches!(p.key, PropKey::RevealX | PropKey::RevealY) && !declared(&self.page, NodeId::from_index(i), p.key) {
                         errs.push((n.line, format!("a `when` drives `{}` only where the node declares it — give the node a resting `{}=` first", p.key.word(), p.key.word())));
                     }
                 }
@@ -6126,7 +6115,7 @@ impl<'a> Compiler<'a> {
             }
             for lane in self.page.anims.iter().filter(|a| a.anim == t.anim) {
                 let Some(channels) = Channel::parse(self.page.str(lane.channel)) else { continue };
-                let target = &self.page.nodes[lane.node as usize];
+                let target = &self.page.nodes[lane.node];
                 for w in &self.page.whens[target.whens.0 as usize..(target.whens.0 + target.whens.1) as usize] {
                     let owner = if w.of == NO_NODE { lane.node } else { w.of };
                     let node_state = matches!(w.state, State::Held | State::Hovered | State::Focused | State::FocusWithin | State::Selected | State::StateDisabled | State::Custom(_));
@@ -6167,11 +6156,11 @@ impl<'a> Compiler<'a> {
         // (GPAR9 — `transition base -> held` on a node is a decided Rust
         // form), so only a DECLARED arrangement flags one-sided.
         let is_arr = |st: &State| matches!(st, State::Arrangement(_));
-        let is_named_arr = |st: &State| matches!(st, State::Arrangement(i) if *i != u32::MAX);
+        let is_named_arr = |st: &State| matches!(st, State::Arrangement(i) if *i != BASE);
         let mut errs: Vec<(u32, String)> = Vec::new();
         let mut seen: Vec<(NodeId, Option<State>, Option<State>)> = Vec::new();
         for t in &self.page.transitions {
-            let live_node = t.node != NO_NODE && (t.node as usize) < self.page.nodes.len();
+            let live_node = t.node != NO_NODE && t.node.index() < self.page.nodes.len();
             if t.node == NO_NODE {
                 for e in [t.from, t.to].into_iter().flatten() {
                     if is_state(&e) {
@@ -6219,9 +6208,9 @@ fn state_word(page: &Page, state: State) -> String {
         State::FocusWithin => "focus_within".to_string(),
         State::Selected => "selected".to_string(),
         State::StateDisabled => "disabled".to_string(),
-        State::Arrangement(i) => page.arrangements.get(i as usize).map(|a| page.str(*a).to_string()).unwrap_or_else(|| "base".to_string()),
+        State::Arrangement(i) => page.arrangements.get(i.index()).map(|a| page.str(*a).to_string()).unwrap_or_else(|| "base".to_string()),
         State::ScreenOrientation(w) | State::ScreenClass(w) => format!("screen.{}", page.str(w)),
-        State::ArrangementScreen(i, w) => format!("{} screen.{}", page.arrangements.get(i as usize).map(|a| page.str(*a)).unwrap_or("base"), page.str(w)),
+        State::ArrangementScreen(i, w) => format!("{} screen.{}", page.arrangements.get(i.index()).map(|a| page.str(*a)).unwrap_or("base"), page.str(w)),
         State::ScreenPair(a, b) => format!("screen.{} screen.{}", page.str(a), page.str(b)),
         State::Custom(s) => page.str(s).to_string(),
     }
@@ -6251,11 +6240,11 @@ mod tests {
         let names: Vec<&str> = p.nodes.iter().map(|n| p.str(n.name)).collect();
         assert_eq!(names, vec!["root", "col", "bg", "a", "r", "d", "b", "c"]);
         let col = p.find("col").unwrap();
-        assert_eq!(p.nodes[col as usize].children, (3, 3));
-        assert_eq!(p.nodes[col as usize].subtree_end, 8);
+        assert_eq!(p.nodes[col].children, (3, 3));
+        assert_eq!(p.nodes[col].subtree_end, 8);
         let r = p.find("r").unwrap();
-        assert_eq!(p.nodes[r as usize].children, (6, 2));
-        assert_eq!(p.nodes[r as usize].parent, col);
+        assert_eq!(p.nodes[r].children, (6, 2));
+        assert_eq!(p.nodes[r].parent, col);
         assert_eq!(p.nodes[0].subtree_end, 8);
     }
 
@@ -6265,8 +6254,8 @@ mod tests {
         let b = p.find("b").unwrap();
         // Node prop wins over style base on lookup (later in the range).
         assert_eq!(p.prop(b, PropKey::Background), Some(Value::VColor(Color_Straight_Srgb_4xU8_RGBA([0x11, 0x22, 0x33, 0xFF]))));
-        assert_eq!(p.nodes[b as usize].placement.min_height, 36.0);
-        let whens: Vec<State> = p.whens[p.nodes[b as usize].whens.0 as usize..].iter().map(|w| w.state).collect();
+        assert_eq!(p.nodes[b].placement.min_height, 36.0);
+        let whens: Vec<State> = p.whens[p.nodes[b].whens.0 as usize..].iter().map(|w| w.state).collect();
         // The trailing Focused is the injected default focus ring (D129,
         // GP26 step 2) — every Button without an authored `when focused`
         // carries it.
@@ -6286,27 +6275,27 @@ mod tests {
         assert_eq!(names, vec!["v", "size", "", ""]);
         assert_eq!(p.nodes[1].kind, Kind::Column);
         assert_eq!(p.nodes[1].placement.valign, Align::Start);
-        let label = p.prop(2, PropKey::Text).unwrap();
+        let label = p.prop(NodeId::new(2), PropKey::Text).unwrap();
         assert!(matches!(label, Value::VText { text, .. } if p.str(text) == "Size"));
-        assert_eq!(p.prop(3, PropKey::Min), Some(Value::VNum(1.0)));
-        assert_eq!(p.prop(3, PropKey::Max), Some(Value::VNum(100.0)));
+        assert_eq!(p.prop(NodeId::new(3), PropKey::Min), Some(Value::VNum(1.0)));
+        assert_eq!(p.prop(NodeId::new(3), PropKey::Max), Some(Value::VNum(100.0)));
     }
 
     #[test]
     fn arrangements_handlers_and_transitions() {
         let p = ok("arrangement wide\ntransition base -> wide duration=0.2, easing=cubic_out\nwhen wide { bar.width = 300 }\nView v {\n Button bar width=200, on:activate=go(wide) { transition any -> held duration=0.1 }\n Button b text=\"Save\", on:activate=save\n}\n");
         let bar = p.find("bar").unwrap();
-        let w = p.whens[p.nodes[bar as usize].whens.0 as usize];
-        assert_eq!(w.state, State::Arrangement(0));
+        let w = p.whens[p.nodes[bar].whens.0 as usize];
+        assert_eq!(w.state, State::Arrangement(ArrangementId::new(0)));
         assert_eq!(p.props[w.props.0 as usize], Prop { key: PropKey::Width, value: Value::VNum(300.0) });
-        assert_eq!(p.handlers[0].action, Action::Go(0));
+        assert_eq!(p.handlers[0].action, Action::Go(ArrangementId::new(0)));
         let b = p.find("b").unwrap();
-        let h = p.handlers[p.nodes[b as usize].handlers.0 as usize];
+        let h = p.handlers[p.nodes[b].handlers.0 as usize];
         assert_eq!(p.str(h.event), "activate");
         assert!(matches!(h.action, Action::Named(id) if p.str(id) == "save"));
         assert_eq!(p.transitions.len(), 2);
         assert_eq!(p.transitions[0].node, NO_NODE);
-        assert_eq!(p.transitions[0].to, Some(State::Arrangement(0)));
+        assert_eq!(p.transitions[0].to, Some(State::Arrangement(ArrangementId::new(0))));
         assert_eq!(p.transitions[1].node, bar);
     }
 
@@ -6357,12 +6346,12 @@ mod tests {
     #[test]
     fn placement_words() {
         let p = ok("View v {\n Panel a halign=center, valign=bottom, margin=16, width=fill, max_width=380, height=hug\n Panel b 44x44, margin_left=-10\n Column c { gap 12; gap fill; gap fill(2) }\n}\n");
-        let a = p.nodes[p.find("a").unwrap() as usize].placement;
+        let a = p.nodes[p.find("a").unwrap().index()].placement;
         assert_eq!(a.halign, Align::Center);
         assert_eq!(a.margin, [None, None, None, Some(16.0)]);
         assert_eq!(a.max_width, Some(380.0));
         assert_eq!(a.height, Len::Hug(0.0));
-        let b = p.nodes[p.find("b").unwrap() as usize].placement;
+        let b = p.nodes[p.find("b").unwrap().index()].placement;
         assert_eq!(b.width, Len::Exact(44.0));
         assert_eq!(b.margin[0], Some(-10.0));
         let c = p.find("c").unwrap();
@@ -6374,7 +6363,7 @@ mod tests {
 impl Page {
     /// A string id if the string is interned (tests, name lookups).
     pub fn intern_lookup(&self, s: &str) -> StrId {
-        self.strings.iter().position(|x| x == s).map(|i| i as StrId).unwrap_or(NO_STR)
+        self.strings.iter().position(|x| x == s).map(|i| StrId::from_index(i)).unwrap_or(NO_STR)
     }
 }
 
@@ -6389,9 +6378,9 @@ mod anim_tests {
         let p = c.page;
         let face = p.find("face").unwrap();
         let ok = p.find("ok").unwrap();
-        let w = p.whens[p.nodes[face as usize].whens.0 as usize];
+        let w = p.whens[p.nodes[face].whens.0 as usize];
         assert_eq!((w.state, w.of), (State::Held, ok));
-        let tracks: Vec<(&str, &str, Option<f32>, f32, f32, f32)> = p.anims.iter().map(|t| (p.str(p.nodes[t.node as usize].name), p.str(t.channel), t.from.and_then(Value::as_num), t.to.as_num().unwrap_or(f32::NAN), t.start, t.duration)).collect();
+        let tracks: Vec<(&str, &str, Option<f32>, f32, f32, f32)> = p.anims.iter().map(|t| (p.str(p.nodes[t.node].name), p.str(t.channel), t.from.and_then(Value::as_num), t.to.as_num().unwrap_or(f32::NAN), t.start, t.duration)).collect();
         assert_eq!(tracks[0], ("a", "translate.x", Some(-60.0), 0.0, 0.0, 0.5));
         assert_eq!(tracks[1], ("b", "opacity", Some(0.0), 1.0, 0.0, 0.5));
         assert_eq!(tracks[2], ("b", "scale", None, 1.05, 0.5, 0.25));

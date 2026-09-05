@@ -27,14 +27,14 @@ fn widget_anims_play_per_instance() {
  }\n}\nView v {\n Mark a on:show=play(delete)\n Mark b\n}\n";
     let c = ok(src);
     let mut page = c.page;
-    let a_rope = page.find("a/rope").expect("a/rope") as usize;
-    let b_rope = page.find("b/rope").expect("b/rope") as usize;
-    let a_root = page.find("a").unwrap() as usize;
+    let a_rope = (page.find("a/rope").expect("a/rope")).index();
+    let b_rope = (page.find("b/rope").expect("b/rope")).index();
+    let a_root = (page.find("a").unwrap()).index();
     let mut rt = Runtime::new(&page);
     let a_delete = page.intern_lookup("a/delete");
     let b_delete = page.intern_lookup("b/delete");
     assert!(a_delete != gogo::page::NO_STR && b_delete != gogo::page::NO_STR, "one anim per instance");
-    rt.play(&page, a_delete, Finish::Nothing);
+    rt.play_id(&page, a_delete, Finish::Nothing);
     rt.tick(&mut page, 0.5);
     assert_eq!(rt.motion[a_rope].scale[1], 0.5);
     assert_eq!(rt.motion[b_rope].scale[1], 1.0, "b's rope is untouched");
@@ -59,19 +59,19 @@ fn repeat_items_show_by_count_and_lay_out_in_the_stack() {
         layout(page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance)
     };
     let r = lay(&page, &rt);
-    let tail = page.find("tail").unwrap() as usize;
-    let none = page.find("none").unwrap() as usize;
+    let tail = (page.find("tail").unwrap()).index();
+    let none = (page.find("none").unwrap()).index();
     assert_eq!(r[tail].y, 10.0 + 4.0 + 12.5 + 4.0, "at zero the `empty` label holds the slot");
     assert!(r[none].h > 0.0);
     rt.set_count(&mut page, marks, 2);
     let items = rt.items(&page, marks);
     assert_eq!(items.len(), 2, "the third slot stays parked until the count wants it");
-    assert_eq!(page.str(page.nodes[items[1] as usize].name), "marks/1/item");
+    assert_eq!(page.str(page.nodes[items[1].index()].name), "marks/1/item");
     assert!(page.find("marks/1/item/box").is_some(), "parts are addressable");
     let r = lay(&page, &rt);
     assert_eq!(r[tail].y, 10.0 + 4.0 + 10.0 + 4.0 + 10.0 + 4.0, "two items, spaced like siblings");
-    assert_eq!(r[items[0] as usize].y, 14.0);
-    assert_eq!(r[items[1] as usize].y, 28.0);
+    assert_eq!(r[items[0].index()].y, 14.0);
+    assert_eq!(r[items[1].index()].y, 28.0);
     let res = resolve(&page, &rt);
     let empty = page.nodes[none].parent;
     assert!(res.gone(&page, empty), "`empty` hides once there are items");
@@ -222,11 +222,11 @@ fn slot_lanes_move_the_region_in_a_controls_own_anim() {
     let src = "control Fader {\n Layers body { slot thumb { Rectangle tt 4x4 } }\n anim pop { slot.thumb.translate.y from=-3, to=0, duration=1 }\n}\nView v {\n Fader f\n}\n";
     let c = ok(src);
     let mut page = c.page;
-    let thumb = page.find("f/thumb").expect("f/thumb") as usize;
+    let thumb = (page.find("f/thumb").expect("f/thumb")).index();
     let pop = page.intern_lookup("f/pop");
     assert!(pop != gogo::page::NO_STR, "the instance's own anim");
     let mut rt = Runtime::new(&page);
-    rt.play(&page, pop, Finish::Nothing);
+    rt.play_id(&page, pop, Finish::Nothing);
     rt.tick(&mut page, 0.25);
     assert!(rt.motion[thumb].translate[1] < -1.0, "the slot region rides the lane: {:?}", rt.motion[thumb]);
 }

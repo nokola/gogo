@@ -86,7 +86,7 @@ fn frame(page: &mut Page, rt: &mut Runtime, dt: f32) -> (Resolved, Vec<Rect>) {
 /// A tap (down + up at the node's center) through the real input path.
 fn tap(page: &Page, rt: &mut Runtime, input: &mut Input, node: NodeId, t: f64) {
     let (res, rects) = lay(page, rt);
-    let r = rects[node as usize];
+    let r = rects[node.index()];
     let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
     input.touch(page, rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x, y, t, id: 1 });
     let (res, rects) = lay(page, rt);
@@ -285,7 +285,7 @@ fn arrangement_build_errors_match() {
 fn one_line_top_level_when_poses() {
     let c = ok("arrangement s\nwhen s bar.width=2\nView v { Rectangle bar }");
     let bar = c.page.find("bar").unwrap();
-    assert!(c.page.nodes[bar as usize].whens.1 > 0, "the when line reached the node: {:?}", c.page.nodes[bar as usize]);
+    assert!(c.page.nodes[bar.index()].whens.1 > 0, "the when line reached the node: {:?}", c.page.nodes[bar.index()]);
     assert!(has_code("arrangement s\nwhen s foo.width=2\nView v { Rectangle bar }", "G0060"));
 }
 
@@ -425,10 +425,10 @@ fn arrangement_flip_poses_tweens_and_comes_home() {
     let bar = page.find("bar").unwrap();
     let scrim = page.find("scrim").unwrap();
     let dot = page.find("dot").unwrap();
-    let collapsed = page.arrangements.iter().position(|a| page.str(*a) == "collapsed").unwrap() as u32;
+    let collapsed = gogo::ArrangementId::from_index(page.arrangements.iter().position(|a| page.str(*a) == "collapsed").unwrap());
     let mut rt = Runtime::new(&page);
     let (_, rects) = frame(&mut page, &mut rt, 0.0);
-    let b = rects[bar as usize];
+    let b = rects[bar.index()];
     assert!(near(b.bottom(), H) && near(b.y, H - 60.0), "base pose: {b:?}");
     assert_eq!(rt.arrangement, BASE);
 
@@ -436,23 +436,23 @@ fn arrangement_flip_poses_tweens_and_comes_home() {
     assert_eq!(rt.arrangement, collapsed);
     frame(&mut page, &mut rt, 0.0);
     let (_, rects) = frame(&mut page, &mut rt, 0.05);
-    let b = rects[bar as usize];
+    let b = rects[bar.index()];
     assert!(b.bottom() > H && b.bottom() < H + 40.0, "midway through the 0.2 s rule: {b:?}");
     let (res, rects) = frame(&mut page, &mut rt, 0.3);
-    let b = rects[bar as usize];
+    let b = rects[bar.index()];
     assert!(near(b.bottom(), H + 40.0) && near(b.y, H - 50.0) && near(opacity(&page, &res, scrim), 0.5), "pose applied: {b:?} scrim={}", opacity(&page, &res, scrim));
     assert!(near(opacity(&page, &res, dot), 0.25), "the style-scoped when follows the view: {}", opacity(&page, &res, dot));
 
     // A relayout (a units change) keeps the ACTIVE pose, not the base.
     let res = resolve(&page, &rt);
     let again = layout(&page, &res, Rect::new(0.0, 0.0, W * 2.0, H), &FixedAdvance);
-    let b = again[bar as usize];
+    let b = again[bar.index()];
     assert!(near(b.bottom(), H + 40.0) && near(b.y, H - 50.0), "re-assert on relayout: {b:?}");
 
     rt.go_id(BASE);
     frame(&mut page, &mut rt, 0.0);
     let (res, rects) = frame(&mut page, &mut rt, 0.3);
-    let b = rects[bar as usize];
+    let b = rects[bar.index()];
     assert!(near(b.bottom(), H) && near(opacity(&page, &res, scrim), 1.0) && near(opacity(&page, &res, dot), 1.0), "back to base: {b:?} scrim={} dot={}", opacity(&page, &res, scrim), opacity(&page, &res, dot));
 }
 
@@ -465,13 +465,13 @@ fn go_instant_flips_without_the_motion() {
     let c = ok(STATE_VIEW);
     let mut page = c.page;
     let bar = page.find("bar").unwrap();
-    let collapsed = page.arrangements.iter().position(|a| page.str(*a) == "collapsed").unwrap() as u32;
+    let collapsed = gogo::ArrangementId::from_index(page.arrangements.iter().position(|a| page.str(*a) == "collapsed").unwrap());
     let mut rt = Runtime::new(&page);
     frame(&mut page, &mut rt, 0.0);
     rt.go_instant_id(collapsed);
     let (_, rects) = frame(&mut page, &mut rt, 0.0);
     assert!(!rt.animating(), "an instant flip arms nothing");
-    let b = rects[bar as usize];
+    let b = rects[bar.index()];
     assert!(near(b.bottom(), H + 40.0) && near(b.y, H - 50.0), "the pose is already applied: {b:?}");
 }
 
@@ -483,7 +483,7 @@ fn go_instant_flips_without_the_motion() {
 fn arrangement_settled_fires_once_after_the_motion() {
     let c = ok(STATE_VIEW);
     let mut page = c.page;
-    let collapsed = page.arrangements.iter().position(|a| page.str(*a) == "collapsed").unwrap() as u32;
+    let collapsed = gogo::ArrangementId::from_index(page.arrangements.iter().position(|a| page.str(*a) == "collapsed").unwrap());
     let mut rt = Runtime::new(&page);
     frame(&mut page, &mut rt, 0.0);
     rt.go_id(collapsed);
@@ -510,7 +510,7 @@ fn go_and_toggle_buttons_flip_the_arrangement() {
     let page = c.page;
     let go_btn = page.find("goBtn").unwrap();
     let toggle_btn = page.find("toggleBtn").unwrap();
-    let idx = |name: &str| page.arrangements.iter().position(|a| page.str(*a) == name).unwrap() as u32;
+    let idx = |name: &str| gogo::ArrangementId::from_index(page.arrangements.iter().position(|a| page.str(*a) == name).unwrap());
     let (collapsed, wide) = (idx("collapsed"), idx("wide"));
     let mut rt = Runtime::new(&page);
     let mut input = Input::new();
@@ -534,11 +534,11 @@ fn unknown_arrangement_flip_keeps_the_pose() {
     let page = c.page;
     let bar = page.find("bar").unwrap();
     let mut rt = Runtime::new(&page);
-    rt.go_id(0);
-    rt.go_id(99);
+    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo::ArrangementId::new(99));
     let (_, rects) = lay(&page, &rt);
-    assert_eq!(rt.arrangement, 0, "the pose is kept");
-    assert!(near(rects[bar as usize].h, 90.0), "{:?}", rects[bar as usize]);
+    assert_eq!(rt.arrangement, gogo::ArrangementId::new(0), "the pose is kept");
+    assert!(near(rects[bar.index()].h, 90.0), "{:?}", rects[bar.index()]);
 }
 
 const DIR_STYLE: &str = "style T background=#00000000 {\n    transition any -> held duration=0.2\n    transition held -> any duration=0.1\n    when held opacity=0.5\n}\nView v { Button b .T }";
@@ -640,12 +640,12 @@ fn control_scope_transitions_tween_from_the_default_value() {
 fn view_rule_times_the_flip_and_retargets_mid_flight() {
     let c = ok(POSE_TIMING);
     let mut page = c.page;
-    let slab = page.find("slab").unwrap() as usize;
-    let plate = page.find("plate").unwrap() as usize;
-    let tag = page.find("tag").unwrap() as usize;
+    let slab = (page.find("slab").unwrap()).index();
+    let plate = (page.find("plate").unwrap()).index();
+    let tag = (page.find("tag").unwrap()).index();
     let mut rt = Runtime::new(&page);
     frame(&mut page, &mut rt, 0.0);
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     frame(&mut page, &mut rt, 0.0);
     let (_, r) = frame(&mut page, &mut rt, 0.25);
     assert!((r[slab].y - 87.5).abs() < 0.01, "view timing: {:?}", r[slab]);
@@ -658,7 +658,7 @@ fn view_rule_times_the_flip_and_retargets_mid_flight() {
     frame(&mut page, &mut rt, 0.0);
     let (_, r) = frame(&mut page, &mut rt, 10.0);
     assert!(near(r[slab].y, 0.0) && near(r[plate].y, 0.0) && near(r[tag].y, 0.0), "home: {:?}/{:?}/{:?}", r[slab], r[plate], r[tag]);
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     frame(&mut page, &mut rt, 0.0);
     let (_, r) = frame(&mut page, &mut rt, 0.25);
     let mid = r[slab].y;
@@ -679,12 +679,12 @@ fn view_rule_times_the_flip_and_retargets_mid_flight() {
 fn node_pose_pair_rules_time_their_own_share() {
     let c = ok(POSE_TIMING);
     let mut page = c.page;
-    let slab = page.find("slab").unwrap() as usize;
-    let plate = page.find("plate").unwrap() as usize;
-    let tag = page.find("tag").unwrap() as usize;
+    let slab = (page.find("slab").unwrap()).index();
+    let plate = (page.find("plate").unwrap()).index();
+    let tag = (page.find("tag").unwrap()).index();
     let mut rt = Runtime::new(&page);
     frame(&mut page, &mut rt, 0.0);
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     let (_, r) = frame(&mut page, &mut rt, 0.0);
     assert!(near(r[tag].y, 100.0), "duration=0 snaps at flip time: {:?}", r[tag]);
     let (_, r) = frame(&mut page, &mut rt, 0.25);
@@ -763,11 +763,11 @@ fn alignment_pose_under_a_timed_arrangement_builds_and_glides() {
     }
     let c = ok(&plain);
     let mut page = c.page;
-    let bar = page.find("bar").unwrap() as usize;
+    let bar = (page.find("bar").unwrap()).index();
     let mut rt = Runtime::new(&page);
     let (_, r) = frame(&mut page, &mut rt, 0.0);
     assert_eq!(r[bar].w, 80.0, "base spans the margins: {:?}", r[bar]);
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     frame(&mut page, &mut rt, 0.0);
     let (_, r) = frame(&mut page, &mut rt, 0.1);
     assert!(r[bar].w < 80.0 && r[bar].w > 0.0, "gliding toward the left-docked hug: {:?}", r[bar]);
@@ -812,41 +812,41 @@ fn screen_class_poses_compose_with_arrangements() {
     let scrim = page.find("scrim").unwrap();
     let pane = page.find("pane").unwrap();
     let chip = page.find("chip").unwrap();
-    let open = 0;
+    let open = gogo::ArrangementId::new(0);
     let mut rt = Runtime::new(&page);
     let (res, r) = lay(&page, &rt);
-    let b = r[bar as usize];
+    let b = r[bar.index()];
     assert!(near(b.bottom(), H) && near(b.y, H - 60.0) && near(opacity(&page, &res, tag), 1.0), "base pose: {b:?}");
-    let p = r[pane as usize];
+    let p = r[pane.index()];
     assert!(near(p.x, 10.0) && near(p.right(), W - 10.0), "base pane spans its margins: {p:?}");
     assert!(rt.screen.is_empty(), "no class named yet: {:?}", rt.screen);
 
     set_class(&page, &mut rt, ScreenClass::LandscapeSmall);
     assert!(rt.screen.contains(&page.intern_lookup("landscapeSmall")), "{:?}", rt.screen);
     let (res, r) = lay(&page, &rt);
-    let b = r[bar as usize];
+    let b = r[bar.index()];
     assert!(near(b.bottom(), H + 10.0) && near(b.y, H - 70.0) && near(opacity(&page, &res, tag), 0.25), "class pose: {b:?} tag={}", opacity(&page, &res, tag));
 
     rt.go_id(open);
     frame(&mut page, &mut rt, 0.0);
     let (res, r) = frame(&mut page, &mut rt, 0.3);
-    let b = r[bar as usize];
+    let b = r[bar.index()];
     assert!(near(b.bottom(), H + 40.0) && near(b.y, H - 40.0) && near(opacity(&page, &res, scrim), 0.5) && near(opacity(&page, &res, tag), 0.25), "composed: {b:?} scrim={} tag={}", opacity(&page, &res, scrim), opacity(&page, &res, tag));
 
     set_class(&page, &mut rt, ScreenClass::PortraitSmall);
     let (res, r) = frame(&mut page, &mut rt, 0.3);
-    let p = r[pane as usize];
+    let p = r[pane.index()];
     assert!(near(p.x, 10.0) && near(p.right(), W - 10.0) && near(opacity(&page, &res, chip), 1.0), "pair lets go with the class: {p:?} chip={}", opacity(&page, &res, chip));
 
     set_class(&page, &mut rt, ScreenClass::LandscapeSmall);
     rt.go_id(BASE);
     frame(&mut page, &mut rt, 0.0);
     let (_, r) = frame(&mut page, &mut rt, 0.3);
-    let b = r[bar as usize];
+    let b = r[bar.index()];
     assert!(near(b.bottom(), H + 10.0) && near(b.y, H - 70.0), "leaving the arrangement lands on the screen pose: {b:?}");
     let res = resolve(&page, &rt);
     let again = layout(&page, &res, Rect::new(0.0, 0.0, W * 2.0, H), &FixedAdvance);
-    assert!(near(again[bar as usize].bottom(), H + 10.0), "re-assert on relayout: {:?}", again[bar as usize]);
+    assert!(near(again[bar.index()].bottom(), H + 10.0), "re-assert on relayout: {:?}", again[bar.index()]);
 }
 
 /// `screen.axis-redeclare` 7052, `screen.pair-applied` 7072,
@@ -867,23 +867,23 @@ fn pane_axis_redeclare_and_pair_margin() {
     let mut rt = Runtime::new(&page);
     set_class(&page, &mut rt, ScreenClass::LandscapeSmall);
     let (_, r) = lay(&page, &rt);
-    let p = r[pane as usize];
+    let p = r[pane.index()];
     assert!(near(p.x, 20.0) && near(p.right(), 100.0), "axis re-declare: {p:?}");
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     frame(&mut page, &mut rt, 0.0);
     let (res, r) = frame(&mut page, &mut rt, 0.3);
-    let p = r[pane as usize];
+    let p = r[pane.index()];
     assert!(near(p.x, 40.0) && near(p.right(), 120.0) && near(opacity(&page, &res, chip), 0.5), "pair applied: {p:?} chip={}", opacity(&page, &res, chip));
     set_class(&page, &mut rt, ScreenClass::PortraitSmall);
     frame(&mut page, &mut rt, 0.3);
     set_class(&page, &mut rt, ScreenClass::LandscapeSmall);
     let (res, r) = frame(&mut page, &mut rt, 0.3);
-    let p = r[pane as usize];
+    let p = r[pane.index()];
     assert!(near(p.x, 40.0) && near(opacity(&page, &res, chip), 0.5), "pair re-applies: {p:?} chip={}", opacity(&page, &res, chip));
     rt.go_id(BASE);
     frame(&mut page, &mut rt, 0.0);
     let (res, r) = frame(&mut page, &mut rt, 0.3);
-    let p = r[pane as usize];
+    let p = r[pane.index()];
     assert!(near(p.x, 20.0) && near(p.right(), 100.0) && near(opacity(&page, &res, chip), 1.0), "pair off with the arrangement: {p:?} chip={}", opacity(&page, &res, chip));
 }
 
@@ -899,7 +899,7 @@ fn a_runtime_told_the_class_before_its_first_frame_starts_posed() {
     let mut rt = Runtime::new(&page);
     set_class(&page, &mut rt, ScreenClass::LandscapeSmall);
     let (res, r) = lay(&page, &rt);
-    assert!(near(r[bar as usize].bottom(), H + 10.0) && near(opacity(&page, &res, tag), 0.25), "{:?} tag={}", r[bar as usize], opacity(&page, &res, tag));
+    assert!(near(r[bar.index()].bottom(), H + 10.0) && near(opacity(&page, &res, tag), 0.25), "{:?} tag={}", r[bar.index()], opacity(&page, &res, tag));
 }
 
 /// `screen.clear-restores-base` 7129, `screen.clear-restores-span` 7132:
@@ -919,9 +919,9 @@ fn a_class_the_file_never_poses_is_base() {
     set_class(&page, &mut rt, ScreenClass::LandscapeSmall);
     set_class(&page, &mut rt, ScreenClass::PortraitMedium);
     let (res, r) = lay(&page, &rt);
-    let b = r[bar as usize];
+    let b = r[bar.index()];
     assert!(near(b.bottom(), H) && near(opacity(&page, &res, tag), 1.0), "base: {b:?} tag={}", opacity(&page, &res, tag));
-    let p = r[pane as usize];
+    let p = r[pane.index()];
     assert!(near(p.x, 10.0) && near(p.right(), W - 10.0), "base span: {p:?}");
 }
 
@@ -1028,38 +1028,38 @@ fn orientation_axis_poses_pairs_and_the_seat_move() {
     let inside = |inner: Rect, outer: Rect| inner.x >= outer.x && inner.y >= outer.y && inner.right() <= outer.right() && inner.bottom() <= outer.bottom();
 
     let (res, r) = lay(&page, &rt);
-    assert!(near(r[bar as usize].h, 20.0) && near(opacity(&page, &res, tag), 1.0), "base: {:?}", r[bar as usize]);
-    assert_eq!(res.seat[mover as usize], NO_NODE, "the mover is home");
-    assert!(inside(r[mover as usize], r[mover_home as usize]), "mover {:?} in home {:?}", r[mover as usize], r[mover_home as usize]);
+    assert!(near(r[bar.index()].h, 20.0) && near(opacity(&page, &res, tag), 1.0), "base: {:?}", r[bar.index()]);
+    assert_eq!(res.seat[mover.index()], NO_NODE, "the mover is home");
+    assert!(inside(r[mover.index()], r[mover_home.index()]), "mover {:?} in home {:?}", r[mover.index()], r[mover_home.index()]);
     assert!(rt.screen.is_empty());
 
     rt.set_screen(&page, Orientation::Landscape, ScreenClass::LandscapeSmall);
     assert!(rt.screen.contains(&page.intern_lookup("landscape")));
     let (res, r) = lay(&page, &rt);
-    assert!(near(r[bar as usize].h, 30.0) && near(opacity(&page, &res, tag), 0.25), "orientation pose: {:?} tag={}", r[bar as usize], opacity(&page, &res, tag));
-    assert_eq!(res.seat[mover as usize], side_seat, "seat moved");
-    assert!(inside(r[mover as usize], r[strip as usize]), "mover {:?} in strip {:?}", r[mover as usize], r[strip as usize]);
+    assert!(near(r[bar.index()].h, 30.0) && near(opacity(&page, &res, tag), 0.25), "orientation pose: {:?} tag={}", r[bar.index()], opacity(&page, &res, tag));
+    assert_eq!(res.seat[mover.index()], side_seat, "seat moved");
+    assert!(inside(r[mover.index()], r[strip.index()]), "mover {:?} in strip {:?}", r[mover.index()], r[strip.index()]);
 
     rt.set_screen(&page, Orientation::Landscape, ScreenClass::LotsOfSpace);
     let (res, r) = lay(&page, &rt);
-    assert!(near(r[bar as usize].h, 44.0) && near(opacity(&page, &res, chip), 0.5), "pair over the single: {:?} chip={}", r[bar as usize], opacity(&page, &res, chip));
+    assert!(near(r[bar.index()].h, 44.0) && near(opacity(&page, &res, chip), 0.5), "pair over the single: {:?} chip={}", r[bar.index()], opacity(&page, &res, chip));
 
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     frame(&mut page, &mut rt, 0.3);
     rt.go_id(BASE);
     frame(&mut page, &mut rt, 0.0);
     let (_, r) = frame(&mut page, &mut rt, 0.3);
-    assert!(near(r[bar as usize].h, 44.0), "arrangement off keeps the pair: {:?}", r[bar as usize]);
+    assert!(near(r[bar.index()].h, 44.0), "arrangement off keeps the pair: {:?}", r[bar.index()]);
 
     rt.set_screen(&page, Orientation::Landscape, ScreenClass::LandscapeSmall);
     let (res, r) = lay(&page, &rt);
-    assert!(near(r[bar as usize].h, 30.0) && near(opacity(&page, &res, chip), 1.0), "class off, single back: {:?} chip={}", r[bar as usize], opacity(&page, &res, chip));
+    assert!(near(r[bar.index()].h, 30.0) && near(opacity(&page, &res, chip), 1.0), "class off, single back: {:?} chip={}", r[bar.index()], opacity(&page, &res, chip));
 
     rt.set_screen(&page, Orientation::Portrait, ScreenClass::PortraitSmall);
     let (res, r) = lay(&page, &rt);
-    assert!(near(r[bar as usize].h, 20.0) && near(opacity(&page, &res, tag), 1.0), "portrait restores: {:?}", r[bar as usize]);
-    assert_eq!(res.seat[mover as usize], NO_NODE);
-    assert!(inside(r[mover as usize], r[mover_home as usize]), "mover {:?} back in home {:?}", r[mover as usize], r[mover_home as usize]);
+    assert!(near(r[bar.index()].h, 20.0) && near(opacity(&page, &res, tag), 1.0), "portrait restores: {:?}", r[bar.index()]);
+    assert_eq!(res.seat[mover.index()], NO_NODE);
+    assert!(inside(r[mover.index()], r[mover_home.index()]), "mover {:?} back in home {:?}", r[mover.index()], r[mover_home.index()]);
 }
 
 /// `orient.arr-pair-wins` (7238), re-read under the flattened ladder
@@ -1082,9 +1082,9 @@ fn equal_count_pairs_tie_to_the_later_line() {
         let bar = page.find("bar").unwrap();
         let mut rt = Runtime::new(&page);
         rt.set_screen(&page, Orientation::Landscape, ScreenClass::LotsOfSpace);
-        rt.go_id(0);
+        rt.go_id(gogo::ArrangementId::new(0));
         let (res, _) = lay(&page, &rt);
-        assert_eq!(res.placement[bar as usize].height, Len::Exact(want), "{:?}", res.placement[bar as usize]);
+        assert_eq!(res.placement[bar.index()].height, Len::Exact(want), "{:?}", res.placement[bar.index()]);
     }
 }
 
@@ -1131,14 +1131,14 @@ View v {
         let tag = page.find("tag").unwrap();
         let mut rt = Runtime::new(&page);
         rt.set_screen(&page, Orientation::Landscape, ScreenClass::LotsOfSpace);
-        rt.go_id(0);
+        rt.go_id(gogo::ArrangementId::new(0));
         let (res, _) = lay(&page, &rt);
-        assert_eq!(res.placement[bar as usize].height, Len::Exact(want_h), "{:?}", res.placement[bar as usize]);
+        assert_eq!(res.placement[bar.index()].height, Len::Exact(want_h), "{:?}", res.placement[bar.index()]);
         assert!(near(opacity(&page, &res, tag), want_a), "opacity {}", opacity(&page, &res, tag));
         // Only one of the two holds → that one poses, order irrelevant.
-        rt.go_id(u32::MAX);
+        rt.go_id(BASE);
         let (res, _) = lay(&page, &rt);
-        assert_eq!(res.placement[bar as usize].height, Len::Exact(30.0));
+        assert_eq!(res.placement[bar.index()].height, Len::Exact(30.0));
     }
 }
 
@@ -1155,7 +1155,7 @@ fn portrait_with_an_unposed_class_is_base() {
     rt.set_screen(&page, Orientation::Landscape, ScreenClass::LotsOfSpace);
     rt.set_screen(&page, Orientation::Portrait, ScreenClass::PortraitMedium);
     let (_, r) = lay(&page, &rt);
-    assert!(near(r[bar as usize].h, 20.0), "{:?}", r[bar as usize]);
+    assert!(near(r[bar.index()].h, 20.0), "{:?}", r[bar.index()]);
 }
 
 /// GPAR27 (round 6, 2026-08-31): `go` with an arrangement the page never
@@ -1168,10 +1168,10 @@ fn go_with_an_unknown_arrangement_keeps_the_pose() {
     let c = ok("arrangement wide\nView v { Panel p width=10, height=10 }\nwhen wide { p.width = 20 }\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go_id(0);
-    assert_eq!(rt.arrangement, 0, "the declared arrangement lands");
-    rt.go_id(7);
-    assert_eq!(rt.arrangement, 0, "an unknown index is refused and the pose keeps");
+    rt.go_id(gogo::ArrangementId::new(0));
+    assert_eq!(rt.arrangement, gogo::ArrangementId::new(0), "the declared arrangement lands");
+    rt.go_id(gogo::ArrangementId::new(7));
+    assert_eq!(rt.arrangement, gogo::ArrangementId::new(0), "an unknown index is refused and the pose keeps");
     rt.go_id(gogo::runtime::BASE);
     assert_eq!(rt.arrangement, gogo::runtime::BASE, "base is always reachable");
 }

@@ -22,7 +22,7 @@ fn lay(src: &str, w: f32, h: f32) -> (Page, Vec<Rect>) {
 }
 
 fn rect(p: &Page, r: &[Rect], name: &str) -> Rect {
-    r[p.find(name).unwrap() as usize]
+    r[(p.find(name).unwrap()).index()]
 }
 
 /// GP16: two fill Buttons in a tight Row never go under their labels — the
@@ -79,7 +79,7 @@ fn seat_fits_its_occupant_to_the_socket() {
     let c = ok("arrangement side\nView v {\n Layers host halign=left, valign=top {\n  seat socket width=200, height=100\n  Panel pane width=fill, height=fill, halign=left, margin=10 { Rectangle x width=fill, height=fill }\n }\n}\nwhen side { pane.seat = socket }\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     let res = resolve(&page, &rt);
     let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
     let socket = rect(&page, &rects, "socket");
@@ -89,7 +89,7 @@ fn seat_fits_its_occupant_to_the_socket() {
     let c = ok("arrangement side\nView v {\n Column col halign=left, valign=top {\n  seat socket\n  Layers free { Rectangle box 50x30, margin_left=10, margin_top=10 }\n }\n}\nwhen side { box.seat = socket }\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     let res = resolve(&page, &rt);
     let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
     let socket = rect(&page, &rects, "socket");
@@ -120,7 +120,7 @@ fn timed_arrangement_glides_every_reposed_box() {
     let src = "arrangement wide\nView v {\n Rectangle box 100x50, halign=left, valign=top { when wide { halign = right } }\n}\ntransition base -> wide duration=1\n";
     let c = ok(src);
     let mut page = c.page;
-    let b = page.find("box").unwrap() as usize;
+    let b = (page.find("box").unwrap()).index();
     let mut rt = Runtime::new(&page);
     let frame = |rt: &mut Runtime, page: &mut Page, dt: f32| -> Rect {
         rt.tick(page, dt);
@@ -129,7 +129,7 @@ fn timed_arrangement_glides_every_reposed_box() {
         rt.glide(rects)[b]
     };
     assert_eq!(frame(&mut rt, &mut page, 0.0).x, 0.0);
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     let start = frame(&mut rt, &mut page, 0.0);
     assert_eq!(start.x, 0.0, "the glide starts where the box was");
     let mid = frame(&mut rt, &mut page, 0.5);
@@ -143,6 +143,6 @@ fn timed_arrangement_glides_every_reposed_box() {
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
     frame(&mut rt, &mut page, 0.0);
-    rt.go_id(0);
+    rt.go_id(gogo::ArrangementId::new(0));
     assert_eq!(frame(&mut rt, &mut page, 0.0).x, 300.0);
 }

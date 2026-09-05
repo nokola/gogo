@@ -5,10 +5,117 @@
 //! type here is `Copy` + `Debug`, and `Debug` output IS the emitted Rust
 //! literal (see `emit.rs`) — keep variant names unique across enums.
 
-pub type NodeId = u32;
-pub type StrId = u32;
+/// Declares an id over `u32` as its own type: `Copy`, ordered, hashable,
+/// and an index into any `Vec<T>` / `[T]` (`page.nodes[node]`,
+/// `rects[node]`, `page.strings[text]`).
+///
+/// Needed so a node id, a string id, a key id and an arrangement id never
+/// mix: handing one where another belongs is a rustc error, not a wrong
+/// slot read at runtime. The raw number stays private to this crate — the
+/// pools it indexes live here; every other crate passes the id whole.
+///
+/// `Debug` prints the constructor call (`NodeId::new(3)`) because the
+/// emitted page literal (`emit.rs`) is `Debug` output.
+macro_rules! id_newtype {
+    ($(#[$doc:meta])* $name:ident) => {
+        $(#[$doc])*
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[repr(transparent)]
+        pub struct $name(u32);
+
+        impl $name {
+            pub const fn new(raw: u32) -> $name {
+                $name(raw)
+            }
+
+            /// The id as a pool index.
+            pub const fn index(self) -> usize {
+                self.0 as usize
+            }
+
+            pub const fn from_index(i: usize) -> $name {
+                $name(i as u32)
+            }
+
+            /// Every id from `from` up to (not including) `to`, in order.
+            pub fn range(from: $name, to: $name) -> impl DoubleEndedIterator<Item = $name> + ExactSizeIterator + Clone {
+                (from.0..to.0).map($name)
+            }
+
+            /// The id `by` slots on (a clone's shift, a bind site's offset
+            /// from its row root) — an arena fact, so crate-private.
+            pub(crate) const fn offset(self, by: u32) -> $name {
+                $name(self.0 + by)
+            }
+        }
+
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                write!(f, concat!(stringify!($name), "::new({})"), self.0)
+            }
+        }
+
+        impl<T> std::ops::Index<$name> for Vec<T> {
+            type Output = T;
+            fn index(&self, id: $name) -> &T {
+                &self[id.0 as usize]
+            }
+        }
+
+        impl<T> std::ops::IndexMut<$name> for Vec<T> {
+            fn index_mut(&mut self, id: $name) -> &mut T {
+                &mut self[id.0 as usize]
+            }
+        }
+
+        impl<T> std::ops::Index<$name> for [T] {
+            type Output = T;
+            fn index(&self, id: $name) -> &T {
+                &self[id.0 as usize]
+            }
+        }
+
+        impl<T> std::ops::IndexMut<$name> for [T] {
+            fn index_mut(&mut self, id: $name) -> &mut T {
+                &mut self[id.0 as usize]
+            }
+        }
+    };
+}
+
+id_newtype! {
+    /// A node: its index in the page's arena (`Page::nodes`) and in every
+    /// per-node runtime table (rects, motion, scroll, states).
+    NodeId
+}
+id_newtype! {
+    /// An interned string: its index in `Page::strings`. Anim names, node
+    /// names, theme words and text all live there.
+    StrId
+}
+id_newtype! {
+    /// A translation key (`text="x"/key`), one id space for the WHOLE
+    /// build: keys are global — `/ok` in two files is one key — so the id
+    /// indexes the build's `KEYS` table and a `Locale`, not a page's
+    /// strings.
+    KeyId
+}
+id_newtype! {
+    /// An arrangement: its index in `Page::arrangements`, or `BASE` (the
+    /// rest pose). The page build emits `enum Arrangement` over these
+    /// (`ArrangementName`), so code names a pose, never a number.
+    ArrangementId
+}
+impl Default for StrId {
+    fn default() -> StrId {
+        NO_STR
+    }
+}
+
+/// The rest pose — no `arrangement` word in force.
+pub const BASE: ArrangementId = ArrangementId(u32::MAX);
 /// No node (a root's parent).
-pub const NO_NODE: NodeId = u32::MAX;
+pub const NO_NODE: NodeId = NodeId(u32::MAX);
 /// Content of a `disabled` control dims to this unless the theme or a
 /// `when disabled` says otherwise (`Page::disabled_opacity`).
 pub const DISABLED_OPACITY: f32 = 0.3;
@@ -28,13 +135,9 @@ pub const LIST_FOCUS_FILL: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4
 pub const BUTTON_FOCUS_RING: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 85]);
 pub const BUTTON_FOCUS_RING_EPX: f32 = 2.0;
 /// The empty string; `name == NO_STR` = unnamed.
-pub const NO_STR: StrId = 0;
-/// A translation key (`text="x"/key`), one id space for the WHOLE build:
-/// keys are global — `/ok` in two files is one key — so the id indexes the
-/// build's `KEYS` table and a `Locale`, not a page's strings.
-pub type KeyId = u32;
+pub const NO_STR: StrId = StrId(0);
 /// No translation key: the text is a literal, shown as written.
-pub const NO_KEY: KeyId = u32::MAX;
+pub const NO_KEY: KeyId = KeyId(u32::MAX);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
@@ -886,14 +989,13 @@ pub enum State {
     FocusWithin,
     Selected,
     StateDisabled,
-    /// Index into `Page::arrangements`.
-    Arrangement(u32),
+    Arrangement(ArrangementId),
     /// `screen.<orientation>` — `portrait` or `landscape` (the word).
     ScreenOrientation(StrId),
     /// `screen.<class>` — one of `SCREEN_CLASSES` (the word).
     ScreenClass(StrId),
     /// `when <arrangement> screen.<class|orientation>`: both must hold.
-    ArrangementScreen(u32, StrId),
+    ArrangementScreen(ArrangementId, StrId),
     /// `when screen.<orientation> screen.<class>`: both must hold.
     ScreenPair(StrId, StrId),
     /// A control's declared state (`state a, b` in its body), raised and
@@ -1042,8 +1144,8 @@ pub struct When {
 pub enum Action {
     /// A handler name the app matches on.
     Named(StrId),
-    Go(u32),
-    ToggleArrangement(u32),
+    Go(ArrangementId),
+    ToggleArrangement(ArrangementId),
     Play(StrId),
     Emit(StrId),
 }
@@ -1128,6 +1230,13 @@ pub struct Node {
     /// The type word for `Custom`.
     pub type_name: StrId,
     pub name: StrId,
+    /// The widget this node is an instance ROOT of (`SliderPhone` for
+    /// `SliderPhone sliderSize { … }`), `NO_STR` for every other node.
+    /// Needed so the page build can emit one `<Widget>Names` struct per
+    /// widget and a typed entry per instance (`NAMES.slider_size.track`)
+    /// — a widget code-behind takes the struct instead of finding body
+    /// nodes by string path.
+    pub widget: StrId,
     pub parent: NodeId,
     /// Direct children: first index and count (contiguous).
     pub children: (u32, u32),
@@ -1215,6 +1324,7 @@ impl Node {
         kind: Kind::Layers,
         type_name: NO_STR,
         name: NO_STR,
+        widget: NO_STR,
         parent: NO_NODE,
         children: (0, 0),
         subtree_end: 0,
@@ -1407,13 +1517,15 @@ impl Page {
     /// Node ids only ever grow: a freed slot is reused, never removed,
     /// so no id ever re-means.
     pub fn clone_subtree(&mut self, src: NodeId) -> NodeId {
-        let end = self.nodes[src as usize].subtree_end;
-        let base = self.nodes.len() as u32;
-        let delta = base - src;
-        for i in src..end {
-            let mut n = self.nodes[i as usize];
+        let end: NodeId = NodeId(self.nodes[src].subtree_end);
+        let base: NodeId = NodeId::from_index(self.nodes.len());
+        let delta: u32 = base.0 - src.0;
+        let shift = |n: NodeId| NodeId(n.0 + delta);
+        for i in src.0..end.0 {
+            let i = NodeId(i);
+            let mut n = self.nodes[i];
             if i != src {
-                n.parent += delta;
+                n.parent = shift(n.parent);
             }
             n.children.0 += delta;
             n.subtree_end += delta;
@@ -1422,7 +1534,7 @@ impl Page {
             for wi in w0..w0 + wc {
                 let mut w = self.whens[wi as usize];
                 if w.of != NO_NODE && w.of >= src && w.of < end {
-                    w.of += delta;
+                    w.of = shift(w.of);
                 }
                 self.whens.push(w);
             }
@@ -1431,17 +1543,17 @@ impl Page {
         }
         // A cloned control root declares the same states as its template
         // (a control inside a repeat row keeps its `set_custom` gate).
-        let declared: Vec<(NodeId, StrId)> = self.custom_states.iter().filter(|(n, _)| *n >= src && *n < end).map(|(n, s)| (*n + delta, *s)).collect();
+        let declared: Vec<(NodeId, StrId)> = self.custom_states.iter().filter(|(n, _)| *n >= src && *n < end).map(|(n, s)| (shift(*n), *s)).collect();
         self.custom_states.extend(declared);
-        let claims: Vec<(NodeId, u8)> = self.key_claims.iter().filter(|(n, _)| *n >= src && *n < end).map(|(n, m)| (*n + delta, *m)).collect();
+        let claims: Vec<(NodeId, u8)> = self.key_claims.iter().filter(|(n, _)| *n >= src && *n < end).map(|(n, m)| (shift(*n), *m)).collect();
         self.key_claims.extend(claims);
-        let behaviors: Vec<SliderBehavior> = self.behaviors.iter().filter(|b| b.root >= src && b.root < end).map(|b| SliderBehavior { root: b.root + delta, track: b.track + delta, ..*b }).collect();
+        let behaviors: Vec<SliderBehavior> = self.behaviors.iter().filter(|b| b.root >= src && b.root < end).map(|b| SliderBehavior { root: shift(b.root), track: shift(b.track), ..*b }).collect();
         self.behaviors.extend(behaviors);
         base
     }
 
     pub fn str(&self, id: StrId) -> &str {
-        &self.strings[id as usize]
+        &self.strings[id]
     }
 
     pub fn intern(&mut self, s: &str) -> StrId {
@@ -1449,19 +1561,38 @@ impl Page {
             self.strings.push(String::new());
         }
         if let Some(i) = self.strings.iter().position(|x| x == s) {
-            return i as StrId;
+            return StrId::from_index(i);
         }
         self.strings.push(s.to_string());
-        (self.strings.len() - 1) as StrId
+        StrId::from_index(self.strings.len() - 1)
     }
 
     pub fn find(&self, name: &str) -> Option<NodeId> {
-        self.nodes.iter().position(|n| n.name != NO_STR && self.str(n.name) == name).map(|i| i as NodeId)
+        self.nodes.iter().position(|n| n.name != NO_STR && self.str(n.name) == name).map(NodeId::from_index)
     }
 
-    pub fn children(&self, id: NodeId) -> std::ops::Range<usize> {
-        let (first, count) = self.nodes[id as usize].children;
-        first as usize..(first + count) as usize
+    /// The direct children of `id`, in order (one contiguous arena run).
+    pub fn children(&self, id: NodeId) -> impl DoubleEndedIterator<Item = NodeId> + ExactSizeIterator + Clone {
+        let (first, count) = self.nodes[id].children;
+        (first..first + count).map(NodeId::new)
+    }
+
+    /// Every node id in arena order.
+    pub fn node_ids(&self) -> impl DoubleEndedIterator<Item = NodeId> + ExactSizeIterator + Clone {
+        (0..self.nodes.len()).map(NodeId::from_index)
+    }
+
+    /// One past the last id `Node::subtree_end` bounds for `id` — the
+    /// scan `id+1..subtree_end(id)` covers every descendant (and later
+    /// siblings; ask `is_under` for membership).
+    pub fn subtree_end(&self, id: NodeId) -> NodeId {
+        NodeId(self.nodes[id].subtree_end)
+    }
+
+    /// The ids after `id` up to its `subtree_end` — a scan that covers
+    /// every descendant (see `Node::subtree_end`: later siblings too).
+    pub fn subtree_scan(&self, id: NodeId) -> impl DoubleEndedIterator<Item = NodeId> + ExactSizeIterator + Clone {
+        NodeId::range(id.offset(1), self.subtree_end(id))
     }
 
     /// Whether `node` is `root` or sits anywhere under it — a parent walk,
@@ -1473,15 +1604,15 @@ impl Page {
             if n == root {
                 return true;
             }
-            if n == NO_NODE || n as usize >= self.nodes.len() {
+            if n == NO_NODE || n.index() >= self.nodes.len() {
                 return false;
             }
-            n = self.nodes[n as usize].parent;
+            n = self.nodes[n].parent;
         }
     }
 
     pub fn node_props(&self, id: NodeId) -> &[Prop] {
-        let (first, count) = self.nodes[id as usize].props;
+        let (first, count) = self.nodes[id].props;
         &self.props[first as usize..(first + count) as usize]
     }
 
@@ -1592,5 +1723,25 @@ mod tests {
             out.push_str(&format!("| `{word}` | {cell} |\n"));
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod id_tests {
+    use super::*;
+
+    /// An id indexes a `Vec` and a slice by value; the raw number never
+    /// shows outside this crate, so this is where the plumbing is pinned.
+    #[test]
+    fn ids_index_pools() {
+        let v: Vec<u8> = vec![10, 20, 30];
+        assert_eq!(v[NodeId::new(1)], 20);
+        assert_eq!(v.as_slice()[StrId::from_index(2)], 30);
+        let mut w: Vec<u8> = v.clone();
+        w[KeyId::new(0)] = 7;
+        assert_eq!(w[0], 7);
+        assert_eq!(format!("{:?}", NodeId::new(3)), "NodeId::new(3)");
+        assert_eq!(NodeId::range(NodeId::new(2), NodeId::new(5)).collect::<Vec<NodeId>>(), vec![NodeId::new(2), NodeId::new(3), NodeId::new(4)]);
+        assert!(NodeId::new(2) < NO_NODE);
     }
 }
