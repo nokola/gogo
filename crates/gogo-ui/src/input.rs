@@ -580,7 +580,9 @@ fn snap_step(page: &Page, res: &Resolved, node: NodeId, v: f32) -> f32 {
 /// into `Page::behaviors`, by subtree range (the claim rides the
 /// instance root; every descendant is the machine's surface).
 fn behavior_at(page: &Page, node: NodeId) -> Option<u32> {
-    page.behaviors.iter().position(|b| b.root <= node && node < page.nodes[b.root as usize].subtree_end).map(|i| i as u32)
+    // By ancestry, not by index range: a later sibling's subtree shares
+    // the control root's `id+1..subtree_end` range (Node::subtree_end).
+    page.behaviors.iter().position(|b| page.is_under(node, b.root)).map(|i| i as u32)
 }
 
 /// The machine's pointer math (GP52): bare x over the `slot track`'s
@@ -1108,6 +1110,13 @@ impl Input {
     /// tap runs (`change` first, then `activate`, the toggling-surface
     /// order), so a key accept and a tap are one law.
     fn activate_focused(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, f: NodeId, events: &mut Vec<Event>) {
+        // `tap_pulse=true`: the press feedback plays on the completed tap
+        // (the shipped `button.Pressed += Fx.TapPulse` hook — Godot's
+        // `pressed` fires on release), a turnstile swing here
+        // (`Runtime::tap_pulse`).
+        if res.bool(page, f, PropKey::TapPulse).unwrap_or(false) {
+            rt.tap_pulse(f);
+        }
         match page.nodes[f as usize].kind {
             Kind::Button => {
                 if res.bool(page, f, PropKey::ToggleMode).unwrap_or(false) {
@@ -1788,6 +1797,13 @@ impl Input {
                 // Released inside = inside the pressed node's OWN rect (a dialog
                 // opening under the finger does not turn the tap into a miss).
                 let inside = rects[p.node as usize].contains(t.x, t.y) && !(rt.disabled(page, p.node) || res.gone(page, p.node) || res.hidden(page, p.node));
+                // `tap_pulse=true`: the press feedback plays on the completed
+                // tap (the shipped `button.Pressed += Fx.TapPulse` hook —
+                // Godot's `pressed` fires on release, inside), a turnstile
+                // swing here (`Runtime::tap_pulse`).
+                if inside && p.kind.is_press_surface() && res.bool(page, p.node, PropKey::TapPulse).unwrap_or(false) {
+                    rt.tap_pulse(p.node);
+                }
                 // GP52: a behavior slider commits like the built-in —
                 // changed means CHANGED (its root wears a body kind, so
                 // the match below can't route it).
@@ -1992,6 +2008,85 @@ mod tests {
             let (res, rects) = self.lay();
             self.input.tick(&self.page, &mut self.rt, &res, &rects, dt)
         }
+    }
+
+    /// `tap_pulse=true`: a completed tap swings the box like a turnstile
+    /// door about its LEFT edge — its projected width narrows (scale.x =
+    /// cos of the swing) while the left edge stays put — then it settles
+    /// flat and the transform is gone (the D10 disarm law).
+    #[test]
+    fn tap_pulse_swings_about_the_left_edge_then_disarms() {
+        let mut fx = Fx::new("View v { Button b tap_pulse=true, width=200, height=50 }");
+        let b = fx.page.find("b").unwrap();
+        let (_, rects) = fx.lay();
+        fx.rt.glide(rects.clone());
+        let r = rects[b as usize];
+        let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+        fx.touch(Phase::Down, x, y, 0.0);
+        assert_eq!(fx.rt.tap_pulse_angle(b), 0.0, "a press alone swings nothing (shipped: the pulse rode `pressed`, the completed tap)");
+        fx.touch(Phase::Up, x, y, 0.1);
+        assert!(fx.rt.animating(), "the swing is live");
+        fx.rt.tick(&mut fx.page, crate::runtime::TAP_PULSE_OUT_SEC);
+        let angle = fx.rt.tap_pulse_angle(b);
+        assert!((angle - crate::runtime::TAP_PULSE_ANGLE_DEG).abs() < 0.01, "fully out at the end of the out phase: {angle}");
+        let res = resolve(&fx.page, &fx.rt);
+        let m = res.motion[b as usize];
+        assert!((m.scale[0] - angle.to_radians().cos()).abs() < 1e-4, "{m:?}");
+        assert_eq!(m.scale[1], 1.0, "a turnstile keeps its height");
+        // The drawn left edge: a center-pivot shrink puts it at x + (w - w*sx)/2; translate.x takes that back.
+        let left = r.x + (r.w - r.w * m.scale[0]) / 2.0 + m.translate[0];
+        assert!((left - r.x).abs() < 1e-3, "the hinge edge stays put: {left} vs {}", r.x);
+        fx.rt.tick(&mut fx.page, crate::runtime::TAP_PULSE_BACK_SEC + 0.01);
+        assert_eq!(fx.rt.tap_pulse_angle(b), 0.0, "disarmed");
+        assert!(!fx.rt.animating());
+        let res = resolve(&fx.page, &fx.rt);
+        assert_eq!(res.motion[b as usize], crate::anim::Motion::IDENTITY, "no standing transform after the swing");
+        // A second tap mid-swing restarts the node's swing (one live play per target).
+        fx.touch(Phase::Down, x, y, 1.0);
+        fx.touch(Phase::Up, x, y, 1.1);
+        fx.rt.tick(&mut fx.page, 0.03);
+        let mid = fx.rt.tap_pulse_angle(b);
+        fx.touch(Phase::Down, x, y, 2.0);
+        fx.touch(Phase::Up, x, y, 2.1);
+        assert!(fx.rt.tap_pulse_angle(b) < mid, "restarted from flat");
+        // A button without the word swings nothing.
+        let mut plain = Fx::new("View v { Button b width=200, height=50 }");
+        let b2 = plain.page.find("b").unwrap();
+        let (_, rects) = plain.lay();
+        let r = rects[b2 as usize];
+        plain.touch(Phase::Down, r.x + 1.0, r.y + 1.0, 0.0);
+        plain.touch(Phase::Up, r.x + 1.0, r.y + 1.0, 0.1);
+        assert!(!plain.rt.animating());
+    }
+
+    /// The arena pushes a parent's children together before their own
+    /// children, so a control root's `id+1..subtree_end` range holds its
+    /// later siblings' subtrees too. Membership is by ancestry: a press on
+    /// the raw surface BESIDE a behavior slider is the surface's, and a
+    /// swinging button leaves its neighbour's hit rect alone.
+    #[test]
+    fn a_control_root_does_not_own_its_later_siblings() {
+        let src = "control S $value=0, $min=0, $max=10 {\n behavior slider by $value in $min..$max\n Layers width=fill, height=20 { slot track width=fill, height=fill { Rectangle width=fill, height=fill } }\n}\nView v {\n Column {\n  S a width=fill\n  Layers b interactive=true, width=fill, height=40, on:pointer=raw\n  Button c tap_pulse=true, width=fill, height=30\n  Button d width=fill, height=30\n }\n}\n";
+        let mut fx = Fx::new(src);
+        let (a, b, c, d) = (fx.page.find("a").unwrap(), fx.page.find("b").unwrap(), fx.page.find("c").unwrap(), fx.page.find("d").unwrap());
+        assert!(fx.page.nodes[a as usize].subtree_end > b, "the precondition: b's index sits inside a's range");
+        assert!(!fx.page.is_under(b, a) && fx.page.is_under(a, a));
+        let (_, rects) = fx.lay();
+        let rb = rects[b as usize];
+        let ev = fx.touch(Phase::Down, rb.x + 5.0, rb.y + 5.0, 0.0);
+        assert!(ev.iter().all(|e| e.node == b && matches!(e.kind, EventKind::Pointer { .. })), "the raw surface's own pointer, not the slider's drag: {ev:?}");
+        fx.touch(Phase::Up, rb.x + 5.0, rb.y + 5.0, 0.1);
+        // A swing on c: d's drawn rect stands where the layout put it.
+        fx.rt.glide(rects.clone());
+        let rc = rects[c as usize];
+        fx.touch(Phase::Down, rc.x + 5.0, rc.y + 5.0, 1.0);
+        fx.touch(Phase::Up, rc.x + 5.0, rc.y + 5.0, 1.1);
+        fx.rt.tick(&mut fx.page, 0.04);
+        let res = resolve(&fx.page, &fx.rt);
+        assert!(res.motion[c as usize].scale[0] < 1.0, "c swings");
+        let drawn = crate::draw::moved_rects(&fx.page, &res, &rects).expect("something moves");
+        assert_eq!(drawn[d as usize], rects[d as usize], "d is not under c");
+        assert_ne!(drawn[c as usize], rects[c as usize]);
     }
 
     #[test]

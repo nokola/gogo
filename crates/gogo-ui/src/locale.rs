@@ -159,6 +159,22 @@ impl Locale {
     pub fn key_count(&self) -> usize {
         self.english.len()
     }
+
+    /// The shipped `gogo.translate(key, fallback)` for code-side strings
+    /// (toasts, formatted messages): the translation for the key NAMED
+    /// `key`, else `fallback` — an empty fallback means the key itself
+    /// (the shipped rule). Needed because code has a name, not a `KeyId`:
+    /// the pages' `/key` path bakes ids at build time, a toast's key is a
+    /// string in the code. A name lookup is a scan of the build's table —
+    /// a toast a minute, not a label a frame; the per-frame reads stay on
+    /// `text(KeyId)`. A key this build does not know shows the fallback.
+    pub fn translate<'a>(&'a self, key: &'a str, fallback: &'a str) -> &'a str {
+        let fallback: &str = if fallback.is_empty() { key } else { fallback };
+        match self.english.iter().position(|(name, _)| *name == key) {
+            Some(id) if self.is_translated(id as KeyId) => self.text(id as KeyId).unwrap_or(fallback),
+            _ => fallback,
+        }
+    }
 }
 
 /// What a `VText { text, key }` shows: the locale's string for `key` when
@@ -214,6 +230,16 @@ mod tests {
         let mut e = Locale::english(TABLE);
         e.set(1, "Annuler");
         assert_eq!(e.text(1), Some("Annuler"), "set works on an English-only table too");
+    }
+
+    #[test]
+    fn translate_looks_a_code_key_up_by_name_and_falls_back() {
+        let l = Locale::build(TABLE, &[(1, "Abbrechen")]);
+        assert_eq!(l.translate("cancel", "Cancel"), "Abbrechen");
+        assert_eq!(l.translate("ok", "OK"), "OK", "a known key with no translation shows the caller's English");
+        assert_eq!(l.translate("tapBack", "Tap Back to exit full screen"), "Tap Back to exit full screen", "an unknown key shows the fallback");
+        assert_eq!(l.translate("tapBack", ""), "tapBack", "no fallback = the key itself (the shipped gogo.translate rule)");
+        assert_eq!(Locale::english(TABLE).translate("cancel", "Cancel"), "Cancel");
     }
 
     #[test]

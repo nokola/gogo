@@ -718,7 +718,7 @@ fn paint_order(page: &Page, res: &Resolved, id: NodeId, out: &mut Vec<NodeId>) {
 /// channels the draw walk applies) moved onto its own rect and its
 /// subtree's. `None` = nothing moves — the caller keeps the borrowed
 /// slice and pays nothing.
-fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option<Vec<Rect>> {
+pub(crate) fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option<Vec<Rect>> {
     if res.motion.iter().all(|m| m.translate == [0.0, 0.0] && m.scale == [1.0, 1.0]) {
         return None;
     }
@@ -732,7 +732,13 @@ fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option<Vec<Rect>>
         // walk order like the draw pass.
         let p = pivot_frac(page, res, i as NodeId);
         let (cx, cy) = (out[i].x + out[i].w * p.0, out[i].y + out[i].h * p.1);
+        // The range bounds the scan; membership is by ancestry — a later
+        // sibling's subtree shares the range (Node::subtree_end), and a
+        // swinging button must not drag its neighbours' hit rects along.
         for j in i..page.nodes[i].subtree_end as usize {
+            if !page.is_under(j as NodeId, i as NodeId) {
+                continue;
+            }
             let r = out[j];
             out[j] = Rect::new(cx + (r.x - cx) * m.scale[0] + m.translate[0], cy + (r.y - cy) * m.scale[1] + m.translate[1], r.w * m.scale[0], r.h * m.scale[1]);
         }

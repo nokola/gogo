@@ -11,6 +11,40 @@ use crate::locale::{KeyName, Locale};
 use crate::page::*;
 
 pub const HELD: u8 = 1;
+
+/// How far a `tap_pulse` turnstile swings (degrees about the left edge).
+/// 25°: cos = 0.906, about the shipped scale pulse's 0.9 in lost width, so
+/// the feedback reads as the same weight of motion.
+pub const TAP_PULSE_ANGLE_DEG: f32 = 25.0;
+/// The swing out — the shipped `Fx.TapPulse` first track (0.05 s, quad out).
+pub const TAP_PULSE_OUT_SEC: f32 = 0.05;
+/// The swing back — the shipped second track (0.12 s, back out 0.5).
+pub const TAP_PULSE_BACK_SEC: f32 = 0.12;
+
+/// One `tap_pulse` swing in flight on a node.
+#[derive(Clone, Copy, Debug)]
+struct Pulse {
+    node: NodeId,
+    elapsed: f32,
+}
+
+impl Pulse {
+    /// The swing angle at `elapsed`: out on quad-out, back on back-out
+    /// (amplitude 0.5 — the shipped `new BackEase(0.5)`; its small
+    /// overshoot past flat reads as a hair of swing the other way, the
+    /// door settling).
+    fn angle(&self) -> f32 {
+        if self.elapsed < TAP_PULSE_OUT_SEC {
+            let t: f32 = self.elapsed / TAP_PULSE_OUT_SEC;
+            let e = Easing { curve: crate::anim::Curve::Quad, mode: crate::anim::Mode::Out, params: [None, None] };
+            TAP_PULSE_ANGLE_DEG * e.apply(t)
+        } else {
+            let t: f32 = ((self.elapsed - TAP_PULSE_OUT_SEC) / TAP_PULSE_BACK_SEC).clamp(0.0, 1.0);
+            let e = Easing { curve: crate::anim::Curve::Back, mode: crate::anim::Mode::Out, params: [Some(0.5), None] };
+            TAP_PULSE_ANGLE_DEG * (1.0 - e.apply(t))
+        }
+    }
+}
 pub const HOVERED: u8 = 2;
 pub const FOCUSED: u8 = 4;
 pub const FOCUS_WITHIN: u8 = 8;
@@ -288,6 +322,9 @@ pub struct Runtime {
     pub rect_tweens: Vec<(NodeId, Rect, Rect, f32, f32, Easing)>,
     /// The rects shown last frame (the `from` of the next glide).
     pub last_rects: Vec<Rect>,
+    /// The `tap_pulse` swings in flight (`tap_pulse`), one per node — a
+    /// second tap restarts the node's swing, Storyboard-style.
+    pulses: Vec<Pulse>,
     /// Paint-order bumps among siblings (the Canvas.ZIndex port): (node,
     /// raise) — higher paints later (on top), lower earlier (below);
     /// absent = 0, the file's order. Layout never moves.
@@ -369,12 +406,39 @@ impl Runtime {
             rect_tweens: Vec::new(),
             last_rects: Vec::new(),
             raised: Vec::new(),
+            pulses: Vec::new(),
         }
     }
 
     /// Something is moving: keep redrawing.
     pub fn animating(&self) -> bool {
-        !self.tweens.is_empty() || !self.players.is_empty() || !self.rect_tweens.is_empty() || !self.auto_glides.is_empty()
+        !self.tweens.is_empty() || !self.players.is_empty() || !self.rect_tweens.is_empty() || !self.auto_glides.is_empty() || !self.pulses.is_empty()
+    }
+
+    /// Starts a press surface's `tap_pulse` feedback: the WP turnstile
+    /// swing (user call 2026-09-05 — the name stays `tap_pulse`, the
+    /// motion is a turnstile, not the shipped scale pulse). The box swings
+    /// about its LEFT edge like a door: out to `TAP_PULSE_ANGLE_DEG` over
+    /// `TAP_PULSE_OUT_SEC` (quad out), back to flat over `TAP_PULSE_BACK_SEC`
+    /// (back out, amplitude 0.5) — the shipped `Fx.TapPulse` timings and
+    /// easings on the angle instead of a uniform scale. Drawn without
+    /// perspective: the swing shows as the box's projected width,
+    /// `scale.x = cos(angle)`, its left edge held still (`translate.x`
+    /// takes back the center-pivot shift). One swing per node: a tap
+    /// mid-swing restarts it (shipped: a new play kills the old one).
+    /// The input layer calls this on `activate` for every node whose
+    /// `tap_pulse=true` (the shipped `button.Pressed` hook).
+    pub fn tap_pulse(&mut self, node: NodeId) {
+        self.pulses.retain(|p| p.node != node);
+        self.pulses.push(Pulse { node, elapsed: 0.0 });
+        self.dirty = true;
+    }
+
+    /// The `tap_pulse` swing angle on `node` right now, degrees about its
+    /// left edge; 0 when no swing is live (a finished swing is disarmed —
+    /// the D10 law: a node has a transform only WHILE it animates).
+    pub fn tap_pulse_angle(&self, node: NodeId) -> f32 {
+        self.pulses.iter().find(|p| p.node == node).map(|p| p.angle()).unwrap_or(0.0)
     }
 
     /// The rects to SHOW this frame: the laid-out ones, except boxes still
@@ -706,10 +770,9 @@ impl Runtime {
     /// The rows a List owns right now, display order: every live row of
     /// every repeat under it (statics are never rows).
     pub fn list_rows(&self, page: &Page, list: NodeId) -> Vec<NodeId> {
-        let end = page.nodes[list as usize].subtree_end;
         let mut out = Vec::new();
         for p in &self.pools {
-            if p.repeat > list && p.repeat < end {
+            if p.repeat != list && page.is_under(p.repeat, list) {
                 out.extend(p.live.iter().map(|s| p.slots[*s as usize]));
             }
         }
@@ -1131,6 +1194,13 @@ impl Runtime {
                 self.auto_glides.push(g);
             }
         }
+        if !self.pulses.is_empty() {
+            for p in &mut self.pulses {
+                p.elapsed += dt;
+            }
+            self.pulses.retain(|p| p.elapsed < TAP_PULSE_OUT_SEC + TAP_PULSE_BACK_SEC);
+            moving = true;
+        }
         let before = self.tweens.len();
         self.tweens.retain(|t| t.elapsed < t.duration);
         moving |= before > 0;
@@ -1273,6 +1343,21 @@ impl Runtime {
     pub fn set_locale(&mut self, locale: Option<Arc<Locale>>) {
         self.locale = locale;
         self.dirty = true;
+    }
+
+    /// Code-side lookup for a dynamic string (a toast, a formatted
+    /// message) — the shipped `GogoBridge.Translate(key, fallback)`: the
+    /// active language's text for `key`, else `fallback` (the English the
+    /// caller passes; an empty fallback falls back to the key itself, the
+    /// shipped `gogo.translate` rule). No locale set = `fallback`. The
+    /// key must be one this build knows (`KEYS` — pages' `/key`s plus the
+    /// host's seeded code keys); an unknown key shows the fallback.
+    pub fn translate<'a>(&'a self, key: &'a str, fallback: &'a str) -> &'a str {
+        match &self.locale {
+            Some(l) => l.translate(key, fallback),
+            None if fallback.is_empty() => key,
+            None => fallback,
+        }
     }
 
     pub fn set_visible(&mut self, page: &mut Page, node: NodeId, visible: bool) {
@@ -1857,6 +1942,18 @@ fn compose_anim(page: &Page, rt: &Runtime, r: &mut Resolved) {
         for (node, channel) in &p.owns {
             apply(*node, *channel, rt.motion[*node as usize].get(*channel));
         }
+    }
+    // The `tap_pulse` turnstile: the swing's projected width on `scale.x`,
+    // the left edge held still by `translate.x` (the draw walk scales
+    // about the node's pivot, the center by default — half the lost width
+    // moves the box back). The width is last frame's laid-out rect; before
+    // the first layout there is none, and the box swings about its center
+    // for that one frame.
+    for p in &rt.pulses {
+        let sx: f32 = p.angle().to_radians().cos();
+        let w: f32 = rt.last_rects.get(p.node as usize).map(|r| r.w).unwrap_or(0.0);
+        apply(p.node, Channel::ScaleX, sx);
+        apply(p.node, Channel::TranslateX, -(1.0 - sx) * w / 2.0);
     }
     for (node, key, v) in &rt.held_props {
         apply_prop_lane(page, r, *node, *key, *v);

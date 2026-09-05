@@ -1127,7 +1127,12 @@ pub struct Node {
     pub parent: NodeId,
     /// Direct children: first index and count (contiguous).
     pub children: (u32, u32),
-    /// One past the last descendant — the subtree is `id+1..subtree_end`.
+    /// One past the last descendant. NOT a contiguous subtree: a parent's
+    /// children are pushed together (so `children` is one range) before
+    /// their own children, so later siblings and THEIR subtrees sit inside
+    /// `id+1..subtree_end` too. Ask `Page::is_under` for membership; the
+    /// range only bounds a scan. (A slider press landed on the picker
+    /// beside it through a range test, 2026-09-05.)
     pub subtree_end: u32,
     pub placement: Placement,
     pub props: (u32, u32),
@@ -1283,7 +1288,6 @@ pub fn palette_color(word: &str) -> Option<Color_Straight_Srgb_4xU8_RGBA> {
 pub const UNREAD_BY_DESIGN: &[(PropKey, &str)] = &[
     (PropKey::Loading, "host-read: `loading=lazy` asks the host to defer that image's decode to its first draw"),
     (PropKey::TouchTarget, "accepted: `touch_target=off` silences the 44-epx finger-target lint; the lint is not built here yet (GP41), and hit testing always uses the node's own rect"),
-    (PropKey::TapPulse, "host-read: the press feedback pulse is drawn by the host; not built here yet"),
     (PropKey::AccessibilityName, "host-read: no screen-reader bridge here yet"),
     (PropKey::KeyboardTarget, "host-read: no keyboard focus routing here yet"),
     (PropKey::IconSrc, "accepted for old files; an icon file hint nothing reads"),
@@ -1454,6 +1458,22 @@ impl Page {
     pub fn children(&self, id: NodeId) -> std::ops::Range<usize> {
         let (first, count) = self.nodes[id as usize].children;
         first as usize..(first + count) as usize
+    }
+
+    /// Whether `node` is `root` or sits anywhere under it — a parent walk,
+    /// because the arena's index ranges are not subtrees (see
+    /// `Node::subtree_end`). `NO_NODE` is under nothing.
+    pub fn is_under(&self, node: NodeId, root: NodeId) -> bool {
+        let mut n: NodeId = node;
+        loop {
+            if n == root {
+                return true;
+            }
+            if n == NO_NODE || n as usize >= self.nodes.len() {
+                return false;
+            }
+            n = self.nodes[n as usize].parent;
+        }
     }
 
     pub fn node_props(&self, id: NodeId) -> &[Prop] {
