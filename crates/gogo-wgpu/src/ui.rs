@@ -60,6 +60,20 @@ struct Texture {
     height: u32,
 }
 
+/// One externally-owned image the UI shows (`UiRenderer::external_image`).
+struct External {
+    /// The Image's `source=` string.
+    key: String,
+    /// The texture identity last registered; `None` until the first set.
+    texture: Option<wgpu::Texture>,
+}
+
+/// The handle `UiRenderer::external_image` opens for one image key; the
+/// per-frame `set_external_image` takes it, so showing a live texture
+/// hashes no string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExternalImage(u32);
+
 pub struct UiRenderer {
     pipeline: wgpu::RenderPipeline,
     screen_buffer: wgpu::Buffer,
@@ -77,9 +91,10 @@ pub struct UiRenderer {
     atlas_size: u32,
     /// Image key (the `source=` string) → texture slot.
     images: HashMap<String, TexId>,
-    /// Externally-owned textures shown by key (`set_texture_image`): the
-    /// identity last registered, so a same-texture call makes no bind group.
-    externals: HashMap<String, wgpu::Texture>,
+    /// Externally-owned textures (`external_image` / `set_external_image`):
+    /// the image key and the texture identity last registered, so a
+    /// same-texture frame makes no bind group. Indexed by `ExternalImage`.
+    externals: Vec<External>,
     /// Commands with no texture to draw them (a missing image).
     pub skipped: u32,
     pub draw_calls: u32,
@@ -168,7 +183,7 @@ impl UiRenderer {
             atlas_texture: None,
             atlas_size: 0,
             images: HashMap::new(),
-            externals: HashMap::new(),
+            externals: Vec::new(),
             skipped: 0,
             draw_calls: 0,
         };
@@ -210,31 +225,44 @@ impl UiRenderer {
         Texture { bind_group, width, height }
     }
 
-    /// Shows an externally-owned DISPLAY texture as the image `key` (the
-    /// `source=` string) — the D302 road for live GPU content in a gogo
-    /// Image (D10): the owner keeps the texture and re-encodes it when it
-    /// changes; the UI samples it like any uploaded image. Needed for the
-    /// brush page's live preview (its display cache, an sRGB8 encode of the
-    /// preview renderer). Re-registering the same key with another texture
-    /// replaces the slot (the ping-pong renderers swap); the SAME texture
-    /// again is a no-op — no bind group per frame. Returns true when it
-    /// (re)registered. Takes the display newtype: the raw texture never
-    /// leaves this crate (the D202 domain guard).
-    pub fn set_texture_image(&mut self, device: &wgpu::Device, key: &str, texture: &Tex_Display_Srgb_4xU8_RGBA) -> bool {
+    /// Opens the image `key` (the `source=` string) for an externally-owned
+    /// DISPLAY texture and hands back its handle — the D302 road for live
+    /// GPU content in a gogo Image (D10): the owner keeps the texture and
+    /// re-encodes it when it changes; the UI samples it like any uploaded
+    /// image. Needed for the brush page's live preview (its display cache,
+    /// an sRGB8 encode of the preview renderer). Open once, then
+    /// `set_external_image` per frame: the handle is an index, so the
+    /// steady state hashes no key. Opening a key twice returns the same
+    /// handle.
+    pub fn external_image(&mut self, key: &str) -> ExternalImage {
+        if let Some(i) = self.externals.iter().position(|e| e.key == key) {
+            return ExternalImage(i as u32);
+        }
+        self.externals.push(External { key: key.to_string(), texture: None });
+        ExternalImage((self.externals.len() - 1) as u32)
+    }
+
+    /// Shows `texture` as the opened image. Another texture replaces the
+    /// slot (the ping-pong renderers swap); the SAME texture again is a
+    /// no-op — no bind group per frame. Returns true when it (re)registered.
+    /// Takes the display newtype: the raw texture never leaves this crate
+    /// (the D202 domain guard).
+    pub fn set_external_image(&mut self, device: &wgpu::Device, image: ExternalImage, texture: &Tex_Display_Srgb_4xU8_RGBA) -> bool {
         let raw: &wgpu::Texture = &texture.RGBA;
-        if self.externals.get(key).is_some_and(|t| t == raw) {
+        let external: &External = &self.externals[image.0 as usize];
+        if external.texture.as_ref() == Some(raw) {
             return false;
         }
         let (width, height) = (raw.width(), raw.height());
         let entry = self.make_entry(device, raw, width, height);
-        match self.images.get(key).copied() {
+        match self.images.get(&external.key).copied() {
             Some(slot) if slot != ATLAS => self.textures[slot as usize] = entry,
             _ => {
                 self.textures.push(entry);
-                self.images.insert(key.to_string(), (self.textures.len() - 1) as TexId);
+                self.images.insert(external.key.clone(), (self.textures.len() - 1) as TexId);
             }
         }
-        self.externals.insert(key.to_string(), raw.clone());
+        self.externals[image.0 as usize].texture = Some(raw.clone());
         true
     }
 
