@@ -96,13 +96,21 @@ pub struct BuildOptions<'a> {
     pub ignore_marker: Option<&'a str>,
     /// Passed to every page's compile.
     pub compile: CompileOptions<'a>,
+    /// Keys CODE looks up at runtime that no page may declare — (name,
+    /// English), joined to `KEYS` AFTER every page compiled: a page's
+    /// English for the same key wins without a word (the page literal is
+    /// what the shipped screen showed; this list is the translators'
+    /// reference text). Needed for captions that come from data tables (a
+    /// filter's property and preset names), which are translatable only as
+    /// keys.
+    pub runtime_keys: &'a [(&'a str, &'a str)],
 }
 
 impl<'a> BuildOptions<'a> {
     /// The defaults with `res_root` set: `.ignore` fence, no default
     /// font, no host options.
     pub fn new(res_root: &'a Path) -> Self {
-        BuildOptions { res_root, default_font: None, ignore_marker: Some(".ignore"), compile: CompileOptions::default() }
+        BuildOptions { res_root, default_font: None, ignore_marker: Some(".ignore"), compile: CompileOptions::default(), runtime_keys: &[] }
     }
 }
 
@@ -229,8 +237,12 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
         source.push_str(&format!("    ({m:?}, &{m}::PAGE),\n"));
     }
     source.push_str("];\n\n");
-    // The translation keys every page named, as code.
+    // The translation keys every page named, as code — after the runtime
+    // keys join (a page's English stands where both name a key).
     {
+        for (name, english) in options.runtime_keys {
+            let _ = options.compile.keys.expect("set above").borrow_mut().intern(name, english, "runtime");
+        }
         let keys = options.compile.keys.expect("set above").borrow();
         match emit::emit_keys(&keys) {
             Ok(code) => source.push_str(&code),

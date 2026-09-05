@@ -283,6 +283,12 @@ pub fn emit_widget_names(pages: &[(&str, &Page)]) -> Result<String, String> {
     for (module, page) in pages {
         let entries = name_entries(page, "").map_err(|e| format!("{module}: {e}"))?;
         collect_widget_shapes(&entries, &mut shapes, module)?;
+        // A widget placed only inside a repeat's template still needs its
+        // struct: the slots are typed through it (`<Repeat>Slot::at`).
+        for (_, template) in repeat_templates(page) {
+            let entries = name_entries(page, &template).map_err(|e| format!("{module}: {e}"))?;
+            collect_widget_shapes(&entries, &mut shapes, module)?;
+        }
     }
     let mut out = String::new();
     for (widget, rows) in &shapes {
@@ -293,11 +299,32 @@ pub fn emit_widget_names(pages: &[(&str, &Page)]) -> Result<String, String> {
             out.push_str(&format!("    pub {f}: {t},\n"));
         }
         out.push_str("}\n\n");
+        out.push_str(&rebase_impl(&widget_struct(widget), rows, ""));
     }
     if !shapes.is_empty() {
         out = format!("use gogo::NodeId;\n\n{out}");
     }
     Ok(out)
+}
+
+/// `impl <Struct> { pub fn rebase(self, from, to) -> Self }` moving every
+/// field to a cloned subtree (a repeat slot) — a node field by
+/// `NodeId::rebase`, an instance field by its own `rebase`. `indent` is
+/// the module nesting.
+fn rebase_impl(struct_name: &str, rows: &[(String, String)], indent: &str) -> String {
+    let mut s = format!("{indent}impl {struct_name} {{\n{indent}    /// The same names under a subtree cloned from `from` to `to` (a repeat slot).\n{indent}    pub const fn rebase(self, from: NodeId, to: NodeId) -> {struct_name} {{\n{indent}        {struct_name} {{\n");
+    for (f, t) in rows {
+        s.push_str(&format!("{indent}            {f}: self.{f}.rebase(from, to),\n"));
+        let _ = t;
+    }
+    s.push_str(&format!("{indent}        }}\n{indent}    }}\n{indent}}}\n\n"));
+    s
+}
+
+/// Every repeat on the page with its template's name prefix
+/// (`<repeat>/item`): (repeat node, prefix).
+fn repeat_templates(page: &Page) -> Vec<(NodeId, String)> {
+    page.repeats.iter().map(|r| (r.node, format!("{}/item", page.str(page.nodes[r.node].name)))).collect()
 }
 
 /// The Rust source of `pub mod <module>`. `Err` for a name clash the
@@ -356,15 +383,56 @@ pub fn emit_rust(page: &Page, module: &str) -> Result<String, String> {
     for (f, e) in &entries {
         out.push_str(&format!("        {f}: {},\n", entry_value(e, 8)));
     }
-    out.push_str("    };\n}\n");
+    out.push_str("    };\n");
+    emit_slots(page, &mut out).map_err(|e| format!("{module}: {e}"))?;
+    out.push_str("}\n");
     Ok(out)
+}
+
+/// One `<Repeat>Slot` struct per repeat: the template's named parts
+/// (`root` = the slot itself) as typed fields, `TEMPLATE` for the hidden
+/// template, and `at(slot_root)` for a live row (`Runtime::items`). Needed
+/// so a code-behind over a pooled row binds its widgets by field
+/// (`BigRowsSlot::at(root).slider`) instead of formatting name paths.
+fn emit_slots(page: &Page, out: &mut String) -> Result<(), String> {
+    for (repeat, prefix) in repeat_templates(page) {
+        let name = page.str(page.nodes[repeat].name);
+        let template: NodeId = page.repeats.iter().find(|r| r.node == repeat).map(|r| r.template).expect("a repeat has a template");
+        // The template root carries the prefix too (`rows/item/row`): it IS
+        // the slot, so it is the `root` field, not a part.
+        let is_root = |e: &NameEntry| matches!(e, NameEntry::Node(n) if *n == template) || matches!(e, NameEntry::Instance { root, .. } if *root == template);
+        let entries: Vec<(String, NameEntry)> = name_entries(page, &prefix)?.into_iter().filter(|(_, e)| !is_root(e)).collect();
+        if entries.iter().any(|(f, _)| f == "root") {
+            return Err(format!("repeat `{name}`: a template node named `root` clashes with the slot's `root` field — rename it\n"));
+        }
+        // A repeat inside a widget instance is `inst/marks`: the path
+        // joins into one name (`InstMarksSlot`).
+        let struct_name = format!("{}Slot", pascal_case(&name.replace('/', "_")));
+        out.push_str(&format!("\n    /// One row of `repeat {name}`: the template's named parts by id (`root` = the row itself).\n    #[allow(dead_code)]\n    #[derive(Clone, Copy, Debug)]\n    pub struct {struct_name} {{\n        pub root: NodeId,\n"));
+        for (f, e) in &entries {
+            out.push_str(&format!("        pub {f}: {},\n", entry_type(e)));
+        }
+        out.push_str("    }\n\n");
+        out.push_str(&format!("    impl {struct_name} {{\n        /// The hidden template the rows are cloned from.\n        pub const TEMPLATE: {struct_name} = {struct_name} {{\n            root: {template:?},\n"));
+        for (f, e) in &entries {
+            out.push_str(&format!("            {f}: {},\n", entry_value(e, 12)));
+        }
+        out.push_str(&format!("        }};\n\n        /// The row whose root is `slot_root` (one of `Runtime::items`).\n        pub const fn at(slot_root: NodeId) -> {struct_name} {{\n            {struct_name}::TEMPLATE.rebase({struct_name}::TEMPLATE.root, slot_root)\n        }}\n    }}\n\n"));
+        let mut rows: Vec<(String, String)> = vec![("root".to_string(), "NodeId".to_string())];
+        rows.extend(entries.iter().map(|(f, e)| (f.clone(), entry_type(e))));
+        out.push_str(&rebase_impl(&struct_name, &rows, "    "));
+    }
+    Ok(())
 }
 
 /// The Rust variant for translation key `name`: `pickColorHint` →
 /// `PickColorHint`; a key that starts with a digit gets `N` in front
 /// (`16by9` → `N16by9`), since a variant cannot.
 pub fn key_variant(name: &str) -> String {
-    let p = pascal_case(name);
+    // A runtime key may carry a dash or a dot (`fxTile3-half`): every
+    // character that cannot sit in an identifier becomes `_`.
+    let clean: String = name.chars().map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' }).collect();
+    let p = pascal_case(&clean);
     if p.chars().next().is_some_and(|c| c.is_ascii_digit()) { format!("N{p}") } else { p }
 }
 
@@ -378,10 +446,23 @@ pub fn key_variant(name: &str) -> String {
 pub fn emit_keys(keys: &Keys) -> Result<String, String> {
     let mut out = String::new();
     let mut variants: Vec<String> = Vec::with_capacity(keys.names.len());
-    for name in &keys.names {
-        let v = key_variant(name);
+    for (i, name) in keys.names.iter().enumerate() {
+        let mut v = key_variant(name);
         if let Some(j) = variants.iter().position(|x| *x == v) {
-            return Err(format!("translation keys `{}` and `{name}` both become `Key::{v}` — rename one\n", keys.names[j]));
+            // A runtime key (`BuildOptions::runtime_keys`) is looked up by
+            // its spelling, never by variant, so a case-only twin of a
+            // page key (`save`/`Save`) takes a numbered variant instead of
+            // stopping the build; two PAGE keys colliding is an authoring
+            // mistake and stays one.
+            if keys.origins[i] == "runtime" {
+                let mut n = 2;
+                while variants.iter().any(|x| *x == format!("{v}_{n}")) {
+                    n += 1;
+                }
+                v = format!("{v}_{n}");
+            } else {
+                return Err(format!("translation keys `{}` and `{name}` both become `Key::{v}` — rename one\n", keys.names[j]));
+            }
         }
         variants.push(v);
     }
@@ -465,6 +546,35 @@ mod tests {
         assert!(src.contains(&format!("pub enum Anim {{\n        Appear = {},\n        SlideOut = {},\n    }}", appear.index(), c.page.intern_lookup("slideOut").index())), "{src}");
         assert!(src.contains("impl gogo::AnimName for Anim"), "{src}");
         assert!(!emit_rust(&compile("View v { Panel p width=10 }", &|_| None).page, "t").unwrap().contains("enum Anim"), "no anims, no enum");
+    }
+
+    /// A repeat's template becomes `<Repeat>Slot`: the hidden template's
+    /// parts as typed fields with `TEMPLATE` and `at(slot_root)`, so a
+    /// code-behind over a pooled row never formats a name path; a widget
+    /// placed only inside the template still gets its build-wide struct.
+    #[test]
+    fn repeat_templates_emit_slot_names() {
+        let src = "widget Bar { Column { Label caption text=\"c\"; Rectangle track width=fill, height=4 } }\nView v { Column c { repeat rows capacity=2 { Layers row { Bar vol; Label note text=\"n\" } } } }";
+        let c = compile(src, &|_| None);
+        assert!(!crate::has_errors(&c.diags), "{:#?}", c.diags);
+        let code = emit_rust(&c.page, "t").unwrap();
+        assert!(code.contains("pub struct RowsSlot {\n        pub root: NodeId,\n        pub vol: super::BarNames,\n        pub note: NodeId,\n    }"), "{code}");
+        let template = c.page.repeats[0].template;
+        assert_eq!(c.page.str(c.page.nodes[template].name), "rows/item/row", "the template root carries the prefix");
+        assert!(code.contains(&format!("pub const TEMPLATE: RowsSlot = RowsSlot {{\n            root: {template:?},")), "{code}");
+        assert!(code.contains("pub const fn at(slot_root: NodeId) -> RowsSlot"), "{code}");
+        assert!(code.contains("impl RowsSlot {\n        /// The same names under a subtree cloned"), "{code}");
+        let structs = emit_widget_names(&[("t", &c.page)]).unwrap();
+        assert!(structs.contains("pub struct BarNames"), "a template-only widget still gets its struct: {structs}");
+        assert!(structs.contains("impl BarNames {\n    /// The same names under a subtree cloned"), "{structs}");
+        // The rebase arithmetic the generated `at` runs: a cloned slot's
+        // node is the template's node moved by the roots' distance.
+        let mut page = c.page.clone();
+        let mut rt = crate::Runtime::new(&page);
+        rt.set_count(&mut page, c.page.find("rows").unwrap(), 2);
+        let slots = rt.items(&page, c.page.find("rows").unwrap());
+        let track = c.page.find("rows/item/vol/track").unwrap();
+        assert_eq!(track.rebase(template, slots[1]), page.find("rows/1/vol/track").unwrap());
     }
 
     /// A widget instance is a nested names struct: `NAMES.vol.track` is the

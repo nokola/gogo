@@ -47,6 +47,16 @@ macro_rules! id_newtype {
             pub(crate) const fn offset(self, by: u32) -> $name {
                 $name(self.0 + by)
             }
+
+            /// This id's twin under another root: the same place in a
+            /// subtree cloned from `from` to `to` (`Page::clone_subtree`
+            /// keeps the layout, so a repeat slot's node is the template's
+            /// node moved by the roots' distance). The build's
+            /// `<Repeat>Slot::at` uses it, so code names a slot's parts
+            /// as typed fields, never by string path.
+            pub const fn rebase(self, from: $name, to: $name) -> $name {
+                $name(self.0 - from.0 + to.0)
+            }
         }
 
         impl std::fmt::Debug for $name {

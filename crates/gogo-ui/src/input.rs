@@ -585,6 +585,26 @@ fn behavior_at(page: &Page, node: NodeId) -> Option<u32> {
     page.behaviors.iter().position(|b| page.is_under(node, b.root)).map(|i| i as u32)
 }
 
+/// The behavior with the control's LIVE range: a code write of `min=` /
+/// `max=` / `step=` on the control root (SliderPhone's Minimum/Maximum
+/// setters — an effect row takes its filter's range at every open)
+/// overrides the contract's baked numbers, as the addon's slider_behavior
+/// read the live params. Needed because the rows are pooled slots: one
+/// declared control serves every filter's range.
+fn live_behavior(page: &Page, res: &Resolved, bi: u32) -> crate::page::SliderBehavior {
+    let mut b = page.behaviors[bi as usize];
+    if let Some(v) = res.num(page, b.root, PropKey::Min) {
+        b.min = v;
+    }
+    if let Some(v) = res.num(page, b.root, PropKey::Max) {
+        b.max = v;
+    }
+    if let Some(v) = res.num(page, b.root, PropKey::Step) {
+        b.step = v;
+    }
+    b
+}
+
 /// The machine's pointer math (GP52): bare x over the `slot track`'s
 /// width — shipped SliderPhone drew no thumb, so there is no knob
 /// compensation (its UpdatePercent was `x / width` verbatim).
@@ -758,7 +778,8 @@ impl Input {
         // fence keeps a `keys` claim off them, so no second owner).
         if let (Some(f), Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End) = (self.focus, k) {
             if !rt.disabled(page, f) {
-                if let Some(b) = page.behaviors.iter().find(|b| b.root == f).copied() {
+                if let Some(bi) = page.behaviors.iter().position(|b| b.root == f) {
+                    let b = live_behavior(page, res, bi as u32);
                     self.step_behavior(page, rt, res, &b, k, &mut events);
                     return events;
                 }
@@ -1179,7 +1200,7 @@ impl Input {
         // its surface — found before the kind walk (its root wears a
         // body kind, not Slider).
         if let Some(bi) = n.and_then(|h| behavior_at(page, h)) {
-            let b = page.behaviors[bi as usize];
+            let b = live_behavior(page, res, bi);
             if rt.disabled(page, b.root) {
                 return events;
             }
@@ -1555,7 +1576,7 @@ impl Input {
                     value_from = if rt.writes.iter().any(|(n, w)| *n == node && w.key == PropKey::Value) { value_of(rt, res, page, node) } else if rt.has(node, SELECTED) { 1.0 } else { 0.0 };
                 }
                 if let (Some(bi), false) = (behavior, caught) {
-                    let b = page.behaviors[bi as usize];
+                    let b = live_behavior(page, res, bi);
                     value_from = b_value_of(rt, res, page, &b);
                     // The gesture's opening edge first, when declared —
                     // the addon's behaviors emitted, then applied.
@@ -1655,7 +1676,7 @@ impl Input {
                     }
                 }
                 if let (Some(bi), false) = (p.behavior, p.panning) {
-                    let b = page.behaviors[bi as usize];
+                    let b = live_behavior(page, res, bi);
                     let v = behavior_value(rects, &b, t.x);
                     // One `edit` per crossed step, none for a same-value
                     // sample (GPAR6, same as the built-in below).
@@ -1808,7 +1829,7 @@ impl Input {
                 // changed means CHANGED (its root wears a body kind, so
                 // the match below can't route it).
                 if let Some(bi) = p.behavior {
-                    let b = page.behaviors[bi as usize];
+                    let b = live_behavior(page, res, bi);
                     let v = b_value_of(rt, res, page, &b);
                     if v != p.value_from {
                         self.push_event(rt, &mut events, b.root, EventKind::Change(Value::VNum(v)), event_action(page, b.root, "change"));

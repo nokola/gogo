@@ -532,7 +532,11 @@ pub struct Compiler<'a> {
     /// The image table when `options.images` is `None`.
     local_images: Images,
     /// Top-level `when <arrangement> { node.prop = v }`, applied after the tree exists.
-    deferred_whens: Vec<(State, Vec<AstItem>, u32)>,
+    /// Top-level poses, resolved at finish: (state, `node.prop = value`
+    /// lines, block line, default). `default` = a hostless widget's own
+    /// `when screen.*` pose (D14): it ranks as line 0 and never clashes, so
+    /// a page's pose on the same instance wins.
+    deferred_whens: Vec<(State, Vec<AstItem>, u32, bool)>,
     /// `anim` declarations, compiled after the tree exists (they name
     /// nodes): (the widget-instance scope they were declared in — `""` at
     /// the top of the file — and the declaration).
@@ -847,7 +851,7 @@ impl<'a> Compiler<'a> {
                                 // silent no-op reads as a working pose.
                                 self.error("G0054", n.line, "this `when` holds no responses — a top-level block poses nodes (`node.prop = value`)");
                             }
-                            self.deferred_whens.push((state, items, n.line));
+                            self.deferred_whens.push((state, items, n.line, false));
                         }
                     }
                     _ => {}
@@ -2097,7 +2101,14 @@ impl<'a> Compiler<'a> {
         // carries a default `transition` line for its own states.
         if host.is_none() && n.type_word == "widget" {
             for w in n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "when" || b.type_word == "transition") {
-                self.error("G5001", w.line, format!("a widget-scope `{}` responds to the HOST's states — this widget declares no host; announce it: `widget {name} for=Radio, …` (hosts: Button, Radio, Check)", w.type_word));
+                // A hostless widget may pose ITS OWN body on the screen
+                // class (`when screen.landscapeSmall { card.width = 420 }`,
+                // D14) — the pose compiles per instance below. Any other
+                // state word has nothing here to answer.
+                if w.type_word == "when" && w.name.as_deref().is_some_and(|s| s.starts_with("screen.")) {
+                    continue;
+                }
+                self.error("G5001", w.line, format!("a widget-scope `{}` responds to the HOST's states — this widget declares no host; announce it: `widget {name} for=Radio, …` (hosts: Button, Radio, Check), or pose the body on the screen class: `when screen.landscapeSmall {{ card.width = 420 }}`", w.type_word));
             }
         }
         let states: Vec<String> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "state").flat_map(|b| b.args.iter().filter_map(|a| a.as_ident()).map(str::to_string)).collect();
@@ -3715,11 +3726,30 @@ impl<'a> Compiler<'a> {
                     t.transitions.push(tr);
                 }
             }
-            // A `for=` widget's scope responses answer the hosting control.
-            for w in &def.whens {
-                if let Some(mut tw) = self.when(w, t.node.kind) {
-                    tw.host = def.host.is_some();
-                    t.whens.push(tw);
+            if def.host.is_none() && !def.control {
+                // A hostless widget's `when screen.*` blocks pose its own
+                // body (D14): one copy per instance, the body's names under
+                // the instance's prefix, resolved with the page's top-level
+                // whens so the same one-writer and seat checks apply.
+                let inst_full: String = self.prefix.join("/");
+                for w in &def.whens {
+                    let Some(state) = self.state_word(w, true) else { continue };
+                    let mut items: Vec<AstItem> = w.props.iter().map(|p| AstItem::Assign { key: format!("{inst_full}/{}", p.key), dollar: false, value: p.value.clone(), line: p.line }).collect();
+                    for item in &w.children {
+                        match item {
+                            AstItem::Assign { key, dollar, value, line } => items.push(AstItem::Assign { key: format!("{inst_full}/{key}"), dollar: *dollar, value: value.clone(), line: *line }),
+                            other => items.push(other.clone()),
+                        }
+                    }
+                    self.deferred_whens.push((state, items, w.line, true));
+                }
+            } else {
+                // A `for=` widget's scope responses answer the hosting control.
+                for w in &def.whens {
+                    if let Some(mut tw) = self.when(w, t.node.kind) {
+                        tw.host = def.host.is_some();
+                        t.whens.push(tw);
+                    }
                 }
             }
             // A `for=` widget's `transition` rules time the HOSTING
@@ -5499,7 +5529,10 @@ impl<'a> Compiler<'a> {
         let deferred = std::mem::take(&mut self.deferred_whens);
         let mut seat_claims: Vec<(NodeId, StrId, State, u32)> = Vec::new();
         let mut screen_writes: Vec<(NodeId, PropKey, State, u32)> = Vec::new();
-        for (state, items, line) in deferred {
+        for (state, items, block_line, default_pose) in deferred {
+            // A widget's default pose ranks under every page line (the
+            // runtime applies a node's whens by (priority, line)).
+            let line: u32 = if default_pose { 0 } else { block_line };
             for item in &items {
                 let AstItem::Assign { key, dollar: false, value, line: l } = item else {
                     self.error("G0054", line, "a top-level `when` block holds `node.prop = value` lines");
@@ -5538,7 +5571,7 @@ impl<'a> Compiler<'a> {
                     // each keep their own line for the later-line tie-break.
                     match self.node_whens[id].iter_mut().find(|w| w.state == state && w.line == line) {
                         Some(w) => w.props.push(prop),
-                        None => self.node_whens[id].push(WhenTmp { state, line, props: vec![prop], descendants: Vec::new(), host: false, styled: false }),
+                        None => self.node_whens[id].push(WhenTmp { state, line, props: vec![prop], descendants: Vec::new(), host: false, styled: default_pose }),
                     }
                 }
             }
