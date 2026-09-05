@@ -1327,6 +1327,18 @@ impl Runtime {
         self.dirty = true;
     }
 
+    /// Takes a code write back: `node`'s `key` reads the file's value
+    /// again (the shipped "fixed_w = -1 = unset" — a Tiles cell that was a
+    /// 72x72 square becomes a full row with no width of its own). A key
+    /// never written is a no-op.
+    pub fn clear_prop(&mut self, node: NodeId, key: PropKey) {
+        let before = self.writes.len();
+        self.writes.retain(|(n, p)| !(*n == node && p.key == key));
+        if self.writes.len() != before {
+            self.dirty = true;
+        }
+    }
+
     /// A code write of a label's text. The first write pushes a fresh
     /// string slot the node owns (never a shared interned one — another
     /// node may show the same words); later writes rewrite that slot in
