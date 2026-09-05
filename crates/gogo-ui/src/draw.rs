@@ -46,8 +46,9 @@ pub enum Draw {
     /// across the `band` (0..1 along the gradient's run; `(0, 1)` is the
     /// whole run), nothing painted outside it. A gradient with N stops is
     /// N−1 of these. `angle` is the CSS compass: 0 = to top, 90 = to
-    /// right, clockwise.
-    Gradient { rect: Rect, kind: GradientKind, from: Color_Straight_Srgb_4xU8_RGBA, to: Color_Straight_Srgb_4xU8_RGBA, angle: f32, band: (f32, f32) },
+    /// right, clockwise. `corner` is the node's `corner_radius` (epx): the
+    /// renderer masks the ramp to the rounded rect, half the box = a disc.
+    Gradient { rect: Rect, kind: GradientKind, from: Color_Straight_Srgb_4xU8_RGBA, to: Color_Straight_Srgb_4xU8_RGBA, angle: f32, band: (f32, f32), corner: f32 },
     /// `text`/`key`: the literal as the file wrote it and its translation
     /// key (`NO_KEY` = none). The renderer shows `locale::display(page,
     /// locale, text, key)` — the same string layout measured.
@@ -481,7 +482,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                 bands.extend(back);
             }
             for (f, t, band) in bands {
-                out.push(Draw::Gradient { rect, kind, from: f, to: t, angle, band });
+                out.push(Draw::Gradient { rect, kind, from: f, to: t, angle, band, corner });
             }
         }
         Kind::Image => {
@@ -911,6 +912,24 @@ mod tests {
         assert!(list.iter().any(|d| matches!(d, Draw::Quad { color, corner, .. } if *color == accent && *corner == TOGGLE_PILL.1 / 2.0)), "the on pill");
         assert!(!list.iter().any(|d| matches!(d, Draw::Quad { color, .. } if *color == DEFAULT_BUTTON_BACKGROUND)), "no plate under a mark; the undo plate is dimmed");
         assert!(list.iter().any(|d| matches!(d, Draw::Text { color, .. } if color.0[3] == (255.0 * DISABLED_OPACITY) as u8 + 1 || color.0[3] == (255.0 * DISABLED_OPACITY).round() as u8)), "undo text dimmed: {list:#?}");
+    }
+
+    /// A Gradient's `corner_radius` rides its draw (Q9): the renderer
+    /// masks the ramp to the rounded rect — half the box makes the disc the
+    /// brush-options preview ball needs. Without the key the corner is 0,
+    /// the square.
+    #[test]
+    fn a_gradient_carries_its_corner_radius() {
+        let src = "View v { Gradient g width=100, height=100, fill=radial, corner_radius=50, stops=[#FFFFFFFF, #FFFFFF00]; Gradient h width=100, height=100, stops=[#FF0000FF, #0000FFFF] }";
+        let c = crate::compile(src, &|_| None);
+        assert!(!crate::has_errors(&c.diags), "{:#?}", c.diags);
+        let page = c.page;
+        let rt = crate::runtime::Runtime::new(&page);
+        let res = crate::runtime::resolve(&page, &rt);
+        let rects = crate::layout::layout(&page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &crate::layout::FixedAdvance);
+        let list = draw(&page, &res, &rects);
+        let corners: Vec<f32> = list.iter().filter_map(|d| if let Draw::Gradient { corner, .. } = d { Some(*corner) } else { None }).collect();
+        assert_eq!(corners, vec![50.0, 0.0], "{list:?}");
     }
 
     /// A Circle in a non-square box draws a CENTERED DISC — the bounding

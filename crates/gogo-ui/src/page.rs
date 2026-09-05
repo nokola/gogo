@@ -749,7 +749,11 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
         Kind::Image => &[BOX, PLATE, &[PropKey::Source, PropKey::Fit, PropKey::Loading]],
         Kind::Rectangle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::CornerRadius, PropKey::CornerRadiusTopLeft, PropKey::CornerRadiusTopRight, PropKey::CornerRadiusBottomRight, PropKey::CornerRadiusBottomLeft, PropKey::BorderThickness, PropKey::BorderColor]],
         Kind::Circle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::BorderThickness, PropKey::BorderColor]],
-        Kind::Gradient => &[BOX, &[PropKey::Stops, PropKey::GradientFill, PropKey::Angle, PropKey::GradientRepeat, PropKey::From, PropKey::To]],
+        // `corner_radius` (Q9, user 2026-09-05): a rounded or disc-shaped
+        // ramp — the brush-options preview ball. The uniform key only: the
+        // per-corner radii ride the draw's uv slot, which a gradient's band
+        // already uses.
+        Kind::Gradient => &[BOX, &[PropKey::Stops, PropKey::GradientFill, PropKey::Angle, PropKey::GradientRepeat, PropKey::From, PropKey::To, PropKey::CornerRadius]],
         Kind::Arc => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::From, PropKey::Sweep, PropKey::Thickness]],
         // A Slider's `background=` is its track, `color=` the filled part.
         Kind::Slider => &[BOX, &[PropKey::Background, PropKey::CornerRadius, PropKey::Color, PropKey::Value, PropKey::Min, PropKey::Max, PropKey::Step]],
