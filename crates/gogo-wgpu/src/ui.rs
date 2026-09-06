@@ -12,7 +12,7 @@
 
 use crate::tex_types::Tex_Display_Srgb_4xU8_RGBA;
 
-use gogo::draw::{Draw, Fit, GradientKind, TextAlign};
+use gogo::draw::{Draw, Fit, GradientKind, Sampling, TextAlign};
 use gogo::layout::Rect;
 use gogo::locale::Locale;
 use gogo::page::{NO_STR, Page};
@@ -68,10 +68,14 @@ struct Batch {
     count: u32,
     scissor: Option<[u32; 4]>,
     tex: TexId,
+    /// Sampled by texel (`sampling=pixel`) instead of smoothed.
+    pixel: bool,
 }
 
 struct Texture {
     bind_group: wgpu::BindGroup,
+    /// The same view through the nearest-texel sampler.
+    bind_group_pixel: wgpu::BindGroup,
     width: u32,
     height: u32,
 }
@@ -96,6 +100,8 @@ pub struct UiRenderer {
     screen_bind: wgpu::BindGroup,
     tex_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// Nearest-texel sampling for `sampling=pixel` Images.
+    sampler_pixel: wgpu::Sampler,
     quad_buffer: wgpu::Buffer,
     quad_capacity: usize,
     quads: Vec<Quad>,
@@ -160,6 +166,7 @@ impl UiRenderer {
         let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("ui screen"), size: std::mem::size_of::<Screen>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let screen_bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("ui screen"), layout: &screen_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: screen_buffer.as_entire_binding() }] });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("ui"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
+        let sampler_pixel = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("ui pixel"), mag_filter: wgpu::FilterMode::Nearest, min_filter: wgpu::FilterMode::Nearest, ..Default::default() });
         let gradients = GradientTable::new(device, GRAD_ROWS_INITIAL);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("ui"), bind_group_layouts: &[Some(&screen_layout), Some(&tex_layout), Some(&gradients.layout)], immediate_size: 0 });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -195,6 +202,7 @@ impl UiRenderer {
             screen_bind,
             tex_layout,
             sampler,
+            sampler_pixel,
             quad_buffer,
             quad_capacity,
             quads: Vec::new(),
@@ -235,8 +243,9 @@ impl UiRenderer {
         (tex, entry)
     }
 
-    /// A slot over any 2D texture the UI may sample: one bind group with
-    /// the shared sampler.
+    /// A slot over any 2D texture the UI may sample: one bind group per
+    /// sampler (smooth, and the pixel one a `sampling=pixel` Image draws
+    /// with).
     fn make_entry(&self, device: &wgpu::Device, tex: &wgpu::Texture, width: u32, height: u32) -> Texture {
         let view = tex.create_view(&Default::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -244,7 +253,12 @@ impl UiRenderer {
             layout: &self.tex_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) }],
         });
-        Texture { bind_group, width, height }
+        let bind_group_pixel = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ui texture pixel"),
+            layout: &self.tex_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler_pixel) }],
+        });
+        Texture { bind_group, bind_group_pixel, width, height }
     }
 
     /// Opens the image `key` (the `source=` id) for an externally-owned
@@ -374,6 +388,7 @@ impl UiRenderer {
         let mut batch_first = 0u32;
         let mut current: Option<[u32; 4]> = None;
         let mut current_tex: TexId = ATLAS;
+        let mut current_pixel: bool = false;
         for (draws, page) in pages {
         // Indexed: a Gradient entry owns the stop records after it.
         let mut i: usize = 0;
@@ -423,9 +438,10 @@ impl UiRenderer {
                 // by the draw pass; skipped, not drawn).
                 Draw::GradientStop { .. } => {}
                 Draw::Text { rect, text: text_id, key, font_size, color, halign, valign, wrap, font } => {
-                    if current_tex != ATLAS {
-                        self.close_batch(&mut batch_first, current, current_tex);
+                    if current_tex != ATLAS || current_pixel {
+                        self.close_batch(&mut batch_first, current, current_tex, current_pixel);
                         current_tex = ATLAS;
+                        current_pixel = false;
                     }
                     let s = gogo::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
@@ -450,9 +466,10 @@ impl UiRenderer {
                     }
                 }
                 Draw::TextStretch { rect, text: text_id, key, color, font, flip } => {
-                    if current_tex != ATLAS {
-                        self.close_batch(&mut batch_first, current, current_tex);
+                    if current_tex != ATLAS || current_pixel {
+                        self.close_batch(&mut batch_first, current, current_tex, current_pixel);
                         current_tex = ATLAS;
+                        current_pixel = false;
                     }
                     let s = gogo::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
@@ -511,37 +528,44 @@ impl UiRenderer {
                     let y = r[1] + (r[3] - h) / 2.0;
                     self.quads.push(Quad { rect: [x, y, (1.5 * epx).max(1.0), h], color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_RECT, 0.0], uv: NO_UV, rot, wedge, swing, eye });
                 }
-                Draw::Image { rect, image, tint, fit } => {
+                Draw::Image { rect, image, tint, fit, window, sampling } => {
                     let Some(tex) = self.slot(*image) else {
                         self.skipped += 1;
                         continue;
                     };
-                    if current_tex != tex {
-                        self.close_batch(&mut batch_first, current, current_tex);
+                    let pixel: bool = *sampling == Sampling::Pixel;
+                    if current_tex != tex || current_pixel != pixel {
+                        self.close_batch(&mut batch_first, current, current_tex, current_pixel);
                         current_tex = tex;
+                        current_pixel = pixel;
                     }
                     let t = &self.textures[tex as usize];
                     let r = px(rect);
                     let (tw, th) = (t.width as f32, t.height as f32);
+                    // The window is the picture the fit maps (the whole
+                    // texture when unset); its uv corners are the
+                    // window's fraction of the texture.
+                    let [wx, wy, ww, wh] = window.unwrap_or([0.0, 0.0, tw, th]);
                     let (fitted, uv) = match fit {
                         // contain: the bitmap letterboxed into the rect.
                         Fit::Contain => {
-                            let scale = (r[2] / tw).min(r[3] / th);
-                            let (w, h) = (tw * scale, th * scale);
+                            let scale = (r[2] / ww).min(r[3] / wh);
+                            let (w, h) = (ww * scale, wh * scale);
                             ([r[0] + (r[2] - w) / 2.0, r[1] + (r[3] - h) / 2.0, w, h], [0.0, 0.0, 1.0, 1.0])
                         }
                         // cover: the rect filled, the bitmap's overflow cropped (centered).
                         Fit::Cover => {
-                            let scale = (r[2] / tw).max(r[3] / th);
-                            let (vis_w, vis_h) = (r[2] / scale / tw, r[3] / scale / th);
+                            let scale = (r[2] / ww).max(r[3] / wh);
+                            let (vis_w, vis_h) = (r[2] / scale / ww, r[3] / scale / wh);
                             (r, [(1.0 - vis_w) / 2.0, (1.0 - vis_h) / 2.0, (1.0 + vis_w) / 2.0, (1.0 + vis_h) / 2.0])
                         }
                         Fit::Distort => (r, [0.0, 0.0, 1.0, 1.0]),
                     };
+                    let uv = [(wx + uv[0] * ww) / tw, (wy + uv[1] * wh) / th, (wx + uv[2] * ww) / tw, (wy + uv[3] * wh) / th];
                     self.quads.push(Quad { rect: fitted, color: tint.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_IMAGE, 0.0], uv, rot, wedge, swing, eye });
                 }
                 Draw::ClipPush(rect) => {
-                    self.close_batch(&mut batch_first, current, current_tex);
+                    self.close_batch(&mut batch_first, current, current_tex, current_pixel);
                     let r = px(rect);
                     let x = r[0].max(0.0).floor() as u32;
                     let y = r[1].max(0.0).floor() as u32;
@@ -559,7 +583,7 @@ impl UiRenderer {
                     current = Some(clip);
                 }
                 Draw::ClipPop => {
-                    self.close_batch(&mut batch_first, current, current_tex);
+                    self.close_batch(&mut batch_first, current, current_tex, current_pixel);
                     clips.pop();
                     current = clips.last().copied();
                 }
@@ -597,7 +621,7 @@ impl UiRenderer {
             }
         }
         }
-        self.close_batch(&mut batch_first, current, current_tex);
+        self.close_batch(&mut batch_first, current, current_tex, current_pixel);
         self.sync_atlas(device, queue, text);
         self.gradients.flush(queue);
 
@@ -611,10 +635,10 @@ impl UiRenderer {
         queue.write_buffer(&self.screen_buffer, 0, bytemuck::bytes_of(&Screen { size: [screen.0 as f32, screen.1 as f32], _pad: [0.0; 2] }));
     }
 
-    fn close_batch(&mut self, first: &mut u32, scissor: Option<[u32; 4]>, tex: TexId) {
+    fn close_batch(&mut self, first: &mut u32, scissor: Option<[u32; 4]>, tex: TexId, pixel: bool) {
         let end = self.quads.len() as u32;
         if end > *first {
-            self.batches.push(Batch { first: *first, count: end - *first, scissor, tex });
+            self.batches.push(Batch { first: *first, count: end - *first, scissor, tex, pixel });
         }
         *first = end;
     }
@@ -635,7 +659,8 @@ impl UiRenderer {
                 Some(_) => continue,
                 None => pass.set_scissor_rect(0, 0, self.screen.0, self.screen.1),
             }
-            pass.set_bind_group(1, &self.textures[b.tex as usize].bind_group, &[]);
+            let t = &self.textures[b.tex as usize];
+            pass.set_bind_group(1, if b.pixel { &t.bind_group_pixel } else { &t.bind_group }, &[]);
             pass.draw(0..6, b.first..b.first + b.count);
             self.draw_calls += 1;
         }
