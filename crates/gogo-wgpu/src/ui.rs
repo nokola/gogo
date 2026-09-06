@@ -78,6 +78,9 @@ struct Texture {
     bind_group_pixel: wgpu::BindGroup,
     width: u32,
     height: u32,
+    /// The texture itself, so a same-size re-upload writes in place
+    /// (`update_image`); None for the externals' entries and the atlas.
+    texture: Option<wgpu::Texture>,
 }
 
 /// One externally-owned image the UI shows (`UiRenderer::external_image`).
@@ -258,7 +261,7 @@ impl UiRenderer {
             layout: &self.tex_layout,
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler_pixel) }],
         });
-        Texture { bind_group, bind_group_pixel, width, height }
+        Texture { bind_group, bind_group_pixel, width, height, texture: None }
     }
 
     /// Opens the image `key` (the `source=` id) for an externally-owned
@@ -351,10 +354,29 @@ impl UiRenderer {
         // sRGB bytes in, sRGB bytes out: the surface is non-sRGB (the canvas
         // blit copies encoded bytes), so an sRGB texture here would be
         // decoded on sample and never re-encoded — every image too dark.
-        let (tex, entry) = self.make_texture(device, width, height, wgpu::TextureFormat::Rgba8Unorm);
+        let (tex, mut entry) = self.make_texture(device, width, height, wgpu::TextureFormat::Rgba8Unorm);
         Self::write(queue, &tex, rgba, width, height, 4);
+        entry.texture = Some(tex);
         self.textures.push(entry);
         self.set_slot(key, (self.textures.len() - 1) as TexId);
+    }
+
+    /// Re-uploads an image the page shows: the same-size texture is written
+    /// IN PLACE, a new size (or a key never added) takes `add_image`.
+    /// Needed for pictures that refresh while shown — the mask panel's
+    /// tiles re-render on every effect pass and the preset strip per open;
+    /// a fresh texture per refresh would pile up for the session.
+    pub fn update_image(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: ImageKey, rgba: &[u8], width: u32, height: u32) {
+        let slot: Option<TexId> = self.images.get(key.index()).copied().flatten();
+        if let Some(entry) = slot.map(|s| &self.textures[s as usize]) {
+            if let Some(tex) = &entry.texture {
+                if entry.width == width && entry.height == height {
+                    Self::write(queue, tex, rgba, width, height, 4);
+                    return;
+                }
+            }
+        }
+        self.add_image(device, queue, key, rgba, width, height);
     }
 
     /// Uploads the glyph atlas when the engine changed it.
