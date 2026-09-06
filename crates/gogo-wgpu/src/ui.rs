@@ -359,8 +359,11 @@ impl UiRenderer {
                 Draw::QuadCorners { rect, color, corners, border, border_color } => {
                     self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [0.0, border * epx, KIND_RECT4, 0.0], uv: [corners[0] * epx, corners[1] * epx, corners[2] * epx, corners[3] * epx], rot, wedge });
                 }
-                Draw::Arc { rect, color, from, sweep, thickness } => {
-                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: [0.0; 4], params: [thickness * epx, from.to_radians(), KIND_ARC, sweep.to_radians()], uv: NO_UV, rot, wedge });
+                Draw::Arc { rect, color, from, sweep, thickness, dash } => {
+                    // uv: the dash mask (offset, dash, period) in radians —
+                    // period 0 = solid. One quad per dash/gap pair.
+                    let (offset, dash_len, period) = dash;
+                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: [0.0; 4], params: [thickness * epx, from.to_radians(), KIND_ARC, sweep.to_radians()], uv: [offset.to_radians(), dash_len.to_radians(), period.to_radians(), 0.0], rot, wedge });
                 }
                 Draw::Circle { rect, color, border, border_color } => {
                     self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [0.0, border * epx, KIND_CIRCLE, 0.0], uv: NO_UV, rot, wedge });

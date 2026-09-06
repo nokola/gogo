@@ -20,7 +20,7 @@ struct Quad {
     @location(1) color: vec4<f32>,         // fill (gradient: from, PREMULTIPLIED OKLAB; glyph/image: tint)
     @location(2) border_color: vec4<f32>,  // border (gradient: to, premultiplied Oklab)
     @location(3) params: vec4<f32>,        // corner, border, kind, angle (radians)
-    @location(4) uv: vec4<f32>,            // u0, v0, u1, v1 (kinds 4, 5); band start, end, period start, period length (kinds 2, 3, 6)
+    @location(4) uv: vec4<f32>,            // u0, v0, u1, v1 (kinds 4, 5); band start, end, period start, period length (kinds 2, 3, 6); dash offset, dash, period (kind 7)
     @location(5) rot: vec4<f32>,           // sin, cos, center x, center y (device px)
     @location(6) wedge: vec4<f32>,         // mask: center x, y (device px), from rad, span rad (<0 = none)
 };
@@ -130,8 +130,19 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         if (rel > in.params.w) {
             discard;
         }
+        // The dash mask (the quad's raw uv, `band` here: offset, dash,
+        // period in radians; period 0 = solid): where the angle past the
+        // offset falls in its period, the stroke shows for the first
+        // `dash`. The dash ends get the same one-pixel ramp as the ring's
+        // rim, measured along the centerline.
+        var dash_cov = 1.0;
+        if (in.band.z > 0.0) {
+            let ph = fract((rel - in.band.x) / in.band.z) * in.band.z;
+            let along = min(ph, in.band.y - ph) * (r - in.params.x * 0.5);
+            dash_cov = clamp(0.5 + along, 0.0, 1.0);
+        }
         let pm = vec4<f32>(in.color.rgb * in.color.a, in.color.a);
-        return pm * clamp(0.5 - ring, 0.0, 1.0);
+        return pm * clamp(0.5 - ring, 0.0, 1.0) * dash_cov;
     }
     var corner = in.params.x;
     if (kind == 1.0) {
