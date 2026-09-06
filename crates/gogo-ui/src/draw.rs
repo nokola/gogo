@@ -126,6 +126,39 @@ pub enum Draw {
     SwingPop,
 }
 
+impl Draw {
+    /// The same command moved by (`dx`, `dy`) epx with every color's alpha
+    /// scaled by `alpha` — a page sliding in or fading out (the navigation's
+    /// page poses). Needed because a page lays out ONCE at rest and the
+    /// slide is a pose over that layout, not a relayout per frame.
+    pub fn posed(&self, dx: f32, dy: f32, alpha: f32) -> Draw {
+        let mv = |r: &Rect| Rect::new(r.x + dx, r.y + dy, r.w, r.h);
+        let fade = |c: &Color_Straight_Srgb_4xU8_RGBA| Color_Straight_Srgb_4xU8_RGBA([c.0[0], c.0[1], c.0[2], (c.0[3] as f32 * alpha).round().clamp(0.0, 255.0) as u8]);
+        match self {
+            Draw::Quad { rect, color, corner, border, border_color } => Draw::Quad { rect: mv(rect), color: fade(color), corner: *corner, border: *border, border_color: fade(border_color) },
+            Draw::QuadCorners { rect, color, corners, border, border_color } => Draw::QuadCorners { rect: mv(rect), color: fade(color), corners: *corners, border: *border, border_color: fade(border_color) },
+            Draw::Arc { rect, color, from, sweep, thickness, dash } => Draw::Arc { rect: mv(rect), color: fade(color), from: *from, sweep: *sweep, thickness: *thickness, dash: *dash },
+            Draw::Circle { rect, color, border, border_color } => Draw::Circle { rect: mv(rect), color: fade(color), border: *border, border_color: fade(border_color) },
+            Draw::Image { rect, image, tint, fit, window, sampling } => Draw::Image { rect: mv(rect), image: *image, tint: fade(tint), fit: *fit, window: *window, sampling: *sampling },
+            Draw::Gradient { rect, kind, angle, corner, period, stops } => Draw::Gradient { rect: mv(rect), kind: *kind, angle: *angle, corner: *corner, period: *period, stops: *stops },
+            Draw::GradientStop { pos, color } => Draw::GradientStop { pos: *pos, color: fade(color) },
+            Draw::Text { rect, text, key, font_size, color, halign, valign, wrap, font } => Draw::Text { rect: mv(rect), text: *text, key: *key, font_size: *font_size, color: fade(color), halign: *halign, valign: *valign, wrap: *wrap, font: *font },
+            Draw::TextStretch { rect, text, key, color, font, flip } => Draw::TextStretch { rect: mv(rect), text: *text, key: *key, color: fade(color), font: *font, flip: *flip },
+            Draw::Caret { rect, text, key, font_size, font, index, color } => Draw::Caret { rect: mv(rect), text: *text, key: *key, font_size: *font_size, font: *font, index: *index, color: fade(color) },
+            Draw::Selection { rect, text, key, font_size, font, lo, hi, color } => Draw::Selection { rect: mv(rect), text: *text, key: *key, font_size: *font_size, font: *font, lo: *lo, hi: *hi, color: fade(color) },
+            Draw::SelHandles { rect, text, key, font_size, font, lo, hi, color } => Draw::SelHandles { rect: mv(rect), text: *text, key: *key, font_size: *font_size, font: *font, lo: *lo, hi: *hi, color: fade(color) },
+            Draw::ClipPush(rect) => Draw::ClipPush(mv(rect)),
+            Draw::ClipPop => Draw::ClipPop,
+            Draw::WedgePush { cx, cy, from, span } => Draw::WedgePush { cx: cx + dx, cy: cy + dy, from: *from, span: *span },
+            Draw::WedgePop => Draw::WedgePop,
+            Draw::RotatePush { angle, cx, cy } => Draw::RotatePush { angle: *angle, cx: cx + dx, cy: cy + dy },
+            Draw::RotatePop => Draw::RotatePop,
+            Draw::SwingPush { angle, pivot_x, cx, cy, focal } => Draw::SwingPush { angle: *angle, pivot_x: pivot_x + dx, cx: cx + dx, cy: cy + dy, focal: *focal },
+            Draw::SwingPop => Draw::SwingPop,
+        }
+    }
+}
+
 /// The WP7 camera: Silverlight's PlaneProjection sees an element under a
 /// 57° field of view, the camera as far in front as makes the element
 /// fill it at zero depth — so the perspective of a swing looks the same
