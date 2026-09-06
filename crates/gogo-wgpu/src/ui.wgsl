@@ -14,13 +14,19 @@ struct Screen {
 @group(0) @binding(0) var<uniform> screen: Screen;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
+// The gradient tables (D21), one row per gradient on screen, read by exact
+// texel — no sampler, no filtering: `grad_map` holds, per slot along the
+// run, WHICH stop pair covers it; `grad_stops` holds the stops, two
+// texels each (premultiplied Oklab color, then the position in .x).
+@group(2) @binding(0) var grad_map: texture_2d<u32>;
+@group(2) @binding(1) var grad_stops: texture_2d<f32>;
 
 struct Quad {
     @location(0) rect: vec4<f32>,          // x, y, w, h (device px)
     @location(1) color: vec4<f32>,         // fill (gradient: from, PREMULTIPLIED OKLAB; glyph/image: tint)
     @location(2) border_color: vec4<f32>,  // border (gradient: to, premultiplied Oklab)
     @location(3) params: vec4<f32>,        // corner, border, kind, angle (radians)
-    @location(4) uv: vec4<f32>,            // u0, v0, u1, v1 (kinds 4, 5); band start, end, period start, period length (kinds 2, 3, 6); dash offset, dash, period (kind 7)
+    @location(4) uv: vec4<f32>,            // u0, v0, u1, v1 (kinds 4, 5); table row, slot count, period start, period length (kinds 2, 3, 6); dash offset, dash, period (kind 7)
     @location(5) rot: vec4<f32>,           // sin, cos, center x, center y (device px)
     @location(6) wedge: vec4<f32>,         // mask: center x, y (device px), from rad, span rad (<0 = none)
 };
@@ -192,17 +198,26 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         } else {
             run = clamp(length(p / half), 0.0, 1.0);
         }
-        if ((in.band.x > 0.0 && run < in.band.x) || (in.band.y < 1.0 && run >= in.band.y)) {
-            discard;
-        }
-        let span = max(in.band.y - in.band.x, 0.0001);
-        let t = clamp((run - in.band.x) / span, 0.0, 1.0);
+        // The lookup (D21): the run's slot names the stop pair — the CPU
+        // filled the map with the SAME floor (slot = floor(run * n)), so
+        // the two agree at every slot edge — then the pair's two stops
+        // blend by where the run sits between them. Before the first stop
+        // or past the last, t clamps and the edge color holds.
+        let n = in.band.y;
+        let row = i32(in.band.x);
+        let slot = clamp(i32(floor(run * n)), 0, i32(n) - 1);
+        let pair = i32(textureLoad(grad_map, vec2<i32>(slot, row), 0).r);
+        let c0 = textureLoad(grad_stops, vec2<i32>(pair * 2, row), 0);
+        let p0 = textureLoad(grad_stops, vec2<i32>(pair * 2 + 1, row), 0).x;
+        let c1 = textureLoad(grad_stops, vec2<i32>(pair * 2 + 2, row), 0);
+        let p1 = textureLoad(grad_stops, vec2<i32>(pair * 2 + 3, row), 0).x;
+        let t = clamp((run - p0) / max(p1 - p0, 0.0001), 0.0, 1.0);
         // Authored colors mix in premultiplied Oklab (gogo's one law —
-        // gogo/src/color.rs is the CPU twin of this math): the quad build
-        // hands both stops as (L,a,b)*alpha + alpha, so the plain mix IS
-        // the Oklab lerp; only the mixed result converts back to the
+        // gogo/src/color.rs is the CPU twin of this math): the table holds
+        // each stop as (L,a,b)*alpha + alpha, so the plain mix IS the
+        // Oklab lerp; only the mixed result converts back to the
         // premultiplied sRGB the blend expects.
-        color = srgb_pm_from_oklab_pm(mix(in.color, in.border_color, t));
+        color = srgb_pm_from_oklab_pm(mix(c0, c1, t));
     } else if (border > 0.0) {
         // Blends fill into border over one pixel at the border's inner
         // edge, the same ramp the rim gets below.

@@ -96,6 +96,9 @@ pub struct UiRenderer {
     /// the image key and the texture identity last registered, so a
     /// same-texture frame makes no bind group. Indexed by `ExternalImage`.
     externals: Vec<External>,
+    /// The gradient tables (D21): a row per gradient on screen, cached by
+    /// content across frames.
+    gradients: GradientTable,
     /// Commands with no texture to draw them (a missing image).
     pub skipped: u32,
     pub draw_calls: u32,
@@ -141,7 +144,8 @@ impl UiRenderer {
         let screen_buffer = device.create_buffer(&wgpu::BufferDescriptor { label: Some("ui screen"), size: std::mem::size_of::<Screen>() as u64, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let screen_bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("ui screen"), layout: &screen_layout, entries: &[wgpu::BindGroupEntry { binding: 0, resource: screen_buffer.as_entire_binding() }] });
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("ui"), mag_filter: wgpu::FilterMode::Linear, min_filter: wgpu::FilterMode::Linear, ..Default::default() });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("ui"), bind_group_layouts: &[Some(&screen_layout), Some(&tex_layout)], immediate_size: 0 });
+        let gradients = GradientTable::new(device, GRAD_ROWS_INITIAL);
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("ui"), bind_group_layouts: &[Some(&screen_layout), Some(&tex_layout), Some(&gradients.layout)], immediate_size: 0 });
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("ui"),
             layout: Some(&pipeline_layout),
@@ -185,6 +189,7 @@ impl UiRenderer {
             atlas_size: 0,
             images: Vec::new(),
             externals: Vec::new(),
+            gradients,
             skipped: 0,
             draw_calls: 0,
         };
@@ -351,7 +356,11 @@ impl UiRenderer {
         let mut current: Option<[u32; 4]> = None;
         let mut current_tex: TexId = ATLAS;
         for (draws, page) in pages {
-        for d in draws.iter() {
+        // Indexed: a Gradient entry owns the stop records after it.
+        let mut i: usize = 0;
+        while i < draws.len() {
+            let d = &draws[i];
+            i += 1;
             match d {
                 Draw::Quad { rect, color, corner, border, border_color } => {
                     self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [corner * epx, border * epx, KIND_RECT, 0.0], uv: NO_UV, rot, wedge });
@@ -368,23 +377,32 @@ impl UiRenderer {
                 Draw::Circle { rect, color, border, border_color } => {
                     self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [0.0, border * epx, KIND_CIRCLE, 0.0], uv: NO_UV, rot, wedge });
                 }
-                Draw::Gradient { rect, kind, from, to, angle, band, corner, period } => {
+                Draw::Gradient { rect, kind, angle, corner, period, stops } => {
+                    let count: usize = *stops as usize;
+                    let list: &[Draw] = &draws[i..(i + count).min(draws.len())];
+                    i += count;
                     let k = match kind {
                         GradientKind::Radial => KIND_RADIAL,
                         GradientKind::Conic => KIND_CONIC,
                         GradientKind::Linear => KIND_LINEAR,
                     };
-                    // The compass (0 = to top, clockwise) as the shader's
-                    // direction angle (0 = to the right): a quarter turn back.
-                    // Stops ride the color slots as premultiplied Oklab
-                    // (gogo's one mixing law): the shader lerps them raw
-                    // and converts the mix back to sRGB per pixel.
-                    // params.x is the rounded-rect radius the shader masks
-                    // EVERY quad by — a Gradient's `corner_radius` (Q9).
-                    // uv: the band, then the tiling period (start, length
-                    // in run units; 0 length = no tiling).
-                    self.quads.push(Quad { rect: px(rect), color: gogo::color::oklab_pm_from_rgba(*from).0, border_color: gogo::color::oklab_pm_from_rgba(*to).0, params: [corner * epx, 0.0, k, (angle - 90.0).to_radians()], uv: [band.0, band.1, period.0, period.1], rot, wedge });
+                    // ONE quad (D21): the stops go to the table row this
+                    // gradient's content owns; the shader looks each pixel's
+                    // pair up. params.x is the rounded-rect radius the
+                    // shader masks EVERY quad by — a Gradient's
+                    // `corner_radius` (Q9). The compass (0 = to top,
+                    // clockwise) as the shader's direction angle (0 = to the
+                    // right): a quarter turn back. uv: the row, the slot
+                    // count, then the tiling period (start, length in run
+                    // units; 0 length = no tiling).
+                    let r = px(rect);
+                    let n_slots: u32 = GradientTable::slots_for(r[2].max(r[3]), *period);
+                    let row: u32 = self.gradients.row_for(device, list, n_slots, *kind, *period);
+                    self.quads.push(Quad { rect: r, color: [0.0; 4], border_color: [0.0; 4], params: [corner * epx, 0.0, k, (angle - 90.0).to_radians()], uv: [row as f32, n_slots as f32, period.0, period.1], rot, wedge });
                 }
+                // A stop without its Gradient ahead of it (never emitted
+                // by the draw pass; skipped, not drawn).
+                Draw::GradientStop { .. } => {}
                 Draw::Text { rect, text: text_id, key, font_size, color, halign, valign, wrap, font } => {
                     if current_tex != ATLAS {
                         self.close_batch(&mut batch_first, current, current_tex);
@@ -535,6 +553,7 @@ impl UiRenderer {
         }
         self.close_batch(&mut batch_first, current, current_tex);
         self.sync_atlas(device, queue, text);
+        self.gradients.flush(queue);
 
         if self.quads.len() > self.quad_capacity {
             self.quad_capacity = self.quads.len().next_power_of_two();
@@ -562,6 +581,7 @@ impl UiRenderer {
         }
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.screen_bind, &[]);
+        pass.set_bind_group(2, &self.gradients.bind_group, &[]);
         pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
         for b in &self.batches {
             match b.scissor {
@@ -576,11 +596,326 @@ impl UiRenderer {
         pass.set_scissor_rect(0, 0, self.screen.0, self.screen.1);
     }
 
+    /// Pin probe: gradient table rows in use after the last frame.
+    pub fn debug_gradient_rows(&self) -> usize {
+        self.gradients.debug_rows_in_use()
+    }
+
     pub fn quad_count(&self) -> usize {
         self.quads.len()
     }
 
     pub fn has_image(&self, key: ImageKey) -> bool {
         self.slot(key).is_some()
+    }
+}
+
+// ---- The gradient tables (D21) ---------------------------------------------------
+
+/// Slots per index-map row: a gradient uses as many as its box has device
+/// pixels along the run (see `slots_for`), at most this.
+const GRAD_MAP_WIDTH: u32 = 1024;
+/// Stops per table row (two texels each). The editor caps a gradient at
+/// 60; a mirrored one doubles; more is cut.
+const GRAD_MAX_STOPS: u32 = 128;
+const GRAD_STOP_TEXELS: u32 = GRAD_MAX_STOPS * 2;
+const GRAD_ROWS_INITIAL: u32 = 64;
+
+/// One cached gradient: what its row holds, and whether this frame drew it.
+struct GradEntry {
+    hash: u64,
+    row: u32,
+    seen: bool,
+}
+
+/// The two tables a gradient quad reads (ui.wgsl group 2): the index map
+/// (which stop pair covers each slot along the run) and the stops
+/// (premultiplied Oklab color, then position). One row per gradient on
+/// screen, owned across frames by content: a row refills only when its
+/// stops, slot count or period change, so a still gradient uploads
+/// nothing, and the frame's refills go up in ONE write per table. Never
+/// filtered: both are read by exact texel.
+pub struct GradientTable {
+    layout: wgpu::BindGroupLayout,
+    bind_group: wgpu::BindGroup,
+    map_tex: wgpu::Texture,
+    stops_tex: wgpu::Texture,
+    rows: u32,
+    /// Staging, table-shaped: `rows × GRAD_MAP_WIDTH` bytes.
+    map: Vec<u8>,
+    /// Staging: `rows × GRAD_STOP_TEXELS` texels.
+    stops: Vec<[f32; 4]>,
+    entries: Vec<GradEntry>,
+    free: Vec<u32>,
+    next_row: u32,
+    /// Rows written since the last flush (inclusive range).
+    dirty: Option<(u32, u32)>,
+    /// The positions of the row being filled (reused, never reallocated
+    /// past its high-water mark).
+    positions: Vec<f32>,
+}
+
+impl GradientTable {
+    fn new(device: &wgpu::Device, rows: u32) -> GradientTable {
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("ui gradients"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+            ],
+        });
+        let (map_tex, stops_tex, bind_group) = Self::make_tables(device, &layout, rows);
+        GradientTable {
+            layout,
+            bind_group,
+            map_tex,
+            stops_tex,
+            rows,
+            map: vec![0; (rows * GRAD_MAP_WIDTH) as usize],
+            stops: vec![[0.0; 4]; (rows * GRAD_STOP_TEXELS) as usize],
+            entries: Vec::new(),
+            free: Vec::new(),
+            next_row: 0,
+            dirty: None,
+            positions: Vec::new(),
+        }
+    }
+
+    fn make_tables(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, rows: u32) -> (wgpu::Texture, wgpu::Texture, wgpu::BindGroup) {
+        let make = |label: &str, width: u32, format: wgpu::TextureFormat| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d { width, height: rows, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        };
+        let map_tex = make("ui gradient map", GRAD_MAP_WIDTH, wgpu::TextureFormat::R8Uint);
+        let stops_tex = make("ui gradient stops", GRAD_STOP_TEXELS, wgpu::TextureFormat::Rgba32Float);
+        let map_view = map_tex.create_view(&Default::default());
+        let stops_view = stops_tex.create_view(&Default::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ui gradients"),
+            layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&map_view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&stops_view) }],
+        });
+        (map_tex, stops_tex, bind_group)
+    }
+
+    /// How many slots a gradient over a box whose longer side is
+    /// `max_side_px` uses: one per device pixel along the run, times 1.5
+    /// for a diagonal run (the longest a box holds), at most the row.
+    /// Tiled, the run is the period, so the fraction scales it.
+    pub fn slots_for(max_side_px: f32, period: (f32, f32)) -> u32 {
+        let run: f32 = if period.1 > 0.0 { max_side_px * 1.5 * period.1 } else { max_side_px * 1.5 };
+        (run.ceil().max(2.0) as u32).min(GRAD_MAP_WIDTH)
+    }
+
+    /// The row holding `stops` at `n_slots`: the cached one, else a fresh
+    /// fill. `stops` are the `Draw::GradientStop` records of one gradient.
+    fn row_for(&mut self, device: &wgpu::Device, stops: &[Draw], n_slots: u32, kind: GradientKind, period: (f32, f32)) -> u32 {
+        let hash: u64 = Self::hash(stops, n_slots, kind, period);
+        if let Some(e) = self.entries.iter_mut().find(|e| e.hash == hash) {
+            e.seen = true;
+            return e.row;
+        }
+        let row: u32 = match self.free.pop() {
+            Some(r) => r,
+            None => {
+                if self.next_row >= self.rows {
+                    self.grow(device);
+                }
+                self.next_row += 1;
+                self.next_row - 1
+            }
+        };
+        self.fill(row, stops, n_slots);
+        self.entries.push(GradEntry { hash, row, seen: true });
+        row
+    }
+
+    /// FNV-1a over what the row holds: the stops' positions and colors,
+    /// the slot count, the kind and the period.
+    fn hash(stops: &[Draw], n_slots: u32, kind: GradientKind, period: (f32, f32)) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |bytes: &[u8]| {
+            for b in bytes {
+                h ^= *b as u64;
+                h = h.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        };
+        eat(&n_slots.to_le_bytes());
+        eat(&[kind as u8]);
+        eat(&period.0.to_bits().to_le_bytes());
+        eat(&period.1.to_bits().to_le_bytes());
+        for d in stops {
+            if let Draw::GradientStop { pos, color } = d {
+                eat(&pos.to_bits().to_le_bytes());
+                eat(&color.0);
+            }
+        }
+        h
+    }
+
+    /// Writes one row: the stops as premultiplied Oklab + position texels,
+    /// then the map slots. Beyond `GRAD_MAX_STOPS` the stops are cut.
+    fn fill(&mut self, row: u32, stops: &[Draw], n_slots: u32) {
+        self.positions.clear();
+        let base: usize = (row * GRAD_STOP_TEXELS) as usize;
+        for d in stops {
+            if self.positions.len() as u32 >= GRAD_MAX_STOPS {
+                break;
+            }
+            if let Draw::GradientStop { pos, color } = d {
+                let i: usize = self.positions.len();
+                self.stops[base + 2 * i] = gogo::color::oklab_pm_from_rgba(*color).0;
+                self.stops[base + 2 * i + 1] = [*pos, 0.0, 0.0, 0.0];
+                self.positions.push(*pos);
+            }
+        }
+        let map_base: usize = (row * GRAD_MAP_WIDTH) as usize;
+        fill_map(&mut self.map[map_base..map_base + n_slots as usize], &self.positions);
+        self.dirty = Some(match self.dirty {
+            Some((lo, hi)) => (lo.min(row), hi.max(row)),
+            None => (row, row),
+        });
+    }
+
+    /// Twice the rows: new textures, the staging kept, every row re-uploaded.
+    fn grow(&mut self, device: &wgpu::Device) {
+        let rows: u32 = self.rows * 2;
+        let (map_tex, stops_tex, bind_group) = Self::make_tables(device, &self.layout, rows);
+        self.map_tex = map_tex;
+        self.stops_tex = stops_tex;
+        self.bind_group = bind_group;
+        self.map.resize((rows * GRAD_MAP_WIDTH) as usize, 0);
+        self.stops.resize((rows * GRAD_STOP_TEXELS) as usize, [0.0; 4]);
+        self.dirty = Some((0, self.rows.max(1) - 1));
+        self.rows = rows;
+    }
+
+    /// End of frame: the dirty rows go up as one write per table, rows no
+    /// gradient used this frame are freed, the seen marks reset.
+    fn flush(&mut self, queue: &wgpu::Queue) {
+        if let Some((lo, hi)) = self.dirty.take() {
+            let count: u32 = hi - lo + 1;
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &self.map_tex, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: lo, z: 0 }, aspect: wgpu::TextureAspect::All },
+                &self.map[(lo * GRAD_MAP_WIDTH) as usize..((hi + 1) * GRAD_MAP_WIDTH) as usize],
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(GRAD_MAP_WIDTH), rows_per_image: Some(count) },
+                wgpu::Extent3d { width: GRAD_MAP_WIDTH, height: count, depth_or_array_layers: 1 },
+            );
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &self.stops_tex, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: lo, z: 0 }, aspect: wgpu::TextureAspect::All },
+                bytemuck::cast_slice(&self.stops[(lo * GRAD_STOP_TEXELS) as usize..((hi + 1) * GRAD_STOP_TEXELS) as usize]),
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(GRAD_STOP_TEXELS * 16), rows_per_image: Some(count) },
+                wgpu::Extent3d { width: GRAD_STOP_TEXELS, height: count, depth_or_array_layers: 1 },
+            );
+        }
+        let mut i: usize = 0;
+        while i < self.entries.len() {
+            if self.entries[i].seen {
+                self.entries[i].seen = false;
+                i += 1;
+            } else {
+                let gone = self.entries.swap_remove(i);
+                self.free.push(gone.row);
+            }
+        }
+    }
+
+    /// Pin probes.
+    pub fn debug_rows_in_use(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+/// Fills `map` (one byte per slot) with the stop pair covering each slot:
+/// slot s covers run positions [s/n, (s+1)/n), and takes the pair whose
+/// [p_i, p_i+1) contains s/n — the SAME floor the shader applies
+/// (slot = floor(run × n)), so the two never disagree at a slot edge.
+/// Before the first stop the first pair holds (the shader clamps t to 0),
+/// past the last the last pair (t to 1); a zero-width pair contains
+/// nothing and is never chosen — a hard edge.
+fn fill_map(map: &mut [u8], positions: &[f32]) {
+    let n: usize = map.len();
+    let pairs: usize = positions.len().saturating_sub(1);
+    if pairs == 0 {
+        map.fill(0);
+        return;
+    }
+    for (s, slot) in map.iter_mut().enumerate() {
+        let run: f32 = s as f32 / n as f32;
+        let mut pair: usize = if run < positions[0] { 0 } else { pairs - 1 };
+        for i in 0..pairs {
+            if positions[i] <= run && run < positions[i + 1] {
+                pair = i;
+                break;
+            }
+        }
+        *slot = pair.min(255) as u8;
+    }
+}
+
+#[cfg(test)]
+mod gradient_table_tests {
+    use super::*;
+
+    /// The shader's slot for a run position — the CPU rule's twin.
+    fn shader_slot(run: f32, n: usize) -> usize {
+        ((run * n as f32).floor() as isize).clamp(0, n as isize - 1) as usize
+    }
+
+    #[test]
+    fn the_map_names_the_pair_that_contains_each_slot_start() {
+        let mut map = vec![0u8; 100];
+        fill_map(&mut map, &[0.0, 0.94, 1.0]);
+        assert!(map[..94].iter().all(|p| *p == 0) && map[94..].iter().all(|p| *p == 1), "{map:?}");
+        // The shader's floor lands a pixel at 0.945 in slot 94 → pair 1,
+        // and one at 0.935 in slot 93 → pair 0.
+        assert_eq!(map[shader_slot(0.945, 100)], 1);
+        assert_eq!(map[shader_slot(0.935, 100)], 0);
+    }
+
+    #[test]
+    fn edges_hold_and_a_zero_width_pair_is_a_hard_edge() {
+        let mut map = vec![0u8; 10];
+        // Stops start at 0.3: slots before it take the first pair (the
+        // shader clamps t to 0 → the first color holds).
+        fill_map(&mut map, &[0.3, 0.6]);
+        assert_eq!(map, vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        // A hard edge at 0.3: pair (0.3→0.3) is never chosen; slot 3 (run
+        // 0.3) goes straight to the pair after it.
+        fill_map(&mut map, &[0.0, 0.3, 0.3, 1.0]);
+        assert_eq!(map, vec![0, 0, 0, 2, 2, 2, 2, 2, 2, 2]);
+        // A lone pair: everything is it.
+        fill_map(&mut map, &[0.0, 1.0]);
+        assert!(map.iter().all(|p| *p == 0));
+    }
+
+    #[test]
+    fn slots_follow_the_box_and_the_period() {
+        assert_eq!(GradientTable::slots_for(100.0, (0.0, 0.0)), 150);
+        assert_eq!(GradientTable::slots_for(100.0, (0.0, 0.25)), 38);
+        assert_eq!(GradientTable::slots_for(2000.0, (0.0, 0.0)), GRAD_MAP_WIDTH);
+        assert_eq!(GradientTable::slots_for(0.5, (0.0, 0.0)), 2);
+    }
+
+    #[test]
+    fn the_hash_follows_the_content() {
+        let a = [Draw::GradientStop { pos: 0.0, color: gogo::Color_Straight_Srgb_4xU8_RGBA([1, 2, 3, 4]) }, Draw::GradientStop { pos: 1.0, color: gogo::Color_Straight_Srgb_4xU8_RGBA([5, 6, 7, 8]) }];
+        let mut b = a;
+        let h = GradientTable::hash(&a, 10, GradientKind::Linear, (0.0, 0.0));
+        assert_eq!(h, GradientTable::hash(&b, 10, GradientKind::Linear, (0.0, 0.0)));
+        assert_ne!(h, GradientTable::hash(&a, 11, GradientKind::Linear, (0.0, 0.0)), "the slot count is content");
+        assert_ne!(h, GradientTable::hash(&a, 10, GradientKind::Radial, (0.0, 0.0)));
+        if let Draw::GradientStop { pos, .. } = &mut b[1] {
+            *pos = 0.5;
+        }
+        assert_ne!(h, GradientTable::hash(&b, 10, GradientKind::Linear, (0.0, 0.0)));
     }
 }
