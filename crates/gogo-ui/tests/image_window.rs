@@ -89,6 +89,32 @@ fn a_percent_endpoint_is_a_fraction_of_the_nodes_own_box() {
     assert_eq!(r.motion[sheet.index()].translate[0], -200.0, "{:?}", r.motion[sheet.index()]);
 }
 
+/// A sheet hidden at play has no box: the percent waits for the next
+/// glide and the sheet's first laid-out frame is already one height below.
+#[test]
+fn a_percent_on_a_hidden_node_resolves_at_the_next_glide() {
+    let c = ok("anim slideUp { sheet.translate.y from=100%, to=0, duration=1 }\nView v { Panel sheet width=fill, height=50, valign=bottom, visibility=gone }\n");
+    let mut page = c.page;
+    let sheet = page.find("sheet").unwrap();
+    let mut rt = Runtime::new(&page);
+    let res = resolve(&page, &rt);
+    rt.glide(layout(&page, &res, Rect::new(0.0, 0.0, 200.0, 400.0), &FixedAdvance));
+    rt.set_visible(&mut page, sheet, true);
+    let id = page.intern_lookup("slideUp");
+    rt.play_id(&page, id, Finish::Nothing);
+    // The frame's tick before the layout: nothing to measure yet.
+    rt.tick(&mut page, 1.0 / 60.0);
+    let r = resolve_animated(&page, &mut rt);
+    rt.glide(layout(&page, &r, Rect::new(0.0, 0.0, 200.0, 400.0), &FixedAdvance));
+    let r = resolve_animated(&page, &mut rt);
+    assert!((r.motion[sheet.index()].translate[1] - 50.0).abs() < 1.5, "one sheet-height below at its first laid-out frame: {:?}", r.motion[sheet.index()]);
+    for _ in 0..70 {
+        rt.tick(&mut page, 1.0 / 60.0);
+    }
+    let r = resolve_animated(&page, &mut rt);
+    assert_eq!(r.motion[sheet.index()].translate, [0.0, 0.0]);
+}
+
 #[test]
 fn a_percent_on_any_other_lane_is_refused() {
     assert!(codes("anim a { p.scale from=50%, to=1, duration=1 }\nView v { Panel p 40x20 }\n").contains(&"G0064".to_string()));

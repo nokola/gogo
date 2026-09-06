@@ -431,6 +431,11 @@ struct Track {
     /// stutter (GPAR55). A later track on the channel stays `None`: its
     /// lead-in belongs to the previous track.
     lead_in_from: Option<f32>,
+    /// `%` endpoints still waiting for the node's box (the node was hidden
+    /// at play — a sheet slides in from below its own height before it
+    /// ever laid out): the raw percents (from, to), resolved by
+    /// `Player::resolve_pending_percent` at the next layout.
+    pending_percent: Option<(Option<f32>, Option<f32>)>,
 }
 
 impl Track {
@@ -567,9 +572,17 @@ impl Player {
                     Channel::TranslateY => boxes.get(t.node.index()).map(|r| r.h).unwrap_or(0.0),
                     _ => 100.0,
                 };
-                let track_from = t.from.and_then(Value::as_num).map(|v| if t.from_percent { v / 100.0 * axis } else { v });
-                let track_to = t.to.as_num().unwrap_or(0.0);
-                let track_to = if t.to_percent { track_to / 100.0 * axis } else { track_to };
+                let raw_from: Option<f32> = t.from.and_then(Value::as_num);
+                let raw_to: f32 = t.to.as_num().unwrap_or(0.0);
+                let track_from = raw_from.map(|v| if t.from_percent { v / 100.0 * axis } else { v });
+                let track_to = if t.to_percent { raw_to / 100.0 * axis } else { raw_to };
+                // No box yet (a hidden node): the percents wait for the
+                // next layout instead of reading as 0.
+                let pending_percent: Option<(Option<f32>, Option<f32>)> = if (t.from_percent || t.to_percent) && axis <= 0.0 {
+                    Some((if t.from_percent { raw_from } else { None }, if t.to_percent { Some(raw_to) } else { None }))
+                } else {
+                    None
+                };
                 let shown = live.get(t.node.index()).map(|m| m.get(channel)).unwrap_or(Motion::IDENTITY.get(channel));
                 let base_held = held.iter().any(|h| h.0 == t.node && h.1 == channel);
                 let first_on_channel = !tracks.iter().any(|x| x.node == t.node && x.channel == channel);
@@ -585,7 +598,7 @@ impl Player {
                     None
                 };
                 let lead_in_from = if first_on_channel { Some(if t.current { shown } else { track_from.unwrap_or(shown) }) } else { None };
-                tracks.push(Track { node: t.node, channel, from, to: track_to, start: t.start, duration: t.duration, easing, autoreverse: t.autoreverse, base: shown, base_held, lead_in_from });
+                tracks.push(Track { node: t.node, channel, from, to: track_to, start: t.start, duration: t.duration, easing, autoreverse: t.autoreverse, base: shown, base_held, lead_in_from, pending_percent });
                 if !owns.contains(&(t.node, channel)) {
                     owns.push((t.node, channel));
                 }
@@ -597,6 +610,41 @@ impl Player {
 
     pub fn length(&self) -> f32 {
         self.total
+    }
+
+    /// Resolves the `%` endpoints that had no box at play time against
+    /// the nodes' fresh rects (the runtime's `glide`): the track's from
+    /// and to become the fractions of the box, the layer jumps to the
+    /// from pose so the node's first laid-out frame already shows it
+    /// displaced (a sheet's first frame is below the screen, not at its
+    /// seat). Returns whether anything resolved.
+    pub fn resolve_pending_percent(&mut self, boxes: &[Rect], layer: &mut [Motion]) -> bool {
+        let mut resolved: bool = false;
+        for track in &mut self.tracks {
+            let Some((pct_from, pct_to)) = track.pending_percent else { continue };
+            let axis: f32 = match track.channel {
+                Channel::TranslateX => boxes.get(track.node.index()).map(|r| r.w).unwrap_or(0.0),
+                Channel::TranslateY => boxes.get(track.node.index()).map(|r| r.h).unwrap_or(0.0),
+                _ => 100.0,
+            };
+            if axis <= 0.0 {
+                continue;
+            }
+            if let Some(p) = pct_from {
+                let from: f32 = p / 100.0 * axis;
+                track.from = Some(from);
+                if track.lead_in_from.is_some() {
+                    track.lead_in_from = Some(from);
+                }
+                layer[track.node].set(track.channel, from);
+            }
+            if let Some(p) = pct_to {
+                track.to = p / 100.0 * axis;
+            }
+            track.pending_percent = None;
+            resolved = true;
+        }
+        resolved
     }
 
     /// A newer player takes `(node, channel)`: this player's tracks on it

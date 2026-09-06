@@ -1350,7 +1350,8 @@ pub struct AnimTrack {
     /// `from=-100%` / `to=100%` on a `translate.x` / `translate.y` lane:
     /// the number is a fraction of the node's OWN laid-out box on that
     /// axis (its width for x, its height for y), resolved when the anim
-    /// starts from the last `glide`. Needed because a sheet that slides in
+    /// starts from the last `glide` — or, for a node with no box yet (hidden
+    /// at play), at the next `glide`. Needed because a sheet that slides in
     /// by its own height, or two panes that push each other by the screen
     /// width, move by numbers no file can write (user, 2026-09-06).
     pub from_percent: bool,

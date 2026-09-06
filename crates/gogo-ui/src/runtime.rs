@@ -483,6 +483,13 @@ impl Runtime {
         self.glide_late = 0.0;
         self.rect_tweens.retain(|t| t.3 < t.4);
         self.last_rects = shown.clone();
+        // A `%` anim endpoint on a node that had no box at play (hidden
+        // then) reads its fraction now that the node laid out.
+        for p in &mut self.players {
+            if p.resolve_pending_percent(&self.last_rects, &mut self.motion) {
+                self.dirty = true;
+            }
+        }
         shown
     }
 
