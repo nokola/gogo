@@ -635,6 +635,15 @@ struct GradEntry {
 /// stops, slot count or period change, so a still gradient uploads
 /// nothing, and the frame's refills go up in ONE write per table. Never
 /// filtered: both are read by exact texel.
+///
+/// Both tables are INTEGER textures (R8Uint, Rgba16Uint). Needed because a
+/// float32 texture bound without a filter is an INCOMPLETE texture on GLES
+/// 3.0 drivers without OES_texture_float_linear (the OnePlus A0001's
+/// Adreno 330, 2026-09-06) and samples as opaque black — every gradient on
+/// the phone was a black box while the desktop pins were green. Integer
+/// textures can never filter, so every driver fetches them by texel. The
+/// stops are 16-bit fixed point over -1..1 (step 3e-5, well under the
+/// 8-bit encode), the position two 16-bit halves of a 32-bit fraction.
 pub struct GradientTable {
     layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
@@ -643,8 +652,8 @@ pub struct GradientTable {
     rows: u32,
     /// Staging, table-shaped: `rows × GRAD_MAP_WIDTH` bytes.
     map: Vec<u8>,
-    /// Staging: `rows × GRAD_STOP_TEXELS` texels.
-    stops: Vec<[f32; 4]>,
+    /// Staging: `rows × GRAD_STOP_TEXELS` texels, fixed point (see `encode_unit`).
+    stops: Vec<[u16; 4]>,
     entries: Vec<GradEntry>,
     free: Vec<u32>,
     next_row: u32,
@@ -661,7 +670,7 @@ impl GradientTable {
             label: Some("ui gradients"),
             entries: &[
                 wgpu::BindGroupLayoutEntry { binding: 0, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
-                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: false }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Uint, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
             ],
         });
         let (map_tex, stops_tex, bind_group) = Self::make_tables(device, &layout, rows);
@@ -672,7 +681,7 @@ impl GradientTable {
             stops_tex,
             rows,
             map: vec![0; (rows * GRAD_MAP_WIDTH) as usize],
-            stops: vec![[0.0; 4]; (rows * GRAD_STOP_TEXELS) as usize],
+            stops: vec![[0; 4]; (rows * GRAD_STOP_TEXELS) as usize],
             entries: Vec::new(),
             free: Vec::new(),
             next_row: 0,
@@ -695,7 +704,7 @@ impl GradientTable {
             })
         };
         let map_tex = make("ui gradient map", GRAD_MAP_WIDTH, wgpu::TextureFormat::R8Uint);
-        let stops_tex = make("ui gradient stops", GRAD_STOP_TEXELS, wgpu::TextureFormat::Rgba32Float);
+        let stops_tex = make("ui gradient stops", GRAD_STOP_TEXELS, wgpu::TextureFormat::Rgba16Uint);
         let map_view = map_tex.create_view(&Default::default());
         let stops_view = stops_tex.create_view(&Default::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -772,8 +781,10 @@ impl GradientTable {
             }
             if let Draw::GradientStop { pos, color } = d {
                 let i: usize = self.positions.len();
-                self.stops[base + 2 * i] = gogo::color::oklab_pm_from_rgba(*color).0;
-                self.stops[base + 2 * i + 1] = [*pos, 0.0, 0.0, 0.0];
+                let lab: [f32; 4] = gogo::color::oklab_pm_from_rgba(*color).0;
+                self.stops[base + 2 * i] = [encode_unit(lab[0]), encode_unit(lab[1]), encode_unit(lab[2]), encode_unit(lab[3])];
+                let (hi, lo) = encode_pos(*pos);
+                self.stops[base + 2 * i + 1] = [hi, lo, 0, 0];
                 self.positions.push(*pos);
             }
         }
@@ -793,7 +804,7 @@ impl GradientTable {
         self.stops_tex = stops_tex;
         self.bind_group = bind_group;
         self.map.resize((rows * GRAD_MAP_WIDTH) as usize, 0);
-        self.stops.resize((rows * GRAD_STOP_TEXELS) as usize, [0.0; 4]);
+        self.stops.resize((rows * GRAD_STOP_TEXELS) as usize, [0; 4]);
         self.dirty = Some((0, self.rows.max(1) - 1));
         self.rows = rows;
     }
@@ -812,7 +823,7 @@ impl GradientTable {
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo { texture: &self.stops_tex, mip_level: 0, origin: wgpu::Origin3d { x: 0, y: lo, z: 0 }, aspect: wgpu::TextureAspect::All },
                 bytemuck::cast_slice(&self.stops[(lo * GRAD_STOP_TEXELS) as usize..((hi + 1) * GRAD_STOP_TEXELS) as usize]),
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(GRAD_STOP_TEXELS * 16), rows_per_image: Some(count) },
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(GRAD_STOP_TEXELS * 8), rows_per_image: Some(count) },
                 wgpu::Extent3d { width: GRAD_STOP_TEXELS, height: count, depth_or_array_layers: 1 },
             );
         }
@@ -832,6 +843,20 @@ impl GradientTable {
     pub fn debug_rows_in_use(&self) -> usize {
         self.entries.len()
     }
+}
+
+/// A premultiplied Oklab component (L, a, b or alpha, all within -1..1) as
+/// 16-bit fixed point: 0 = -1, 65535 = +1. The shader's twin divides by
+/// 32767.5 and subtracts 1.
+fn encode_unit(v: f32) -> u16 {
+    ((v.clamp(-1.0, 1.0) + 1.0) * 32767.5).round() as u16
+}
+
+/// A 0..1 stop position as the two 16-bit halves of a 32-bit fraction —
+/// the shader rebuilds `(hi * 65536 + lo) / 4294967295`, exact to 1e-7.
+fn encode_pos(pos: f32) -> (u16, u16) {
+    let p: u32 = (pos.clamp(0.0, 1.0) as f64 * 4_294_967_295.0).round() as u32;
+    ((p >> 16) as u16, (p & 0xFFFF) as u16)
 }
 
 /// Fills `map` (one byte per slot) with the stop pair covering each slot:
@@ -903,6 +928,19 @@ mod gradient_table_tests {
         assert_eq!(GradientTable::slots_for(100.0, (0.0, 0.25)), 38);
         assert_eq!(GradientTable::slots_for(2000.0, (0.0, 0.0)), GRAD_MAP_WIDTH);
         assert_eq!(GradientTable::slots_for(0.5, (0.0, 0.0)), 2);
+    }
+
+    #[test]
+    fn the_fixed_point_encodings_round_trip_under_the_pins_tolerance() {
+        for v in [-1.0f32, -0.4, -0.01, 0.0, 0.3, 0.999, 1.0] {
+            let back: f32 = encode_unit(v) as f32 / 32767.5 - 1.0;
+            assert!((back - v).abs() <= 1.0 / 32767.5, "{v} -> {back}");
+        }
+        for p in [0.0f32, 0.3, 0.4915, 0.5, 0.94, 1.0] {
+            let (hi, lo) = encode_pos(p);
+            let back: f32 = (hi as f32 * 65536.0 + lo as f32) / 4_294_967_295.0;
+            assert!((back - p).abs() < 1e-6, "{p} -> {back}");
+        }
     }
 
     #[test]

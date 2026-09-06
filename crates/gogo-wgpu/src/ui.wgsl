@@ -17,9 +17,23 @@ struct Screen {
 // The gradient tables (D21), one row per gradient on screen, read by exact
 // texel — no sampler, no filtering: `grad_map` holds, per slot along the
 // run, WHICH stop pair covers it; `grad_stops` holds the stops, two
-// texels each (premultiplied Oklab color, then the position in .x).
+// texels each (the premultiplied Oklab color as 16-bit fixed point over
+// -1..1, then the position as two 16-bit halves of a 32-bit fraction).
+// Integer textures on purpose: a float32 texture bound unfiltered is
+// INCOMPLETE on GLES 3.0 without OES_texture_float_linear and samples as
+// opaque black (Adreno 330, 2026-09-06); integers always fetch.
 @group(2) @binding(0) var grad_map: texture_2d<u32>;
-@group(2) @binding(1) var grad_stops: texture_2d<f32>;
+@group(2) @binding(1) var grad_stops: texture_2d<u32>;
+
+fn grad_stop_color(pair_texel: i32, row: i32) -> vec4<f32> {
+    let raw = textureLoad(grad_stops, vec2<i32>(pair_texel, row), 0);
+    return vec4<f32>(raw) / 32767.5 - vec4<f32>(1.0);
+}
+
+fn grad_stop_pos(pair_texel: i32, row: i32) -> f32 {
+    let raw = textureLoad(grad_stops, vec2<i32>(pair_texel, row), 0);
+    return (f32(raw.x) * 65536.0 + f32(raw.y)) / 4294967295.0;
+}
 
 struct Quad {
     @location(0) rect: vec4<f32>,          // x, y, w, h (device px)
@@ -203,14 +217,17 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // the two agree at every slot edge — then the pair's two stops
         // blend by where the run sits between them. Before the first stop
         // or past the last, t clamps and the edge color holds.
-        let n = in.band.y;
-        let row = i32(in.band.x);
+        // The row and the slot count are whole numbers interpolated across
+        // the quad: rounded, so a varying that lands at 2.9999 on a lower-
+        // precision GPU still names row 3.
+        let n = floor(in.band.y + 0.5);
+        let row = i32(in.band.x + 0.5);
         let slot = clamp(i32(floor(run * n)), 0, i32(n) - 1);
         let pair = i32(textureLoad(grad_map, vec2<i32>(slot, row), 0).r);
-        let c0 = textureLoad(grad_stops, vec2<i32>(pair * 2, row), 0);
-        let p0 = textureLoad(grad_stops, vec2<i32>(pair * 2 + 1, row), 0).x;
-        let c1 = textureLoad(grad_stops, vec2<i32>(pair * 2 + 2, row), 0);
-        let p1 = textureLoad(grad_stops, vec2<i32>(pair * 2 + 3, row), 0).x;
+        let c0 = grad_stop_color(pair * 2, row);
+        let p0 = grad_stop_pos(pair * 2 + 1, row);
+        let c1 = grad_stop_color(pair * 2 + 2, row);
+        let p1 = grad_stop_pos(pair * 2 + 3, row);
         let t = clamp((run - p0) / max(p1 - p0, 0.0001), 0.0, 1.0);
         // Authored colors mix in premultiplied Oklab (gogo's one law —
         // gogo/src/color.rs is the CPU twin of this math): the table holds
