@@ -38,7 +38,12 @@ pub enum Draw {
     QuadCorners { rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, corners: [f32; 4], border: f32, border_color: Color_Straight_Srgb_4xU8_RGBA },
     /// A circular stroke: `from` degrees on the compass (0 = up,
     /// clockwise), `sweep` degrees, `thickness` the stroke width in epx.
-    Arc { rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, from: f32, sweep: f32, thickness: f32 },
+    /// `dash` = (offset, dash, period) in degrees around the ring: the
+    /// stroke shows where the angle from `from`, minus `offset`, falls in
+    /// the first `dash` of every `period` — the renderer's mask, ONE quad
+    /// however many dashes (period 0 = solid). A pattern with several
+    /// dash/gap pairs is one Arc per pair, all over the same period.
+    Arc { rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, from: f32, sweep: f32, thickness: f32, dash: (f32, f32, f32) },
     Circle { rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, border: f32, border_color: Color_Straight_Srgb_4xU8_RGBA },
     /// `image` is the build-wide image id (`source=`); the renderer
     /// indexes its texture slots by it.
@@ -127,6 +132,37 @@ pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
 /// left, left edge up — the pattern running continuously across the
 /// corners like WPF's StrokeDashArray. The stroke sits INSIDE the box like
 /// the solid border; each dash is a crisp axis-aligned quad (D257).
+/// No dash mask: the stroke shows along its whole sweep.
+pub const SOLID: (f32, f32, f32) = (0.0, 0.0, 0.0);
+
+/// A dashed stroke around a ring — a Circle's `border_dash=` or an Arc's
+/// `dash=`: lengths in stroke units measured along the stroke's CENTERLINE
+/// (the box's half-side minus half the stroke), the pattern starting at
+/// `from` and running clockwise; an odd list repeats to even out; the last
+/// dash is cut where the sweep ends (shipped MoldCursor's DrawArc loop,
+/// `end = min(a + dash, TAU)`). ONE `Draw::Arc` per dash/gap PAIR — the
+/// renderer masks the dashes per pixel, so a `[4, 3]` ring is one quad
+/// whatever its circumference (48 full-disc quads was measured at ~50x the
+/// fill of a masked one).
+fn dashed_arcs(out: &mut Vec<Draw>, rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, from: f32, sweep: f32, thickness: f32, pattern: &[f32]) {
+    let mut lengths: Vec<f32> = pattern.iter().map(|n| n * thickness).collect();
+    if lengths.len() % 2 == 1 {
+        lengths.extend_from_slice(&pattern.iter().map(|n| n * thickness).collect::<Vec<f32>>());
+    }
+    let radius: f32 = rect.w.min(rect.h) / 2.0 - thickness / 2.0;
+    if lengths.iter().any(|l| *l <= 0.0) || radius <= 0.0 {
+        return;
+    }
+    let degrees_per_epx: f32 = 360.0 / (std::f32::consts::TAU * radius);
+    let period: f32 = lengths.iter().sum::<f32>() * degrees_per_epx;
+    let mut offset: f32 = 0.0;
+    for pair in lengths.chunks(2) {
+        let dash: f32 = pair[0] * degrees_per_epx;
+        out.push(Draw::Arc { rect, color, from, sweep, thickness, dash: (offset, dash, period) });
+        offset += (pair[0] + pair[1]) * degrees_per_epx;
+    }
+}
+
 fn dash_quads(out: &mut Vec<Draw>, rect: Rect, border: f32, color: Color_Straight_Srgb_4xU8_RGBA, pattern: &[f32]) {
     let mut lengths: Vec<f32> = pattern.iter().map(|n| n * border).collect();
     if lengths.len() % 2 == 1 {
@@ -429,14 +465,27 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             // whole quad — handed the full rect it would paint a pill.
             let d = rect.w.min(rect.h);
             let disc = Rect::new(rect.x + (rect.w - d) / 2.0, rect.y + (rect.h - d) / 2.0, d, d);
-            out.push(Draw::Circle { rect: disc, color: c, border, border_color });
+            if !dash.is_empty() && border > 0.0 {
+                // A dashed ring: the disc's fill with no ring, then the
+                // dashes as arcs (a circle's stroke is antialiased anyway —
+                // D257 is about straight dashes feathering into their gaps).
+                out.push(Draw::Circle { rect: disc, color: c, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+                dashed_arcs(out, disc, border_color, 0.0, 360.0, border, &dash);
+            } else {
+                out.push(Draw::Circle { rect: disc, color: c, border, border_color });
+            }
         }
         Kind::Arc => {
             let c = color(PropKey::Color).unwrap_or(Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT);
             let from = res.num(page, id, PropKey::From).unwrap_or(0.0);
             let sweep = res.num(page, id, PropKey::Sweep).unwrap_or(360.0);
             let thickness = res.num(page, id, PropKey::Thickness).unwrap_or(1.0);
-            out.push(Draw::Arc { rect, color: c, from, sweep, thickness });
+            let arc_dash: Vec<f32> = res.prop(page, id, PropKey::Dash).map(|v| page.list(v).iter().filter_map(|x| if let Value::VNum(n) = x { Some(*n) } else { None }).collect()).unwrap_or_default();
+            if arc_dash.is_empty() {
+                out.push(Draw::Arc { rect, color: c, from, sweep, thickness, dash: SOLID });
+            } else {
+                dashed_arcs(out, rect, c, from, sweep, thickness, &arc_dash);
+            }
         }
         Kind::Gradient => {
             let stops = res.prop(page, id, PropKey::Stops).map(|v| page.list(v).to_vec()).unwrap_or_default();

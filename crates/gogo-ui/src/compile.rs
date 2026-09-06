@@ -471,6 +471,7 @@ fn wrong_kind(key: PropKey, kind: Kind) -> String {
         PropKey::From | PropKey::Sweep if kind == Kind::Slot => format!("`{word}=` is a radial kind's config — it goes inside the kind: `automatic=arc(from=-225, sweep=270) by $value in $min..$max`, in a `control`"),
         PropKey::From | PropKey::To => format!("`{word}=` aims a Gradient (0..1 box points) or an Arc (degrees) — a {name} takes neither"),
         PropKey::Sweep | PropKey::Thickness => format!("`{word}=` is an Arc word — a {name} sweeps nothing"),
+        PropKey::Dash => format!("`dash=` dashes an Arc's stroke — a {name}'s ring or border dashes with `border_dash=`"),
         PropKey::Value | PropKey::Min | PropKey::Max | PropKey::Step => format!("`{word}=` belongs to a Slider, Input, Toggle or choice — a {name} holds no value"),
         PropKey::SelectedProp | PropKey::ToggleMode | PropKey::TapPulse | PropKey::IconSrc => format!("`{word}=` belongs to a press surface (Button, Check, Toggle, Radio, ListItem) — a {name} is not pressed"),
         PropKey::Select => format!("`select=` is a List word — a {name} selects nothing"),
@@ -3324,17 +3325,17 @@ impl<'a> Compiler<'a> {
         // `stops=` and nothing else — no prop becomes list-accepting by
         // accident (the spec's Values table).
         if let AstValue::List(_) = p.value {
-            let takes_list = matches!(key, PropKey::Cols | PropKey::Areas | PropKey::Stops | PropKey::BorderDash);
+            let takes_list = matches!(key, PropKey::Cols | PropKey::Areas | PropKey::Stops | PropKey::BorderDash | PropKey::Dash);
             if !takes_list {
-                self.error("G0040", p.line, format!("`{}=` doesn't take a list — only Grid's `cols=`/`areas=`, Gradient's `stops=` and `border_dash=` do", p.key));
+                self.error("G0040", p.line, format!("`{}=` doesn't take a list — only Grid's `cols=`/`areas=`, Gradient's `stops=`, `border_dash=` and an Arc's `dash=` do", p.key));
                 return None;
             }
         }
         if key == PropKey::Stops {
             self.check_stops(&p.value, p.line);
         }
-        if key == PropKey::BorderDash {
-            self.check_border_dash(&p.value, p.line);
+        if key == PropKey::BorderDash || key == PropKey::Dash {
+            self.check_border_dash(key.word(), &p.value, p.line);
         }
         let mut value = self.value(&p.value, p.line, Some(key));
         // `pivot=` is a 0..1 box point — the fixed spot `scale` and
@@ -3450,20 +3451,23 @@ impl<'a> Compiler<'a> {
     /// `border_dash=[4, 1]`: a non-empty list of positive lengths in
     /// `border_thickness` units (WPF StrokeDashArray — `4 1` at a 1-epx
     /// border is 4-epx dashes, 1-epx gaps). G2009 names the bad spelling.
-    fn check_border_dash(&mut self, v: &AstValue, line: u32) {
+    /// `border_dash=` (plates, Circles) and an Arc's `dash=`: the same list
+    /// of positive lengths in stroke units.
+    fn check_border_dash(&mut self, word: &str, v: &AstValue, line: u32) {
+        let unit: &str = if word == "dash" { "thickness" } else { "border_thickness" };
         let AstValue::List(items) = v else {
-            self.error("G2009", line, "`border_dash=` takes the dash/gap lengths — `border_dash=[4, 1]` (in border_thickness units)");
+            self.error("G2009", line, format!("`{word}=` takes the dash/gap lengths — `{word}=[4, 1]` (in {unit} units)"));
             return;
         };
         if items.is_empty() {
-            self.error("G2009", line, "`border_dash=` is empty — give the dash and gap lengths (`border_dash=[4, 1]`)");
+            self.error("G2009", line, format!("`{word}=` is empty — give the dash and gap lengths (`{word}=[4, 1]`)"));
             return;
         }
         for it in items {
             match it {
                 AstValue::Num { value, .. } if *value > 0.0 => {}
                 other => {
-                    self.error("G2009", line, format!("`border_dash=` entries are positive lengths in border_thickness units — got `{}`", spell(other)));
+                    self.error("G2009", line, format!("`{word}=` entries are positive lengths in {unit} units — got `{}`", spell(other)));
                     return;
                 }
             }

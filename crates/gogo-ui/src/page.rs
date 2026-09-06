@@ -549,6 +549,10 @@ pub enum PropKey {
     /// never antialiased line ends, which feather into a 1-epx gap and
     /// erase it (D257). Corners stay square while dashed.
     BorderDash,
+    /// `dash=[4, 3]` on an Arc: dash and gap lengths in `thickness` units
+    /// along the stroke (an Arc has no border — its stroke is
+    /// `thickness=`). Same list rules as `border_dash=`.
+    Dash,
     Opacity,
     Visibility,
     Disabled,
@@ -692,6 +696,7 @@ pub const WORDS: &[(&str, PropKey)] = &[
     ("border_thickness", PropKey::BorderThickness),
     ("border_color", PropKey::BorderColor),
     ("border_dash", PropKey::BorderDash),
+    ("dash", PropKey::Dash),
     ("opacity", PropKey::Opacity),
     ("visibility", PropKey::Visibility),
     ("disabled", PropKey::Disabled),
@@ -948,13 +953,13 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
         Kind::Button => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::ToggleMode, PropKey::SelectedProp, PropKey::IconSrc, PropKey::IconSize]],
         Kind::Image => &[BOX, PLATE, &[PropKey::Source, PropKey::Fit, PropKey::Loading]],
         Kind::Rectangle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::CornerRadius, PropKey::CornerRadiusTopLeft, PropKey::CornerRadiusTopRight, PropKey::CornerRadiusBottomRight, PropKey::CornerRadiusBottomLeft, PropKey::BorderThickness, PropKey::BorderColor, PropKey::BorderDash]],
-        Kind::Circle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::BorderThickness, PropKey::BorderColor]],
+        Kind::Circle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::BorderThickness, PropKey::BorderColor, PropKey::BorderDash]],
         // `corner_radius` (Q9, user 2026-09-05): a rounded or disc-shaped
         // ramp — the brush-options preview ball. The uniform key only: the
         // per-corner radii ride the draw's uv slot, which a gradient's band
         // already uses.
         Kind::Gradient => &[BOX, &[PropKey::Stops, PropKey::GradientFill, PropKey::Angle, PropKey::GradientRepeat, PropKey::From, PropKey::To, PropKey::CornerRadius]],
-        Kind::Arc => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::From, PropKey::Sweep, PropKey::Thickness]],
+        Kind::Arc => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::From, PropKey::Sweep, PropKey::Thickness, PropKey::Dash]],
         // A Slider's `background=` is its track, `color=` the filled part.
         Kind::Slider => &[BOX, &[PropKey::Background, PropKey::CornerRadius, PropKey::Color, PropKey::Value, PropKey::Min, PropKey::Max, PropKey::Step]],
         Kind::Input => &[BOX, PLATE, PADDING, TEXT, &[PropKey::Value, PropKey::PlaceholderText, PropKey::MaxLength, PropKey::SelectionColor]],

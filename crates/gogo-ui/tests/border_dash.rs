@@ -4,6 +4,9 @@
 //! perimeter with the pattern continuing across corners (D257: never
 //! antialiased line ends). A dashed plate keeps its fill and drops the
 //! solid border; an odd list repeats to even out; bad spellings are G2009.
+//! A Circle (2026-09-06, user) dashes its ring along the centerline,
+//! clockwise from the top — ONE masked arc draw per dash/gap pair, never a
+//! draw per dash; an Arc's `dash=` is the same mask along its sweep.
 use gogo::draw::{Draw, draw};
 use gogo::layout::{FixedAdvance, Rect, layout};
 use gogo::runtime::{Runtime, resolve};
@@ -71,6 +74,49 @@ fn bad_spellings_are_refused() {
     assert!(c.diags.iter().any(|d| d.code == "G2009"), "{:#?}", c.diags);
     let c = gogo::compile("View v { Label l text=\"x\", border_thickness=1, border_dash=[4, 1] }", &|_: &str| None::<String>);
     assert!(!gogo::has_errors(&c.diags), "any box has a plate — a dashed one too: {:#?}", c.diags);
-    let c = gogo::compile("View v { Circle c 24x24, border_thickness=1, border_dash=[4, 1] }", &|_: &str| None::<String>);
-    assert!(c.diags.iter().any(|d| d.code == "G2002"), "a Circle has no dashed border: {:#?}", c.diags);
+}
+
+#[test]
+fn a_dashed_circle_is_arcs_along_its_ring() {
+    let d = draws("View v { Circle c 24x24, halign=left, valign=top, color=#00000000, border_thickness=1, border_color=#000000FF, border_dash=[4, 1] }");
+    // The disc keeps its fill and loses the solid ring.
+    let discs: Vec<f32> = d.iter().filter_map(|x| if let Draw::Circle { border, .. } = x { Some(*border) } else { None }).collect();
+    assert_eq!(discs, vec![0.0], "{d:?}");
+    let arcs: Vec<(Rect, f32, f32, f32, (f32, f32, f32))> = d.iter().filter_map(|x| if let Draw::Arc { rect, from, sweep, thickness, dash, .. } = x { Some((*rect, *from, *sweep, *thickness, *dash)) } else { None }).collect();
+    // ONE masked full ring: centerline radius 11.5, the dash 4 epx and the
+    // period 5 epx as angles.
+    let per_epx: f32 = 360.0 / (std::f32::consts::TAU * 11.5);
+    assert_eq!(arcs.len(), 1, "{arcs:?}");
+    let (rect, from, sweep, thickness, (offset, dash, period)) = arcs[0];
+    assert!(rect.w == 24.0 && from == 0.0 && sweep == 360.0 && thickness == 1.0);
+    assert!((offset - 0.0).abs() < 0.001 && (dash - 4.0 * per_epx).abs() < 0.01 && (period - 5.0 * per_epx).abs() < 0.01, "{arcs:?}");
+    // Two dash/gap pairs: two masks over the same period, the second
+    // offset past the first pair.
+    let two = draws("View v { Circle c 24x24, halign=left, valign=top, border_thickness=1, border_color=#000000FF, border_dash=[4, 1, 2, 1] }");
+    let masks: Vec<(f32, f32, f32)> = two.iter().filter_map(|x| if let Draw::Arc { dash, .. } = x { Some(*dash) } else { None }).collect();
+    assert_eq!(masks.len(), 2, "{masks:?}");
+    assert!((masks[0].2 - 8.0 * per_epx).abs() < 0.01 && (masks[1].0 - 5.0 * per_epx).abs() < 0.01 && (masks[1].1 - 2.0 * per_epx).abs() < 0.01, "{masks:?}");
+    // Without a ring there is nothing to dash.
+    let none = draws("View v { Circle c 24x24, color=#FFFFFFFF, border_dash=[4, 1] }");
+    assert!(none.iter().all(|x| !matches!(x, Draw::Arc { .. })));
+}
+
+#[test]
+fn an_arc_dashes_its_own_stroke() {
+    // `dash=` in thickness units along the arc's sweep.
+    let d = draws("View v { Arc a 40x40, halign=left, valign=top, color=#000000FF, thickness=2, from=90, sweep=180, dash=[3, 1] }");
+    let arcs: Vec<(f32, f32, f32, (f32, f32, f32))> = d.iter().filter_map(|x| if let Draw::Arc { from, sweep, thickness, dash, .. } = x { Some((*from, *sweep, *thickness, *dash)) } else { None }).collect();
+    let per_epx: f32 = 360.0 / (std::f32::consts::TAU * 19.0); // centerline radius 20 - 1
+    assert_eq!(arcs.len(), 1, "{arcs:?}");
+    let (from, sweep, thickness, (offset, dash, period)) = arcs[0];
+    assert!(from == 90.0 && sweep == 180.0 && thickness == 2.0 && offset == 0.0);
+    assert!((dash - 6.0 * per_epx).abs() < 0.01 && (period - 8.0 * per_epx).abs() < 0.01, "{arcs:?}");
+    // A solid Arc carries no mask.
+    let solid = draws("View v { Arc a 40x40, color=#000000FF, thickness=2 }");
+    assert!(solid.iter().any(|x| matches!(x, Draw::Arc { dash, .. } if *dash == gogo::draw::SOLID)));
+    // The word is the Arc's; a plate dashes with `border_dash=`.
+    let c = gogo::compile("View v { Rectangle r 24x24, border_thickness=1, dash=[4, 1] }", &|_: &str| None::<String>);
+    assert!(c.diags.iter().any(|d| d.code == "G2002"), "{:#?}", c.diags);
+    let c = gogo::compile("View v { Arc a 40x40, thickness=2, dash=4 }", &|_: &str| None::<String>);
+    assert!(c.diags.iter().any(|d| d.code == "G2009"), "{:#?}", c.diags);
 }
