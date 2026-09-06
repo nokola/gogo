@@ -171,24 +171,38 @@ pub struct Images {
     /// By id: the path as the file wrote it (`res://assets/x.png`).
     pub names: Vec<String>,
     index: std::collections::HashMap<String, ImageKey>,
+    /// A runtime table seeded from the build (`from_names`): every
+    /// `res://` file it will ever show is already in it — the phone has
+    /// no file system to fetch a late one from. A build-time table (the
+    /// compiler's) is not sealed.
+    sealed: bool,
 }
 
 impl Images {
     /// A table over `names` in id order — the host seeds one from the
-    /// build's `IMAGES` so its ids match what the pages carry.
+    /// build's `IMAGES` so its ids match what the pages carry. The table
+    /// is SEALED for `res://` names: interning a file the build did not
+    /// embed is the `unembedded_image` lint (a debug panic; release
+    /// interns a key that shows nothing).
     pub fn from_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Images {
         let mut images = Images::default();
         for name in names {
             images.intern(name);
         }
+        images.sealed = true;
         images
     }
 
-    /// The id for `name`, new or existing.
+    /// The id for `name`, new or existing. A host picture (`face://3`,
+    /// `preset://default`) is any non-`res://` name and is always welcome;
+    /// a `res://` file a sealed table has never heard of is the
+    /// `unembedded_image` lint — name the file in a `.gogo` `source=` or
+    /// wrap the path in `gogo_image!()` so the build embeds it.
     pub fn intern(&mut self, name: &str) -> ImageKey {
         if let Some(&key) = self.index.get(name) {
             return key;
         }
+        debug_assert!(!(self.sealed && name.starts_with("res://")), "unembedded_image: `{name}` is not in the build's image table — name it in a .gogo `source=` or wrap it in gogo_image!() so the build embeds it (a runtime res:// string shows nothing on the phone)");
         let key = ImageKey::from_index(self.names.len());
         self.names.push(name.to_string());
         self.index.insert(name.to_string(), key);
@@ -529,6 +543,12 @@ pub enum PropKey {
     RevealY,
     BorderThickness,
     BorderColor,
+    /// `border_dash=[4, 1]`: dash and gap lengths in `border_thickness`
+    /// units, repeated along the plate's edge (WPF StrokeDashArray; an odd
+    /// list repeats to even out). Drawn as crisp axis-aligned quads —
+    /// never antialiased line ends, which feather into a 1-epx gap and
+    /// erase it (D257). Corners stay square while dashed.
+    BorderDash,
     Opacity,
     Visibility,
     Disabled,
@@ -671,6 +691,7 @@ pub const WORDS: &[(&str, PropKey)] = &[
     ("reveal_y", PropKey::RevealY),
     ("border_thickness", PropKey::BorderThickness),
     ("border_color", PropKey::BorderColor),
+    ("border_dash", PropKey::BorderDash),
     ("opacity", PropKey::Opacity),
     ("visibility", PropKey::Visibility),
     ("disabled", PropKey::Disabled),
@@ -895,7 +916,7 @@ const BOX: &[PropKey] = &[
 /// The plate behind a box's content. Any box has one (E8): a Label with
 /// `background=` gets a plate under its text, padding included, the same
 /// as a Panel — no wrapping Panel needed.
-const PLATE: &[PropKey] = &[PropKey::Background, PropKey::CornerRadius, PropKey::CornerRadiusTopLeft, PropKey::CornerRadiusTopRight, PropKey::CornerRadiusBottomRight, PropKey::CornerRadiusBottomLeft, PropKey::BorderThickness, PropKey::BorderColor, PropKey::ClipContents];
+const PLATE: &[PropKey] = &[PropKey::Background, PropKey::CornerRadius, PropKey::CornerRadiusTopLeft, PropKey::CornerRadiusTopRight, PropKey::CornerRadiusBottomRight, PropKey::CornerRadiusBottomLeft, PropKey::BorderThickness, PropKey::BorderColor, PropKey::BorderDash, PropKey::ClipContents];
 /// Air inside the box around its children or text.
 const PADDING: &[PropKey] = &[PropKey::Padding, PropKey::PaddingLeft, PropKey::PaddingTop, PropKey::PaddingRight, PropKey::PaddingBottom];
 /// The words of a box that shows text of its own.
@@ -926,7 +947,7 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
         Kind::Label => &[BOX, PLATE, PADDING, TEXT],
         Kind::Button => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::ToggleMode, PropKey::SelectedProp, PropKey::IconSrc, PropKey::IconSize]],
         Kind::Image => &[BOX, PLATE, &[PropKey::Source, PropKey::Fit, PropKey::Loading]],
-        Kind::Rectangle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::CornerRadius, PropKey::CornerRadiusTopLeft, PropKey::CornerRadiusTopRight, PropKey::CornerRadiusBottomRight, PropKey::CornerRadiusBottomLeft, PropKey::BorderThickness, PropKey::BorderColor]],
+        Kind::Rectangle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::CornerRadius, PropKey::CornerRadiusTopLeft, PropKey::CornerRadiusTopRight, PropKey::CornerRadiusBottomRight, PropKey::CornerRadiusBottomLeft, PropKey::BorderThickness, PropKey::BorderColor, PropKey::BorderDash]],
         Kind::Circle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::BorderThickness, PropKey::BorderColor]],
         // `corner_radius` (Q9, user 2026-09-05): a rounded or disc-shaped
         // ramp — the brush-options preview ball. The uniform key only: the

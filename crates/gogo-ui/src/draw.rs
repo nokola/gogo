@@ -49,7 +49,12 @@ pub enum Draw {
     /// N−1 of these. `angle` is the CSS compass: 0 = to top, 90 = to
     /// right, clockwise. `corner` is the node's `corner_radius` (epx): the
     /// renderer masks the ramp to the rounded rect, half the box = a disc.
-    Gradient { rect: Rect, kind: GradientKind, from: Color_Straight_Srgb_4xU8_RGBA, to: Color_Straight_Srgb_4xU8_RGBA, angle: f32, band: (f32, f32), corner: f32 },
+    /// `period` is (start, length) along the run in 0..1 of the box:
+    /// length 0 = the run is the box (the edge colors hold past the last
+    /// stop); length > 0 = the ramp TILES — `repeat=repeat|mirror` with
+    /// `from=`/`to=` makes that span one period and the `band` is 0..1 of
+    /// the period, repeated across the whole box (a linear fill only).
+    Gradient { rect: Rect, kind: GradientKind, from: Color_Straight_Srgb_4xU8_RGBA, to: Color_Straight_Srgb_4xU8_RGBA, angle: f32, band: (f32, f32), corner: f32, period: (f32, f32) },
     /// `text`/`key`: the literal as the file wrote it and its translation
     /// key (`NO_KEY` = none). The renderer shows `locale::display(page,
     /// locale, text, key)` — the same string layout measured.
@@ -115,6 +120,57 @@ pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
     }
     walk(page, res, rects, NodeId::new(0), 1.0, &mut out);
     out
+}
+
+/// The dashed border (`border_dash=`): one pass around the plate's
+/// perimeter — top edge left→right, right edge down, bottom edge right→
+/// left, left edge up — the pattern running continuously across the
+/// corners like WPF's StrokeDashArray. The stroke sits INSIDE the box like
+/// the solid border; each dash is a crisp axis-aligned quad (D257).
+fn dash_quads(out: &mut Vec<Draw>, rect: Rect, border: f32, color: Color_Straight_Srgb_4xU8_RGBA, pattern: &[f32]) {
+    let mut lengths: Vec<f32> = pattern.iter().map(|n| n * border).collect();
+    if lengths.len() % 2 == 1 {
+        lengths.extend_from_slice(&pattern.iter().map(|n| n * border).collect::<Vec<f32>>());
+    }
+    if lengths.iter().any(|l| *l <= 0.0) || rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+    // (start point, direction, length) per edge, clockwise from top-left.
+    let edges: [((f32, f32), (f32, f32), f32); 4] = [
+        ((rect.x, rect.y), (1.0, 0.0), rect.w),
+        ((rect.x + rect.w, rect.y), (0.0, 1.0), rect.h),
+        ((rect.x + rect.w, rect.y + rect.h), (-1.0, 0.0), rect.w),
+        ((rect.x, rect.y + rect.h), (0.0, -1.0), rect.h),
+    ];
+    let mut i: usize = 0; // which pattern entry
+    let mut left: f32 = lengths[0]; // what remains of it
+    let mut on: bool = true;
+    for (start, dir, len) in edges {
+        let mut t: f32 = 0.0;
+        while t < len {
+            let run: f32 = left.min(len - t);
+            if on && run > 0.0 {
+                // The dash along the edge, `border` thick toward the inside.
+                let (x0, y0) = (start.0 + dir.0 * t, start.1 + dir.1 * t);
+                let (x1, y1) = (start.0 + dir.0 * (t + run), start.1 + dir.1 * (t + run));
+                let quad: Rect = if dir.1 == 0.0 {
+                    let top: f32 = if dir.0 > 0.0 { y0 } else { y0 - border };
+                    Rect::new(x0.min(x1), top, (x1 - x0).abs(), border)
+                } else {
+                    let leftx: f32 = if dir.1 > 0.0 { x0 - border } else { x0 };
+                    Rect::new(leftx, y0.min(y1), border, (y1 - y0).abs())
+                };
+                out.push(Draw::Quad { rect: quad, color, corner: 0.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+            }
+            t += run;
+            left -= run;
+            if left <= 0.0001 {
+                i = (i + 1) % lengths.len();
+                left = lengths[i];
+                on = !on;
+            }
+        }
+    }
 }
 
 fn mul_alpha(c: Color_Straight_Srgb_4xU8_RGBA, opacity: f32) -> Color_Straight_Srgb_4xU8_RGBA {
@@ -216,8 +272,20 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     // that corner, a uniform after a per-corner key stomps it back.
     let corners = corner_set(page, res, id);
     let uniform = corners[0] == corners[1] && corners[1] == corners[2] && corners[2] == corners[3];
+    // `border_dash=`: the dash/gap lengths in border_thickness units (WPF
+    // StrokeDashArray; an odd list repeats to even out). A dashed plate
+    // draws its fill with no border, then the dashes as crisp quads
+    // walking the perimeter (D257: never antialiased line ends).
+    let dash: Vec<f32> = res.prop(page, id, PropKey::BorderDash).map(|v| page.list(v).iter().filter_map(|x| if let Value::VNum(n) = x { Some(*n) } else { None }).collect()).unwrap_or_default();
     let plate_quad = |out: &mut Vec<Draw>, rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, border: f32, border_color: Color_Straight_Srgb_4xU8_RGBA| {
-        if uniform {
+        if !dash.is_empty() && border > 0.0 {
+            if uniform {
+                out.push(Draw::Quad { rect, color, corner: corners[0], border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+            } else {
+                out.push(Draw::QuadCorners { rect, color, corners, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+            }
+            dash_quads(out, rect, border, border_color, &dash);
+        } else if uniform {
             out.push(Draw::Quad { rect, color, corner: corners[0], border, border_color });
         } else {
             out.push(Draw::QuadCorners { rect, color, corners, border, border_color });
@@ -290,9 +358,9 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             let native_mark = node.kind != Kind::Button && !templated;
             let bg = color(PropKey::Background).or_else(|| if templated || native_mark { None } else { Some(mul_alpha(DEFAULT_BUTTON_BACKGROUND, opacity)) });
             if let Some(bg) = bg {
-                out.push(Draw::Quad { rect, color: bg, corner, border, border_color });
+                plate_quad(out, rect, bg, border, border_color);
             } else if border > 0.0 {
-                out.push(Draw::Quad { rect, color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT, corner, border, border_color });
+                plate_quad(out, rect, Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT, border, border_color);
             }
             let mut text_rect = text_rect;
             let mut halign_default = TextAlign::Center;
@@ -377,7 +445,11 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                 Some("conic") => GradientKind::Conic,
                 _ => GradientKind::Linear,
             };
-            let mirror = res.ident(page, id, PropKey::GradientRepeat) == Some("mirror");
+            let repeat_word: Option<&str> = res.ident(page, id, PropKey::GradientRepeat);
+            let mirror = repeat_word == Some("mirror");
+            // `repeat=repeat|mirror` with a `from=`/`to=` span: the span
+            // is one PERIOD and the ramp tiles across the box.
+            let tiles = matches!(repeat_word, Some("mirror") | Some("repeat"));
             // No `angle=`: left → right (Godot's fill_from (0,0) → fill_to
             // (1,0)), which is 90 on the compass.
             let mut angle = res.num(page, id, PropKey::Angle).unwrap_or(90.0);
@@ -454,7 +526,12 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                 }
             }
             let fold = if mirror { 0.5 } else { 1.0 };
+            let period: (f32, f32) = match span {
+                Some((a, b)) if tiles && kind == GradientKind::Linear && b > a => (a, b - a),
+                _ => (0.0, 0.0),
+            };
             let remap = |t: f32| match span {
+                Some(_) if period.1 > 0.0 => t, // period-local: the renderer tiles it
                 Some((a, b)) => (a + t * (b - a)).clamp(0.0, 1.0),
                 None => t,
             };
@@ -483,7 +560,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                 bands.extend(back);
             }
             for (f, t, band) in bands {
-                out.push(Draw::Gradient { rect, kind, from: f, to: t, angle, band, corner });
+                out.push(Draw::Gradient { rect, kind, from: f, to: t, angle, band, corner, period });
             }
         }
         Kind::Image => {

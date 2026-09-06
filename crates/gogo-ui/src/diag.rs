@@ -151,6 +151,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G2006", "`transparent` in `stops=` hides the fade's color"),
     ("G2007", "the word is not a color"),
     ("G2008", "a variant-flipping color inside `stops=`"),
+    ("G2009", "`border_dash=` takes dash/gap lengths"),
     ("G3002", "an automatic (value-driven) slot property assigned — the control drives it"),
     ("G3005", "one target posed from both screen vocabularies — a class and an orientation can hold at once; compose or pick one"),
     ("G3006", "style targeting / theme-entry shape — `for=`/`extends=` misuse, `theme` in a node, a named/wired/placed/duplicate entry"),

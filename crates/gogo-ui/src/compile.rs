@@ -3324,14 +3324,17 @@ impl<'a> Compiler<'a> {
         // `stops=` and nothing else — no prop becomes list-accepting by
         // accident (the spec's Values table).
         if let AstValue::List(_) = p.value {
-            let takes_list = matches!(key, PropKey::Cols | PropKey::Areas | PropKey::Stops);
+            let takes_list = matches!(key, PropKey::Cols | PropKey::Areas | PropKey::Stops | PropKey::BorderDash);
             if !takes_list {
-                self.error("G0040", p.line, format!("`{}=` doesn't take a list — only Grid's `cols=`/`areas=` and Gradient's `stops=` do", p.key));
+                self.error("G0040", p.line, format!("`{}=` doesn't take a list — only Grid's `cols=`/`areas=`, Gradient's `stops=` and `border_dash=` do", p.key));
                 return None;
             }
         }
         if key == PropKey::Stops {
             self.check_stops(&p.value, p.line);
+        }
+        if key == PropKey::BorderDash {
+            self.check_border_dash(&p.value, p.line);
         }
         let mut value = self.value(&p.value, p.line, Some(key));
         // `pivot=` is a 0..1 box point — the fixed spot `scale` and
@@ -3377,7 +3380,7 @@ impl<'a> Compiler<'a> {
             PropKey::Select => Some(&["one", "many", "off"]),
             PropKey::TouchTarget | PropKey::KeyboardTarget => Some(&["off"]),
             PropKey::GradientFill => Some(&["linear", "radial", "conic"]),
-            PropKey::GradientRepeat => Some(&["mirror"]),
+            PropKey::GradientRepeat => Some(&["none", "repeat", "mirror"]),
             PropKey::Loading => Some(&["lazy", "eager"]),
             _ => None,
         };
@@ -3444,6 +3447,29 @@ impl<'a> Compiler<'a> {
     /// solid (G2003 — that's a Rectangle, the rewrite is spelled out);
     /// `@` positions all-or-none and never decreasing. Checked on the
     /// file's spelling so a message can quote it.
+    /// `border_dash=[4, 1]`: a non-empty list of positive lengths in
+    /// `border_thickness` units (WPF StrokeDashArray — `4 1` at a 1-epx
+    /// border is 4-epx dashes, 1-epx gaps). G2009 names the bad spelling.
+    fn check_border_dash(&mut self, v: &AstValue, line: u32) {
+        let AstValue::List(items) = v else {
+            self.error("G2009", line, "`border_dash=` takes the dash/gap lengths — `border_dash=[4, 1]` (in border_thickness units)");
+            return;
+        };
+        if items.is_empty() {
+            self.error("G2009", line, "`border_dash=` is empty — give the dash and gap lengths (`border_dash=[4, 1]`)");
+            return;
+        }
+        for it in items {
+            match it {
+                AstValue::Num { value, .. } if *value > 0.0 => {}
+                other => {
+                    self.error("G2009", line, format!("`border_dash=` entries are positive lengths in border_thickness units — got `{}`", spell(other)));
+                    return;
+                }
+            }
+        }
+    }
+
     fn check_stops(&mut self, v: &AstValue, line: u32) {
         let AstValue::List(items) = v else {
             self.error("G2005", line, "`stops=` takes the gradient's color list — `stops=[white, black]` spaces evenly; @positions pin entries (`white@0, blue@0.24`)");

@@ -104,13 +104,19 @@ pub struct BuildOptions<'a> {
     /// filter's property and preset names), which are translatable only as
     /// keys.
     pub runtime_keys: &'a [(&'a str, &'a str)],
+    /// `res://` images CODE shows (`gogo_image!("res://…")` sites the
+    /// host's build.rs scanned): they join the ONE image table — the same
+    /// `ImageKey` space and embed as a page's `source=` — and the
+    /// generated `code_image(path)` hands a site its key. One registry:
+    /// a PNG a page also names is embedded and decoded once.
+    pub code_images: &'a [&'a str],
 }
 
 impl<'a> BuildOptions<'a> {
     /// The defaults with `res_root` set: `.ignore` fence, no default
     /// font, no host options.
     pub fn new(res_root: &'a Path) -> Self {
-        BuildOptions { res_root, default_font: None, ignore_marker: Some(".ignore"), compile: CompileOptions::default(), runtime_keys: &[] }
+        BuildOptions { res_root, default_font: None, ignore_marker: Some(".ignore"), compile: CompileOptions::default(), runtime_keys: &[], code_images: &[] }
     }
 }
 
@@ -282,6 +288,15 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
         }
     }
     source.push_str("];\n\n");
+    // Code images (`gogo_image!` sites) join the table after the pages: a
+    // path a page named keeps its id, a new one takes the next.
+    for path in options.code_images {
+        if !path.starts_with("res://") {
+            errors.push_str(&format!("gogo_image!({path:?}): a code image is a `res://` asset path\n"));
+            continue;
+        }
+        options.compile.images.expect("set above").borrow_mut().intern(path);
+    }
     // The image table, dense by `ImageKey`: every path a `source=` named,
     // with the file's bytes for a `res://` asset and `None` for a picture
     // the host shows at runtime (`preview://brush`).
@@ -299,6 +314,16 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
             }
         }
         source.push_str("];\n\n");
+        // `code_image(path)`: the key for a `gogo_image!` site — a match
+        // over exactly the scanned literals, so an unscanned path is a
+        // compile error at the macro, never a runtime miss.
+        source.push_str("/// The image key for a `gogo_image!(\"res://…\")` site (generated over the build's scan).\npub fn code_image(path: &str) -> gogo::ImageKey {\n    match path {\n");
+        for path in options.code_images {
+            if let Some(key) = images.get(path) {
+                source.push_str(&format!("        {path:?} => gogo::ImageKey::from_index({}),\n", key.index()));
+            }
+        }
+        source.push_str("        other => panic!(\"gogo_image!({other:?}) is not in the build's image table — the build scans src/**/*.rs for the literal; a path built at runtime cannot be embedded\"),\n    }\n}\n\n");
     }
     if !errors.is_empty() {
         return Err(errors);
