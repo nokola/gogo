@@ -317,6 +317,26 @@ impl UiRenderer {
         true
     }
 
+    /// Drops the texture an opened image shows: the slot points at a
+    /// blank 1x1 until the next `set_external_image`. Needed because the
+    /// bind group here holds the texture alive — a released full-res crop
+    /// photo (hundreds of MB) would otherwise stay on the GPU until the
+    /// next open replaced it.
+    pub fn release_external_image(&mut self, device: &wgpu::Device, image: ExternalImage) {
+        let external: &External = &self.externals[image.0 as usize];
+        if external.texture.is_none() {
+            return;
+        }
+        let key: ImageKey = external.key;
+        let (_, entry) = self.make_texture(device, 1, 1, wgpu::TextureFormat::Rgba8Unorm);
+        if let Some(slot) = self.slot(key) {
+            if slot != ATLAS {
+                self.textures[slot as usize] = entry;
+            }
+        }
+        self.externals[image.0 as usize].texture = None;
+    }
+
     fn write(queue: &wgpu::Queue, tex: &wgpu::Texture, data: &[u8], width: u32, height: u32, bytes_per_pixel: u32) {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
