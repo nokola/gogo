@@ -1307,6 +1307,23 @@ impl Input {
         rt.sel_handles = self.touch_sel && rt.selection.is_some();
     }
 
+    /// Code hands the keyboard to `node` (the shipped `GrabFocus` — the
+    /// text page's edit box takes the caret the moment a callout is
+    /// tapped for editing, no second tap on the box); `None` takes it
+    /// back (`ReleaseFocus`). The field's caret lands at its end and the
+    /// host's IME arm reads the runtime's caret as it would after a tap.
+    /// Returns the events the hand-over raises (the old owner's commit).
+    pub fn focus_on(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], node: Option<NodeId>) -> Vec<Event> {
+        let mut events: Vec<Event> = Vec::new();
+        self.grant(page, rt, res, rects, node, false, &mut events);
+        if node.is_none() {
+            rt.caret = None;
+            rt.selection = None;
+            rt.sel_handles = false;
+        }
+        events
+    }
+
     /// The focused Input's text + selection span for seeding an IME
     /// (GPAR112): `None` when no Input holds the caret. No selection =
     /// a collapsed span at the caret.

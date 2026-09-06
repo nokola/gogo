@@ -576,6 +576,18 @@ pub enum PropKey {
     ColSpan,
     RowSpan,
     Fit,
+    /// `window=[left, top, width, height]` on an Image: draw only this
+    /// rectangle of the texture, in the texture's own pixels (the whole
+    /// texture when unset). Needed because a canvas tile's texture carries
+    /// a border copied from its neighbours so smoothing never shows a
+    /// seam — the border must never reach the eye (shipped's AtlasTexture
+    /// window over the buffered sector, CanvasView.cs Setup).
+    Window,
+    /// `sampling=smooth|pixel` on an Image: `smooth` blends between texels
+    /// (the default); `pixel` shows each texel as a hard block — the
+    /// canvas past 21 px per texel (shipped DisableImageFilteringLimitEpx:
+    /// "precise pixel drawing when zoomed far in").
+    Sampling,
     TextHalign,
     TextValign,
     Wrap,
@@ -722,6 +734,8 @@ pub const WORDS: &[(&str, PropKey)] = &[
     ("col_span", PropKey::ColSpan),
     ("row_span", PropKey::RowSpan),
     ("fit", PropKey::Fit),
+    ("window", PropKey::Window),
+    ("sampling", PropKey::Sampling),
     ("horizontal_alignment", PropKey::TextHalign),
     ("vertical_alignment", PropKey::TextValign),
     ("wrap", PropKey::Wrap),
@@ -965,7 +979,7 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
         // its box (a Button's text stays text).
         Kind::Label => &[BOX, PLATE, PADDING, TEXT, &[PropKey::TextFit, PropKey::TextFlip]],
         Kind::Button => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::ToggleMode, PropKey::SelectedProp, PropKey::IconSrc, PropKey::IconSize]],
-        Kind::Image => &[BOX, PLATE, &[PropKey::Source, PropKey::Fit, PropKey::Loading]],
+        Kind::Image => &[BOX, PLATE, &[PropKey::Source, PropKey::Fit, PropKey::Loading, PropKey::Window, PropKey::Sampling]],
         Kind::Rectangle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::CornerRadius, PropKey::CornerRadiusTopLeft, PropKey::CornerRadiusTopRight, PropKey::CornerRadiusBottomRight, PropKey::CornerRadiusBottomLeft, PropKey::BorderThickness, PropKey::BorderColor, PropKey::BorderDash]],
         Kind::Circle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::BorderThickness, PropKey::BorderColor, PropKey::BorderDash]],
         // `corner_radius` (Q9, user 2026-09-05): a rounded or disc-shaped
@@ -1333,6 +1347,14 @@ pub struct AnimTrack {
     pub current: bool,
     /// `autoreverse=true`: out and back, the return leg with the same easing.
     pub autoreverse: bool,
+    /// `from=-100%` / `to=100%` on a `translate.x` / `translate.y` lane:
+    /// the number is a fraction of the node's OWN laid-out box on that
+    /// axis (its width for x, its height for y), resolved when the anim
+    /// starts from the last `glide`. Needed because a sheet that slides in
+    /// by its own height, or two panes that push each other by the screen
+    /// width, move by numbers no file can write (user, 2026-09-06).
+    pub from_percent: bool,
+    pub to_percent: bool,
 }
 
 /// An `anim` header: how the whole chain plays.

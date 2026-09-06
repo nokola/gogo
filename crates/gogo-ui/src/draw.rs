@@ -22,6 +22,14 @@ pub enum Fit {
     Distort,
 }
 
+/// `sampling=` on an Image: `Smooth` blends between texels, `Pixel`
+/// shows each texel as a hard block (the canvas zoomed far in).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sampling {
+    Smooth,
+    Pixel,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GradientKind {
     Linear,
@@ -46,8 +54,10 @@ pub enum Draw {
     Arc { rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, from: f32, sweep: f32, thickness: f32, dash: (f32, f32, f32) },
     Circle { rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, border: f32, border_color: Color_Straight_Srgb_4xU8_RGBA },
     /// `image` is the build-wide image id (`source=`); the renderer
-    /// indexes its texture slots by it.
-    Image { rect: Rect, image: ImageKey, tint: Color_Straight_Srgb_4xU8_RGBA, fit: Fit },
+    /// indexes its texture slots by it. `window` is the texture rectangle
+    /// shown (`window=`, texture pixels; `None` = all of it) — the fit
+    /// maps that rectangle, not the whole texture, into `rect`.
+    Image { rect: Rect, image: ImageKey, tint: Color_Straight_Srgb_4xU8_RGBA, fit: Fit, window: Option<[f32; 4]>, sampling: Sampling },
     /// A gradient over `rect`, drawn ONCE: the `stops` entries right after
     /// this one in the list are its [`Draw::GradientStop`]s, positions
     /// non-decreasing along the run (0..1). The renderer keeps the stops
@@ -665,7 +675,12 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                     Some("distort") => Fit::Distort,
                     _ => Fit::Contain,
                 };
-                out.push(Draw::Image { rect, image: src, tint, fit });
+                let window: Option<[f32; 4]> = res.prop(page, id, PropKey::Window).and_then(|v| {
+                    let nums: Vec<f32> = page.list(v).iter().filter_map(|x| if let Value::VNum(n) = x { Some(*n) } else { None }).collect();
+                    (nums.len() == 4).then(|| [nums[0], nums[1], nums[2], nums[3]])
+                });
+                let sampling = if res.ident(page, id, PropKey::Sampling) == Some("pixel") { Sampling::Pixel } else { Sampling::Smooth };
+                out.push(Draw::Image { rect, image: src, tint, fit, window, sampling });
             }
         }
         Kind::Label => {

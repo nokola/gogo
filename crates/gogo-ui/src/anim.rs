@@ -6,6 +6,7 @@
 //! is transformed: a player never touches a rect in the arena; the draw
 //! walk applies the channels, and prop lanes land as resolve overrides.
 
+use crate::layout::Rect;
 use crate::page::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -520,8 +521,12 @@ impl Player {
     /// `layer`/`live`/`held` (GP40); `variant` derefs a `to=` written as a
     /// mode-flipping palette word at PLAY start (a variant flip mid-play
     /// keeps the play's colors — the next play reads the new mode).
+    /// `boxes` are the nodes' last laid-out rects (the runtime's `glide`
+    /// memory): a `%` endpoint on a translate lane is that fraction of
+    /// the node's width (x) or height (y); with no layout yet the box is
+    /// empty and the endpoint is 0.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(page: &Page, anim: StrId, layer: &mut [Motion], live: &[Motion], held: &[(NodeId, Channel, f32)], pvals: &mut Vec<(NodeId, PropKey, Value)>, plive: &[(NodeId, PropKey, Value)], pheld: &[(NodeId, PropKey, Value)], variant: StrId, finish: Finish) -> Player {
+    pub fn new(page: &Page, anim: StrId, layer: &mut [Motion], live: &[Motion], held: &[(NodeId, Channel, f32)], pvals: &mut Vec<(NodeId, PropKey, Value)>, plive: &[(NodeId, PropKey, Value)], pheld: &[(NodeId, PropKey, Value)], variant: StrId, finish: Finish, boxes: &[Rect]) -> Player {
         let mut tracks: Vec<Track> = Vec::new();
         let mut ptracks: Vec<PropTrack> = Vec::new();
         let mut owns = Vec::new();
@@ -556,9 +561,15 @@ impl Player {
                 }
                 continue;
             };
-            let track_from = t.from.and_then(Value::as_num);
-            let track_to = t.to.as_num().unwrap_or(0.0);
             for channel in channels {
+                let axis: f32 = match channel {
+                    Channel::TranslateX => boxes.get(t.node.index()).map(|r| r.w).unwrap_or(0.0),
+                    Channel::TranslateY => boxes.get(t.node.index()).map(|r| r.h).unwrap_or(0.0),
+                    _ => 100.0,
+                };
+                let track_from = t.from.and_then(Value::as_num).map(|v| if t.from_percent { v / 100.0 * axis } else { v });
+                let track_to = t.to.as_num().unwrap_or(0.0);
+                let track_to = if t.to_percent { track_to / 100.0 * axis } else { track_to };
                 let shown = live.get(t.node.index()).map(|m| m.get(channel)).unwrap_or(Motion::IDENTITY.get(channel));
                 let base_held = held.iter().any(|h| h.0 == t.node && h.1 == channel);
                 let first_on_channel = !tracks.iter().any(|x| x.node == t.node && x.channel == channel);

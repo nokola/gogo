@@ -2732,7 +2732,7 @@ impl<'a> Compiler<'a> {
                                 None if t <= 0.0 => (Some(v), cluster_start, 0.0),
                                 None => (None, if jump { cluster_start + t } else { cluster_start }, if jump { 0.0 } else { t }),
                             };
-                            self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from: from.map(Value::VNum), to: Value::VNum(v), start, duration, easing, current: false, autoreverse: false });
+                            self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from: from.map(Value::VNum), to: Value::VNum(v), start, duration, easing, current: false, autoreverse: false, from_percent: false, to_percent: false });
                             end = start + duration;
                             prev = Some((t, v));
                         }
@@ -2747,7 +2747,7 @@ impl<'a> Compiler<'a> {
                                 let (t0, v0, _, _) = parsed[i];
                                 let (t1, _, jump, easing) = parsed[i + 1];
                                 let (start, duration) = if jump { (cluster_start + 2.0 * lane - t0, 0.0) } else { (cluster_start + 2.0 * lane - t1, t1 - t0) };
-                                self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from: None, to: Value::VNum(v0), start, duration, easing, current: false, autoreverse: false });
+                                self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from: None, to: Value::VNum(v0), start, duration, easing, current: false, autoreverse: false, from_percent: false, to_percent: false });
                                 end = end.max(start + duration);
                             }
                         }
@@ -2776,7 +2776,17 @@ impl<'a> Compiler<'a> {
                         },
                         None => (None, false),
                     };
+                    // `from=-100%` / `to=100%`: a fraction of the node's own
+                    // box, translate lanes only — a percent of a scale, a
+                    // rotation or an opacity has no axis to measure.
                     let to_ast = step.props.iter().find(|p| p.key == "to").map(|p| (p.value.clone(), p.line));
+                    let is_percent = |v: &Option<(AstValue, u32)>| matches!(v, Some((AstValue::Num { unit, .. }, _)) if unit == "%");
+                    let from_percent: bool = is_percent(&from_ast);
+                    let to_percent: bool = is_percent(&to_ast);
+                    if (from_percent || to_percent) && !(channel == "translate.x" || channel == "translate.y") {
+                        self.error("G0064", step.line, format!("`{path}`: a `%` value is a fraction of the node's own box — only `translate.x` (of its width) and `translate.y` (of its height) take one"));
+                        continue;
+                    }
                     let to: Value = match (&to_ast, value_key) {
                         (Some((v, line)), Some(key)) => self.value(v, *line, Some(key)),
                         (Some((v, _)), None) => match v.as_num() {
@@ -2806,7 +2816,7 @@ impl<'a> Compiler<'a> {
                     };
                     let offset = num("offset").unwrap_or(0.0);
                     let start = (cluster_start + offset).max(0.0);
-                    self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from, to, start, duration, easing, current, autoreverse });
+                    self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from, to, start, duration, easing, current, autoreverse, from_percent, to_percent });
                     if self_target {
                         for i in lane_mark..self.page.anims.len() {
                             self.self_lanes.push((anim, i as u32));
@@ -3326,9 +3336,9 @@ impl<'a> Compiler<'a> {
         // `stops=` and nothing else — no prop becomes list-accepting by
         // accident (the spec's Values table).
         if let AstValue::List(_) = p.value {
-            let takes_list = matches!(key, PropKey::Cols | PropKey::Areas | PropKey::Stops | PropKey::BorderDash | PropKey::Dash);
+            let takes_list = matches!(key, PropKey::Cols | PropKey::Areas | PropKey::Stops | PropKey::BorderDash | PropKey::Dash | PropKey::Window);
             if !takes_list {
-                self.error("G0040", p.line, format!("`{}=` doesn't take a list — only Grid's `cols=`/`areas=`, Gradient's `stops=`, `border_dash=` and an Arc's `dash=` do", p.key));
+                self.error("G0040", p.line, format!("`{}=` doesn't take a list — only Grid's `cols=`/`areas=`, Gradient's `stops=`, `border_dash=`, an Arc's `dash=` and an Image's `window=` do", p.key));
                 return None;
             }
         }
@@ -3337,6 +3347,9 @@ impl<'a> Compiler<'a> {
         }
         if key == PropKey::BorderDash || key == PropKey::Dash {
             self.check_border_dash(key.word(), &p.value, p.line);
+        }
+        if key == PropKey::Window {
+            self.check_window(&p.value, p.line);
         }
         let mut value = self.value(&p.value, p.line, Some(key));
         // `pivot=` is a 0..1 box point — the fixed spot `scale` and
@@ -3386,6 +3399,7 @@ impl<'a> Compiler<'a> {
             PropKey::GradientFill => Some(&["linear", "radial", "conic"]),
             PropKey::GradientRepeat => Some(&["none", "repeat", "mirror"]),
             PropKey::Loading => Some(&["lazy", "eager"]),
+            PropKey::Sampling => Some(&["smooth", "pixel"]),
             _ => None,
         };
         if let Some(words) = closed_words {
@@ -3474,6 +3488,20 @@ impl<'a> Compiler<'a> {
                     return;
                 }
             }
+        }
+    }
+
+    /// `window=[left, top, width, height]`: four numbers in the texture's
+    /// own pixels, the corner at or past 0 and a positive size — a
+    /// zero-sized or negative window would draw nothing and say nothing.
+    fn check_window(&mut self, v: &AstValue, line: u32) {
+        let nums: Option<Vec<f32>> = match v {
+            AstValue::List(items) if items.len() == 4 => items.iter().map(AstValue::as_num).collect(),
+            _ => None,
+        };
+        match nums.as_deref() {
+            Some([l, t, w, h]) if *l >= 0.0 && *t >= 0.0 && *w > 0.0 && *h > 0.0 => {}
+            _ => self.error("G2010", line, format!("`window=` is the texture rectangle to show — `window=[left, top, width, height]` in the texture's pixels, corner at or past 0 and a positive size, not `{}`", spell(v))),
         }
     }
 

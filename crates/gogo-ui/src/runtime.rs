@@ -530,7 +530,7 @@ impl Runtime {
                 plive.push((node, key, v));
             }
         }
-        let mut player = Player::new(page, anim, &mut self.motion, &live, &self.held, &mut self.prop_anim, &plive, &self.held_props, self.variant, finish);
+        let mut player = Player::new(page, anim, &mut self.motion, &live, &self.held, &mut self.prop_anim, &plive, &self.held_props, self.variant, finish, &self.last_rects);
         // The channels move to the new player; the older ones keep their
         // clocks (a deferred hide still hides on time) and hand over the
         // true base, so `stop(restore)` lands where the FIRST play found
