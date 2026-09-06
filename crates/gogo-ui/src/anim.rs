@@ -258,6 +258,8 @@ pub enum Channel {
     ScaleX,
     ScaleY,
     Rotate,
+    /// The turnstile swing about the node's left edge, degrees (3D).
+    Swing,
     /// The node's own opacity — the SAME value `opacity=` declares and a
     /// `when … opacity=` holds; an anim writes that one channel, it does
     /// not multiply it (decided 2026-08-30, E1: one property, one writer).
@@ -284,6 +286,7 @@ impl Channel {
             "scale.x" => vec![Channel::ScaleX],
             "scale.y" => vec![Channel::ScaleY],
             "rotate" => vec![Channel::Rotate],
+            "swing" => vec![Channel::Swing],
             "opacity" => vec![Channel::Opacity],
             "color.a" => vec![Channel::ColorA],
             "reveal_x" => vec![Channel::RevealX],
@@ -327,6 +330,9 @@ pub struct Motion {
     pub scale: [f32; 2],
     /// Degrees, clockwise, about the node's center.
     pub rotate: f32,
+    /// Degrees the node swings about its LEFT edge in 3D (the `tap_pulse`
+    /// turnstile, an anim's `swing` lane); 0 = flat on the screen.
+    pub swing: f32,
     pub opacity: f32,
     /// The fill's alpha (0..1).
     pub color_a: f32,
@@ -335,7 +341,7 @@ pub struct Motion {
 }
 
 impl Motion {
-    pub const IDENTITY: Motion = Motion { translate: [0.0, 0.0], scale: [1.0, 1.0], rotate: 0.0, opacity: 1.0, color_a: 1.0, reveal: [1.0, 1.0] };
+    pub const IDENTITY: Motion = Motion { translate: [0.0, 0.0], scale: [1.0, 1.0], rotate: 0.0, swing: 0.0, opacity: 1.0, color_a: 1.0, reveal: [1.0, 1.0] };
 
     pub fn get(&self, c: Channel) -> f32 {
         match c {
@@ -344,6 +350,7 @@ impl Motion {
             Channel::ScaleX => self.scale[0],
             Channel::ScaleY => self.scale[1],
             Channel::Rotate => self.rotate,
+            Channel::Swing => self.swing,
             Channel::Opacity => self.opacity,
             Channel::ColorA => self.color_a,
             Channel::RevealX => self.reveal[0],
@@ -358,6 +365,7 @@ impl Motion {
             Channel::ScaleX => self.scale[0] = v,
             Channel::ScaleY => self.scale[1] = v,
             Channel::Rotate => self.rotate = v,
+            Channel::Swing => self.swing = v,
             Channel::Opacity => self.opacity = v,
             Channel::ColorA => self.color_a = v,
             Channel::RevealX => self.reveal[0] = v,

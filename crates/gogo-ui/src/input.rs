@@ -2032,9 +2032,9 @@ mod tests {
     }
 
     /// `tap_pulse=true`: a completed tap swings the box like a turnstile
-    /// door about its LEFT edge — its projected width narrows (scale.x =
-    /// cos of the swing) while the left edge stays put — then it settles
-    /// flat and the transform is gone (the D10 disarm law).
+    /// door about its LEFT edge — the angle rides the `swing` motion
+    /// channel, which the draw walk turns into the 3D push — then it
+    /// settles flat and the transform is gone (the D10 disarm law).
     #[test]
     fn tap_pulse_swings_about_the_left_edge_then_disarms() {
         let mut fx = Fx::new("View v { Button b tap_pulse=true, width=200, height=50 }");
@@ -2052,11 +2052,13 @@ mod tests {
         assert!((angle - crate::runtime::TAP_PULSE_ANGLE_DEG).abs() < 0.01, "fully out at the end of the out phase: {angle}");
         let res = resolve(&fx.page, &fx.rt);
         let m = res.motion[b];
-        assert!((m.scale[0] - angle.to_radians().cos()).abs() < 1e-4, "{m:?}");
-        assert_eq!(m.scale[1], 1.0, "a turnstile keeps its height");
-        // The drawn left edge: a center-pivot shrink puts it at x + (w - w*sx)/2; translate.x takes that back.
-        let left = r.x + (r.w - r.w * m.scale[0]) / 2.0 + m.translate[0];
-        assert!((left - r.x).abs() < 1e-3, "the hinge edge stays put: {left} vs {}", r.x);
+        assert!((m.swing - angle).abs() < 1e-4, "the angle is the swing channel: {m:?}");
+        assert_eq!((m.scale, m.translate), ([1.0, 1.0], [0.0, 0.0]), "a turnstile is a swing, not a squash");
+        // The draw walk hinges the door on the left edge.
+        let draws = crate::draw::draw(&fx.page, &res, &rects);
+        let push = draws.iter().find_map(|d| if let crate::draw::Draw::SwingPush { angle: a, pivot_x, cx, cy, focal } = d { Some((*a, *pivot_x, *cx, *cy, *focal)) } else { None }).expect("a SwingPush");
+        assert!((push.0 - angle).abs() < 1e-4 && push.1 == r.x && push.2 == r.x + r.w / 2.0 && push.3 == r.y + r.h / 2.0, "{push:?}");
+        assert!((push.4 - crate::draw::swing_focal(r.h)).abs() < 1e-4, "the WP7 camera: {} vs {}", push.4, crate::draw::swing_focal(r.h));
         fx.rt.tick(&mut fx.page, crate::runtime::TAP_PULSE_BACK_SEC + 0.01);
         assert_eq!(fx.rt.tap_pulse_angle(b), 0.0, "disarmed");
         assert!(!fx.rt.animating());
@@ -2104,10 +2106,12 @@ mod tests {
         fx.touch(Phase::Up, rc.x + 5.0, rc.y + 5.0, 1.1);
         fx.rt.tick(&mut fx.page, 0.04);
         let res = resolve(&fx.page, &fx.rt);
-        assert!(res.motion[c].scale[0] < 1.0, "c swings");
+        assert!(res.motion[c].swing > 0.0, "c swings");
         let drawn = crate::draw::moved_rects(&fx.page, &res, &rects).expect("something moves");
         assert_eq!(drawn[d], rects[d], "d is not under c");
         assert_ne!(drawn[c], rects[c]);
+        assert_eq!((drawn[c].x, drawn[c].h), (rects[c].x, rects[c].h), "the hinge edge and the near height stand; the far edge came in");
+        assert!(drawn[c].w < rects[c].w);
     }
 
     #[test]

@@ -10,6 +10,7 @@ pub mod color;
 pub mod compile;
 pub mod diag;
 pub mod draw;
+pub mod font_style;
 pub mod emit;
 pub mod input;
 pub mod layout;

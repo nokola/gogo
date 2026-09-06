@@ -609,6 +609,16 @@ pub enum PropKey {
     /// content dims when no `when disabled` on it says otherwise.
     DisabledOpacity,
     ClipText,
+    /// `text_fit=stretch` on a Label: its text is ONE glyph whose ink
+    /// box is stretched to fill the Label's box, each axis its own
+    /// stretch — a speech bubble is one character of an ornament font
+    /// pulled over the callout (Callout.xaml.cs's stretched TextMesh).
+    /// `none` (the default) draws text as text.
+    TextFit,
+    /// `text_flip=horizontal|vertical|both` with `text_fit=stretch`:
+    /// the stretched glyph mirrored, so a bubble's tail points at the
+    /// chosen corner.
+    TextFlip,
     ClipContents,
     /// Tiles cell props.
     Span,
@@ -729,6 +739,8 @@ pub const WORDS: &[(&str, PropKey)] = &[
     ("color.a", PropKey::ColorA),
     ("disabled_opacity", PropKey::DisabledOpacity),
     ("clip_text", PropKey::ClipText),
+    ("text_fit", PropKey::TextFit),
+    ("text_flip", PropKey::TextFlip),
     ("clip_contents", PropKey::ClipContents),
     ("span", PropKey::Span),
     ("full_row", PropKey::FullRow),
@@ -949,7 +961,9 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
         Kind::Scroll => &[BOX, PLATE, PADDING, &[PropKey::Allow, PropKey::Bars]],
         Kind::Grid => &[BOX, PLATE, PADDING, &[PropKey::Cols, PropKey::Areas, PropKey::RowHeight, PropKey::Spacing]],
         Kind::Tiles => &[BOX, PLATE, PADDING, &[PropKey::Cols, PropKey::Spacing]],
-        Kind::Label => &[BOX, PLATE, PADDING, TEXT],
+        // `text_fit`/`text_flip`: a Label alone stretches a glyph over
+        // its box (a Button's text stays text).
+        Kind::Label => &[BOX, PLATE, PADDING, TEXT, &[PropKey::TextFit, PropKey::TextFlip]],
         Kind::Button => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::ToggleMode, PropKey::SelectedProp, PropKey::IconSrc, PropKey::IconSize]],
         Kind::Image => &[BOX, PLATE, &[PropKey::Source, PropKey::Fit, PropKey::Loading]],
         Kind::Rectangle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::CornerRadius, PropKey::CornerRadiusTopLeft, PropKey::CornerRadiusTopRight, PropKey::CornerRadiusBottomRight, PropKey::CornerRadiusBottomLeft, PropKey::BorderThickness, PropKey::BorderColor, PropKey::BorderDash]],

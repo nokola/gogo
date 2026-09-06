@@ -431,13 +431,14 @@ impl Runtime {
     /// about its LEFT edge like a door: out to `TAP_PULSE_ANGLE_DEG` over
     /// `TAP_PULSE_OUT_SEC` (quad out), back to flat over `TAP_PULSE_BACK_SEC`
     /// (back out, amplitude 0.5) — the shipped `Fx.TapPulse` timings and
-    /// easings on the angle instead of a uniform scale. Drawn without
-    /// perspective: the swing shows as the box's projected width,
-    /// `scale.x = cos(angle)`, its left edge held still (`translate.x`
-    /// takes back the center-pivot shift). One swing per node: a tap
-    /// mid-swing restarts it (shipped: a new play kills the old one).
-    /// The input layer calls this on `activate` for every node whose
-    /// `tap_pulse=true` (the shipped `button.Pressed` hook).
+    /// easings on the angle instead of a uniform scale. Drawn in 3D
+    /// (user call 2026-09-06: WP7's turnstile has perspective): the angle
+    /// rides the `swing` motion channel and the draw walk wraps the node
+    /// in a `SwingPush` — the far side of the door shrinks toward the
+    /// center as it turns. One swing per node: a tap mid-swing restarts
+    /// it (shipped: a new play kills the old one). The input layer calls
+    /// this on `activate` for every node whose `tap_pulse=true` (the
+    /// shipped `button.Pressed` hook).
     pub fn tap_pulse(&mut self, node: NodeId) {
         self.pulses.retain(|p| p.node != node);
         self.pulses.push(Pulse { node, elapsed: 0.0 });
@@ -1986,17 +1987,11 @@ fn compose_anim(page: &Page, rt: &Runtime, r: &mut Resolved) {
             apply(*node, *channel, rt.motion[*node].get(*channel));
         }
     }
-    // The `tap_pulse` turnstile: the swing's projected width on `scale.x`,
-    // the left edge held still by `translate.x` (the draw walk scales
-    // about the node's pivot, the center by default — half the lost width
-    // moves the box back). The width is last frame's laid-out rect; before
-    // the first layout there is none, and the box swings about its center
-    // for that one frame.
+    // The `tap_pulse` turnstile: the swing angle on the node's `swing`
+    // channel; the draw walk turns it into the 3D push about the left
+    // edge (`Draw::SwingPush`).
     for p in &rt.pulses {
-        let sx: f32 = p.angle().to_radians().cos();
-        let w: f32 = rt.last_rects.get(p.node.index()).map(|r| r.w).unwrap_or(0.0);
-        apply(p.node, Channel::ScaleX, sx);
-        apply(p.node, Channel::TranslateX, -(1.0 - sx) * w / 2.0);
+        apply(p.node, Channel::Swing, p.angle());
     }
     for (node, key, v) in &rt.held_props {
         apply_prop_lane(page, r, *node, *key, *v);

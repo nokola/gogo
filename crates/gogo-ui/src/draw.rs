@@ -74,6 +74,12 @@ pub enum Draw {
     /// key (`NO_KEY` = none). The renderer shows `locale::display(page,
     /// locale, text, key)` — the same string layout measured.
     Text { rect: Rect, text: StrId, key: KeyId, font_size: f32, color: Color_Straight_Srgb_4xU8_RGBA, halign: TextAlign, valign: TextAlign, wrap: bool, font: StrId },
+    /// A Label with `text_fit=stretch`: the text's ONE glyph, its ink box
+    /// stretched to fill `rect` (each axis its own stretch), mirrored by
+    /// `flip` (horizontal, vertical). The renderer rasterizes the glyph
+    /// at a size near the rect's larger side and maps the ink box onto
+    /// the rect; text of more than one glyph draws only the first.
+    TextStretch { rect: Rect, text: StrId, key: KeyId, color: Color_Straight_Srgb_4xU8_RGBA, font: StrId, flip: (bool, bool) },
     /// The focused Input's caret. The renderer shapes the first `index`
     /// chars of the text to place it — glyph positions live where glyphs
     /// live, never in this layout-space list (GPAR112).
@@ -99,6 +105,27 @@ pub enum Draw {
     /// clockwise about (`cx`, `cy`) epx — a node's `rotate` and its subtree.
     RotatePush { angle: f32, cx: f32, cy: f32 },
     RotatePop,
+    /// Everything until the matching `SwingPop` turns `angle` degrees
+    /// about the vertical axis through `pivot_x` (the node's LEFT edge —
+    /// a door on its hinge), seen in perspective: a camera `focal` epx in
+    /// front of (`cx`, `cy`), the node's center, so the swung-away side
+    /// shrinks toward the middle. Silverlight's PlaneProjection, the WP7
+    /// turnstile: `focal` = half the node's height over tan(57°/2)
+    /// (`swing_focal`).
+    SwingPush { angle: f32, pivot_x: f32, cx: f32, cy: f32, focal: f32 },
+    SwingPop,
+}
+
+/// The WP7 camera: Silverlight's PlaneProjection sees an element under a
+/// 57° field of view, the camera as far in front as makes the element
+/// fill it at zero depth — so the perspective of a swing looks the same
+/// on a tile and on a page.
+pub const SWING_FOV_DEG: f32 = 57.0;
+
+/// The camera distance (epx) for a box `height` epx tall (`SwingPush`'s
+/// `focal`).
+pub fn swing_focal(height: f32) -> f32 {
+    height.max(1.0) / 2.0 / (SWING_FOV_DEG / 2.0).to_radians().tan()
 }
 
 pub const DEFAULT_TEXT_COLOR: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([0xFF, 0xFF, 0xFF, 0xFF]);
@@ -371,6 +398,12 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
     if rotated {
         out.push(Draw::RotatePush { angle: motion.rotate, cx: rect.x + rect.w * pivot.0, cy: rect.y + rect.h * pivot.1 });
     }
+    // The `tap_pulse` turnstile (and an anim's `swing` lane): a door on
+    // its left edge, the camera on the box's center.
+    let swung = motion.swing != 0.0;
+    if swung {
+        out.push(Draw::SwingPush { angle: motion.swing, pivot_x: rect.x, cx: rect.x + rect.w / 2.0, cy: rect.y + rect.h / 2.0, focal: swing_focal(rect.h) });
+    }
 
     // Any box has a plate (docs/gogo-design.md §8, E8 2026-08-31):
     // `background=` / a border on a Label, Image, Layers, stack or code
@@ -637,17 +670,27 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
         }
         Kind::Label => {
             if let Some(Value::VText { text, key }) = res.prop(page, id, PropKey::Text) {
-                out.push(Draw::Text {
-                    rect: text_rect,
-                    text,
-                    key,
-                    font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE),
-                    color: text_color(),
-                    halign: text_align(page, res, id, PropKey::TextHalign, TextAlign::Start),
-                    valign: text_align(page, res, id, PropKey::TextValign, TextAlign::Start),
-                    wrap: res.bool(page, id, PropKey::Wrap).unwrap_or(false),
-                    font: res.font(page, id).unwrap_or(NO_STR),
-                });
+                if res.ident(page, id, PropKey::TextFit) == Some("stretch") {
+                    let flip = match res.ident(page, id, PropKey::TextFlip) {
+                        Some("horizontal") => (true, false),
+                        Some("vertical") => (false, true),
+                        Some("both") => (true, true),
+                        _ => (false, false),
+                    };
+                    out.push(Draw::TextStretch { rect: text_rect, text, key, color: text_color(), font: res.font(page, id).unwrap_or(NO_STR), flip });
+                } else {
+                    out.push(Draw::Text {
+                        rect: text_rect,
+                        text,
+                        key,
+                        font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE),
+                        color: text_color(),
+                        halign: text_align(page, res, id, PropKey::TextHalign, TextAlign::Start),
+                        valign: text_align(page, res, id, PropKey::TextValign, TextAlign::Start),
+                        wrap: res.bool(page, id, PropKey::Wrap).unwrap_or(false),
+                        font: res.font(page, id).unwrap_or(NO_STR),
+                    });
+                }
             }
         }
         Kind::Slider => {
@@ -779,6 +822,9 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             out.push(Draw::Quad { rect: Rect::new(x + 1.0, rect.bottom() - SCROLL_BAR_EPX, len - 1.0, SCROLL_BAR_EPX), color: grabber, corner: 0.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
         }
     }
+    if swung {
+        out.push(Draw::SwingPop);
+    }
     if rotated {
         out.push(Draw::RotatePop);
     }
@@ -849,17 +895,38 @@ fn paint_order(page: &Page, res: &Resolved, id: NodeId, out: &mut Vec<NodeId>) {
 /// a surface, `false` hides one, and a wired handler alone never claims
 /// input (a full-screen Panel with just `on:show=` must not eat taps).
 /// `any`: return the top-most visible node of any kind instead.
-/// The rects as DRAWN: every node's motion (translate/scale, the same
-/// channels the draw walk applies) moved onto its own rect and its
-/// subtree's. `None` = nothing moves — the caller keeps the borrowed
-/// slice and pays nothing.
+/// The rects as DRAWN: every node's motion (translate/scale/swing, the
+/// same channels the draw walk applies) moved onto its own rect and its
+/// subtree's. A swing lands as the door's projected span: each rect's
+/// left and right edges through the WP7 camera (`SwingPush`), the height
+/// kept — the near edge's, so a finger on the door's shrunken far end
+/// still lands on it. `None` = nothing moves — the caller keeps the
+/// borrowed slice and pays nothing.
 pub(crate) fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option<Vec<Rect>> {
-    if res.motion.iter().all(|m| m.translate == [0.0, 0.0] && m.scale == [1.0, 1.0]) {
+    if res.motion.iter().all(|m| m.translate == [0.0, 0.0] && m.scale == [1.0, 1.0] && m.swing == 0.0) {
         return None;
     }
     let mut out = rects.to_vec();
     for i in 0..page.nodes.len().min(out.len()) {
         let m = &res.motion[i];
+        if m.swing != 0.0 {
+            let (sin, cos) = m.swing.to_radians().sin_cos();
+            let door = out[i];
+            let (hinge, cx, focal) = (door.x, door.x + door.w / 2.0, swing_focal(door.h));
+            let project = |x: f32| -> f32 {
+                let dx = x - hinge;
+                let ratio = ((focal + dx * sin) / focal).max(0.05);
+                cx + (hinge + dx * cos - cx) / ratio
+            };
+            for j in i..page.nodes[i].subtree_end as usize {
+                if !page.is_under(NodeId::from_index(j), NodeId::from_index(i)) {
+                    continue;
+                }
+                let r = out[j];
+                let (l, rr) = (project(r.x), project(r.right()));
+                out[j] = Rect::new(l.min(rr), r.y, (rr - l).abs(), r.h);
+            }
+        }
         if m.translate == [0.0, 0.0] && m.scale == [1.0, 1.0] {
             continue;
         }
