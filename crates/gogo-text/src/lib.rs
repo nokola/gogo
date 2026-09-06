@@ -5,13 +5,21 @@
 //! coverage atlas, shelf-packed; when it fills it doubles and every glyph
 //! is rasterized again on demand. All sizes here are DEVICE pixels — the
 //! caller converts epx.
+//!
+//! Faces arrive two ways: the page fonts at construction, and later by
+//! key — a file's bytes (`add_face`, the picker's built-in fonts, parsed
+//! on first use so boot stays fast) or an OS family after the one system
+//! scan (`load_system_fonts` + `add_system_face`). A font key may end in
+//! a style suffix (`styled_key`): `#bold` thickens the coverage, `#italic`
+//! skews it — faux styles, since no shipped face carries real ones
+//! (shipped FontLoader.MakeStyled).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use cosmic_text::fontdb;
-use cosmic_text::{Attrs, Buffer, CacheKey, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Weight, Wrap};
+use cosmic_text::{Attrs, Buffer, CacheKey, CacheKeyFlags, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Weight, Wrap};
 use gogo::layout::TextMeasure;
 use gogo::ImageKey;
 
@@ -24,6 +32,15 @@ pub const LINE_SPACING_PX: f32 = 3.0;
 /// cache would grow for as long as the app runs. Emptying costs one
 /// re-shape per visible string on the next frame, far below a frame.
 pub const CACHE_CAP: usize = 4096;
+
+/// Faux bold: how far the coverage grows on every side, in pixels per
+/// pixel of font size — 0.6 px at a 24 px face, the weight shipped's
+/// `VariationEmbolden = 0.6` reads as at the text page's default size.
+pub const BOLD_GROW_PER_PX: f32 = 0.6 / 24.0;
+
+/// The font-key style suffix (`"Angelina#bold"`) is gogo vocabulary: the
+/// app spells it, this engine reads it.
+pub use gogo::font_style::{split_style, styled_key};
 
 /// A face's vertical metrics in font units, read from the file at load.
 #[derive(Clone, Copy, Debug)]
@@ -104,7 +121,12 @@ pub struct TextEngine {
     shelf_x: u32,
     shelf_y: u32,
     shelf_h: u32,
-    slots: HashMap<CacheKey, Option<Slot>>,
+    /// (glyph, faux bold) → its atlas slot; a bold glyph is its own raster.
+    slots: HashMap<(CacheKey, bool), Option<Slot>>,
+    /// The OS font scan ran (once per engine).
+    system_loaded: bool,
+    /// Family names the scan found, sorted, each once.
+    system_families: Vec<String>,
     /// The atlas changed since the last `take_dirty`.
     dirty: bool,
     /// Set when the atlas grew: every uv handed out before is stale.
@@ -152,16 +174,7 @@ impl TextEngine {
         let mut faces = HashMap::new();
         let mut default_face = None;
         for (key, id, family, weight) in loaded {
-            // The file's own ascent/descent: the line height comes from
-            // them, not from a constant fitted to one size.
-            let metrics = fs
-                .get_font(id, weight)
-                .map(|font| {
-                    let m = font.as_swash().metrics(&[]);
-                    FaceMetrics { ascent: m.ascent, descent: m.descent, units_per_em: m.units_per_em as f32 }
-                })
-                .filter(|m| m.units_per_em > 0.0 && m.ascent > 0.0)
-                .unwrap_or(FaceMetrics::ROBOTO);
+            let metrics = metrics_of(&mut fs, id, weight);
             let f = Face { family, weight, metrics };
             if default_face.is_none() {
                 default_face = Some(f.clone());
@@ -180,11 +193,111 @@ impl TextEngine {
             shelf_y: 0,
             shelf_h: 0,
             slots: HashMap::new(),
+            system_loaded: false,
+            system_families: Vec::new(),
             dirty: true,
             generation: 0,
             measure_cache: HashMap::new(),
             shape_cache: HashMap::new(),
         }
+    }
+
+    /// A face `font=` / a draw can name by `key` — `bytes` is a TTF/OTF
+    /// file. Parses now, so call it when the key is first needed, not at
+    /// boot (28 picker fonts would cost the boot a second on a phone).
+    /// An existing key keeps its face. Returns false when the bytes hold
+    /// no face.
+    pub fn add_face(&mut self, key: &str, bytes: Vec<u8>) -> bool {
+        if self.faces.contains_key(key) {
+            return true;
+        }
+        let db = self.fs.db_mut();
+        let before: usize = db.faces().count();
+        db.load_font_data(bytes);
+        let Some((id, family, weight)) = db.faces().nth(before).map(|f| (f.id, f.families.first().map(|(n, _)| n.clone()).unwrap_or_default(), f.weight)) else {
+            return false;
+        };
+        let metrics = metrics_of(&mut self.fs, id, weight);
+        self.faces.insert(key.to_string(), Face { family, weight, metrics });
+        true
+    }
+
+    /// Whether `key` (style suffix ignored) names a registered face.
+    pub fn has_face(&self, key: &str) -> bool {
+        self.faces.contains_key(split_style(key).0)
+    }
+
+    /// The one OS font scan: every face under the system font folders
+    /// joins the database (mapped, not copied), and their family names
+    /// become `system_families`. Needed for the picker's OS arm (shipped
+    /// FontLoader lists the device's fonts after the built-ins) and for
+    /// script fallback — a glyph no page font has is then looked up
+    /// across the OS faces instead of drawing a box. Hundreds of
+    /// milliseconds on a phone: call it when the picker first opens,
+    /// never at boot. A second call does nothing. Returns the family
+    /// count.
+    pub fn load_system_fonts(&mut self) -> usize {
+        if self.system_loaded {
+            return self.system_families.len();
+        }
+        self.system_loaded = true;
+        let db = self.fs.db_mut();
+        let before: usize = db.faces().count();
+        #[cfg(target_os = "android")]
+        {
+            // fontdb scans no Android folder itself; these are where every
+            // Android build keeps its fonts (Godot's OS.GetSystemFonts
+            // read the same).
+            for dir in ["/system/fonts", "/system/font", "/data/fonts", "/product/fonts"] {
+                db.load_fonts_dir(dir);
+            }
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            db.load_system_fonts();
+        }
+        let mut names: Vec<String> = db.faces().skip(before).filter_map(|f| f.families.first().map(|(n, _)| n.clone())).collect();
+        names.sort();
+        names.dedup();
+        self.system_families = names;
+        // Fallback can now find glyphs it could not before.
+        self.measure_cache.clear();
+        self.shape_cache.clear();
+        self.system_families.len()
+    }
+
+    /// The family names `load_system_fonts` found (empty before it ran).
+    pub fn system_families(&self) -> &[String] {
+        &self.system_families
+    }
+
+    /// A face `key` names from the OS family `family` (one of
+    /// `system_families`): its regular member when it has one. Returns
+    /// false for an unknown family.
+    pub fn add_system_face(&mut self, key: &str, family: &str) -> bool {
+        if self.faces.contains_key(key) {
+            return true;
+        }
+        let found = self
+            .fs
+            .db()
+            .faces()
+            .filter(|f| f.families.iter().any(|(n, _)| n == family))
+            .min_by_key(|f| (f.style != fontdb::Style::Normal, (f.weight.0 as i32 - Weight::NORMAL.0 as i32).abs()))
+            .map(|f| (f.id, f.weight));
+        let Some((id, weight)) = found else {
+            return false;
+        };
+        let metrics = metrics_of(&mut self.fs, id, weight);
+        self.faces.insert(key.to_string(), Face { family: family.to_string(), weight, metrics });
+        true
+    }
+
+    /// The one glyph of `ch` at `font_size` px with the pen at the origin:
+    /// its ink box and atlas uv, or None when the face draws nothing for
+    /// it. The `text_fit=stretch` word maps this box onto a Label's rect.
+    pub fn glyph(&mut self, ch: &str, font_size: f32, font: Option<&str>) -> Option<GlyphQuad> {
+        self.shape(ch, font_size, None, font, 0.0, 0.0, 0.0, 0).into_iter().find(|g| g.w > 0.0 && g.h > 0.0)
     }
 
     pub fn atlas(&self) -> (&[u8], u32) {
@@ -213,14 +326,27 @@ impl TextEngine {
         std::mem::replace(&mut self.dirty, false)
     }
 
+    /// The face `font` names (its style suffix ignored), else the default.
     fn face(&self, font: Option<&str>) -> Option<&Face> {
-        font.and_then(|f| self.faces.get(f)).or(self.default_face.as_ref())
+        font.and_then(|f| self.faces.get(split_style(f).0)).or(self.default_face.as_ref())
+    }
+
+    /// (bold, italic) as the key's suffix spells them.
+    fn style(font: Option<&str>) -> (bool, bool) {
+        font.map_or((false, false), |f| {
+            let (_, b, i) = split_style(f);
+            (b, i)
+        })
     }
 
     fn attrs<'a>(&'a self, font: Option<&str>) -> Attrs<'a> {
+        // Faux italic is the shaper's own 14° skew; faux bold is ours, at
+        // raster time (`rasterize`).
+        let (_, italic) = Self::style(font);
+        let flags = if italic { CacheKeyFlags::FAKE_ITALIC } else { CacheKeyFlags::empty() };
         match self.face(font) {
-            Some(f) => Attrs::new().family(Family::Name(&f.family)).weight(f.weight),
-            None => Attrs::new(),
+            Some(f) => Attrs::new().family(Family::Name(&f.family)).weight(f.weight).cache_key_flags(flags),
+            None => Attrs::new().cache_key_flags(flags),
         }
     }
 
@@ -285,6 +411,7 @@ impl TextEngine {
     /// Quads with the pen at the origin.
     fn shape_uncached(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>, box_w: f32, halign: u8) -> Vec<GlyphQuad> {
         let (x, y) = (0.0f32, 0.0f32);
+        let (bold, _) = Self::style(font);
         let buffer = self.buffer(text, font_size, max_width, font);
         let mut out = Vec::new();
         let runs: Vec<(f32, f32, Vec<cosmic_text::PhysicalGlyph>)> = buffer.layout_runs().map(|run| (run.line_w, run.line_y, run.glyphs.iter().map(|g| g.physical((0.0, 0.0), 1.0)).collect())).collect();
@@ -295,7 +422,7 @@ impl TextEngine {
                 _ => 0.0,
             };
             for g in glyphs {
-                let Some(slot) = self.slot(g.cache_key) else { continue };
+                let Some(slot) = self.slot(g.cache_key, bold) else { continue };
                 if slot.width == 0 || slot.height == 0 {
                     continue;
                 }
@@ -314,41 +441,51 @@ impl TextEngine {
         out
     }
 
-    fn slot(&mut self, key: CacheKey) -> Option<Slot> {
-        if let Some(s) = self.slots.get(&key) {
+    fn slot(&mut self, key: CacheKey, bold: bool) -> Option<Slot> {
+        if let Some(s) = self.slots.get(&(key, bold)) {
             return *s;
         }
         let generation = self.generation;
-        let slot = self.rasterize(key);
+        let slot = self.rasterize(key, bold);
         if slot.is_none() && self.generation != generation {
             // The atlas grew under this glyph: pack it again into the new one.
-            let again = self.rasterize(key);
-            self.slots.insert(key, again);
+            let again = self.rasterize(key, bold);
+            self.slots.insert((key, bold), again);
             return again;
         }
-        self.slots.insert(key, slot);
+        self.slots.insert((key, bold), slot);
         slot
     }
 
-    fn rasterize(&mut self, key: CacheKey) -> Option<Slot> {
+    fn rasterize(&mut self, key: CacheKey, bold: bool) -> Option<Slot> {
         let image = self.cache.get_image(&mut self.fs, key).clone();
         let slot = image.and_then(|img| {
             if img.content != SwashContent::Mask {
                 return None;
             }
-            let (w, h) = (img.placement.width, img.placement.height);
+            let (mut w, mut h) = (img.placement.width, img.placement.height);
+            let (mut left, mut top) = (img.placement.left, img.placement.top);
             if w == 0 || h == 0 {
                 return Some(Slot { u0: 0.0, v0: 0.0, u1: 0.0, v1: 0.0, left: 0, top: 0, width: 0, height: 0 });
             }
+            let mut data: std::borrow::Cow<[u8]> = std::borrow::Cow::Borrowed(&img.data);
+            if bold {
+                let grow: u32 = (f32::from_bits(key.font_size_bits) * BOLD_GROW_PER_PX).round().max(1.0) as u32;
+                data = std::borrow::Cow::Owned(embolden(&img.data, w, h, grow));
+                w += 2 * grow;
+                h += 2 * grow;
+                left -= grow as i32;
+                top += grow as i32;
+            }
             let (px, py) = self.pack(w + 1, h + 1)?;
             for row in 0..h {
-                let src = &img.data[(row * w) as usize..((row + 1) * w) as usize];
+                let src = &data[(row * w) as usize..((row + 1) * w) as usize];
                 let dst = ((py + row) * self.atlas_size + px) as usize;
                 self.atlas[dst..dst + w as usize].copy_from_slice(src);
             }
             self.dirty = true;
             let s = self.atlas_size as f32;
-            Some(Slot { u0: px as f32 / s, v0: py as f32 / s, u1: (px + w) as f32 / s, v1: (py + h) as f32 / s, left: img.placement.left, top: img.placement.top, width: w, height: h })
+            Some(Slot { u0: px as f32 / s, v0: py as f32 / s, u1: (px + w) as f32 / s, v1: (py + h) as f32 / s, left, top, width: w, height: h })
         });
         slot
     }
@@ -387,6 +524,43 @@ impl TextEngine {
     pub fn warm(&mut self, chars: &str, font_size: f32, font: Option<&str>) {
         let _ = self.shape(chars, font_size, None, font, 0.0, 0.0, 0.0, 0);
     }
+}
+
+/// A face's vertical metrics as the file carries them: the line height
+/// comes from them, not from a constant fitted to one size. Roboto's when
+/// the file has none.
+fn metrics_of(fs: &mut FontSystem, id: fontdb::ID, weight: Weight) -> FaceMetrics {
+    fs.get_font(id, weight)
+        .map(|font| {
+            let m = font.as_swash().metrics(&[]);
+            FaceMetrics { ascent: m.ascent, descent: m.descent, units_per_em: m.units_per_em as f32 }
+        })
+        .filter(|m| m.units_per_em > 0.0 && m.ascent > 0.0)
+        .unwrap_or(FaceMetrics::ROBOTO)
+}
+
+/// Faux bold: the coverage mask grown by `grow` pixels on every side (a
+/// square max filter — FreeType's EmboldenXY on the raster instead of the
+/// outline). The result is `(w + 2·grow) × (h + 2·grow)`.
+fn embolden(mask: &[u8], w: u32, h: u32, grow: u32) -> Vec<u8> {
+    let (w2, h2) = (w + 2 * grow, h + 2 * grow);
+    let mut out = vec![0u8; (w2 * h2) as usize];
+    // Output (x, y) is source (x − grow, y − grow); its neighbours within
+    // `grow` are the source pixels in [x − 2·grow, x], clipped to the mask.
+    for y in 0..h2 {
+        let (sy0, sy1) = (y.saturating_sub(2 * grow), y.min(h - 1));
+        for x in 0..w2 {
+            let (sx0, sx1) = (x.saturating_sub(2 * grow), x.min(w - 1));
+            let mut best: u8 = 0;
+            for sy in sy0..=sy1 {
+                for sx in sx0..=sx1 {
+                    best = best.max(mask[(sy * w + sx) as usize]);
+                }
+            }
+            out[(y * w2 + x) as usize] = best;
+        }
+    }
+    out
 }
 
 /// `TextMeasure` for gogo's layout: epx in, epx out, device pixels inside.
@@ -458,5 +632,70 @@ mod tests {
         assert_eq!(size, 1024);
         assert!(e.take_dirty());
         assert!(!e.take_dirty());
+    }
+
+    /// A style suffix on the font key is a faux style: bold grows the
+    /// coverage, italic skews it — the same glyph, its own atlas slot.
+    #[test]
+    fn a_style_suffix_fakes_bold_and_italic() {
+        let mut e = engine();
+        let key = "assets/Fonts/Roboto Regular.ttf";
+        let plain = e.glyph("H", 24.0, Some(key)).unwrap();
+        let bold = e.glyph("H", 24.0, Some(&styled_key(key, true, false))).unwrap();
+        let italic = e.glyph("H", 24.0, Some(&styled_key(key, false, true))).unwrap();
+        // 24 px → 1 px of growth each side.
+        assert_eq!(bold.w, plain.w + 2.0, "bold {bold:?} vs {plain:?}");
+        assert_eq!(bold.h, plain.h + 2.0);
+        assert!(italic.w > plain.w, "the skew widens the ink box: {italic:?} vs {plain:?}");
+        assert_eq!(e.measure("Hi", 24.0, None, Some(key)), e.measure("Hi", 24.0, None, Some(&styled_key(key, true, false))), "bold keeps the advances");
+    }
+
+    /// A face added by key after construction shapes under that key.
+    #[test]
+    fn a_face_added_later_shapes_under_its_key() {
+        let mut e = engine();
+        assert!(!e.has_face("Angelina"));
+        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/Fonts/angelina.ttf")).expect("font");
+        assert!(e.add_face("Angelina", bytes));
+        assert!(e.has_face("Angelina") && e.has_face("Angelina#bold"));
+        let (roboto, _) = e.measure("Hello", 24.0, None, None);
+        let (angelina, _) = e.measure("Hello", 24.0, None, Some("Angelina"));
+        assert!((roboto - angelina).abs() > 1.0, "a different face measures differently: {roboto} vs {angelina}");
+        assert!(!e.add_face("junk", vec![0, 1, 2, 3]), "no face in those bytes");
+    }
+
+    /// The OS scan runs once, names each family once, and a family can
+    /// become a face. Skips its OS-specific half where the folders are
+    /// empty (a bare CI box).
+    #[test]
+    fn system_fonts_load_once_and_name_families() {
+        let mut e = engine();
+        assert!(e.system_families().is_empty());
+        let n = e.load_system_fonts();
+        assert_eq!(e.load_system_fonts(), n, "the second call is a no-op");
+        let names = e.system_families().to_vec();
+        assert_eq!(names.len(), n);
+        let mut sorted = names.clone();
+        sorted.dedup();
+        assert_eq!(sorted, names, "sorted, no repeats");
+        if names.is_empty() {
+            eprintln!("SKIP: no system fonts on this box");
+            return;
+        }
+        assert!(!e.add_system_face("os", "no such family 0x1234"));
+        assert!(e.add_system_face("os", &names[0]));
+        let (w, _) = e.measure("Hello", 24.0, None, Some("os"));
+        assert!(w > 0.0);
+    }
+
+    /// An ornament glyph reports its ink box — the bubble's stretch source.
+    #[test]
+    fn glyph_reports_an_ink_box() {
+        let mut e = engine();
+        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/Fonts/ornaments/Alin_Speech_Bubbles_2.ttf")).expect("font");
+        assert!(e.add_face("bubbles", bytes));
+        let g = e.glyph("0", 100.0, Some("bubbles")).expect("ink");
+        assert!(g.w > 20.0 && g.h > 20.0, "{g:?}");
+        assert!(e.glyph(" ", 100.0, Some("bubbles")).is_none(), "a space has no ink");
     }
 }

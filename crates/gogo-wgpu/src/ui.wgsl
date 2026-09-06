@@ -43,6 +43,8 @@ struct Quad {
     @location(4) uv: vec4<f32>,            // u0, v0, u1, v1 (kinds 4, 5); table row, slot count, period start, period length (kinds 2, 3, 6); dash offset, dash, period (kind 7)
     @location(5) rot: vec4<f32>,           // sin, cos, center x, center y (device px)
     @location(6) wedge: vec4<f32>,         // mask: center x, y (device px), from rad, span rad (<0 = none)
+    @location(7) swing: vec4<f32>,         // 3D swing: sin, cos, hinge x (device px), camera distance (device px; 0 = none)
+    @location(8) eye: vec4<f32>,           // the swing's camera: on x, y (device px)
 };
 
 struct VsOut {
@@ -67,9 +69,24 @@ fn vs_main(@builtin(vertex_index) vi: u32, q: Quad) -> VsOut {
     // Turned about the rotation center (clockwise on screen, y down).
     let rel = px - q.rot.zw;
     px = q.rot.zw + vec2<f32>(rel.x * q.rot.y - rel.y * q.rot.x, rel.x * q.rot.x + rel.y * q.rot.y);
+    // The 3D swing (the WP7 turnstile): the point turns about the vertical
+    // hinge at x = swing.z, going AWAY from the viewer on the positive
+    // side (z = dx·sin), then a camera `swing.w` in front of `eye` sees
+    // it in perspective — Silverlight's PlaneProjection. The clip w is
+    // the depth ratio, so every varying interpolates perspective-correct
+    // across the turned quad (a rounded corner or a glyph stays true on
+    // the door).
+    var w = 1.0;
+    if (q.swing.w > 0.0) {
+        let dx = px.x - q.swing.z;
+        let x3 = q.swing.z + dx * q.swing.y;
+        let z3 = dx * q.swing.x;
+        w = max((q.swing.w + z3) / q.swing.w, 0.05);
+        px = q.eye.xy + (vec2<f32>(x3, px.y) - q.eye.xy) / w;
+    }
     let ndc = vec2<f32>(px.x / screen.size.x * 2.0 - 1.0, 1.0 - px.y / screen.size.y * 2.0);
     var out: VsOut;
-    out.pos = vec4<f32>(ndc, 0.0, 1.0);
+    out.pos = vec4<f32>(ndc * w, 0.0, w);
     out.local = c * q.rect.zw;
     out.color = q.color;
     out.border_color = q.border_color;

@@ -5,7 +5,10 @@
 //! `text` crate into glyph quads over its coverage atlas (texture 0);
 //! images are RGBA textures added by the shell (`add_image`). A gradient
 //! arrives as one quad per stop pair (its `band`); a `RotatePush` turns
-//! every quad until its pop about the given center.
+//! every quad until its pop about the given center, a `SwingPush` turns
+//! them in 3D about a vertical hinge under a perspective camera (the
+//! WP7 turnstile), and a `TextStretch` maps one glyph's ink box onto its
+//! rect.
 
 use crate::tex_types::Tex_Display_Srgb_4xU8_RGBA;
 
@@ -31,10 +34,23 @@ struct Quad {
     /// Arc-wedge mask (GP33): center x, y (device px), from (radians),
     /// span (radians). span < 0 = none; span 0 hides the quad whole.
     wedge: [f32; 4],
+    /// The 3D swing: sin, cos of the angle, the hinge x (device px), the
+    /// camera distance (device px; 0 = none).
+    swing: [f32; 4],
+    /// The swing's camera: on x, y (device px) — the swung node's center.
+    eye: [f32; 4],
 }
 
 const NO_ROT: [f32; 4] = [0.0, 1.0, 0.0, 0.0];
 const NO_WEDGE: [f32; 4] = [0.0, 0.0, 0.0, -1.0];
+const NO_SWING: [f32; 4] = [0.0, 1.0, 0.0, 0.0];
+const NO_EYE: [f32; 4] = [0.0; 4];
+
+/// The largest size (device px) a `text_fit=stretch` glyph is rasterized
+/// at: near the rect's larger side below this, so only the squashed axis
+/// loses detail; a page-sized bubble stretches a glyph of this size
+/// rather than asking the atlas for one bigger than a texture.
+pub const STRETCH_RASTER_MAX_PX: f32 = 1024.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -156,7 +172,7 @@ impl UiRenderer {
                 buffers: &[Some(wgpu::VertexBufferLayout {
                     array_stride: std::mem::size_of::<Quad>() as u64,
                     step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4],
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4],
                 })],
             },
             primitive: wgpu::PrimitiveState::default(),
@@ -352,6 +368,9 @@ impl UiRenderer {
         let mut rot: [f32; 4] = NO_ROT;
         let mut wedges: Vec<[f32; 4]> = Vec::new();
         let mut wedge: [f32; 4] = NO_WEDGE;
+        let mut swings: Vec<([f32; 4], [f32; 4])> = Vec::new();
+        let mut swing: [f32; 4] = NO_SWING;
+        let mut eye: [f32; 4] = NO_EYE;
         let mut batch_first = 0u32;
         let mut current: Option<[u32; 4]> = None;
         let mut current_tex: TexId = ATLAS;
@@ -363,19 +382,19 @@ impl UiRenderer {
             i += 1;
             match d {
                 Draw::Quad { rect, color, corner, border, border_color } => {
-                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [corner * epx, border * epx, KIND_RECT, 0.0], uv: NO_UV, rot, wedge });
+                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [corner * epx, border * epx, KIND_RECT, 0.0], uv: NO_UV, rot, wedge, swing, eye });
                 }
                 Draw::QuadCorners { rect, color, corners, border, border_color } => {
-                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [0.0, border * epx, KIND_RECT4, 0.0], uv: [corners[0] * epx, corners[1] * epx, corners[2] * epx, corners[3] * epx], rot, wedge });
+                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [0.0, border * epx, KIND_RECT4, 0.0], uv: [corners[0] * epx, corners[1] * epx, corners[2] * epx, corners[3] * epx], rot, wedge, swing, eye });
                 }
                 Draw::Arc { rect, color, from, sweep, thickness, dash } => {
                     // uv: the dash mask (offset, dash, period) in radians —
                     // period 0 = solid. One quad per dash/gap pair.
                     let (offset, dash_len, period) = dash;
-                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: [0.0; 4], params: [thickness * epx, from.to_radians(), KIND_ARC, sweep.to_radians()], uv: [offset.to_radians(), dash_len.to_radians(), period.to_radians(), 0.0], rot, wedge });
+                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: [0.0; 4], params: [thickness * epx, from.to_radians(), KIND_ARC, sweep.to_radians()], uv: [offset.to_radians(), dash_len.to_radians(), period.to_radians(), 0.0], rot, wedge, swing, eye });
                 }
                 Draw::Circle { rect, color, border, border_color } => {
-                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [0.0, border * epx, KIND_CIRCLE, 0.0], uv: NO_UV, rot, wedge });
+                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [0.0, border * epx, KIND_CIRCLE, 0.0], uv: NO_UV, rot, wedge, swing, eye });
                 }
                 Draw::Gradient { rect, kind, angle, corner, period, stops } => {
                     let count: usize = *stops as usize;
@@ -398,7 +417,7 @@ impl UiRenderer {
                     let r = px(rect);
                     let n_slots: u32 = GradientTable::slots_for(r[2].max(r[3]), *period);
                     let row: u32 = self.gradients.row_for(device, list, n_slots, *kind, *period);
-                    self.quads.push(Quad { rect: r, color: [0.0; 4], border_color: [0.0; 4], params: [corner * epx, 0.0, k, (angle - 90.0).to_radians()], uv: [row as f32, n_slots as f32, period.0, period.1], rot, wedge });
+                    self.quads.push(Quad { rect: r, color: [0.0; 4], border_color: [0.0; 4], params: [corner * epx, 0.0, k, (angle - 90.0).to_radians()], uv: [row as f32, n_slots as f32, period.0, period.1], rot, wedge, swing, eye });
                 }
                 // A stop without its Gradient ahead of it (never emitted
                 // by the draw pass; skipped, not drawn).
@@ -427,7 +446,23 @@ impl UiRenderer {
                     };
                     let color = color.to_f32();
                     for g in text.shape(s, size_px, max_w, font_key, x, y, box_w, h) {
-                        self.quads.push(Quad { rect: [g.x, g.y, g.w, g.h], color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_GLYPH, 0.0], uv: g.uv, rot, wedge });
+                        self.quads.push(Quad { rect: [g.x, g.y, g.w, g.h], color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_GLYPH, 0.0], uv: g.uv, rot, wedge, swing, eye });
+                    }
+                }
+                Draw::TextStretch { rect, text: text_id, key, color, font, flip } => {
+                    if current_tex != ATLAS {
+                        self.close_batch(&mut batch_first, current, current_tex);
+                        current_tex = ATLAS;
+                    }
+                    let s = gogo::locale::display(page, locale, *text_id, *key);
+                    let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
+                    let r = px(rect);
+                    let size_px = r[2].max(r[3]).clamp(8.0, STRETCH_RASTER_MAX_PX);
+                    if let Some(g) = text.glyph(s, size_px, font_key) {
+                        // The ink box IS the quad; a flip swaps the uv ends.
+                        let (u0, u1) = if flip.0 { (g.uv[2], g.uv[0]) } else { (g.uv[0], g.uv[2]) };
+                        let (v0, v1) = if flip.1 { (g.uv[3], g.uv[1]) } else { (g.uv[1], g.uv[3]) };
+                        self.quads.push(Quad { rect: r, color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_GLYPH, 0.0], uv: [u0, v0, u1, v1], rot, wedge, swing, eye });
                     }
                 }
                 Draw::Selection { rect, text: text_id, key, font_size, font, lo, hi, color } => {
@@ -442,7 +477,7 @@ impl UiRenderer {
                     let (xhi, _) = text.measure(&s[..byte(*hi)], size_px, None, font_key);
                     let h = size_px * 1.2;
                     let y = r[1] + (r[3] - h) / 2.0;
-                    self.quads.push(Quad { rect: [r[0] + xlo, y, (xhi - xlo).max(0.0), h], color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_RECT, 0.0], uv: NO_UV, rot, wedge });
+                    self.quads.push(Quad { rect: [r[0] + xlo, y, (xhi - xlo).max(0.0), h], color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_RECT, 0.0], uv: NO_UV, rot, wedge, swing, eye });
                 }
                 Draw::SelHandles { rect, text: text_id, key, font_size, font, lo, hi, color } => {
                     // The grab circles below the selection's ends —
@@ -459,7 +494,7 @@ impl UiRenderer {
                     let color = color.to_f32();
                     for x in [r[0] + xlo, r[0] + xhi] {
                         let h = gogo::input::sel_handle_rect(r[1] + r[3], x, gogo::input::SEL_HANDLE_EPX * epx);
-                        self.quads.push(Quad { rect: [h.x, h.y, h.w, h.h], color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_CIRCLE, 0.0], uv: NO_UV, rot, wedge });
+                        self.quads.push(Quad { rect: [h.x, h.y, h.w, h.h], color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_CIRCLE, 0.0], uv: NO_UV, rot, wedge, swing, eye });
                     }
                 }
                 Draw::Caret { rect, text: text_id, key, font_size, font, index, color } => {
@@ -474,7 +509,7 @@ impl UiRenderer {
                     let h = size_px * 1.2;
                     let x = r[0] + pw;
                     let y = r[1] + (r[3] - h) / 2.0;
-                    self.quads.push(Quad { rect: [x, y, (1.5 * epx).max(1.0), h], color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_RECT, 0.0], uv: NO_UV, rot, wedge });
+                    self.quads.push(Quad { rect: [x, y, (1.5 * epx).max(1.0), h], color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_RECT, 0.0], uv: NO_UV, rot, wedge, swing, eye });
                 }
                 Draw::Image { rect, image, tint, fit } => {
                     let Some(tex) = self.slot(*image) else {
@@ -503,7 +538,7 @@ impl UiRenderer {
                         }
                         Fit::Distort => (r, [0.0, 0.0, 1.0, 1.0]),
                     };
-                    self.quads.push(Quad { rect: fitted, color: tint.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_IMAGE, 0.0], uv, rot, wedge });
+                    self.quads.push(Quad { rect: fitted, color: tint.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_IMAGE, 0.0], uv, rot, wedge, swing, eye });
                 }
                 Draw::ClipPush(rect) => {
                     self.close_batch(&mut batch_first, current, current_tex);
@@ -547,6 +582,17 @@ impl UiRenderer {
                 Draw::RotatePop => {
                     rots.pop();
                     rot = rots.last().copied().unwrap_or(NO_ROT);
+                }
+                Draw::SwingPush { angle, pivot_x, cx, cy, focal } => {
+                    // A nested swing keeps only the innermost (the page
+                    // never nests them today).
+                    let (sin, cos) = angle.to_radians().sin_cos();
+                    swings.push(([sin, cos, pivot_x * epx, focal * epx], [cx * epx, cy * epx, 0.0, 0.0]));
+                    (swing, eye) = *swings.last().unwrap();
+                }
+                Draw::SwingPop => {
+                    swings.pop();
+                    (swing, eye) = swings.last().copied().unwrap_or((NO_SWING, NO_EYE));
                 }
             }
         }
