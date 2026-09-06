@@ -20,7 +20,7 @@ struct Quad {
     @location(1) color: vec4<f32>,         // fill (gradient: from, PREMULTIPLIED OKLAB; glyph/image: tint)
     @location(2) border_color: vec4<f32>,  // border (gradient: to, premultiplied Oklab)
     @location(3) params: vec4<f32>,        // corner, border, kind, angle (radians)
-    @location(4) uv: vec4<f32>,            // u0, v0, u1, v1 (kinds 4, 5); band start, end (kinds 2, 3)
+    @location(4) uv: vec4<f32>,            // u0, v0, u1, v1 (kinds 4, 5); band start, end, period start, period length (kinds 2, 3, 6)
     @location(5) rot: vec4<f32>,           // sin, cos, center x, center y (device px)
     @location(6) wedge: vec4<f32>,         // mask: center x, y (device px), from rad, span rad (<0 = none)
 };
@@ -163,7 +163,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         var run: f32;
         if (kind == 2.0) {
             let dir = vec2<f32>(cos(in.params.w), sin(in.params.w));
-            run = clamp(dot(in.local / in.size - 0.5, dir) + 0.5, 0.0, 1.0);
+            let raw = dot(in.local / in.size - 0.5, dir) + 0.5;
+            if (in.band.w > 0.0) {
+                // Tiled (`repeat=` with a `from=`/`to=` span): the span is
+                // one period and the band is 0..1 of it.
+                run = fract((raw - in.band.z) / in.band.w);
+            } else {
+                run = clamp(raw, 0.0, 1.0);
+            }
         } else if (kind == 6.0) {
             // The sweep: 0 at the top, clockwise around the center.
             var ang = atan2(p.x, -p.y) / 6.2831853;

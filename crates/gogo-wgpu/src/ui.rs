@@ -365,7 +365,7 @@ impl UiRenderer {
                 Draw::Circle { rect, color, border, border_color } => {
                     self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [0.0, border * epx, KIND_CIRCLE, 0.0], uv: NO_UV, rot, wedge });
                 }
-                Draw::Gradient { rect, kind, from, to, angle, band, corner } => {
+                Draw::Gradient { rect, kind, from, to, angle, band, corner, period } => {
                     let k = match kind {
                         GradientKind::Radial => KIND_RADIAL,
                         GradientKind::Conic => KIND_CONIC,
@@ -378,7 +378,9 @@ impl UiRenderer {
                     // and converts the mix back to sRGB per pixel.
                     // params.x is the rounded-rect radius the shader masks
                     // EVERY quad by — a Gradient's `corner_radius` (Q9).
-                    self.quads.push(Quad { rect: px(rect), color: gogo::color::oklab_pm_from_rgba(*from).0, border_color: gogo::color::oklab_pm_from_rgba(*to).0, params: [corner * epx, 0.0, k, (angle - 90.0).to_radians()], uv: [band.0, band.1, 0.0, 0.0], rot, wedge });
+                    // uv: the band, then the tiling period (start, length
+                    // in run units; 0 length = no tiling).
+                    self.quads.push(Quad { rect: px(rect), color: gogo::color::oklab_pm_from_rgba(*from).0, border_color: gogo::color::oklab_pm_from_rgba(*to).0, params: [corner * epx, 0.0, k, (angle - 90.0).to_radians()], uv: [band.0, band.1, period.0, period.1], rot, wedge });
                 }
                 Draw::Text { rect, text: text_id, key, font_size, color, halign, valign, wrap, font } => {
                     if current_tex != ATLAS {
