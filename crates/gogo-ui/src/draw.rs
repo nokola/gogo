@@ -48,18 +48,28 @@ pub enum Draw {
     /// `image` is the build-wide image id (`source=`); the renderer
     /// indexes its texture slots by it.
     Image { rect: Rect, image: ImageKey, tint: Color_Straight_Srgb_4xU8_RGBA, fit: Fit },
-    /// One segment of a gradient over the whole `rect`: `from` → `to`
-    /// across the `band` (0..1 along the gradient's run; `(0, 1)` is the
-    /// whole run), nothing painted outside it. A gradient with N stops is
-    /// N−1 of these. `angle` is the CSS compass: 0 = to top, 90 = to
-    /// right, clockwise. `corner` is the node's `corner_radius` (epx): the
-    /// renderer masks the ramp to the rounded rect, half the box = a disc.
-    /// `period` is (start, length) along the run in 0..1 of the box:
-    /// length 0 = the run is the box (the edge colors hold past the last
-    /// stop); length > 0 = the ramp TILES — `repeat=repeat|mirror` with
-    /// `from=`/`to=` makes that span one period and the `band` is 0..1 of
-    /// the period, repeated across the whole box (a linear fill only).
-    Gradient { rect: Rect, kind: GradientKind, from: Color_Straight_Srgb_4xU8_RGBA, to: Color_Straight_Srgb_4xU8_RGBA, angle: f32, band: (f32, f32), corner: f32, period: (f32, f32) },
+    /// A gradient over `rect`, drawn ONCE: the `stops` entries right after
+    /// this one in the list are its [`Draw::GradientStop`]s, positions
+    /// non-decreasing along the run (0..1). The renderer keeps the stops
+    /// in a table and finds each pixel's pair by a lookup, so a gradient
+    /// is one quad however many stops it has (D21) — never a quad per
+    /// pair, which visited every pixel once per pair. Before the first
+    /// stop and after the last the edge color holds; two stops at one
+    /// position are a hard edge. `angle` is the CSS compass: 0 = to top,
+    /// 90 = to right, clockwise. `corner` is the node's `corner_radius`
+    /// (epx): the renderer masks the ramp to the rounded rect, half the
+    /// box = a disc. `period` is (start, length) along the run in 0..1 of
+    /// the box: length 0 = the run is the box; length > 0 = the ramp
+    /// TILES — `repeat=repeat|mirror` with `from=`/`to=` makes that span
+    /// one period and the stops are 0..1 of the period, repeated across
+    /// the whole box (a linear fill only). `repeat=mirror` folds the stops
+    /// into 0..0.5 and appends their mirror.
+    Gradient { rect: Rect, kind: GradientKind, angle: f32, corner: f32, period: (f32, f32), stops: u32 },
+    /// One stop of the [`Draw::Gradient`] just before it — a data record,
+    /// never drawn on its own: the position along the run and the color
+    /// as authored, the node's opacity applied (the renderer converts it
+    /// to the mixing space once, when the stop table row fills).
+    GradientStop { pos: f32, color: Color_Straight_Srgb_4xU8_RGBA },
     /// `text`/`key`: the literal as the file wrote it and its translation
     /// key (`NO_KEY` = none). The renderer shows `locale::display(page,
     /// locale, text, key)` — the same string layout measured.
@@ -574,7 +584,6 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                     *pos = Some(pos.unwrap_or(if n <= 1 { 0.0 } else { i as f32 / (n - 1) as f32 * 0.5 }).min(0.5));
                 }
             }
-            let fold = if mirror { 0.5 } else { 1.0 };
             let period: (f32, f32) = match span {
                 Some((a, b)) if tiles && kind == GradientKind::Linear && b > a => (a, b - a),
                 _ => (0.0, 0.0),
@@ -585,31 +594,30 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
                 None => t,
             };
             let at = |i: usize| remap(colored[i].1.unwrap_or(0.0).clamp(0.0, 1.0));
-            let mut bands: Vec<(Color_Straight_Srgb_4xU8_RGBA, Color_Straight_Srgb_4xU8_RGBA, (f32, f32))> = Vec::new();
-            match n {
-                0 => {}
-                1 => bands.push((colored[0].0, colored[0].0, (0.0, fold))),
-                _ => {
-                    // Before the first stop and after the last, the edge color holds.
-                    if at(0) > 0.0 {
-                        bands.push((colored[0].0, colored[0].0, (0.0, at(0))));
+            // ONE entry, then its stops (D21). The renderer holds the edge
+            // colors past the first and last stop by itself; a lone stop
+            // becomes the same color at both ends so there is a pair.
+            if n > 0 {
+                let head: usize = out.len();
+                out.push(Draw::Gradient { rect, kind, angle, corner, period, stops: 0 });
+                if n == 1 {
+                    out.push(Draw::GradientStop { pos: 0.0, color: colored[0].0 });
+                    out.push(Draw::GradientStop { pos: 1.0, color: colored[0].0 });
+                } else {
+                    for i in 0..n {
+                        out.push(Draw::GradientStop { pos: at(i), color: colored[i].0 });
                     }
-                    for i in 0..n - 1 {
-                        if at(i + 1) > at(i) {
-                            bands.push((colored[i].0, colored[i + 1].0, (at(i), at(i + 1))));
+                    if mirror {
+                        // The fold's mirror: the same stops back from 1.
+                        for i in (0..n).rev() {
+                            out.push(Draw::GradientStop { pos: 1.0 - at(i), color: colored[i].0 });
                         }
                     }
-                    if at(n - 1) < fold {
-                        bands.push((colored[n - 1].0, colored[n - 1].0, (at(n - 1), fold)));
-                    }
                 }
-            }
-            if mirror {
-                let back: Vec<(Color_Straight_Srgb_4xU8_RGBA, Color_Straight_Srgb_4xU8_RGBA, (f32, f32))> = bands.iter().map(|(f, t, (a, b))| (*t, *f, (1.0 - b, 1.0 - a))).collect();
-                bands.extend(back);
-            }
-            for (f, t, band) in bands {
-                out.push(Draw::Gradient { rect, kind, from: f, to: t, angle, band, corner, period });
+                let count: u32 = (out.len() - head - 1) as u32;
+                if let Draw::Gradient { stops, .. } = &mut out[head] {
+                    *stops = count;
+                }
             }
         }
         Kind::Image => {

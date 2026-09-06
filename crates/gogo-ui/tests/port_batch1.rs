@@ -48,8 +48,24 @@ fn composed_when_needs_both_halves() {
     assert_eq!(State::ScreenClass(gogo::StrId::new(0)).priority(), State::ScreenOrientation(gogo::StrId::new(0)).priority());
 }
 
-/// GP3 + GP4: three stops with an `@0.94` plateau draw as three segments
-/// (the plateau holds), and the compass angle travels as written.
+/// Each Gradient entry with the stops that follow it: (angle, positions).
+fn gradient_stops(draws: &[Draw]) -> Vec<(f32, Vec<f32>)> {
+    let mut out: Vec<(f32, Vec<f32>)> = Vec::new();
+    let mut i: usize = 0;
+    while i < draws.len() {
+        if let Draw::Gradient { angle, stops, .. } = draws[i] {
+            let positions: Vec<f32> = draws[i + 1..i + 1 + stops as usize].iter().filter_map(|d| if let Draw::GradientStop { pos, .. } = d { Some(*pos) } else { None }).collect();
+            out.push((angle, positions));
+            i += stops as usize;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// GP3 + GP4: three stops with an `@0.94` plateau draw as ONE gradient
+/// carrying all three (the plateau holds), and the compass angle travels
+/// as written.
 #[test]
 fn gradient_draws_every_stop_with_the_compass_angle() {
     let c = ok("View v {\n Gradient g width=100, height=20, angle=0, stops=[#FFFFFF6B@0, #FFFFFF6B@0.94, #FFFFFF00@1]\n}\n");
@@ -58,19 +74,14 @@ fn gradient_draws_every_stop_with_the_compass_angle() {
     let res = resolve(&page, &rt);
     let rects = layout(&page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
     let draws = draw(&page, &res, &rects);
-    let segments: Vec<(f32, f32, f32)> = draws.iter().filter_map(|d| match d {
-        Draw::Gradient { angle, band, .. } => Some((*angle, band.0, band.1)),
-        _ => None,
-    }).collect();
-    assert_eq!(segments, vec![(0.0, 0.0, 0.94), (0.0, 0.94, 1.0)]);
+    assert_eq!(gradient_stops(&draws), vec![(0.0, vec![0.0, 0.94, 1.0])]);
     // Evenly spread when no position is written; a lone stop is one flat band.
     let c = ok("View v {\n Gradient g width=100, height=20, stops=[#FF0000FF, #00FF00FF, #0000FFFF]\n}\n");
     let page = c.page;
     let rt = Runtime::new(&page);
     let res = resolve(&page, &rt);
     let rects = layout(&page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-    let bands: Vec<(f32, f32)> = draw(&page, &res, &rects).iter().filter_map(|d| if let Draw::Gradient { band, .. } = d { Some(*band) } else { None }).collect();
-    assert_eq!(bands, vec![(0.0, 0.5), (0.5, 1.0)]);
+    assert_eq!(gradient_stops(&draw(&page, &res, &rects)), vec![(90.0, vec![0.0, 0.5, 1.0])]);
 }
 
 /// GP6 + GP7: a `repeat=forever` anim is still moving past its length and

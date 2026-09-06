@@ -108,15 +108,31 @@ fn scene(src: &str) -> (Page, Vec<Rect>, Vec<Draw>) {
     (c.page, rects, draws)
 }
 
-/// Every gradient segment in the list: (kind, from, to, angle, band).
-fn gradients(draws: &[Draw]) -> Vec<(GradientKind, Color_Straight_Srgb_4xU8_RGBA, Color_Straight_Srgb_4xU8_RGBA, f32, (f32, f32))> {
-    draws
-        .iter()
-        .filter_map(|d| match d {
-            Draw::Gradient { kind, from, to, angle, band, .. } => Some((*kind, *from, *to, *angle, *band)),
-            _ => None,
-        })
-        .collect()
+/// A drawn gradient: its kind, compass angle and the stops (position,
+/// color) that follow its entry — ONE entry per gradient (D21).
+#[derive(Clone, Debug, PartialEq)]
+struct Grad {
+    kind: GradientKind,
+    angle: f32,
+    stops: Vec<(f32, Color_Straight_Srgb_4xU8_RGBA)>,
+}
+
+fn gradients(draws: &[Draw]) -> Vec<Grad> {
+    let mut out: Vec<Grad> = Vec::new();
+    let mut i: usize = 0;
+    while i < draws.len() {
+        if let Draw::Gradient { kind, angle, stops, .. } = draws[i] {
+            let list: Vec<(f32, Color_Straight_Srgb_4xU8_RGBA)> = draws[i + 1..i + 1 + stops as usize].iter().filter_map(|d| if let Draw::GradientStop { pos, color } = d { Some((*pos, *color)) } else { None }).collect();
+            out.push(Grad { kind, angle, stops: list });
+            i += stops as usize;
+        }
+        i += 1;
+    }
+    out
+}
+
+fn positions(g: &Grad) -> Vec<f32> {
+    g.stops.iter().map(|s| s.0).collect()
 }
 
 fn circles(draws: &[Draw]) -> Vec<(Rect, Color_Straight_Srgb_4xU8_RGBA, f32, Color_Straight_Srgb_4xU8_RGBA)> {
@@ -580,13 +596,13 @@ fn radial_gradient_with_a_plateau_reaches_the_draw_list() {
     let glow = rect_of(&page, &rects, "glow");
     assert_eq!((glow.w, glow.h), (35.0, 35.0), "{glow:?}");
     let g = gradients(&draws);
-    assert_eq!(g.len(), 2, "{g:#?}");
-    assert!(g.iter().all(|s| s.0 == GradientKind::Radial), "{g:#?}");
-    assert!(near(g[0].4.1, 0.94) && near(g[1].4.0, 0.94), "{g:#?}");
-    assert_eq!(g[0].1, Color_Straight_Srgb_4xU8_RGBA([0xFF, 0xFF, 0xFF, 0x6B]), "{g:#?}");
-    assert_eq!(g[1].2.0[3], 0, "{g:#?}");
+    assert_eq!(g.len(), 1, "one draw per gradient: {g:#?}");
+    assert_eq!(g[0].kind, GradientKind::Radial, "{g:#?}");
+    assert!(near(positions(&g[0])[1], 0.94), "{g:#?}");
+    assert_eq!(g[0].stops[0].1, Color_Straight_Srgb_4xU8_RGBA([0xFF, 0xFF, 0xFF, 0x6B]), "{g:#?}");
+    assert_eq!(g[0].stops[2].1.0[3], 0, "{g:#?}");
     let covers = draws.iter().filter(|d| matches!(d, Draw::Gradient { rect, .. } if *rect == glow)).count();
-    assert_eq!(covers, 2, "every segment spans the node's rect: {draws:#?}");
+    assert_eq!(covers, 1, "the gradient spans the node's rect: {draws:#?}");
 }
 
 /// `_gradient_tests` 8289-8299 (gradient.even-ok, gradient.even-two,
@@ -598,9 +614,8 @@ fn radial_gradient_with_a_plateau_reaches_the_draw_list() {
 fn unpinned_stops_spread_evenly_and_default_to_linear_left_to_right() {
     let (_, _, draws) = scene("View v { Column c {\n    Gradient a width=100, height=10, stops=[white, black]\n    Gradient b width=100, height=10, stops=[red, yellow, green]\n} }");
     let g = gradients(&draws);
-    let bands: Vec<(f32, f32)> = g.iter().map(|s| s.4).collect();
-    assert_eq!(bands, vec![(0.0, 1.0), (0.0, 0.5), (0.5, 1.0)], "{g:#?}");
-    assert!(g.iter().all(|s| s.0 == GradientKind::Linear && s.3 == 90.0), "{g:#?}");
+    assert_eq!(g.iter().map(positions).collect::<Vec<_>>(), vec![vec![0.0, 1.0], vec![0.0, 0.5, 1.0]], "{g:#?}");
+    assert!(g.iter().all(|s| s.kind == GradientKind::Linear && s.angle == 90.0), "{g:#?}");
 }
 
 /// `_gradient_tests` 8305-8312 (gradient.entry-kinds, gradient.ref-entry):
@@ -613,7 +628,7 @@ fn a_ref_stop_carries_its_position() {
     assert!(!fails(src), "{:#?}", diags(src));
     let (_, _, draws) = scene(src);
     let g = gradients(&draws);
-    assert_eq!(g[0].1, Color_Straight_Srgb_4xU8_RGBA([0x10, 0x20, 0x30, 0x40]), "{g:#?}");
+    assert_eq!(g[0].stops[0].1, Color_Straight_Srgb_4xU8_RGBA([0x10, 0x20, 0x30, 0x40]), "{g:#?}");
 }
 
 /// `_gradient_tests` 8311 (gradient.opacity-entry): `/opacity` goes on a
@@ -624,10 +639,10 @@ fn a_ref_stop_carries_its_position() {
 fn a_stop_entry_takes_an_opacity_suffix() {
     let (_, _, draws) = scene("View v { Gradient g width=100, height=10, stops=[#10203040@0, accent/0.5@0.3, white@1] }");
     let g = gradients(&draws);
-    assert_eq!(g.len(), 2, "{g:#?}");
-    assert_eq!(g[0].1, Color_Straight_Srgb_4xU8_RGBA([0x10, 0x20, 0x30, 0x40]), "{g:#?}");
-    assert!((g[0].2.0[3] as i32 - 128).abs() <= 1, "accent/0.5 alpha: {g:#?}");
-    assert!(near(g[0].4.1, 0.3), "{g:#?}");
+    assert_eq!(g.len(), 1, "{g:#?}");
+    assert_eq!(g[0].stops[0].1, Color_Straight_Srgb_4xU8_RGBA([0x10, 0x20, 0x30, 0x40]), "{g:#?}");
+    assert!((g[0].stops[1].1.0[3] as i32 - 128).abs() <= 1, "accent/0.5 alpha: {g:#?}");
+    assert!(near(g[0].stops[1].0, 0.3), "{g:#?}");
 }
 
 /// `_gradient_tests` 8316-8320 (gradient.mirror-ok, gradient.mirror-enum)
@@ -650,9 +665,9 @@ fn repeat_mirror_is_a_gradient_word_with_its_fences() {
 #[test]
 fn angle_is_the_compass() {
     let (_, _, draws) = scene("View v { Gradient g width=100, height=10, angle=90, stops=[white, black] }");
-    assert_eq!(gradients(&draws)[0].3, 90.0, "{draws:#?}");
+    assert_eq!(gradients(&draws)[0].angle, 90.0, "{draws:#?}");
     let (_, _, draws) = scene("View v { Gradient g width=100, height=10, angle=0, stops=[white, black] }");
-    assert_eq!(gradients(&draws)[0].3, 0.0, "{draws:#?}");
+    assert_eq!(gradients(&draws)[0].angle, 0.0, "{draws:#?}");
 }
 
 /// `_gradient_tests` 8341-8347 (gradient.fromto-ok, gradient.fromto-explicit)
@@ -673,7 +688,7 @@ fn from_and_to_are_box_points_with_their_fences() {
 fn conic_fill_is_its_own_kind() {
     let (_, _, draws) = scene("View v { Gradient g width=100, height=100, fill=conic, stops=[red, yellow, red] }");
     let g = gradients(&draws);
-    assert!(!g.is_empty() && g.iter().all(|s| s.0 != GradientKind::Linear && s.0 != GradientKind::Radial), "{g:#?}");
+    assert!(!g.is_empty() && g.iter().all(|s| s.kind != GradientKind::Linear && s.kind != GradientKind::Radial), "{g:#?}");
 }
 
 /// `_gradient_tests` 8365-8380 (gradient.stop-prop-get,
@@ -690,8 +705,8 @@ fn stops_are_live_per_stop_properties() {
     let res = resolve(&c.page, &rt);
     let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
     let list = gradients(&draw(&c.page, &res, &rects));
-    assert_eq!(list.first().unwrap().1, Color_Straight_Srgb_4xU8_RGBA([0xE5, 0x14, 0x00, 0xFF]), "{list:#?}");
-    assert_eq!(list.last().unwrap().2, Color_Straight_Srgb_4xU8_RGBA([0x00, 0x00, 0x00, 0xFF]), "the other stop holds: {list:#?}");
+    assert_eq!(list[0].stops[0].1, Color_Straight_Srgb_4xU8_RGBA([0xE5, 0x14, 0x00, 0xFF]), "{list:#?}");
+    assert_eq!(list[0].stops[1].1, Color_Straight_Srgb_4xU8_RGBA([0x00, 0x00, 0x00, 0xFF]), "the other stop holds: {list:#?}");
 }
 
 /// The stop-write fences: the declared look has one spelling (`stops=`),
@@ -744,8 +759,8 @@ fn the_stops_rules_and_the_fill_fences() {
 #[test]
 fn equal_positions_and_spelled_transparent_stops_build() {
     let (_, _, draws) = scene("View v { Gradient g width=100, height=10, stops=[white@0, gray@0.3, gray@0.3, black@1] }");
-    let bands: Vec<(f32, f32)> = gradients(&draws).iter().map(|s| s.4).collect();
-    assert_eq!(bands, vec![(0.0, 0.3), (0.3, 1.0)], "a zero-width band paints nothing: {bands:?}");
+    let stops: Vec<f32> = positions(&gradients(&draws)[0]);
+    assert_eq!(stops, vec![0.0, 0.3, 0.3, 1.0], "a zero-width pair is a hard edge the renderer never selects: {stops:?}");
     ok("View v { Gradient g stops=[white, #00000000] }");
     ok("View v { Gradient g stops=[white, black/0] }");
 }
