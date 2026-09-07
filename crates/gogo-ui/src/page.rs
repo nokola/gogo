@@ -334,13 +334,13 @@ pub struct AutoDriver {
     pub state: StrId,
 }
 
-/// How many slots a control's input machine may read by rect
+/// How many slots a control's input behavior may read by rect
 /// (`Cx::slot`): a slider's track, a toggle's track and thumb, a range
-/// slider's track and two thumbs. A machine spec naming more refuses at
+/// slider's track and two thumbs. A behavior spec naming more refuses at
 /// compile.
 pub const BEHAVIOR_SLOTS: usize = 3;
 
-/// What `change` carries when a machine's gesture commits: the number
+/// What `change` carries when a behavior's gesture commits: the number
 /// (a slider), or the side the value settled on (a toggle — `change`
 /// reports `true`/`false` at the midpoint, D181's Toggle law).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -351,46 +351,46 @@ pub enum Payload {
 
 /// What the compiler checks a `behavior <name>` line against (GP53).
 ///
-/// Needed because the machine is Rust code the compiler never sees: the
+/// Needed because the behavior is Rust code the compiler never sees: the
 /// spec is the part of it a `.gogo` file can be checked against — the
-/// slots the machine reads (each must be a `slot` in the control body),
+/// slots the behavior reads (each must be a `slot` in the control body),
 /// the key groups it owns (a `keys` claim on them refuses — one owner
-/// per group), and what its `change` carries. gogo's own machines are
+/// per group), and what its `change` carries. gogo's own behaviors are
 /// `BUILTIN_BEHAVIORS`; a host adds its own through
 /// `CompileOptions::behaviors` at build and `Input::register` at run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BehaviorSpec {
     /// The word after `behavior` in a control body.
     pub name: &'static str,
-    /// The slots the machine reads, in the order `Cx::slot(i)` hands
-    /// them (`slots[0]` is the track for both stock machines).
+    /// The slots the behavior reads, in the order `Cx::slot(i)` hands
+    /// them (`slots[0]` is the track for both stock behaviors).
     pub slots: &'static [&'static str],
-    /// The `KEYS_*` groups the machine answers (`Behavior::key`): a key
-    /// in an owned group reaches the machine; a `keys` claim on one
+    /// The `KEYS_*` groups the behavior answers (`Behavior::key`): a key
+    /// in an owned group reaches the behavior; a `keys` claim on one
     /// refuses at compile.
     pub keys: u8,
     pub payload: Payload,
 }
 
-/// The stock slider machine: press-jump, bare x over the track,
+/// The stock slider behavior: press-jump, bare x over the track,
 /// arrows/Home/End/wheel step (the addon's slider_behavior.gd +
 /// ui/slider_phone_behavior.gd, GP52).
 pub const SLIDER_SPEC: BehaviorSpec = BehaviorSpec { name: "slider", slots: &["track"], keys: KEYS_ARROWS | KEYS_HOME_END, payload: Payload::Number };
-/// The stock toggle machine: a tap glides to the other end, a drag past
+/// The stock toggle behavior: a tap glides to the other end, a drag past
 /// the wobble follows the finger and settles nearest, Enter/Space flip,
 /// arrows are sides (the addon's toggle_behavior.gd).
 pub const TOGGLE_SPEC: BehaviorSpec = BehaviorSpec { name: "toggle", slots: &["track", "thumb"], keys: KEYS_ARROWS | KEYS_HOME_END | KEYS_ENTER | KEYS_SPACE, payload: Payload::Bool };
 /// gogo's own registrations — every `Input` carries them; a host's
-/// machines come after, in `CompileOptions::behaviors` order.
+/// behaviors come after, in `CompileOptions::behaviors` order.
 pub const BUILTIN_BEHAVIORS: &[BehaviorSpec] = &[SLIDER_SPEC, TOGGLE_SPEC];
 
 /// A control's `behavior <name> by $value in $min..$max, step=$step,
-/// key_unit=5%` line, baked per instance (GP52/GP53): the machine
+/// key_unit=5%` line, baked per instance (GP52/GP53): the behavior
 /// named answers the instance's input — a press anywhere on it is the
-/// machine's (shipped SliderPhone's whole row was the surface), the
+/// behavior's (shipped SliderPhone's whole row was the surface), the
 /// runtime hands it the value and the slot rects and takes back one
 /// value write per event. The runtime owns the gesture law around the
-/// machine: `held`, focus, `edit` per changed write, `change` on a
+/// behavior: `held`, focus, `edit` per changed write, `change` on a
 /// changed release, restore on cancel, the declared drag edges, and
 /// `selected` derived from the value when the contract declares it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -398,10 +398,10 @@ pub struct Behavior {
     /// The instance root: value writes, `edit`/`change` events, `held`
     /// and focus all land here.
     pub root: NodeId,
-    /// The machine's name, interned — `Input` finds the registered
-    /// machine by it once per gesture.
-    pub machine: StrId,
-    /// The slots the machine reads, in its spec's order (`NO_NODE`
+    /// The behavior's name, interned — `Input` finds the registered
+    /// behavior by it once per gesture.
+    pub name: StrId,
+    /// The slots the behavior reads, in its spec's order (`NO_NODE`
     /// past the spec's count).
     pub slots: [NodeId; BEHAVIOR_SLOTS],
     pub payload: Payload,
@@ -418,7 +418,7 @@ pub struct Behavior {
     /// (`key_unit=5%` bakes as 0.05 × the range); 0 = unset — the
     /// stock 1.0.
     pub key_unit: f32,
-    /// `$value` at build — what the machine reads before any write
+    /// `$value` at build — what the behavior reads before any write
     /// lands (the instance root carries no live Value prop until one
     /// does).
     pub rest: f32,
@@ -1755,6 +1755,18 @@ impl Page {
         self.key_claims.extend(claims);
         let behaviors: Vec<Behavior> = self.behaviors.iter().filter(|b| b.root >= src && b.root < end).map(|b| Behavior { root: shift(b.root), slots: b.slots.map(|n| if n == NO_NODE { NO_NODE } else { shift(n) }), ..*b }).collect();
         self.behaviors.extend(behaviors);
+        // A cloned control's driven slots, `live($value)` labels and its
+        // own `transition` feel come along too. Needed because a pooled
+        // row IS a clone (the effect page's slider rows, `repeat …
+        // capacity=`): without its driver a row's fill stayed at the
+        // template's baked fraction while its value moved — the user saw
+        // the read-out change and the bar stand still (todo-bugs.md #6).
+        let drivers: Vec<AutoDriver> = self.drivers.iter().filter(|d| d.node >= src && d.node < end).map(|d| AutoDriver { node: shift(d.node), root: shift(d.root), ..*d }).collect();
+        self.drivers.extend(drivers);
+        let lives: Vec<LiveText> = self.live_texts.iter().filter(|l| l.node >= src && l.node < end).map(|l| LiveText { node: shift(l.node), root: shift(l.root), ..*l }).collect();
+        self.live_texts.extend(lives);
+        let feels: Vec<Transition> = self.transitions.iter().filter(|t| t.node != NO_NODE && t.node >= src && t.node < end).map(|t| Transition { node: shift(t.node), ..*t }).collect();
+        self.transitions.extend(feels);
         base
     }
 

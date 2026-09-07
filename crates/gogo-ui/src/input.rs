@@ -159,7 +159,7 @@ pub enum EventKind {
     /// A key a focused `control` instance claimed (GP26 `keys` line):
     /// the code-behind steps its model — traversal never saw the key.
     Key { key: Key, mods: Mods },
-    /// A signal a control's machine raised (GP52: `behavior slider`'s
+    /// A signal a control's behavior raised (GP52: `behavior slider`'s
     /// declared `drag_started`/`drag_ended`): the name rides the
     /// event's `Action::Emit`, like every `emit()`.
     Signal,
@@ -249,9 +249,9 @@ struct Press {
     /// The `behavior` row this press belongs to (GP52/GP53) — an index
     /// into `Page::behaviors`; the press node is then the instance root.
     behavior: Option<u32>,
-    /// The registered machine answering it (`Machines::get`), found by
+    /// The registered behavior answering it (`Registry::get`), found by
     /// name once, at the press.
-    machine: u16,
+    registered: u16,
     /// A Toggle press that travelled past the wobble threshold.
     toggle_moved: bool,
     /// The finger went down on a press surface and its `release` has not
@@ -365,8 +365,8 @@ fn text_value(page: &Page, rt: &Runtime, node: NodeId) -> Value {
 
 #[derive(Debug, Default)]
 pub struct Input {
-    /// The input machines (GP53): gogo's own, then the host's.
-    machines: Machines,
+    /// The input behaviors (GP53): gogo's own, then the host's.
+    registry: Registry,
     press: Option<Press>,
     fling: Option<Fling>,
     /// The offset this machine last wrote for `fling.scroll`: a different
@@ -599,9 +599,9 @@ fn snap_step(page: &Page, res: &Resolved, node: NodeId, v: f32) -> f32 {
     res.snap_slider(page, node, v)
 }
 
-// ------------------------------------------------------------ input machines
+// ------------------------------------------------------------ input behaviors
 
-/// A control's input machine — the Godot addon's behavior script
+/// A control's input behavior — the Godot addon's behavior script
 /// (`GogoControlScript`) as a Rust trait (GP53). A `.gogo` control names
 /// one (`behavior toggle by $value in $min..$max`); the runtime routes
 /// the instance's finger and keys to it and takes back one value write
@@ -609,18 +609,18 @@ fn snap_step(page: &Page, res: &Resolved, node: NodeId, v: f32) -> f32 {
 ///
 /// Needed so input stays the gogo USER's job: a knob, a range slider or
 /// a switch is a few lines of pointer math in the host's crate, never
-/// an edit to gogo. The runtime owns the law AROUND the machine, so a
-/// machine stays small: the gesture bracket (`held`, focus, a second
+/// an edit to gogo. The runtime owns the law AROUND the behavior, so a
+/// behavior stays small: the gesture bracket (`held`, focus, a second
 /// finger swallowed), `edit` per changed write and `change` on a changed
 /// release, the restore on a cancelled or reclaimed gesture, the
 /// declared `drag_started`/`drag_ended` edges, `selected` derived from
 /// the value when the contract declares it, and the `live($value)`
-/// label follow. A machine never sees nodes: geometry arrives as
+/// label follow. A behavior never sees nodes: geometry arrives as
 /// control-local rects (`Cx::slot`), and its only output is
 /// `Cx::set_value`/`Cx::set_fraction`.
 ///
 /// One gesture is live at a time (a second finger is swallowed), so a
-/// machine keeps its gesture scratch in `self` — a toggle's press x, a
+/// behavior keeps its gesture scratch in `self` — a toggle's press x, a
 /// wobble flag. gogo's own `slider` and `toggle` implement this trait;
 /// a host adds its own with `Input::register`, and names it to the
 /// compiler through `CompileOptions::behaviors` (the spec is what the
@@ -633,7 +633,7 @@ pub trait Behavior {
 
     /// Finger down at `(x, y)`, control-local epx. `Claim::Take` owns
     /// the gesture (moves and the release come here); `Claim::Pass`
-    /// lets the press go on as if there were no machine (a Scroll above
+    /// lets the press go on as if there were no behavior (a Scroll above
     /// may take it). The default passes.
     fn began(&mut self, cx: &mut Cx, x: f32, y: f32) -> Claim {
         let _ = (cx, x, y);
@@ -653,7 +653,7 @@ pub trait Behavior {
     }
 
     /// The gesture was cancelled or reclaimed. The runtime restores the
-    /// grabbed value itself; this is the machine's cue to drop its
+    /// grabbed value itself; this is the behavior's cue to drop its
     /// scratch.
     fn canceled(&mut self) {}
 
@@ -675,7 +675,7 @@ pub enum Claim {
 }
 
 /// The logical key actions (the addon's `_key_to_action`) — platform
-/// keys stay out of machines. Right/Up = `Increment`, Left/Down =
+/// keys stay out of behaviors. Right/Up = `Increment`, Left/Down =
 /// `Decrement`, Home/End = `ToMin`/`ToMax`, Enter/Space = `Activate`; a
 /// wheel tick is `Increment`/`Decrement` on the instance under the
 /// pointer, focus or not.
@@ -688,7 +688,7 @@ pub enum KeyAction {
     ToMax,
 }
 
-/// What a machine sees and may write during one call (GP53): the value
+/// What a behavior sees and may write during one call (GP53): the value
 /// triad as numbers, the control's box and slots as control-local rects
 /// (the control's own top-left is (0, 0)), and the one write back.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -731,8 +731,8 @@ impl Cx {
         if self.max > self.min { ((self.value - self.min) / (self.max - self.min)).clamp(0.0, 1.0) } else { 0.0 }
     }
 
-    /// The `i`th slot of the machine's spec, control-local (`slot(0)`
-    /// is `track` for both stock machines).
+    /// The `i`th slot of the behavior's spec, control-local (`slot(0)`
+    /// is `track` for both stock behaviors).
     pub fn slot(&self, i: usize) -> Rect {
         self.slots[i]
     }
@@ -771,7 +771,7 @@ impl Cx {
     }
 }
 
-/// The slot indexes the stock machines read (their specs' order).
+/// The slot indexes the stock behaviors read (their specs' order).
 const TRACK: usize = 0;
 const THUMB: usize = 1;
 
@@ -782,9 +782,9 @@ const THUMB: usize = 1;
 /// was `x / width` verbatim); arrows/Home/End/wheel step by the key
 /// unit.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct SliderMachine;
+struct SliderBehavior;
 
-impl SliderMachine {
+impl SliderBehavior {
     fn apply(cx: &mut Cx, x: f32) {
         let track = cx.slot(TRACK);
         if track.w > 0.0 {
@@ -793,7 +793,7 @@ impl SliderMachine {
     }
 }
 
-impl Behavior for SliderMachine {
+impl Behavior for SliderBehavior {
     fn spec(&self) -> &'static BehaviorSpec {
         &SLIDER_SPEC
     }
@@ -825,12 +825,12 @@ impl Behavior for SliderMachine {
 /// compensated over the track) and settles to the nearer end on
 /// release. Enter/Space flip, Right/Up/End = on, Left/Down/Home = off.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct ToggleMachine {
+struct ToggleBehavior {
     press_x: f32,
     moved: bool,
 }
 
-impl ToggleMachine {
+impl ToggleBehavior {
     fn apply(cx: &mut Cx, x: f32) {
         let track = cx.slot(TRACK);
         let thumb_w = cx.slot(THUMB).w;
@@ -845,7 +845,7 @@ impl ToggleMachine {
     }
 }
 
-impl Behavior for ToggleMachine {
+impl Behavior for ToggleBehavior {
     fn spec(&self) -> &'static BehaviorSpec {
         &TOGGLE_SPEC
     }
@@ -888,17 +888,17 @@ impl Behavior for ToggleMachine {
     }
 }
 
-/// The machines an `Input` routes to: gogo's own two inline (no
+/// The behaviors an `Input` routes to: gogo's own two inline (no
 /// allocation for the stock pages), then the host's in `Input::register`
-/// order. Found by name once per gesture (`Behavior::machine`).
+/// order. Found by name once per gesture (`Behavior::behavior`).
 #[derive(Default)]
-struct Machines {
-    slider: SliderMachine,
-    toggle: ToggleMachine,
+struct Registry {
+    slider: SliderBehavior,
+    toggle: ToggleBehavior,
     host: Vec<Box<dyn Behavior>>,
 }
 
-impl Machines {
+impl Registry {
     fn find(&self, name: &str) -> Option<u16> {
         match name {
             "slider" => Some(0),
@@ -916,15 +916,15 @@ impl Machines {
     }
 }
 
-impl std::fmt::Debug for Machines {
+impl std::fmt::Debug for Registry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let names: Vec<&str> = BUILTIN_BEHAVIORS.iter().map(|s| s.name).chain(self.host.iter().map(|m| m.spec().name)).collect();
         f.debug_list().entries(names).finish()
     }
 }
 
-/// The key action `k` means to a machine owning the `KEYS_*` groups in
-/// `owned` — `None` when the group is not the machine's (the key goes
+/// The key action `k` means to a behavior owning the `KEYS_*` groups in
+/// `owned` — `None` when the group is not the behavior's (the key goes
 /// on to a `keys` claim or traversal).
 fn key_action(k: Key, owned: u8) -> Option<KeyAction> {
     match k {
@@ -938,7 +938,7 @@ fn key_action(k: Key, owned: u8) -> Option<KeyAction> {
     }
 }
 
-/// What a machine's `change` carries (`Behavior::payload`).
+/// What a behavior's `change` carries (`Behavior::payload`).
 fn change_value(b: &Behavior_, v: f32) -> Value {
     match b.payload {
         Payload::Number => Value::VNum(v),
@@ -946,7 +946,7 @@ fn change_value(b: &Behavior_, v: f32) -> Value {
     }
 }
 
-/// "changed means CHANGED" for a machine's commit: the number moved, or
+/// "changed means CHANGED" for a behavior's commit: the number moved, or
 /// (a bool payload) the side did.
 fn changed(b: &Behavior_, from: f32, now: f32) -> bool {
     match b.payload {
@@ -957,7 +957,7 @@ fn changed(b: &Behavior_, from: f32, now: f32) -> bool {
 
 /// The `behavior` row whose instance holds `node` (GP52) — an index
 /// into `Page::behaviors`, by subtree range (the claim rides the
-/// instance root; every descendant is the machine's surface).
+/// instance root; every descendant is the behavior's surface).
 fn behavior_at(page: &Page, node: NodeId) -> Option<u32> {
     // By ancestry, not by index range: a later sibling's subtree shares
     // the control root's `id+1..subtree_end` range (Node::subtree_end).
@@ -1036,19 +1036,19 @@ impl Input {
         self.press.is_some()
     }
 
-    /// Adds a host machine (GP53): a `behavior <name>` line whose name
-    /// the machine's spec carries routes to it. The compiler must know
+    /// Adds a host behavior (GP53): a `behavior <name>` line whose name
+    /// the behavior's spec carries routes to it. The compiler must know
     /// the same spec (`CompileOptions::behaviors`) — a page naming a
-    /// machine nobody registered is inert (and a debug assert).
-    pub fn register(&mut self, machine: Box<dyn Behavior>) {
-        self.machines.host.push(machine);
+    /// behavior nobody registered is inert (and a debug assert).
+    pub fn register(&mut self, behavior: Box<dyn Behavior>) {
+        self.registry.host.push(behavior);
     }
 
-    /// One machine call's write, landed: the value prop (the
+    /// One behavior call's write, landed: the value prop (the
     /// `live($value)` labels follow at the tick), `selected` derived
     /// when the contract declares it, and an `edit` when asked and the
     /// value moved. Returns the value shown now.
-    fn land_machine_write(&self, page: &Page, rt: &mut Runtime, events: &mut Vec<Event>, b: &Behavior_, shown: f32, cx: &Cx, edit: bool) -> f32 {
+    fn land_behavior_write(&self, page: &Page, rt: &mut Runtime, events: &mut Vec<Event>, b: &Behavior_, shown: f32, cx: &Cx, edit: bool) -> f32 {
         let Some(v) = cx.out else { return shown };
         if v == shown {
             return shown;
@@ -1063,17 +1063,17 @@ impl Input {
         v
     }
 
-    /// A key or wheel action on a `behavior` instance: the machine
+    /// A key or wheel action on a `behavior` instance: the behavior
     /// answers (`true`), a changed write commits `change` directly —
     /// no `edit` (a step and a programmatic write are one thing at the
     /// seam); one landing on the current value says nothing.
     fn run_key_action(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], b: &Behavior_, mi: u16, action: KeyAction, events: &mut Vec<Event>) -> bool {
         let was = b_value_of(rt, res, page, b);
         let mut cx = Cx::new(rects, b, was);
-        if !self.machines.get(mi).key(&mut cx, action) {
+        if !self.registry.get(mi).key(&mut cx, action) {
             return false;
         }
-        let v = self.land_machine_write(page, rt, events, b, was, &cx, false);
+        let v = self.land_behavior_write(page, rt, events, b, was, &cx, false);
         if changed(b, was, v) {
             self.push_event(rt, events, b.root, EventKind::Change(change_value(b, v)), event_action(page, b.root, "change"));
         }
@@ -1114,12 +1114,12 @@ impl Input {
     /// go back to where the finger found them.
     fn cancel_press(&mut self, page: &Page, rt: &mut Runtime, events: &mut Vec<Event>, p: &Press) {
         rt.set_state(p.node, HELD, false);
-        // GP52/GP53: a reclaimed machine drag restores the grabbed value
+        // GP52/GP53: a reclaimed behavior drag restores the grabbed value
         // (the labels follow at the next tick; never leave a half-drag
         // behind) — and the gesture still gets its closing edge: a host
         // arming UI on `drag_started` must always hear `drag_ended`.
         if let Some(bi) = p.behavior {
-            self.machines.get(p.machine).canceled();
+            self.registry.get(p.registered).canceled();
             let b = page.behaviors[bi as usize];
             rt.set_value_deferred(b.root, p.value_from);
             if b.selected {
@@ -1191,7 +1191,7 @@ impl Input {
         }
         let focus_kind = self.focus.map(|f| page.nodes[f].kind);
         let in_field = focus_kind == Some(Kind::Input);
-        // GP52/GP53: a focused `behavior` instance's machine answers the
+        // GP52/GP53: a focused `behavior` instance's behavior answers the
         // key groups its spec owns (the compile fence keeps a `keys`
         // claim off them, so no second owner); a refused action goes on
         // to traversal.
@@ -1199,8 +1199,8 @@ impl Input {
             if !rt.disabled(page, f) {
                 if let Some(bi) = page.behaviors.iter().position(|b| b.root == f) {
                     let b = live_behavior(page, res, bi as u32);
-                    if let Some(mi) = self.machines.find(page.str(b.machine)) {
-                        let owned = self.machines.get(mi).spec().keys;
+                    if let Some(mi) = self.registry.find(page.str(b.name)) {
+                        let owned = self.registry.get(mi).spec().keys;
                         if let Some(action) = key_action(k, owned) {
                             if self.run_key_action(page, rt, res, rects, &b, mi, action, &mut events) {
                                 return events;
@@ -1597,14 +1597,14 @@ impl Input {
         let mut n = hit(page, res, rects, x, y, false);
         // GP52/GP53: a `behavior` instance is steppable anywhere on its
         // surface — found before the kind walk (its root wears a body
-        // kind, not Slider). The machine hears increment/decrement
+        // kind, not Slider). The behavior hears increment/decrement
         // whether or not it owns the arrow keys (the addon's wheel law).
         if let Some(bi) = n.and_then(|h| behavior_at(page, h)) {
             let b = live_behavior(page, res, bi);
             if rt.disabled(page, b.root) {
                 return events;
             }
-            if let Some(mi) = self.machines.find(page.str(b.machine)) {
+            if let Some(mi) = self.registry.find(page.str(b.name)) {
                 self.grant(page, rt, res, rects, Some(b.root), false, &mut events);
                 self.run_key_action(page, rt, res, rects, &b, mi, if up { KeyAction::Increment } else { KeyAction::Decrement }, &mut events);
             }
@@ -1888,7 +1888,7 @@ impl Input {
                 }
                 if let Some((f, hi_end)) = grabbed {
                     self.drag_handle = Some(hi_end);
-                    self.press = Some(Press { node: f, kind: Kind::Input, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: false, accum: [0.0; 2], value_from: 0.0, behavior: None, machine: 0, toggle_moved: false, release_owed: false, raw: None });
+                    self.press = Some(Press { node: f, kind: Kind::Input, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: false, accum: [0.0; 2], value_from: 0.0, behavior: None, registered: 0, toggle_moved: false, release_owed: false, raw: None });
                     return events;
                 }
                 // A glide is stopped only by a touch that lands ON the
@@ -1937,9 +1937,9 @@ impl Input {
                     return events;
                 }
                 // GP52/GP53: a press anywhere inside a `behavior`
-                // instance is the machine's — the gesture, focus and
+                // instance is the behavior's — the gesture, focus and
                 // `held` all land on the instance root (shipped
-                // SliderPhone's whole row was the surface). The machine
+                // SliderPhone's whole row was the surface). The behavior
                 // hears the press FIRST: `Claim::Pass` lets it go on as
                 // an ordinary press on the root; a caught fling's press
                 // stops the glide and nothing else.
@@ -1951,18 +1951,18 @@ impl Input {
                     }
                     None => (node, kind),
                 };
-                let mut machine: u16 = 0;
+                let mut registered: u16 = 0;
                 let mut value_from = 0.0;
                 let mut began: Option<Cx> = None;
                 if let Some(bi) = behavior {
                     let b = live_behavior(page, res, bi);
-                    match self.machines.find(page.str(b.machine)) {
+                    match self.registry.find(page.str(b.name)) {
                         Some(mi) if !caught => {
                             value_from = b_value_of(rt, res, page, &b);
                             let mut cx = Cx::new(rects, &b, value_from);
                             let r = rects[b.root];
-                            if self.machines.get(mi).began(&mut cx, t.x - r.x, t.y - r.y) == Claim::Take {
-                                machine = mi;
+                            if self.registry.get(mi).began(&mut cx, t.x - r.x, t.y - r.y) == Claim::Take {
+                                registered = mi;
                                 began = Some(cx);
                             } else {
                                 behavior = None;
@@ -1970,7 +1970,7 @@ impl Input {
                         }
                         Some(_) => behavior = None,
                         None => {
-                            debug_assert!(false, "`behavior {}` names a machine nobody registered — Input::register", page.str(b.machine));
+                            debug_assert!(false, "`behavior {}` names a behavior nobody registered — Input::register", page.str(b.name));
                             behavior = None;
                         }
                     }
@@ -2006,7 +2006,7 @@ impl Input {
                 if let Some(action) = raw {
                     let r = rects[node];
                     self.push_event(rt, &mut events, node, EventKind::Pointer { phase: Phase::Down, x: t.x - r.x, y: t.y - r.y }, Some(action));
-                    self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum: [0.0; 2], value_from: 0.0, behavior: None, machine: 0, toggle_moved: false, release_owed: false, raw });
+                    self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum: [0.0; 2], value_from: 0.0, behavior: None, registered: 0, toggle_moved: false, release_owed: false, raw });
                     return events;
                 }
                 let scroll = if matches!(kind, Kind::Scroll | Kind::List) { Some(node) } else { scroll_ancestor(page, node) };
@@ -2024,12 +2024,12 @@ impl Input {
                     let b = live_behavior(page, res, bi);
                     // The gesture's opening edge first, when declared —
                     // the addon's behaviors emitted, then applied; then
-                    // whatever the machine wrote on the press (a slider
+                    // whatever the behavior wrote on the press (a slider
                     // jumps under the finger, a toggle writes nothing).
                     if b.drag_started != NO_STR {
                         self.push_event(rt, &mut events, b.root, EventKind::Signal, Some(Action::Emit(b.drag_started)));
                     }
-                    self.land_machine_write(page, rt, &mut events, &b, value_from, &cx, true);
+                    self.land_behavior_write(page, rt, &mut events, &b, value_from, &cx, true);
                 }
                 if kind == Kind::Slider && !caught {
                     value_from = value_of(rt, res, page, node);
@@ -2049,7 +2049,7 @@ impl Input {
                     (Some(s), _) => rt.scroll[s],
                     (None, _) => [0.0; 2],
                 };
-                self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum, value_from, behavior, machine, toggle_moved: false, release_owed: pressed, raw: None });
+                self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum, value_from, behavior, registered, toggle_moved: false, release_owed: pressed, raw: None });
             }
             Phase::Move => {
                 let Some(mut p) = self.press else { return events };
@@ -2121,8 +2121,8 @@ impl Input {
                     let shown = b_value_of(rt, res, page, &b);
                     let mut cx = Cx::new(rects, &b, shown);
                     let r = rects[b.root];
-                    self.machines.get(p.machine).moved(&mut cx, t.x - r.x, t.y - r.y);
-                    self.land_machine_write(page, rt, &mut events, &b, shown, &cx, true);
+                    self.registry.get(p.registered).moved(&mut cx, t.x - r.x, t.y - r.y);
+                    self.land_behavior_write(page, rt, &mut events, &b, shown, &cx, true);
                 } else if p.kind == Kind::Slider && !p.panning {
                     let v = slider_value(page, res, rects, p.node, t.x);
                     // One `edit` per crossed step, none for a same-value
@@ -2264,7 +2264,7 @@ impl Input {
                 if inside && p.kind.is_press_surface() && res.bool(page, p.node, PropKey::TapPulse).unwrap_or(false) {
                     rt.tap_pulse(p.node);
                 }
-                // GP52/GP53: the machine settles (a toggle's tap flips
+                // GP52/GP53: the behavior settles (a toggle's tap flips
                 // here), then the commit like the built-in — changed
                 // means CHANGED (its root wears a body kind, so the
                 // match below can't route it). `held` is off by now, so
@@ -2274,8 +2274,8 @@ impl Input {
                     let shown = b_value_of(rt, res, page, &b);
                     let mut cx = Cx::new(rects, &b, shown);
                     let r = rects[b.root];
-                    self.machines.get(p.machine).ended(&mut cx, t.x - r.x, t.y - r.y);
-                    let v = self.land_machine_write(page, rt, &mut events, &b, shown, &cx, false);
+                    self.registry.get(p.registered).ended(&mut cx, t.x - r.x, t.y - r.y);
+                    let v = self.land_behavior_write(page, rt, &mut events, &b, shown, &cx, false);
                     if changed(&b, p.value_from, v) {
                         self.push_event(rt, &mut events, b.root, EventKind::Change(change_value(&b, v)), event_action(page, b.root, "change"));
                     }

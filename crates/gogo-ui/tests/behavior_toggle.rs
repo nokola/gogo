@@ -1,5 +1,5 @@
 //! GP53 (user-approved 2026-09-06): `behavior toggle by $value in
-//! $min..$max` — the stock toggle machine (the addon's
+//! $min..$max` — the stock toggle behavior (the addon's
 //! toggle_behavior.gd) behind the effect pages' paint-target switch
 //! (todo-bugs.md #4: its `script` line was dropped and the switch was
 //! deaf). A TAP glides the value to the other end; a DRAG past the
@@ -202,7 +202,7 @@ fn a_held_write_lands_direct_and_the_settle_glides() {
     assert_eq!(fx.thumb_shown(), 0.0, "settled on the other side");
 }
 
-/// The fences: the toggle machine reads `slot thumb` and owns all four
+/// The fences: the toggle behavior reads `slot thumb` and owns all four
 /// key groups; the addon's `script` line is refused, never dropped; a
 /// contract without `selected` derives nothing.
 #[test]
@@ -211,7 +211,7 @@ fn toggle_fences_and_the_script_refusal() {
     let no_thumb = "control C $value=0, $min=0, $max=1 {\n    behavior toggle by $value in $min..$max\n    state_builtin focused\n    Layers width=120, height=60 { slot track width=fill, height=fill { Rectangle width=60, height=fill, color=#FF0000FF } }\n}\nView v { C c }";
     assert!(fails(no_thumb), "no thumb slot");
     let keys = format!("{}", SWITCH.replace("state_builtin", "keys enter\n    state_builtin"));
-    assert!(fails(&format!("{keys}View v {{ Switch s }}")), "the toggle machine owns enter");
+    assert!(fails(&format!("{keys}View v {{ Switch s }}")), "the toggle behavior owns enter");
     let script = SWITCH.replace("behavior toggle by $value in $min..$max", "script \"res://addons/gogo/controls/toggle_behavior.gd\"");
     let c = compile(&format!("{script}View v {{ Switch s }}"), &|_| None);
     assert!(gogo::has_errors(&c.diags), "`script` is the addon's word — refused, not dropped");

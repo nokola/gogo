@@ -1048,6 +1048,12 @@ impl Runtime {
         let from = format!("{rep}/item");
         let to = format!("{rep}/{idx}");
         let end = page.subtree_end(root);
+        // The clone's driven slots start at their baked rest like the
+        // template's did at `Runtime::new` — a landed glide writes its
+        // rest here, and without an entry the next resolve re-armed the
+        // glide from the baked fraction, forever.
+        let rests: Vec<(NodeId, f32)> = page.drivers.iter().filter(|d| d.state == NO_STR && d.node >= root && d.node < end).map(|d| (d.node, baked_frac(page, d.node))).collect();
+        self.auto_rest.extend(rests);
         for ni in NodeId::range(root, end) {
             let nm = page.nodes[ni].name;
             if nm == NO_STR {
@@ -1204,6 +1210,19 @@ impl Runtime {
     }
 
     /// Advances tweens and players by `dt` seconds; true while anything moves.
+    /// Is any motion pump armed — a `when`/arrangement glide, a driven
+    /// slot's glide, a tween, an anim player, a tap pulse, a flip not
+    /// yet resolved? Needed by the frame loop's idle gate AFTER the
+    /// layout pass: glides are armed there (`resolve_animated`, `glide`),
+    /// so what `tick` reported at the frame's start misses a glide this
+    /// frame's write started — and a desktop loop that then WAITS for an
+    /// OS event froze it mid-flight (the effect page's switch settle, a
+    /// code-opened band). The Godot addon polled its `gogo_anims` group
+    /// the same way: every pump keeps its membership current.
+    pub fn is_moving(&self) -> bool {
+        !self.rect_tweens.is_empty() || !self.auto_glides.is_empty() || !self.tweens.is_empty() || !self.players.is_empty() || !self.pulses.is_empty() || !self.changes.is_empty()
+    }
+
     pub fn tick(&mut self, page: &mut Page, dt: f32) -> bool {
         let mut moving = false;
         // GP52: the deferred `live($value)` follows (`set_value_deferred`).
@@ -2111,7 +2130,7 @@ fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
         let shown = if let Some(g) = rt.auto_glides.iter().find(|g| g.node == d.node) {
             g.shown
         } else if let Some(v) = r.num(page, d.root, PropKey::Value) {
-            if d.max > d.min { ((v - d.min) / (d.max - d.min)).clamp(0.0, 1.0) } else { 0.0 }
+            driver_fraction(page, &r, d, v)
         } else {
             rt.auto_rest.iter().find(|(n, _)| *n == d.node).map(|(_, f)| *f).unwrap_or_else(|| baked_frac(page, d.node))
         };
@@ -2320,6 +2339,19 @@ fn placement_value(p: &Placement, key: PropKey) -> Option<Value> {
 }
 
 /// An automatic slot's compile-baked rest fraction (GP33).
+/// A driven slot's fraction for value `v`: over the control's LIVE
+/// `min=`/`max=` when code wrote them on the root, else the contract's
+/// baked numbers — the same rule the behavior reads (`live_behavior`).
+/// Needed because the effect page's rows are pooled: one declared
+/// control serves every filter's range, written at open. Colorize's
+/// Saturation runs 0..1, and against the contract's baked 0..10 the
+/// fill showed 7% at 70% (todo-bugs.md #6).
+fn driver_fraction(page: &Page, r: &Resolved, d: &crate::page::AutoDriver, v: f32) -> f32 {
+    let min = r.num(page, d.root, PropKey::Min).unwrap_or(d.min);
+    let max = r.num(page, d.root, PropKey::Max).unwrap_or(d.max);
+    if max > min { ((v - min) / (max - min)).clamp(0.0, 1.0) } else { 0.0 }
+}
+
 fn baked_frac(page: &Page, node: NodeId) -> f32 {
     match page.nodes[node].auto {
         Auto::Length(f) | Auto::Position(f) | Auto::Arc { frac: f, .. } | Auto::Angle { frac: f, .. } => f,
@@ -2598,7 +2630,7 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
             continue;
         }
         let Some(v) = r.num(page, d.root, PropKey::Value) else { continue };
-        let target = if d.max > d.min { ((v - d.min) / (d.max - d.min)).clamp(0.0, 1.0) } else { 0.0 };
+        let target = driver_fraction(page, &r, d, v);
         // GP53: while the finger holds the control (`held` on its root)
         // a write lands DIRECT — the thumb stays under the finger, and a
         // glide in flight is dropped at the value; the release's settle

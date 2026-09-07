@@ -1,9 +1,9 @@
-//! GP53 (user-approved 2026-09-06): a HOST-registered input machine —
+//! GP53 (user-approved 2026-09-06): a HOST-registered input behavior —
 //! the gogo user's own `Behavior`, named to the compiler through
 //! `CompileOptions::behaviors` (its spec: the slots it reads, the keys
 //! it owns) and seated on the page's `Input` with `Input::register`. The
 //! runtime keeps the gesture law (`held`, `edit`/`change`, restore on
-//! cancel, the declared edges); the machine is the pointer math.
+//! cancel, the declared edges); the behavior is the pointer math.
 
 use gogo::input::{Event, EventKind, Input, Key, Mods, Phase, Touch};
 use gogo::layout::{FixedAdvance, Rect, layout};
@@ -51,7 +51,7 @@ impl Behavior for Fader {
     }
 }
 
-/// A machine that takes only a press on its LEFT third and passes the
+/// A behavior that takes only a press on its LEFT third and passes the
 /// rest on (a knob that turns from its handle only).
 #[derive(Default)]
 struct Edge;
@@ -125,7 +125,7 @@ fn signals(page: &Page, ev: &[Event]) -> Vec<String> {
     ev.iter().filter_map(|e| match (&e.kind, &e.action) { (EventKind::Signal, Some(gogo::page::Action::Emit(id))) => Some(page.str(*id).to_string()), _ => None }).collect()
 }
 
-/// The host machine's math drives the value; the runtime's law wraps
+/// The host behavior's math drives the value; the runtime's law wraps
 /// it: `held`, the edges, `edit` per changed write, `change` on release,
 /// restore on cancel.
 #[test]
@@ -150,7 +150,7 @@ fn a_registered_machine_drives_the_value_under_the_runtimes_law() {
     assert_eq!(fx.value(f), 0.0, "a cancel restores what the finger found");
 }
 
-/// The keys the spec OWNS reach the machine (`key_unit=10%` = 1.0 per
+/// The keys the spec OWNS reach the behavior (`key_unit=10%` = 1.0 per
 /// arrow); a group it leaves — Home/End here — stays the contract's to
 /// claim with `keys` and reaches the code-behind as a `Key` event.
 #[test]
@@ -167,7 +167,7 @@ fn the_machine_answers_its_key_groups_and_leaves_the_rest() {
     assert!(ev.iter().any(|e| matches!(e.kind, EventKind::Key { key: Key::End, .. }) && e.node == f), "the claimed key reaches the code-behind: {ev:?}");
 }
 
-/// `Claim::Pass` lets the press go on as if there were no machine: no
+/// `Claim::Pass` lets the press go on as if there were no behavior: no
 /// `held`, no write, no edges.
 #[test]
 fn a_passed_press_is_not_the_machines() {
@@ -184,8 +184,8 @@ fn a_passed_press_is_not_the_machines() {
 }
 
 /// The compile fences read the host's spec: an unknown name lists every
-/// machine the build knows, a missing slot the spec reads refuses, and
-/// a `keys` claim on a group the machine owns refuses.
+/// behavior the build knows, a missing slot the spec reads refuses, and
+/// a `keys` claim on a group the behavior owns refuses.
 #[test]
 fn host_machine_fences() {
     let opts = CompileOptions { behaviors: &[FADER_SPEC, EDGE_SPEC], ..CompileOptions::default() };
@@ -195,5 +195,5 @@ fn host_machine_fences() {
     let c = compile_with("control C $value=0, $min=0, $max=1 {\n    behavior fader by $value in $min..$max\n    Layers { Rectangle r 10x10 }\n}\nView v { C c }", &|_| None, opts);
     assert!(c.diags.iter().any(|d| d.code == "G0082" && d.message.contains("`slot track`")), "{:#?}", c.diags);
     let c = compile_with("control C $value=0, $min=0, $max=1 {\n    behavior fader by $value in $min..$max\n    keys arrows\n    Layers { slot track 10x10 { Rectangle 10x10 } }\n}\nView v { C c }", &|_| None, opts);
-    assert!(c.diags.iter().any(|d| d.code == "G0082" && d.message.contains("`fader` machine already owns arrows")), "{:#?}", c.diags);
+    assert!(c.diags.iter().any(|d| d.code == "G0082" && d.message.contains("`fader` behavior already owns arrows")), "{:#?}", c.diags);
 }

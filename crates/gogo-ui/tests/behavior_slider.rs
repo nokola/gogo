@@ -2,7 +2,7 @@
 //!
 //! GP52 (user-approved 2026-09-03): `behavior slider by $value in
 //! $min..$max, step=$step, key_unit=5%` — the contract names the input
-//! machine that answers a `control`. The machine is the stock slider
+//! behavior that answers a `control`. The behavior is the stock slider
 //! law (the addon's slider_behavior.gd): a press anywhere on the
 //! instance jumps the value and streams `edit`s over bare x/track-width
 //! (shipped SliderPhone drew no thumb — UpdatePercent was x/width
@@ -170,7 +170,7 @@ fn the_wheel_steps_the_row_under_the_pointer() {
 
 /// The visual halves follow a drag: the `automatic=length` fill slot
 /// re-derives its fraction, and a `live($value)` label rewrites at the
-/// next `tick` (the input machine holds only `&Page`, so the label
+/// next `tick` (the input behavior holds only `&Page`, so the label
 /// follow rides the frame door).
 #[test]
 fn the_fill_and_the_live_label_follow() {
@@ -203,14 +203,14 @@ fn a_disabled_instance_answers_nothing() {
     assert!(fx.value(s).is_nan(), "a write leaked through: {}", fx.value(s));
 }
 
-/// The fences: a `keys` claim on the machine's groups (one owner), an
-/// unknown machine name, a widget host, a missing `slot track`, a
+/// The fences: a `keys` claim on the behavior's groups (one owner), an
+/// unknown behavior name, a widget host, a missing `slot track`, a
 /// second `behavior` line, and missing wiring all refuse at compile.
 #[test]
 fn behavior_fences() {
     let fails = |src: &str| gogo::has_errors(&compile(src, &|_| None).diags);
     let body = "state_builtin focused\n    Layers { slot track width=fill, height=10 { Rectangle width=fill, height=fill, color=#FF0000FF } }";
-    assert!(fails(&format!("control C $value=0, $min=0, $max=10, $step=0 {{\n    behavior slider by $value in $min..$max\n    keys arrows\n    {body}\n}}\nView v {{ C c }}")), "keys on the machine's groups");
+    assert!(fails(&format!("control C $value=0, $min=0, $max=10, $step=0 {{\n    behavior slider by $value in $min..$max\n    keys arrows\n    {body}\n}}\nView v {{ C c }}")), "keys on the behavior's groups");
     assert!(!fails(&format!("control C $value=0, $min=0, $max=10, $step=0 {{\n    behavior slider by $value in $min..$max\n    keys enter\n    {body}\n}}\nView v {{ C c }}")), "enter stays claimable");
     assert!(fails(&format!("control C $value=0, $min=0, $max=10, $step=0 {{\n    behavior knob by $value in $min..$max\n    {body}\n}}\nView v {{ C c }}")), "the vocabulary is closed");
     assert!(fails("widget W {\n    behavior slider by $value in $min..$max\n    Layers { Rectangle r 10x10 }\n}\nView v { W w }"), "a widget has no contract");
