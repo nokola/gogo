@@ -203,7 +203,7 @@ pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
     if page.nodes.is_empty() {
         return out;
     }
-    walk(page, res, rects, NodeId::new(0), 1.0, &mut out);
+    walk(page, res, rects, NodeId::new(0), 1.0, None, &mut out);
     out
 }
 
@@ -221,8 +221,26 @@ pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
 pub fn draw_subtree(page: &Page, res: &Resolved, rects: &[Rect], root: NodeId) -> Vec<Draw> {
     let mut out = Vec::new();
     if rects.len() > root.index() {
-        walk(page, res, rects, root, 1.0, &mut out);
+        walk(page, res, rects, root, 1.0, None, &mut out);
     }
+    out
+}
+
+/// The page's draw list without ONE subtree — the half of a page that
+/// paints UNDER its child pages when `draw_subtree` of the same node paints
+/// over them.
+///
+/// Needed because a child page (a component the host lays out over its
+/// parent page) paints after the whole parent, while shipped's XAML put
+/// some parent chrome above the children — the clone page's back chevron
+/// over its intro screen (CopyPastePage.xaml:163-167). That chrome leaves
+/// this list and joins the draws after the children.
+pub fn draw_except(page: &Page, res: &Resolved, rects: &[Rect], skip: NodeId) -> Vec<Draw> {
+    let mut out = Vec::new();
+    if page.nodes.is_empty() {
+        return out;
+    }
+    walk(page, res, rects, NodeId::new(0), 1.0, Some(skip), &mut out);
     out
 }
 
@@ -371,8 +389,8 @@ pub(crate) fn clips(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId) -> 
     matches!(node.kind, Kind::Scroll | Kind::List | Kind::Slot) || res.bool(page, id, PropKey::ClipContents).unwrap_or(false) || (node.kind == Kind::Label && res.bool(page, id, PropKey::ClipText).unwrap_or(false)) || written_overflow
 }
 
-fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, out: &mut Vec<Draw>) {
-    if res.gone(page, id) || res.hidden(page, id) {
+fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, skip: Option<NodeId>, out: &mut Vec<Draw>) {
+    if skip == Some(id) || res.gone(page, id) || res.hidden(page, id) {
         return;
     }
     let node = &page.nodes[id];
@@ -842,11 +860,11 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, o
             moved_rects[i] = Rect::new(cx + (r.x - cx) * motion.scale[0] + motion.translate[0], cy + (r.y - cy) * motion.scale[1] + motion.translate[1], r.w * motion.scale[0], r.h * motion.scale[1]);
         }
         for c in res.paint_children(page, id) {
-            walk(page, res, &moved_rects, c, opacity, out);
+            walk(page, res, &moved_rects, c, opacity, skip, out);
         }
     } else {
         for c in res.paint_children(page, id) {
-            walk(page, res, rects, c, opacity, out);
+            walk(page, res, rects, c, opacity, skip, out);
         }
     }
     if matches!(node.kind, Kind::Scroll | Kind::List) && res.ident(page, id, PropKey::Bars) != Some("never") {
