@@ -658,7 +658,8 @@ pub enum PropKey {
     Overlay,
     /// `interactive=true/false`: claims input / hit-invisible (no restyle).
     Interactive,
-    /// Motion words as standing `when` responses.
+    /// The motion words: a node line's resting transform (`rotate=90`)
+    /// and a `when` response over it.
     Scale,
     ScaleX,
     ScaleY,

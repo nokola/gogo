@@ -462,6 +462,18 @@ impl Runtime {
             if self.last_rects.len() == rects.len() {
                 for i in 0..rects.len() {
                     if self.last_rects[i] != rects[i] {
+                        // A node that had NO box (gone last frame, or gone
+                        // now) snaps: a gone node's rect is the zero rect
+                        // at the origin, and gliding from it inflates the
+                        // node out of the screen's top-left corner (the
+                        // brush page's color wheel, todo-bugs.md #2).
+                        // Shipped tweened only placement-posed nodes from
+                        // their live offsets, so an appearing plate never
+                        // moved there either.
+                        if self.last_rects[i] == Rect::ZERO || rects[i] == Rect::ZERO {
+                            self.rect_tweens.retain(|t| t.0 != NodeId::from_index(i));
+                            continue;
+                        }
                         // The node's own pose-pair rule times its share;
                         // duration 0 snaps (GPAR72).
                         let (d, e) = self.glide_node_rules.iter().find(|(n, _, _)| *n == NodeId::from_index(i)).map(|(_, d, e)| (*d, *e)).unwrap_or((duration, easing));
@@ -2116,6 +2128,18 @@ fn fold_seats_and_motion(page: &Page, r: &mut Resolved) {
     for i in 0..page.nodes.len() {
         r.seat[i] = NO_NODE;
     }
+    // A motion word DECLARED on the node line is its resting transform
+    // (`Image pickerImage rotate=90` — every box takes the motion words,
+    // docs/gogo-design.md "Every box takes"); a `when` response then
+    // overrides it below. Needed because a declared `rotate=` compiled
+    // clean and drew flat (the brush page's vertical picker lay across
+    // the rail, todo-bugs.md #1). One pass over each node's own props —
+    // the same walk `Resolved::prop` takes for any declared value.
+    for i in 0..page.nodes.len() {
+        for p in page.node_props(NodeId::from_index(i)) {
+            set_motion_word(&mut r.motion[i], p.key, p.value);
+        }
+    }
     for (id, p) in &r.overrides {
         match p.key {
             PropKey::SeatOf => {
@@ -2125,21 +2149,23 @@ fn fold_seats_and_motion(page: &Page, r: &mut Resolved) {
                     _ => NO_NODE,
                 };
             }
-            PropKey::Scale | PropKey::ScaleX | PropKey::ScaleY | PropKey::TranslateX | PropKey::TranslateY | PropKey::Rotate => {
-                let Value::VNum(n) = p.value else { continue };
-                let m = &mut r.motion[*id];
-                match p.key {
-                    PropKey::Scale => m.scale = [n, n],
-                    PropKey::ScaleX => m.scale[0] = n,
-                    PropKey::ScaleY => m.scale[1] = n,
-                    PropKey::TranslateX => m.translate[0] = n,
-                    PropKey::TranslateY => m.translate[1] = n,
-                    PropKey::Rotate => m.rotate = n,
-                    _ => {}
-                }
-            }
-            _ => {}
+            _ => set_motion_word(&mut r.motion[*id], p.key, p.value),
         }
+    }
+}
+
+/// Writes one motion word's number into the node's transform; any other
+/// key or a non-number is left alone.
+fn set_motion_word(m: &mut Motion, key: PropKey, value: Value) {
+    let Value::VNum(n) = value else { return };
+    match key {
+        PropKey::Scale => m.scale = [n, n],
+        PropKey::ScaleX => m.scale[0] = n,
+        PropKey::ScaleY => m.scale[1] = n,
+        PropKey::TranslateX => m.translate[0] = n,
+        PropKey::TranslateY => m.translate[1] = n,
+        PropKey::Rotate => m.rotate = n,
+        _ => {}
     }
 }
 

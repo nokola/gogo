@@ -5740,7 +5740,6 @@ impl<'a> Compiler<'a> {
         for (owner, list) in whens.iter_mut().enumerate() {
             for w in list.iter_mut() {
                 for (name, prop, word, line) in std::mem::take(&mut w.descendants) {
-                    let end = self.page.nodes[owner].subtree_end as usize;
                     // Widget-body names carry their instance prefix (`inst/name`).
                     let named = |i: &usize| {
                         let full = if self.page.nodes[*i].name != NO_STR { self.page.str(self.page.nodes[*i].name) } else { "" };
@@ -5748,8 +5747,16 @@ impl<'a> Compiler<'a> {
                     };
                     // Own subtree first; then anywhere — the shipped
                     // scope resolves targets through the named map, so a
-                    // SIBLING shield is a legal target (GPAR83).
-                    let target = (owner + 1..end).find(named).or_else(|| (0..self.page.nodes.len()).find(|i| *i != owner && named(i)));
+                    // SIBLING shield is a legal target (GPAR83). The
+                    // subtree is asked per node (`is_under`): the arena is
+                    // children-first, so `owner+1..subtree_end` also holds
+                    // LATER SIBLINGS and their bodies — a scan over that
+                    // range gave every later widget instance the FIRST
+                    // instance's `box`/`glyph` (the settings page's second
+                    // checkbox lit the first one's mark, todo-bugs.md #7).
+                    let owner_id: NodeId = NodeId::from_index(owner);
+                    let target = (owner + 1..self.page.nodes.len()).find(|i| self.page.is_under(NodeId::from_index(*i), owner_id) && named(i))
+                        .or_else(|| (0..self.page.nodes.len()).find(|i| *i != owner && named(i)));
                     match target {
                         // The word check a node line gets, now that the
                         // target's kind is known. Needed so a misspelled
@@ -6510,5 +6517,27 @@ mod anim_tests {
         assert_eq!(tracks[3], ("a", "opacity", None, 1.0, 0.95, 0.1));
         assert_eq!(p.str(p.anims[2].easing), "back_out");
         assert_eq!(p.str(p.anims[0].easing), "cubic_out");
+    }
+
+    /// Every widget instance's descendant `when` lands on ITS OWN body
+    /// node (todo-bugs.md #7, 2026-09-06): two instances of one widget,
+    /// the second's `when selected glyph.opacity` must host on the
+    /// second's glyph, watching the second — never the first's.
+    #[test]
+    fn each_widget_instance_hosts_its_own_descendant_whens() {
+        let c = compile("widget Tick {\n Check width=100, height=20 {\n  Panel box width=20, height=20 { Rectangle glyph width=12, height=12, opacity=0 }\n  when held box.opacity=0.5\n  when selected glyph.opacity=1\n }\n}\nView v {\n Tick a\n Tick b\n}\n", &|_| None);
+        assert!(!crate::diag::has_errors(&c.diags), "{:#?}", c.diags);
+        let p = c.page;
+        for inst in ["a", "b"] {
+            let root = p.find(inst).unwrap();
+            let glyph = p.find(&format!("{inst}/glyph")).unwrap();
+            let boxn = p.find(&format!("{inst}/box")).unwrap();
+            let (g0, g_count) = p.nodes[glyph].whens;
+            let (b0, b_count) = p.nodes[boxn].whens;
+            assert_eq!(g_count, 1, "{inst}/glyph hosts exactly its own `when selected`");
+            assert_eq!(b_count, 1, "{inst}/box hosts exactly its own `when held`");
+            assert_eq!((p.whens[g0 as usize].state, p.whens[g0 as usize].of), (State::Selected, root), "{inst}: the glyph's rule watches ITS instance");
+            assert_eq!((p.whens[b0 as usize].state, p.whens[b0 as usize].of), (State::Held, root));
+        }
     }
 }
