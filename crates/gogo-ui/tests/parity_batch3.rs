@@ -111,18 +111,18 @@ fn a_theme_variant_block_inside_a_node_is_refused() {
 /// GPAR34: `state_builtin hovered, focused` is a NAME LIST (the first
 /// word used to become the node's name and the rest were dropped); the
 /// names must be built-ins; the heads live in a `control` body — a
-/// `widget` has no script to raise or read them; an empty head is an
+/// `widget` has no machine to raise or read them; an empty head is an
 /// error.
 #[test]
 fn list_heads_take_every_name_and_belong_to_a_control() {
-    ok("control C $value=0 { script \"res://x.gd\"\n state_builtin hovered, focused, held\n signal drag_started, drag_ended\n Layers { } }\nView v { C c }");
-    let typo = "control C $value=0 { script \"res://x.gd\"\n state_builtin hover\n Layers { } }\nView v { C c }";
+    ok("control C $value=0 {\n state_builtin hovered, focused, held\n signal drag_started, drag_ended\n Layers { } }\nView v { C c }");
+    let typo = "control C $value=0 {\n state_builtin hover\n Layers { } }\nView v { C c }";
     assert!(codes(typo).contains(&"G0035".to_string()), "{:?}", codes(typo));
-    let arr = "arrangement wide\ncontrol C $value=0 { script \"res://x.gd\"\n state_builtin wide\n Layers { } }\nView v { C c }";
+    let arr = "arrangement wide\ncontrol C $value=0 {\n state_builtin wide\n Layers { } }\nView v { C c }";
     assert!(codes(arr).contains(&"G0077".to_string()), "{:?}", codes(arr));
     let widget = "widget W { state_builtin hovered\n Layers { } }\nView v { W w }";
     assert!(codes(widget).contains(&"G0077".to_string()), "{:?}", codes(widget));
-    let bare = "control C $value=0 { script \"res://x.gd\"\n state_builtin\n Layers { } }\nView v { C c }";
+    let bare = "control C $value=0 {\n state_builtin\n Layers { } }\nView v { C c }";
     assert!(codes(bare).contains(&"G0076".to_string()), "{:?}", codes(bare));
 }
 

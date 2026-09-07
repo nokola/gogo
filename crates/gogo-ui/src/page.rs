@@ -334,20 +334,81 @@ pub struct AutoDriver {
     pub state: StrId,
 }
 
-/// A control's `behavior slider` line, baked per instance (GP52,
-/// user-approved 2026-09-03): the stock slider machine answers the
-/// instance's input — a drag or tap anywhere on it maps bare x over the
-/// `track` slot's width to `$value` (shipped SliderPhone drew no thumb,
-/// so no knob compensation), arrows/Home/End/wheel step it. The machine
-/// OWNS the arrow and Home/End key groups — a `keys` claim on them
-/// refuses at compile (one owner per group).
+/// How many slots a control's input machine may read by rect
+/// (`Cx::slot`): a slider's track, a toggle's track and thumb, a range
+/// slider's track and two thumbs. A machine spec naming more refuses at
+/// compile.
+pub const BEHAVIOR_SLOTS: usize = 3;
+
+/// What `change` carries when a machine's gesture commits: the number
+/// (a slider), or the side the value settled on (a toggle — `change`
+/// reports `true`/`false` at the midpoint, D181's Toggle law).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Payload {
+    Number,
+    Bool,
+}
+
+/// What the compiler checks a `behavior <name>` line against (GP53).
+///
+/// Needed because the machine is Rust code the compiler never sees: the
+/// spec is the part of it a `.gogo` file can be checked against — the
+/// slots the machine reads (each must be a `slot` in the control body),
+/// the key groups it owns (a `keys` claim on them refuses — one owner
+/// per group), and what its `change` carries. gogo's own machines are
+/// `BUILTIN_BEHAVIORS`; a host adds its own through
+/// `CompileOptions::behaviors` at build and `Input::register` at run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BehaviorSpec {
+    /// The word after `behavior` in a control body.
+    pub name: &'static str,
+    /// The slots the machine reads, in the order `Cx::slot(i)` hands
+    /// them (`slots[0]` is the track for both stock machines).
+    pub slots: &'static [&'static str],
+    /// The `KEYS_*` groups the machine answers (`Behavior::key`): a key
+    /// in an owned group reaches the machine; a `keys` claim on one
+    /// refuses at compile.
+    pub keys: u8,
+    pub payload: Payload,
+}
+
+/// The stock slider machine: press-jump, bare x over the track,
+/// arrows/Home/End/wheel step (the addon's slider_behavior.gd +
+/// ui/slider_phone_behavior.gd, GP52).
+pub const SLIDER_SPEC: BehaviorSpec = BehaviorSpec { name: "slider", slots: &["track"], keys: KEYS_ARROWS | KEYS_HOME_END, payload: Payload::Number };
+/// The stock toggle machine: a tap glides to the other end, a drag past
+/// the wobble follows the finger and settles nearest, Enter/Space flip,
+/// arrows are sides (the addon's toggle_behavior.gd).
+pub const TOGGLE_SPEC: BehaviorSpec = BehaviorSpec { name: "toggle", slots: &["track", "thumb"], keys: KEYS_ARROWS | KEYS_HOME_END | KEYS_ENTER | KEYS_SPACE, payload: Payload::Bool };
+/// gogo's own registrations — every `Input` carries them; a host's
+/// machines come after, in `CompileOptions::behaviors` order.
+pub const BUILTIN_BEHAVIORS: &[BehaviorSpec] = &[SLIDER_SPEC, TOGGLE_SPEC];
+
+/// A control's `behavior <name> by $value in $min..$max, step=$step,
+/// key_unit=5%` line, baked per instance (GP52/GP53): the machine
+/// named answers the instance's input — a press anywhere on it is the
+/// machine's (shipped SliderPhone's whole row was the surface), the
+/// runtime hands it the value and the slot rects and takes back one
+/// value write per event. The runtime owns the gesture law around the
+/// machine: `held`, focus, `edit` per changed write, `change` on a
+/// changed release, restore on cancel, the declared drag edges, and
+/// `selected` derived from the value when the contract declares it.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SliderBehavior {
+pub struct Behavior {
     /// The instance root: value writes, `edit`/`change` events, `held`
     /// and focus all land here.
     pub root: NodeId,
-    /// The `slot track` the finger maps over.
-    pub track: NodeId,
+    /// The machine's name, interned — `Input` finds the registered
+    /// machine by it once per gesture.
+    pub machine: StrId,
+    /// The slots the machine reads, in its spec's order (`NO_NODE`
+    /// past the spec's count).
+    pub slots: [NodeId; BEHAVIOR_SLOTS],
+    pub payload: Payload,
+    /// The contract declares `state_builtin selected`: the runtime
+    /// derives it from the value (at or past the midpoint) on every
+    /// write — live mid-drag, the addon's fraction-bearing rule.
+    pub selected: bool,
     pub min: f32,
     pub max: f32,
     /// `step=`: 0 = continuous; a positive step also serves as the key
@@ -1582,8 +1643,8 @@ pub struct StaticPage {
     /// traversal never sees it.
     pub key_claims: &'static [(NodeId, u8)],
     pub drivers: &'static [AutoDriver],
-    /// See `SliderBehavior` (GP52).
-    pub behaviors: &'static [SliderBehavior],
+    /// See `Behavior` (GP52/GP53).
+    pub behaviors: &'static [Behavior],
     pub live_texts: &'static [LiveText],
 }
 
@@ -1609,8 +1670,8 @@ pub struct Page {
     /// See `StaticPage::key_claims`.
     pub key_claims: Vec<(NodeId, u8)>,
     pub drivers: Vec<AutoDriver>,
-    /// See `SliderBehavior` (GP52).
-    pub behaviors: Vec<SliderBehavior>,
+    /// See `Behavior` (GP52/GP53).
+    pub behaviors: Vec<Behavior>,
     pub live_texts: Vec<LiveText>,
 }
 
@@ -1692,7 +1753,7 @@ impl Page {
         self.custom_states.extend(declared);
         let claims: Vec<(NodeId, u8)> = self.key_claims.iter().filter(|(n, _)| *n >= src && *n < end).map(|(n, m)| (shift(*n), *m)).collect();
         self.key_claims.extend(claims);
-        let behaviors: Vec<SliderBehavior> = self.behaviors.iter().filter(|b| b.root >= src && b.root < end).map(|b| SliderBehavior { root: shift(b.root), track: shift(b.track), ..*b }).collect();
+        let behaviors: Vec<Behavior> = self.behaviors.iter().filter(|b| b.root >= src && b.root < end).map(|b| Behavior { root: shift(b.root), slots: b.slots.map(|n| if n == NO_NODE { NO_NODE } else { shift(n) }), ..*b }).collect();
         self.behaviors.extend(behaviors);
         base
     }

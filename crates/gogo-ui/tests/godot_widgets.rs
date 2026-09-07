@@ -98,7 +98,7 @@ const LABELED_SLIDER: &str = "widget LabeledSlider $label=\"\", $min=0, $max=100
 const LOOKUP_WIDGETS: &str = "widget MiniSlider $caption=\"\" {\n Layers root interactive=true, touch_target=off, height=40 {\n  Label captionLabel text=$caption\n  Label valueLabel\n }\n}\nwidget Outer {\n Column o {\n  MiniSlider innerInst caption=\"in\"\n }\n}\n";
 
 /// The Godot suite's `FADER_SRC` verbatim (run_tests.gd 3383-3403).
-const FADER_SRC: &str = "control Fader $value=0, $min=0, $max=100, $step=0 {\n    script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n    state_builtin hovered, focused, disabled\n    state dragging\n    signal drag_started, drag_ended\n    transition duration=0.12, easing=cubic_out\n    anim releasePop {\n        slot.thumb.translate.y from=-3, to=0, duration=0.2\n    }\n    Layers {\n        slot track width=fill, height=24 {\n            slot progress automatic=length by $value in $min..$max { Rectangle color=#4488FFFF }\n            slot thumb automatic=position by $value in $min..$max { Circle 12x12, color=#FFFFFFFF }\n        }\n        slot label { Label text=live($value) }\n    }\n}\n";
+const FADER_SRC: &str = "control Fader $value=0, $min=0, $max=100, $step=0 {\n    behavior slider by $value in $min..$max, step=$step\n    state_builtin hovered, focused, disabled\n    state dragging\n    signal drag_started, drag_ended\n    transition duration=0.12, easing=cubic_out\n    anim releasePop {\n        slot.thumb.translate.y from=-3, to=0, duration=0.2\n    }\n    Layers {\n        slot track width=fill, height=24 {\n            slot progress automatic=length by $value in $min..$max { Rectangle color=#4488FFFF }\n            slot thumb automatic=position by $value in $min..$max { Circle 12x12, color=#FFFFFFFF }\n        }\n        slot label { Label text=live($value) }\n    }\n}\n";
 
 /// `FADER_SRC` without the `slot.thumb` anim lane (GP32 owes the lane).
 fn fader_static() -> String {
@@ -560,7 +560,7 @@ fn instance_line_when_disabled_applies() {
 /// is gone from layout (nothing drawn for it).
 #[test]
 fn presence_slot_is_gone_while_its_state_is_off() {
-    let c = ok("control Marker $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n state marked\n Layers {\n  slot track height=10 {\n   slot mark automatic=presence by marked { Circle 6x6, color=#FFFFFFFF }\n  }\n }\n}\nMarker m 100x10\n");
+    let c = ok("control Marker $value=0, $min=0, $max=1 {\n state marked\n Layers {\n  slot track height=10 {\n   slot mark automatic=presence by marked { Circle 6x6, color=#FFFFFFFF }\n  }\n }\n}\nMarker m 100x10\n");
     let p = &c.page;
     let mark = find(p, "m/mark");
     assert_eq!(p.nodes[mark.index()].auto, Auto::Presence(false));
@@ -576,7 +576,7 @@ fn presence_slot_is_gone_while_its_state_is_off() {
 /// clearing it hides the mark again. Rust has no custom-state write.
 #[test]
 fn presence_follows_the_state() {
-    let c = ok("control Marker $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n state marked\n Layers {\n  slot track height=10 {\n   slot mark automatic=presence by marked { Circle 6x6, color=#FFFFFFFF }\n  }\n }\n}\nMarker m 100x10\n");
+    let c = ok("control Marker $value=0, $min=0, $max=1 {\n state marked\n Layers {\n  slot track height=10 {\n   slot mark automatic=presence by marked { Circle 6x6, color=#FFFFFFFF }\n  }\n }\n}\nMarker m 100x10\n");
     let p = &c.page;
     let m = find(p, "m");
     let mark = find(p, "m/mark");
@@ -643,7 +643,7 @@ fn stepped_fader_builds() {
 /// (GPAR95, round 5).
 #[test]
 fn fill_width_content_in_a_position_slot_is_refused() {
-    let src = "control BadThumb $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n Layers {\n  slot track height=24 {\n   slot thumb automatic=position by $value in $min..$max { Circle width=fill, height=fill, color=#FFFFFFFF }\n  }\n }\n}\nBadThumb b 100x24\n";
+    let src = "control BadThumb $value=0, $min=0, $max=1 {\n Layers {\n  slot track height=24 {\n   slot thumb automatic=position by $value in $min..$max { Circle width=fill, height=fill, color=#FFFFFFFF }\n  }\n }\n}\nBadThumb b 100x24\n";
     let text = err_text(src);
     assert!(text.contains("takes its width from its content"), "{text}; rects {:?}", rects_of(&compile(src, &|_| None).page));
 }
@@ -653,7 +653,7 @@ fn fill_width_content_in_a_position_slot_is_refused() {
 /// fills those 20.
 #[test]
 fn fill_width_content_is_fine_in_a_sized_position_slot() {
-    let c = ok("control OkThumb $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n Layers {\n  slot track height=24 {\n   slot thumb width=20, automatic=position by $value in $min..$max { Circle width=fill, height=fill, color=#FFFFFFFF }\n  }\n }\n}\nOkThumb b 100x24\n");
+    let c = ok("control OkThumb $value=0, $min=0, $max=1 {\n Layers {\n  slot track height=24 {\n   slot thumb width=20, automatic=position by $value in $min..$max { Circle width=fill, height=fill, color=#FFFFFFFF }\n  }\n }\n}\nOkThumb b 100x24\n");
     let p = &c.page;
     let rects = rects_of(p);
     let thumb = find(p, "b/thumb");
@@ -666,7 +666,7 @@ fn fill_width_content_is_fine_in_a_sized_position_slot() {
 /// the control's OWN words).
 #[test]
 fn builtin_name_under_state_is_refused() {
-    let text = err_text("control C1 $value=0 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n state hover\n Layers { }\n}\nC1 c\n");
+    let text = err_text("control C1 $value=0 {\n state hover\n Layers { }\n}\nC1 c\n");
     assert!(text.contains("state_builtin"), "{text}");
 }
 
@@ -719,7 +719,7 @@ fn unknown_call_in_text_is_refused() {
 /// untracked in GPAR62; Rust builds both silently.
 #[test]
 fn relayout_and_two_writer_fences() {
-    assert!(codes("control Bad $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n Column {\n  slot p automatic=position by $value in $min..$max { Circle 6x6 }\n }\n}\nBad b\n").contains(&"G5105".to_string()));
+    assert!(codes("control Bad $value=0, $min=0, $max=1 {\n Column {\n  slot p automatic=position by $value in $min..$max { Circle 6x6 }\n }\n}\nBad b\n").contains(&"G5105".to_string()));
     let text = err_text(&format!("{}Fader f 100x24\n", fader_static().replace("Label text=live($value)", "Label text=\"x\", opacity=live($value) { when hovered opacity=0.5 }")));
     assert!(text.contains("two writers"), "{text}");
 }
@@ -729,7 +729,7 @@ fn relayout_and_two_writer_fences() {
 /// (`any -> dragging`) is refused (G0034).
 #[test]
 fn default_feel_takes_no_endpoints() {
-    let text = err_text("control C2 $value=0 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n transition any -> dragging duration=0.1\n Layers { }\n}\nC2 c\n");
+    let text = err_text("control C2 $value=0 {\n transition any -> dragging duration=0.1\n Layers { }\n}\nC2 c\n");
     assert!(text.contains("default feel"), "{text}");
 }
 
@@ -741,9 +741,9 @@ fn default_feel_takes_no_endpoints() {
 /// refused (Rust: G5107 for each).
 #[test]
 fn automatic_kind_set_is_closed_and_the_coupling_is_spelled() {
-    assert!(codes("control C3 $value=0 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n Layers { slot p automatic=wibble { } }\n}\nC3 c\n").contains(&"G5107".to_string()));
+    assert!(codes("control C3 $value=0 {\n Layers { slot p automatic=wibble { } }\n}\nC3 c\n").contains(&"G5107".to_string()));
     assert!(codes(&format!("{}Fader f 100x24\n", fader_static().replace("automatic=length by $value in $min..$max", "automatic=phase by $value in $min..$max"))).contains(&"G5107".to_string()));
-    assert!(codes("control M2 $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n state marked\n Layers { slot mark automatic=presence(marked) { Circle 6x6 } }\n}\nM2 m\n").contains(&"G5107".to_string()));
+    assert!(codes("control M2 $value=0, $min=0, $max=1 {\n state marked\n Layers { slot mark automatic=presence(marked) { Circle 6x6 } }\n}\nM2 m\n").contains(&"G5107".to_string()));
     let by_missing = err_text(&format!("{}Fader f 100x24\n", fader_static().replace(" by $value in $min..$max", "")));
     assert!(by_missing.contains("G5107") && by_missing.contains("by $value in $min..$max"), "{by_missing}");
     let in_missing = err_text(&format!("{}Fader f 100x24\n", fader_static().replace(" in $min..$max", "")));
@@ -770,8 +770,8 @@ fn coupling_clauses_are_type_checked() {
     case(format!("{}Fader f 100x24\n", f.replace("automatic=length by $value", "automatic=length by $min")), "v1 drives from `$value`");
     case(format!("{}Fader f 100x24\n", f.replace("automatic=length by $value in $min..$max", "automatic=length by $value in $min..$step")), "normalizes over `$min..$max`");
     case(format!("{}Fader f 100x24\n", f.replace("automatic=length by $value in $min..$max", "automatic=length by $value in min..max")), "two `$params`");
-    case("control M3 $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n state marked\n Layers { slot mark automatic=presence by marked in $min..$max { Circle 6x6 } }\n}\nM3 m\n".to_string(), "a bool has no range");
-    case("control M4 $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n Layers { slot mark automatic=presence by $value { Circle 6x6 } }\n}\nM4 m\n".to_string(), "names one (no `$`)");
+    case("control M3 $value=0, $min=0, $max=1 {\n state marked\n Layers { slot mark automatic=presence by marked in $min..$max { Circle 6x6 } }\n}\nM3 m\n".to_string(), "a bool has no range");
+    case("control M4 $value=0, $min=0, $max=1 {\n Layers { slot mark automatic=presence by $value { Circle 6x6 } }\n}\nM4 m\n".to_string(), "names one (no `$`)");
     case(format!("{}Fader f 100x24\n", f.replace("slot label {", "slot label by $value {")), "this slot declares none");
 }
 
@@ -790,7 +790,7 @@ fn duplicate_call_argument_does_not_build() {
 /// (position, width 20).
 #[test]
 fn coupling_clauses_continue_after_a_trailing_comma() {
-    let c = ok("control CC $value=0, $min=0, $max=1 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n Layers {\n  slot track height=24 {\n   slot p width=20, automatic=position,\n     by $value in $min..$max { Circle 6x6 }\n  }\n }\n}\nCC c 100x24\n");
+    let c = ok("control CC $value=0, $min=0, $max=1 {\n Layers {\n  slot track height=24 {\n   slot p width=20, automatic=position,\n     by $value in $min..$max { Circle 6x6 }\n  }\n }\n}\nCC c 100x24\n");
     let p = &c.page;
     let slot = find(p, "c/p");
     assert_eq!(p.nodes[slot.index()].auto, Auto::Position(0.0));

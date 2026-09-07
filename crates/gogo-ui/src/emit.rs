@@ -333,7 +333,7 @@ fn repeat_templates(page: &Page) -> Vec<(NodeId, String)> {
 pub fn emit_rust(page: &Page, module: &str) -> Result<String, String> {
     let mut out = String::new();
     out.push_str(&format!("#[allow(unused_imports, clippy::all)]\npub mod {module} {{\n"));
-    out.push_str("    use gogo::page::*;\n    use gogo::page::{Kind::*, Len::*, Align::*, PropKey::*, Value::*, State::*, Action::*, Auto::*};\n\n");
+    out.push_str("    use gogo::page::*;\n    use gogo::page::{Kind::*, Len::*, Align::*, PropKey::*, Value::*, State::*, Action::*, Auto::*, Payload::*};\n\n");
     emit_arrangements(page, &mut out);
     emit_anims(page, &mut out).map_err(|e| format!("{module}: {e}"))?;
     out.push_str("    pub static PAGE: StaticPage = StaticPage {\n");

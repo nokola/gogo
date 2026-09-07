@@ -707,7 +707,7 @@ fn canonical_transparent_and_fade_stops_are_legal() {
 /// `control` with a script, contract states, signals and automatic slots.
 const FADER_SRC: &str = r#"
 control Fader $value=0, $min=0, $max=100, $step=0 {
-    script "res://addons/gogo/test/fixtures/fader_behavior.gd"
+    behavior slider by $value in $min..$max, step=$step
     state_builtin hovered, focused, disabled
     state dragging
     signal drag_started, drag_ended
@@ -771,12 +771,12 @@ fn for_style_restyles_slots_by_path() {
 #[test]
 #[ignore = "GP40: `for=` checked styles and their lints not ported (the Fader fixture's slot. anim lane is G0063 first — GP32 owes it)"]
 fn for_style_lints() {
-    let d16 = build("control Chip2 $value=0 {\n    script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n    state marked\n    Layers {\n        slot mark height=6 { }\n    }\n}\nstyle ChipHover for=Chip2 { when hovered opacity=0.9 }\nView v { Chip2 c .ChipHover }\n");
+    let d16 = build("control Chip2 $value=0 {\n    state marked\n    Layers {\n        slot mark height=6 { }\n    }\n}\nstyle ChipHover for=Chip2 { when hovered opacity=0.9 }\nView v { Chip2 c .ChipHover }\n");
     assert!(!gogo::has_errors(&d16.diags), "{:#?}", d16.diags);
     assert!(d16.diags.iter().any(|d| d.severity == Severity::Warning && d.message.contains("doesn't declare 'hovered'")), "{:#?}", d16.diags);
     let one = build(&with_fader("style Ghosty { when dragging opacity=0.8 }\nFader a .Ghosty 100x24"));
     assert!(one.diags.iter().any(|d| d.severity == Severity::Warning && d.message.contains("add `for=Fader`")), "{:#?}", one.diags);
-    let two = build(&format!("{FADER_SRC}control Mini $value=0 {{\n    script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n    state dragging\n    Layers {{\n        slot track height=8 {{ }}\n    }}\n}}\nstyle Ghosty {{ when dragging opacity=0.8 }}\nView v {{\n Fader a .Ghosty 100x24\n Mini b .Ghosty 100x8\n}}\n"));
+    let two = build(&format!("{FADER_SRC}control Mini $value=0 {{\n    state dragging\n    Layers {{\n        slot track height=8 {{ }}\n    }}\n}}\nstyle Ghosty {{ when dragging opacity=0.8 }}\nView v {{\n Fader a .Ghosty 100x24\n Mini b .Ghosty 100x8\n}}\n"));
     assert!(!gogo::has_errors(&two.diags), "{:#?}", two.diags);
     assert!(!two.diags.iter().any(|d| d.message.contains("add `for=")), "{:#?}", two.diags);
 }
@@ -878,7 +878,6 @@ fn for_style_extends_matrix() {
 /// The Godot suite's `KNOB_SRC` (run_tests.gd 3958-3979), verbatim.
 const KNOB_SRC: &str = r#"
 control Knob $value=0, $min=0, $max=1, $step=0, min_size=48x48 {
-    script "res://addons/gogo/test/fixtures/knob_behavior.gd"
     state_builtin hovered, focused, disabled
     state dragging
     signal drag_started, drag_ended

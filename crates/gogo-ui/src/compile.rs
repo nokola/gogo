@@ -24,6 +24,12 @@ pub struct CompileOptions<'a> {
     /// empty box of its declared size with a G7013 warning, so the page
     /// still lays out. Example: `&["GradientEdit"]`.
     pub code_controls: &'a [&'a str],
+    /// The host's own input machines (GP53): what a `behavior <name>`
+    /// line may name beyond gogo's `slider` and `toggle`. Each spec's
+    /// slots and key groups are checked against the control body here;
+    /// the machine itself is registered on the page's `Input` at run
+    /// (`Input::register`), matched by name.
+    pub behaviors: &'a [BehaviorSpec],
     /// The build's translation-key table, shared by every page `build_pages`
     /// compiles — keys are global (one `/ok` across files), so the id a page
     /// bakes into `VText { key }` must index the one `KEYS` table the build
@@ -106,9 +112,9 @@ struct WidgetDef {
     /// The `keys` line's claim (GP26, `KEYS_*` bits) — stamped onto
     /// every instance root at build.
     keys: u8,
-    /// The `behavior slider` line (GP52) — baked per instance at stamp
-    /// time (the param scope is live there).
-    behavior: Option<AstNode>,
+    /// The `behavior <name>` line (GP52/GP53) and the machine's spec —
+    /// baked per instance at stamp time (the param scope is live there).
+    behavior: Option<(AstNode, BehaviorSpec)>,
     /// The `signal` lines' declared names — what GP52's machine may
     /// raise (`drag_started`/`drag_ended` when declared).
     signals: Vec<String>,
@@ -296,10 +302,16 @@ fn join_uses(base: &str, path: &str) -> String {
     parts.join("/")
 }
 
-/// GP52: one `behavior slider` line's bake, waiting for the end of the
-/// build (the instance root and its `slot track` have no arena ids yet).
+/// GP52/GP53: one `behavior <name>` line's bake, waiting for the end of
+/// the build (the instance root and the slots the machine reads have no
+/// arena ids yet).
 struct PendingBehavior {
     path: String,
+    /// The machine's interned name and its spec (the slots to find).
+    machine: StrId,
+    spec: BehaviorSpec,
+    /// The contract declares `state_builtin selected`.
+    selected: bool,
     min: f32,
     max: f32,
     step: f32,
@@ -629,6 +641,17 @@ pub struct Compiler<'a> {
 }
 
 /// A value as the file spells it, for a message.
+/// The `keys` words of a `KEYS_*` mask, for messages: `arrows, home_end`.
+fn key_group_words(mask: u8) -> String {
+    let mut words: Vec<&str> = Vec::new();
+    for (bit, word) in [(KEYS_ARROWS, "arrows"), (KEYS_HOME_END, "home_end"), (KEYS_ENTER, "enter"), (KEYS_SPACE, "space")] {
+        if mask & bit != 0 {
+            words.push(word);
+        }
+    }
+    words.join(", ")
+}
+
 fn spell(v: &AstValue) -> String {
     let suffixes = |opacity: &Option<f32>, pos: &Option<f32>| {
         let mut s = String::new();
@@ -1984,34 +2007,43 @@ impl<'a> Compiler<'a> {
         // `widget` has no script to raise or read them, so there they are
         // refused, not skipped; `state_builtin` names must be built-ins.
         let mut keys_mask = 0u8;
-        let mut behavior: Option<AstNode> = None;
+        let mut behavior: Option<(AstNode, BehaviorSpec)> = None;
         for b in n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }) {
             match b.type_word.as_str() {
                 "script" | "state" | "state_builtin" | "signal" | "keys" | "behavior" if n.type_word == "widget" => {
-                    self.error("G0077", b.line, format!("`{}` lines belong to a `control` body (they describe its script) — a `widget` has none", b.type_word));
+                    self.error("G0077", b.line, format!("`{}` lines belong to a `control` body (they describe its machine) — a `widget` has none", b.type_word));
                 }
-                // GP52 (user-approved 2026-09-03): `behavior slider by
-                // $value in $min..$max, step=$step, key_unit=5%` — the
-                // contract names the INPUT MACHINE that answers this
-                // control. The vocabulary is closed; custom input stays
-                // the code-behind's (`on:pointer=` + `keys`).
+                // The Godot addon's word: a script file was the control's
+                // machine there. Here the machine is Rust the file names
+                // by `behavior` — refused, never dropped (todo-bugs.md #4:
+                // a dropped `script` line left the effect page's switch
+                // deaf to taps).
+                "script" => {
+                    self.error("G0082", b.line, format!("`script` is the Godot addon's word — a control names its input machine here: `behavior <name> by $value in $min..$max` ({}); code-behind input is `on:pointer=` + `keys`", self.behavior_names()));
+                }
+                // GP52/GP53: `behavior <name> by $value in $min..$max,
+                // step=$step, key_unit=5%` — the contract names the INPUT
+                // MACHINE that answers this control: gogo's `slider` and
+                // `toggle`, or a machine the host registered
+                // (`CompileOptions::behaviors`).
                 "behavior" => {
-                    match b.name.as_deref() {
-                        Some("slider") => {}
-                        Some(w) => {
-                            self.error("G0082", b.line, format!("`behavior {w}` — the machine vocabulary is closed: `slider` (custom input is code-behind work: `on:pointer=` + `keys`)"));
-                            continue;
-                        }
-                        None => {
-                            self.error("G0082", b.line, "`behavior` names its machine — `behavior slider by $value in $min..$max`");
-                            continue;
-                        }
+                    let Some(w) = b.name.as_deref() else {
+                        self.error("G0082", b.line, "`behavior` names its machine — `behavior slider by $value in $min..$max`");
+                        continue;
+                    };
+                    let Some(spec) = self.behavior_spec(w) else {
+                        self.error("G0082", b.line, format!("`behavior {w}` — no machine by that name; the machines are {} (a host registers its own: `CompileOptions::behaviors` + `Input::register`; code-behind input is `on:pointer=` + `keys`)", self.behavior_names()));
+                        continue;
+                    };
+                    if spec.slots.len() > BEHAVIOR_SLOTS {
+                        self.error("G0082", b.line, format!("the `{w}` machine reads {} slots — a machine reads at most {}", spec.slots.len(), BEHAVIOR_SLOTS));
+                        continue;
                     }
                     if behavior.is_some() {
                         self.error("G0082", b.line, "one `behavior` line per control — a machine is already declared");
                         continue;
                     }
-                    behavior = Some(b.clone());
+                    behavior = Some((b.clone(), spec));
                 }
                 // GP26: `keys arrows, home_end` — the control CLAIMS key
                 // groups for its code-behind, the built-ins' static-claim
@@ -2116,12 +2148,14 @@ impl<'a> Compiler<'a> {
         let states: Vec<String> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "state").flat_map(|b| b.args.iter().filter_map(|a| a.as_ident()).map(str::to_string)).collect();
         let state_builtins: Vec<String> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "state_builtin").flat_map(|b| b.args.iter().filter_map(|a| a.as_ident()).map(str::to_string)).collect();
         let signals: Vec<String> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "signal").flat_map(|b| b.args.iter().filter_map(|a| a.as_ident()).map(str::to_string)).collect();
-        // GP52: one owner per key group — the slider machine steps
-        // `$value` with arrows/Home/End, so a `keys` claim on those
-        // groups would be a second owner. Refused, never a precedence.
-        if behavior.is_some() && keys_mask & (KEYS_ARROWS | KEYS_HOME_END) != 0 {
-            self.error("G0082", n.line, "the slider behavior already claims arrows and Home/End (they step `$value`) — drop them from `keys`; `enter`/`space` stay claimable");
-            keys_mask &= !(KEYS_ARROWS | KEYS_HOME_END);
+        // GP52/GP53: one owner per key group — the machine answers the
+        // groups its spec owns, so a `keys` claim on them would be a
+        // second owner. Refused, never a precedence.
+        if let Some((_, spec)) = &behavior {
+            if keys_mask & spec.keys != 0 {
+                self.error("G0082", n.line, format!("the `{}` machine already owns {} — drop them from `keys`", spec.name, key_group_words(keys_mask & spec.keys)));
+                keys_mask &= !spec.keys;
+            }
         }
         self.widgets.insert(name, WidgetDef { params: n.params.clone(), body: bodies[0].clone(), anims, host, props, whens, transitions, styles, states, state_builtins, signals, keys: keys_mask, behavior, control: n.type_word == "control", line: n.line });
     }
@@ -3837,10 +3871,11 @@ impl<'a> Compiler<'a> {
             }
             if def.control {
                 t.key_claim = def.keys;
-                if let Some(b) = def.behavior.clone() {
+                if let Some((b, spec)) = def.behavior.clone() {
                     let drag_started = if def.signals.iter().any(|s| s == "drag_started") { self.intern("drag_started") } else { NO_STR };
                     let drag_ended = if def.signals.iter().any(|s| s == "drag_ended") { self.intern("drag_ended") } else { NO_STR };
-                    self.slider_behavior(&b, drag_started, drag_ended);
+                    let selected = def.state_builtins.iter().any(|w| w == "selected");
+                    self.behavior_line(&b, spec, drag_started, drag_ended, selected);
                 }
             }
             // The contract's `state_builtin focused` line is the opt-in
@@ -4552,24 +4587,37 @@ impl<'a> Compiler<'a> {
         format!("{}/{name}", self.prefix[..depth].join("/"))
     }
 
-    /// GP52: bakes a contract's `behavior slider by $value in
+    /// The machine a `behavior <name>` line names: gogo's own, then the
+    /// host's (`CompileOptions::behaviors`).
+    fn behavior_spec(&self, name: &str) -> Option<BehaviorSpec> {
+        BUILTIN_BEHAVIORS.iter().chain(self.options.behaviors).find(|s| s.name == name).copied()
+    }
+
+    /// Every machine name this build knows, for the refusal messages.
+    fn behavior_names(&self) -> String {
+        BUILTIN_BEHAVIORS.iter().chain(self.options.behaviors).map(|s| format!("`{}`", s.name)).collect::<Vec<_>>().join(", ")
+    }
+
+    /// GP52/GP53: bakes a contract's `behavior <name> by $value in
     /// $min..$max, step=$step, key_unit=5%` for the instance being
     /// stamped (the param scope is live, like a slot's `automatic=`).
-    /// The root and its `slot track` resolve to arena ids at the end of
-    /// the build, when the subtree exists (`pending_behaviors`).
-    fn slider_behavior(&mut self, b: &AstNode, drag_started: StrId, drag_ended: StrId) {
+    /// The root and the slots the machine reads resolve to arena ids at
+    /// the end of the build, when the subtree exists
+    /// (`pending_behaviors`).
+    fn behavior_line(&mut self, b: &AstNode, spec: BehaviorSpec, drag_started: StrId, drag_ended: StrId, selected: bool) {
+        let name = spec.name;
         let by = b.clauses.iter().find(|(k, _)| k == "by").map(|(_, v)| v.clone());
         let range = b.clauses.iter().find(|(k, _)| k == "in").map(|(_, v)| v.clone());
         let Some(by) = by else {
-            self.error("G0082", b.line, "`behavior slider` spells its wiring — `by $value in $min..$max`");
+            self.error("G0082", b.line, format!("`behavior {name}` spells its wiring — `by $value in $min..$max`"));
             return;
         };
         if !matches!(&by, AstValue::Ref { name, .. } if name == "value") {
-            self.error("G0082", b.line, format!("`behavior slider` drives `$value` — `by $value` (got `{}`)", spell(&by)));
+            self.error("G0082", b.line, format!("`behavior {name}` drives `$value` — `by $value` (got `{}`)", spell(&by)));
             return;
         }
         let Some(AstValue::Range(lo, hi)) = range else {
-            self.error("G0082", b.line, "`behavior slider` needs its range — `in $min..$max`");
+            self.error("G0082", b.line, format!("`behavior {name}` needs its range — `in $min..$max`"));
             return;
         };
         if !matches!((&*lo, &*hi), (AstValue::Ref { name: l, .. }, AstValue::Ref { name: h, .. }) if l == "min" && h == "max") {
@@ -4609,11 +4657,12 @@ impl<'a> Compiler<'a> {
                         key_unit = 0.0;
                     }
                 }
-                other => self.error("G0082", p.line, format!("`{other}=` isn't a `behavior slider` word — the words are `step=`, `key_unit=`")),
+                other => self.error("G0082", p.line, format!("`{other}=` isn't a `behavior {name}` word — the words are `step=`, `key_unit=`")),
             }
         }
         let path = self.prefix.join("/");
-        self.pending_behaviors.push(PendingBehavior { path, min, max, step, key_unit, rest, drag_started, drag_ended, line: b.line });
+        let machine = self.intern(name);
+        self.pending_behaviors.push(PendingBehavior { path, machine, spec, selected, min, max, step, key_unit, rest, drag_started, drag_ended, line: b.line });
     }
 
     /// `automatic=<kind> by $value in $min..$max` on a slot line (D134,
@@ -6178,17 +6227,30 @@ impl<'a> Compiler<'a> {
                 self.page.live_texts.push(LiveText { node, root: rid, step });
             }
         }
-        // GP52: the contracts' `behavior slider` rows — the instance
-        // roots exist now; the machine also needs the `slot track` the
-        // finger maps over.
+        // GP52/GP53: the contracts' `behavior` rows — the instance roots
+        // exist now; the machine also needs the slots its spec reads
+        // (`slot track` for the finger to map over, a toggle's `slot
+        // thumb`). Found by ancestry, not by index range: the arena is
+        // children-first, so `rid..subtree_end` holds later siblings too
+        // and a body missing its slot would borrow a neighbor's.
         for pb in std::mem::take(&mut self.pending_behaviors) {
             let Some(rid) = self.page.find(&pb.path) else { continue };
-            let track = NodeId::range(rid, self.page.subtree_end(rid)).find(|i| self.page.nodes[*i].kind == Kind::Slot && self.page.str(self.page.nodes[*i].name).rsplit('/').next() == Some("track"));
-            let Some(track) = track else {
-                self.error("G0082", pb.line, "`behavior slider` maps the finger over a `slot track` — the control body declares none");
+            let mut slots = [NO_NODE; BEHAVIOR_SLOTS];
+            let mut missing = false;
+            for (i, want) in pb.spec.slots.iter().enumerate() {
+                let found = NodeId::range(rid, self.page.subtree_end(rid)).find(|n| self.page.is_under(*n, rid) && self.page.nodes[*n].kind == Kind::Slot && self.page.str(self.page.nodes[*n].name).rsplit('/').next() == Some(*want));
+                match found {
+                    Some(n) => slots[i] = n,
+                    None => {
+                        self.error("G0082", pb.line, format!("`behavior {}` reads `slot {want}` — the control body declares none", pb.spec.name));
+                        missing = true;
+                    }
+                }
+            }
+            if missing {
                 continue;
-            };
-            self.page.behaviors.push(crate::page::SliderBehavior { root: rid, track, min: pb.min, max: pb.max, step: pb.step, key_unit: pb.key_unit, rest: pb.rest, drag_started: pb.drag_started, drag_ended: pb.drag_ended });
+            }
+            self.page.behaviors.push(Behavior { root: rid, machine: pb.machine, slots, payload: pb.spec.payload, selected: pb.selected, min: pb.min, max: pb.max, step: pb.step, key_unit: pb.key_unit, rest: pb.rest, drag_started: pb.drag_started, drag_ended: pb.drag_ended });
         }
         self.transition_scope_guard();
         self.one_writer_guard();

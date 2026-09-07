@@ -46,7 +46,7 @@ use gogo::{Compiled, Diagnostic, Page, compile};
 /// The Godot suite's `FADER_SRC` (run_tests.gd:3385) in the Rust dialect,
 /// minus the `anim releasePop` block (see the module doc).
 const FADER_SRC: &str = "control Fader $value=0, $min=0, $max=100, $step=0 {
-    script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"
+    behavior slider by $value in $min..$max, step=$step
     state_builtin hovered, focused, disabled
     state dragging
     signal drag_started, drag_ended
@@ -385,7 +385,7 @@ fn render_theme_entry_style_applies() {
 /// expands the widget silently — `Slider s` becomes the widget's Layers.
 #[test]
 fn render_shadowing_a_builtin_kind_is_refused() {
-    let c = build("control Slider $value=0 {\n script \"res://addons/gogo/test/fixtures/fader_behavior.gd\"\n Layers { slot track { } }\n}\nView v { Slider s value=1 }");
+    let c = build("control Slider $value=0 {\n Layers { slot track { } }\n}\nView v { Slider s value=1 }");
     assert!(gogo::has_errors(&c.diags), "shadowing a built-in is an error; got kind {:?}", c.page.nodes[(c.page.find("s").unwrap()).index()].kind);
 }
 

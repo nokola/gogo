@@ -2599,6 +2599,23 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
         }
         let Some(v) = r.num(page, d.root, PropKey::Value) else { continue };
         let target = if d.max > d.min { ((v - d.min) / (d.max - d.min)).clamp(0.0, 1.0) } else { 0.0 };
+        // GP53: while the finger holds the control (`held` on its root)
+        // a write lands DIRECT — the thumb stays under the finger, and a
+        // glide in flight is dropped at the value; the release's settle
+        // glides again, `held` being off by then (the addon's mid-drag
+        // rule: "mid-drag writes land directly, discrete changes
+        // glide"). Without this the effect page's switch, feel 0.3 s,
+        // trailed the finger by a glide per sample.
+        if rt.has(d.root, HELD) {
+            rt.auto_glides.retain(|g| g.node != d.node);
+            if let Some(e) = rt.auto_rest.iter_mut().find(|(n, _)| *n == d.node) {
+                e.1 = target;
+            }
+            if let Some(e) = r.auto.iter_mut().find(|(n, _)| *n == d.node) {
+                e.1 = target;
+            }
+            continue;
+        }
         if let Some(g) = rt.auto_glides.iter_mut().find(|g| g.node == d.node) {
             if (g.to - target).abs() > 1e-6 {
                 g.from = g.shown;
