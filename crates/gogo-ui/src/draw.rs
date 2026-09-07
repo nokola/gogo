@@ -207,6 +207,25 @@ pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
     out
 }
 
+/// The draw list of ONE node and its descendants, in the paint order
+/// `draw` gives them — a text callout on its way into a bake tile
+/// (todo-rust 2.8.3).
+///
+/// Needed so a bake draws a subtree through the one walk the screen uses:
+/// what the user sees is what bakes, and the two cannot drift.
+///
+/// The root starts at full opacity — an ancestor's `opacity=` is not in
+/// the list, only the subtree's own. Rects stay page epx; the renderer
+/// shifts and scales them (`UiRenderer::render_to_texture`). Empty for a
+/// node the layout has no rect for.
+pub fn draw_subtree(page: &Page, res: &Resolved, rects: &[Rect], root: NodeId) -> Vec<Draw> {
+    let mut out = Vec::new();
+    if rects.len() > root.index() {
+        walk(page, res, rects, root, 1.0, &mut out);
+    }
+    out
+}
+
 /// The dashed border (`border_dash=`): one pass around the plate's
 /// perimeter — top edge left→right, right edge down, bottom edge right→
 /// left, left edge up — the pattern running continuously across the
