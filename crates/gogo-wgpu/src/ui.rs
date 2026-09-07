@@ -10,7 +10,7 @@
 //! WP7 turnstile), and a `TextStretch` maps one glyph's ink box onto its
 //! rect.
 
-use crate::tex_types::Tex_Display_Srgb_4xU8_RGBA;
+use crate::tex_types::{Tex_Bake_Premul_Srgb_4xU8_RGBA, Tex_Display_Srgb_4xU8_RGBA};
 
 use gogo::draw::{Draw, Fit, GradientKind, Sampling, TextAlign};
 use gogo::layout::Rect;
@@ -99,6 +99,12 @@ pub struct ExternalImage(u32);
 
 pub struct UiRenderer {
     pipeline: wgpu::RenderPipeline,
+    /// What every pipeline of this renderer shares — the screen's
+    /// (`pipeline`) and the offscreen tile's, made on the first
+    /// `render_to_texture` (a pipeline is bound to ONE target format).
+    module: wgpu::ShaderModule,
+    pipeline_layout: wgpu::PipelineLayout,
+    tile_pipeline: Option<wgpu::RenderPipeline>,
     screen_buffer: wgpu::Buffer,
     screen_bind: wgpu::BindGroup,
     tex_layout: wgpu::BindGroupLayout,
@@ -172,35 +178,14 @@ impl UiRenderer {
         let sampler_pixel = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("ui pixel"), mag_filter: wgpu::FilterMode::Nearest, min_filter: wgpu::FilterMode::Nearest, ..Default::default() });
         let gradients = GradientTable::new(device, GRAD_ROWS_INITIAL);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("ui"), bind_group_layouts: &[Some(&screen_layout), Some(&tex_layout), Some(&gradients.layout)], immediate_size: 0 });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("ui"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Quad>() as u64,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4],
-                })],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState { format: target_format, blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = Self::make_pipeline(device, &module, &pipeline_layout, target_format);
         let quad_capacity = 1024;
         let quad_buffer = Self::make_quad_buffer(device, quad_capacity);
         let mut r = UiRenderer {
             pipeline,
+            module,
+            pipeline_layout,
+            tile_pipeline: None,
             screen_buffer,
             screen_bind,
             tex_layout,
@@ -225,6 +210,36 @@ impl UiRenderer {
         r.textures.push(entry);
         r.atlas_texture = Some(tex);
         r
+    }
+
+    /// One UI pipeline for one target format — the screen's swapchain
+    /// format, or a tile's.
+    fn make_pipeline(device: &wgpu::Device, module: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+        device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("ui"),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<Quad>() as u64,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4],
+                })],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        })
     }
 
     fn make_quad_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
@@ -687,11 +702,18 @@ impl UiRenderer {
 
     /// Records the quads into `pass` (the caller owns the pass).
     pub fn render(&mut self, pass: &mut wgpu::RenderPass<'_>) {
-        self.draw_calls = 0;
+        let calls: u32 = self.record(pass, &self.pipeline);
+        self.draw_calls = calls;
+    }
+
+    /// The prepared batches through `pipeline` (the screen's or the tile's);
+    /// returns the draw calls made.
+    fn record(&self, pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline) -> u32 {
         if self.batches.is_empty() {
-            return;
+            return 0;
         }
-        pass.set_pipeline(&self.pipeline);
+        let mut draw_calls: u32 = 0;
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &self.screen_bind, &[]);
         pass.set_bind_group(2, &self.gradients.bind_group, &[]);
         pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
@@ -704,9 +726,69 @@ impl UiRenderer {
             let t = &self.textures[b.tex as usize];
             pass.set_bind_group(1, if b.pixel { &t.bind_group_pixel } else { &t.bind_group }, &[]);
             pass.draw(0..6, b.first..b.first + b.count);
-            self.draw_calls += 1;
+            draw_calls += 1;
         }
         pass.set_scissor_rect(0, 0, self.screen.0, self.screen.1);
+        draw_calls
+    }
+
+    /// The format a tile is stored in: the shader writes sRGB-ENCODED
+    /// premultiplied values, so a plain Unorm target keeps them as written
+    /// (an `*Srgb` format would encode them a second time) — the same rule
+    /// that picks the shell's non-sRGB surface format.
+    const TILE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+    /// Draws `draws` (page epx — one node's list from `gogo::draw_subtree`)
+    /// into a NEW texture of `size_px`: `origin_epx` lands on the tile's
+    /// top-left, `epx` device px per epx — a text callout's bake tile at
+    /// the painting's scale (todo-rust 2.8.3; shipped's SubViewport +
+    /// TextBakeDrawer pair).
+    ///
+    /// Needed so a bake draws through the ONE code path the screen uses —
+    /// the same walk, shaping, atlas and shader — so what the user sees is
+    /// what bakes; a CPU rasterizer would be a second renderer to keep in
+    /// step (not a perf choice: a bake runs once per keep).
+    ///
+    /// The tile is PREMULTIPLIED sRGB8, the pipeline's output over a
+    /// transparent clear — the typed return keeps it out of the straight
+    /// image decode. Uses the renderer's quad and screen buffers in queue
+    /// order, so it may run any time between two frames (the frame's own
+    /// `prepare` rewrites both). `locale`: the table the page laid out
+    /// with (`prepare_pages`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_to_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, draws: &[Draw], page: &Page, text: &mut TextEngine, locale: Option<&Locale>, epx: f32, origin_epx: (f32, f32), size_px: (u32, u32)) -> Tex_Bake_Premul_Srgb_4xU8_RGBA {
+        let shifted: Vec<Draw> = draws.iter().map(|d| d.posed(-origin_epx.0, -origin_epx.1, 1.0)).collect();
+        let size: (u32, u32) = (size_px.0.max(1), size_px.1.max(1));
+        self.prepare_pages(device, queue, &[(&shifted, page)], epx, size, text, locale);
+        if self.tile_pipeline.is_none() {
+            self.tile_pipeline = Some(Self::make_pipeline(device, &self.module, &self.pipeline_layout, Self::TILE_FORMAT));
+        }
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("ui tile"),
+            size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: Self::TILE_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&Default::default());
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("ui tile") });
+        let calls: u32 = {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ui tile"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, depth_slice: None, resolve_target: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.record(&mut pass, self.tile_pipeline.as_ref().expect("made above"))
+        };
+        self.draw_calls = calls;
+        queue.submit([encoder.finish()]);
+        Tex_Bake_Premul_Srgb_4xU8_RGBA::new(tex)
     }
 
     /// Pin probe: gradient table rows in use after the last frame.
