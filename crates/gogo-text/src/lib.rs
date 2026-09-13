@@ -17,6 +17,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::path::Path;
 
 use cosmic_text::fontdb;
 use cosmic_text::{Attrs, Buffer, CacheKey, CacheKeyFlags, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Weight, Wrap};
@@ -234,8 +235,11 @@ impl TextEngine {
     /// script fallback — a glyph no page font has is then looked up
     /// across the OS faces instead of drawing a box. Hundreds of
     /// milliseconds on a phone: call it when the picker first opens,
-    /// never at boot. A second call does nothing. Returns the family
-    /// count.
+    /// never at boot for a Latin/Cyrillic/Greek language. A script
+    /// language whose known OS file is missing pays it at language load
+    /// instead (the shell's `script_fonts`, the fallback arm of
+    /// `add_fallback_font_file`). A second call does nothing. Returns
+    /// the family count.
     pub fn load_system_fonts(&mut self) -> usize {
         if self.system_loaded {
             return self.system_families.len();
@@ -269,6 +273,38 @@ impl TextEngine {
     /// The family names `load_system_fonts` found (empty before it ran).
     pub fn system_families(&self) -> &[String] {
         &self.system_families
+    }
+
+    /// One font FILE joins the database as a fallback face: a glyph no
+    /// page font has is then looked up in it. Needed so a script
+    /// language costs ONE file, not the whole OS scan (Roboto has no
+    /// Arabic — USER SAW 2026-09-13: `--lang ar` drew every label as a
+    /// row of boxes until the picker's `load_system_fonts` ran; with the
+    /// phone's Noto Naskh Arabic added here, the labels read). The face
+    /// gets no key: `font=` cannot name it and the picker does not list
+    /// it. Mapped, not copied (a .ttc adds every face it holds). Drops
+    /// the measure/shape caches — a label measured as boxes is wrong
+    /// now; the atlas and its glyphs stay. Returns false when the file
+    /// is missing, unreadable, or holds no face.
+    pub fn add_fallback_font_file(&mut self, path: &Path) -> bool {
+        let db = self.fs.db_mut();
+        let before: usize = db.faces().count();
+        if db.load_font_file(path).is_err() || db.faces().count() == before {
+            return false;
+        }
+        self.measure_cache.clear();
+        self.shape_cache.clear();
+        true
+    }
+
+    /// Whether any loaded face (page fonts, fallback files, the OS scan)
+    /// has a glyph for `ch`. Parses every face on the way: a load-time
+    /// or test answer, never per frame.
+    pub fn has_glyph(&mut self, ch: char) -> bool {
+        let ids: Vec<fontdb::ID> = self.fs.db_mut().faces().map(|f| f.id).collect();
+        // The cmap, not `unicode_codepoints` (empty without cosmic's
+        // monospace_fallback feature); glyph 0 is .notdef, the box.
+        ids.into_iter().any(|id| self.fs.get_font(id, Weight::NORMAL).is_some_and(|f| f.as_swash().charmap().map(ch) != 0))
     }
 
     /// A face `key` names from the OS family `family` (one of
@@ -608,6 +644,29 @@ mod tests {
     fn engine() -> TextEngine {
         let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/Fonts/Roboto Regular.ttf")).expect("font");
         TextEngine::new(&[("assets/Fonts/Roboto Regular.ttf", bytes)])
+    }
+
+    /// A fallback file serves the glyphs no page font has: Roboto has no
+    /// Arabic, Windows' Arial does. The face gets no key, a missing file
+    /// is a false, and the measure cache is dropped so a label measured
+    /// as boxes is measured again. Prints SKIPPED where Arial is absent
+    /// (a non-Windows box) — the phone's check is the language load.
+    #[test]
+    fn a_fallback_file_serves_glyphs_no_page_font_has() {
+        let arial = Path::new("C:/Windows/Fonts/arial.ttf");
+        if !arial.exists() {
+            eprintln!("SKIPPED: no {}", arial.display());
+            return;
+        }
+        let mut e = engine();
+        assert!(!e.has_glyph('س'), "Roboto has no Arabic");
+        let boxes_w: f32 = e.measure("سلام", 20.0, None, None).0;
+        assert!(e.add_fallback_font_file(arial));
+        assert!(e.has_glyph('س'));
+        assert!(!e.has_face("C:/Windows/Fonts/arial.ttf"), "a fallback face has no key");
+        let glyphs_w: f32 = e.measure("سلام", 20.0, None, None).0;
+        assert_ne!(boxes_w, glyphs_w, "the measure cache was dropped");
+        assert!(!e.add_fallback_font_file(Path::new("C:/Windows/Fonts/no-such-font.ttf")));
     }
 
     /// The Roboto faces' metrics as the files carry them (the layout
