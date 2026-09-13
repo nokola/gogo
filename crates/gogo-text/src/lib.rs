@@ -586,6 +586,19 @@ impl TextMeasure for EpxMeasure<'_> {
     fn image_size(&self, key: ImageKey) -> Option<(f32, f32)> {
         self.images.get(key.index()).copied().flatten().map(|(w, h)| (w as f32, h as f32))
     }
+
+    /// Everything that changes an answer without the page changing: the
+    /// epx, the default font, and the image sizes (a picture code
+    /// uploads later lands a size a `natural` aspect lays out by). The
+    /// fonts themselves are fixed at `TextEngine::new`. A hash, so the
+    /// retained layout compares one number per frame.
+    fn identity(&self) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.epx.to_bits().hash(&mut h);
+        self.font.hash(&mut h);
+        self.images.hash(&mut h);
+        h.finish()
+    }
 }
 
 #[cfg(test)]
