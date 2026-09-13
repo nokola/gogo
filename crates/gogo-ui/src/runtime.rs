@@ -240,8 +240,9 @@ pub struct Runtime {
     /// `Input`, the focus bits and caret here — so the reset has two
     /// halves.
     pub(crate) focus_reset_pending: bool,
-    /// A plain copy of `Resolved::seat` from the last `resolve_animated`
-    /// (the road every host's frame takes). `disabled` and the state
+    /// A plain copy of `Resolved::seat` from the last resolve
+    /// (`resolve_retained`, the road every host's frame takes;
+    /// `resolve_animated` wraps it). `disabled` and the state
     /// chains walk PLACED parents from it (B25), because they run inside
     /// the resolve that builds the next table, or from doors that hold
     /// no `Resolved` (`Input::reset`, `unhover`). Empty until the first
@@ -335,7 +336,7 @@ pub struct Runtime {
     /// same frame. `stop()` never reports (WPF Storyboard.Stop skips
     /// Completed).
     finished: Vec<StrId>,
-    /// Per node, what SHOWED after the last `resolve_animated`: the
+    /// Per node, what SHOWED after the last resolve: the
     /// composed motion, the node's own opacity and the fill's alpha — the
     /// live value a new play starts from.
     pub shown: Vec<Motion>,
@@ -380,15 +381,37 @@ pub struct Runtime {
     /// each time — `Page::strings` would grow without bound and every
     /// `intern` scans it.
     pub owned_text: Vec<StrId>,
-    /// The displayed value per (node, key) after the last resolve — the
-    /// `from` of the next tween.
-    /// The previous resolve's finished snapshot — what each node SHOWED
-    /// last frame, which a state flip's tween seeding starts from. Kept by
-    /// copying the finished `Resolved` into this buffer (its allocations
-    /// reused, so a frame pays a memcpy), instead of rebuilding a table of
-    /// every node × animatable key through `prop()` on every resolve — 14
-    /// thousand lookups a frame, 3-11 ms on the effect page (B36 trace).
-    last_resolved: Option<Box<Resolved>>,
+    /// The current look (B36-DES stage 2): what the last
+    /// `resolve_retained` left, kept between frames and patched in
+    /// place by the next one — so a flip re-resolves the nodes it
+    /// reaches and nothing else, and no snapshot is rebuilt per frame.
+    /// It is also "what was shown": a state flip's tween seeding starts
+    /// from the values in here before the flip is applied. Empty until
+    /// the first resolve. Hosts read it through `resolved()`.
+    resolved: Resolved,
+    /// The retained resolve's bookkeeping: the reverse table (which
+    /// nodes a flip reaches), the ladder's own per-node answers before
+    /// the tail, what the last resolve saw, and the scratch buffers.
+    retained: Retained,
+    /// B36-DES stage (1): per node, can nothing at run time change its
+    /// resolved look? `true` = static: its placement, overrides, seat,
+    /// motion and visibility word are the file's, so every per-node loop
+    /// in `resolve` skips it and fills the declared result. The rule is
+    /// `static_nodes`; the switch is `debug_set_static_mask`; the
+    /// question every loop asks is `is_static`.
+    static_node: Vec<bool>,
+    /// Per node: a code write stands on it (`writes` holds an entry for
+    /// it). Kept beside `writes` (set in `set_prop`, cleared in
+    /// `clear_prop`) because a static node with a write is promoted to
+    /// dynamic for as long as the write stands, and the loops need a
+    /// flag, not a scan of `writes` per node.
+    written: Vec<bool>,
+    /// The gate's switch: off = every node dynamic, the road before the
+    /// mask (the equivalence pin runs both).
+    static_mask_on: bool,
+    /// The declared looks the skipped loops fill in for static nodes,
+    /// derived once per page and theme variant (`refresh_static_look`).
+    static_look: DeclaredLook,
 }
 
 impl Runtime {
@@ -439,7 +462,12 @@ impl Runtime {
             edit_bar: None,
             motion: vec![Motion::IDENTITY; page.nodes.len()],
             owned_text: vec![NO_STR; page.nodes.len()],
-            last_resolved: None,
+            resolved: Resolved::default(),
+            retained: Retained::new(page),
+            static_node: static_nodes(page, 0),
+            written: vec![false; page.nodes.len()],
+            static_mask_on: true,
+            static_look: DeclaredLook::default(),
             glide_start: None,
             glide_node_rules: Vec::new(),
             rect_tweens: Vec::new(),
@@ -729,6 +757,20 @@ impl Runtime {
         self.motion.resize(n, Motion::IDENTITY);
         self.shown.resize(n, Motion::IDENTITY);
         self.owned_text.resize(n, NO_STR);
+        // The new rows take the static rule like the template did — the
+        // clone copies the template's `when`s, shares its props and
+        // handlers, and the slot's anims and drivers are already pushed
+        // (`grow_pool` runs this last); a slot's bound values arrive as
+        // code writes, the promotion case.
+        if self.static_node.len() < n {
+            let from = self.static_node.len();
+            self.static_node.extend(static_nodes(page, from));
+        }
+        self.written.resize(n, false);
+        // The new rows' `when`s join the reverse table; the row count
+        // change itself makes the next resolve a full rebuild
+        // (`full_rebuild_needed`).
+        self.retained.watchers.extend(page);
     }
 
     /// Hands a keyed repeat (`repeat x by $item.<field>`) its rows,
@@ -1395,7 +1437,17 @@ impl Runtime {
             w.1.value = value;
         } else {
             self.writes.push((node, Prop { key, value }));
+            // The write promotes the node: a static node with a code
+            // write resolves the long way while the write stands.
+            if self.written.len() <= node.index() {
+                self.written.resize(node.index() + 1, false);
+            }
+            self.written[node] = true;
         }
+        // A write is a flip on its own node for the retained resolve:
+        // the node re-runs its ladder (its static/dynamic standing may
+        // have changed) and its shown values are re-read.
+        self.retained.write_flips.push(node);
         self.dirty = true;
     }
 
@@ -1408,6 +1460,11 @@ impl Runtime {
         self.writes.retain(|(n, p)| !(*n == node && p.key == key));
         if self.writes.len() != before {
             self.dirty = true;
+            // The last write gone = the node is back to its declared look.
+            if let Some(w) = self.written.get_mut(node.index()) {
+                *w = self.writes.iter().any(|(n, _)| *n == node);
+            }
+            self.retained.write_flips.push(node);
         }
     }
 
@@ -1781,6 +1838,92 @@ impl Runtime {
         }
     }
 
+    /// Can `resolve` skip this node and fill its declared look (B36-DES
+    /// stage 1)? True when the page's rule says static (`static_nodes`)
+    /// and no code write stands on it — a write promotes the node to
+    /// dynamic until `clear_prop` takes the last one back. One question
+    /// for every per-node loop, so they all skip by the same rule.
+    /// With the mask switched off (`debug_set_static_mask`) every node
+    /// is dynamic.
+    ///
+    /// A node past the tables (the page grew and `grow` has not run)
+    /// answers dynamic — the safe side.
+    #[inline]
+    pub fn is_static(&self, node: NodeId) -> bool {
+        self.static_mask_on && self.static_node.get(node.index()).copied().unwrap_or(false) && !self.written.get(node.index()).copied().unwrap_or(true)
+    }
+
+    /// Switches the static-node mask (B36-DES stage 1) — on by default;
+    /// off = every node resolves the long way, the road before the mask.
+    /// For the equivalence pin (both roads must give the same `Resolved`)
+    /// and for bisecting a look that differs between them.
+    pub fn debug_set_static_mask(&mut self, on: bool) {
+        self.static_mask_on = on;
+        self.dirty = true;
+    }
+
+    /// Switches the retained resolve (B36-DES stage 2) — on by default;
+    /// off = every resolve rebuilds the whole snapshot (the stage-1
+    /// road, every node through its ladder). For the equivalence pin
+    /// (the retained result must equal a full rebuild) and for
+    /// bisecting a look that differs between them.
+    pub fn debug_set_retained(&mut self, on: bool) {
+        self.retained.on = on;
+        self.dirty = true;
+    }
+
+    /// The current look: what the last `resolve_retained` (or
+    /// `resolve_animated`) left. Empty (no nodes) before the first
+    /// resolve. Layout, draw and hit read it; a host that must hold it
+    /// beside `&mut Runtime` copies it (`Resolved::clone_from` reuses
+    /// the copy's buffers).
+    pub fn resolved(&self) -> &Resolved {
+        &self.resolved
+    }
+
+    /// How many nodes the last resolve ran through their `when` ladder
+    /// — the whole page on a full rebuild, the reached set on the
+    /// retained road. For the pin that proves a flip stays local.
+    pub fn debug_laddered(&self) -> u32 {
+        self.retained.laddered
+    }
+
+    /// The retained resolve (B36-DES stage 2): brings `resolved()` up to
+    /// date with the runtime and returns it. Call once per frame after
+    /// `tick`. After it returns, `resolved()` is the current look — the
+    /// `when` ladder for every node a change since the last call can
+    /// reach (see `Watchers`), the code writes, the in-flight tweens and
+    /// the anim layer on top, and the tweens a `transition` rule starts
+    /// for this frame's state changes are seeded from what the previous
+    /// look showed.
+    ///
+    /// The snapshot is patched in place: only the reached nodes re-run
+    /// their ladder, the rest keep last frame's answers. A full rebuild
+    /// happens when the patch cannot be trusted (`full_rebuild_needed`:
+    /// the first resolve, a node-count change, a theme-variant or locale
+    /// switch, a mask switch, or the road switched off).
+    pub fn resolve_retained(&mut self, page: &Page) -> &Resolved {
+        // The snapshot leaves the runtime for the duration so the
+        // resolve can read `&self` and write `&mut Resolved` at once; a
+        // move of the struct's headers, no copy of its buffers.
+        let mut r: Resolved = std::mem::take(&mut self.resolved);
+        resolve_into(page, self, &mut r);
+        self.resolved = r;
+        &self.resolved
+    }
+
+    /// Brings the declared-look table up to date with the page and the
+    /// theme variant. Needed because `deref` and `kind_default` read the
+    /// variant: a dark-mode switch changes what a static node's declared
+    /// `color=$ink` means, so the table is keyed by the variant it was
+    /// derived under and rebuilt on a mismatch, or when rows were added.
+    fn refresh_static_look(&mut self, page: &Page) {
+        if self.static_look.variant == self.variant && self.static_look.opacity.len() == page.nodes.len() {
+            return;
+        }
+        self.static_look = DeclaredLook::build(page, self.variant);
+    }
+
     pub fn state_active(&self, page: &Page, node: NodeId, state: State) -> bool {
         match state {
             State::Held => self.has(node, HELD),
@@ -1811,6 +1954,296 @@ impl Runtime {
     }
 }
 
+/// The static rule (B36-DES stage 1): a node is STATIC when nothing that
+/// runs at run time can change what `resolve` answers for it — it keeps
+/// its declared look, so every per-node loop in `resolve` skips it. All
+/// of these must hold:
+/// - no `when` block responds on it (its own `whens` range is empty;
+///   another node's `when x.held` watches x's STATE, not x's look);
+/// - it declares no seat word and no motion word on its own line (the
+///   keys `fold_seats_and_motion` reads: `seat`, `scale`, `translate`,
+///   `rotate`) — those set the seat table and the draw transform;
+/// - it has no `on:` handler (`on:show`/`on:hide` play anims, and the
+///   visibility watcher fires them — kept dynamic, conservatively);
+/// - no anim lane in the page aims at it (a player would own channels
+///   and prop lanes on it);
+/// - no driver (GP33) targets it or is rooted on it (the fraction and
+///   presence loops write it);
+/// - it is not a `repeat`, a repeat's direct child (the template root,
+///   a pool slot's root, the `empty` content) or a repeat template.
+/// Slot notes: a slot restyle on an instance line is stamped at compile
+/// time, so slot nodes bake like any other; a run-time slot change is a
+/// code write or a `set_items` — the promotion case, `Runtime::written`.
+///
+/// Answers for the nodes from index `from` on (the whole page at
+/// `Runtime::new`, the appended rows at `grow`); the anim and driver
+/// targets are gathered in one walk, not one per node.
+fn static_nodes(page: &Page, from: usize) -> Vec<bool> {
+    let n = page.nodes.len();
+    let mut targeted: Vec<bool> = vec![false; n];
+    for t in &page.anims {
+        if let Some(slot) = targeted.get_mut(t.node.index()) {
+            *slot = true;
+        }
+    }
+    for d in &page.drivers {
+        if let Some(slot) = targeted.get_mut(d.node.index()) {
+            *slot = true;
+        }
+        if let Some(slot) = targeted.get_mut(d.root.index()) {
+            *slot = true;
+        }
+    }
+    for rp in &page.repeats {
+        if let Some(slot) = targeted.get_mut(rp.template.index()) {
+            *slot = true;
+        }
+        if let Some(slot) = targeted.get_mut(rp.node.index()) {
+            *slot = true;
+        }
+    }
+    (from..n)
+        .map(|i| {
+            let id = NodeId::from_index(i);
+            let node = &page.nodes[i];
+            !targeted[i]
+                && node.whens.1 == 0
+                && node.handlers.1 == 0
+                && node.kind != Kind::Repeat
+                // Declared on purpose: the repeat that WROTE the row is
+                // what makes it a slot, wherever a seat moves it.
+                && { let parent = page.declared_parent(id); parent == NO_NODE || page.nodes[parent].kind != Kind::Repeat }
+                && !page.node_props(id).iter().any(|p| matches!(p.key, PropKey::SeatOf | PropKey::Scale | PropKey::ScaleX | PropKey::ScaleY | PropKey::TranslateX | PropKey::TranslateY | PropKey::Rotate))
+        })
+        .collect()
+}
+
+/// A node's declared value for `key` — the file's word, else the kind's
+/// theme default, `$refs` followed — exactly what `Resolved::prop`
+/// answers once the override walk finds nothing. For the tables a static
+/// node's skipped loops read from.
+fn declared_value(page: &Page, variant: StrId, node: NodeId, key: PropKey) -> Option<Value> {
+    let raw = page.prop(node, key).or_else(|| page.kind_default(page.nodes[node].kind, key, variant))?;
+    Some(deref(page, variant, raw))
+}
+
+/// What a static node's skipped loops fill in (B36-DES stage 1): the
+/// three answers `resolve_animated` otherwise looks up per node per
+/// frame — its own visibility word, its opacity and its fill's alpha —
+/// derived once from the declared props under one theme `variant`
+/// (`Runtime::refresh_static_look` rebuilds on a variant switch or new
+/// rows). Dynamic nodes' entries are filled too but never read.
+#[derive(Clone, Debug, Default)]
+struct DeclaredLook {
+    variant: StrId,
+    /// Per node: the node's own word shows it (not `gone`/`space_only`)
+    /// — the `own` half of the visibility fold.
+    own_visible: Vec<bool>,
+    /// Per node: `opacity=` (1 when unspoken) — `Motion::opacity` in `shown`.
+    opacity: Vec<f32>,
+    /// Per node: the declared `color=`'s alpha (1 when unspoken) —
+    /// `Motion::color_a` in `shown`.
+    color_a: Vec<f32>,
+}
+
+impl DeclaredLook {
+    fn build(page: &Page, variant: StrId) -> DeclaredLook {
+        let n = page.nodes.len();
+        let mut look = DeclaredLook { variant, own_visible: Vec::with_capacity(n), opacity: Vec::with_capacity(n), color_a: Vec::with_capacity(n) };
+        for i in 0..n {
+            let id = NodeId::from_index(i);
+            let word: Option<&str> = match declared_value(page, variant, id, PropKey::Visibility) {
+                Some(Value::VIdent(w)) => Some(page.str(w)),
+                _ => None,
+            };
+            look.own_visible.push(!matches!(word, Some("gone") | Some("space_only")));
+            look.opacity.push(match declared_value(page, variant, id, PropKey::Opacity) {
+                Some(Value::VNum(o)) => o,
+                _ => 1.0,
+            });
+            look.color_a.push(match declared_value(page, variant, id, PropKey::Color) {
+                Some(Value::VColor(c)) | Some(Value::VStop { color: c, .. }) => c.0[3] as f32 / 255.0,
+                _ => 1.0,
+            });
+        }
+        look
+    }
+}
+
+/// The reverse table (B36-DES stage 2): for each thing a flip can land
+/// on, the nodes whose `when` blocks watch it — built once per page at
+/// `Runtime::new`, extended with the rows `grow` appends, never rebuilt.
+/// A flip on node W re-runs the ladder of `by_owner[W]` and of no other
+/// node, because a node's ladder reads only the states of the owners its
+/// own `when`s name (`state_active`).
+struct Watchers {
+    /// Per owner node: the nodes with a `when` on its built-in state
+    /// (`when held` on the node itself, `when x.held` on x) or on a
+    /// custom state it declares (`when dragging` anywhere inside the
+    /// control whose `state` line names it — registered under every
+    /// declared ancestor that declares that state, the roots
+    /// `set_custom` raises it on).
+    by_owner: Vec<Vec<NodeId>>,
+    /// The nodes with an arrangement or `screen.` `when`: a view-level
+    /// flip (`go`, `set_screen`) reaches them all.
+    view: Vec<NodeId>,
+    /// The nodes with a `when disabled`: `disabled` folds the owner's
+    /// PLACED ancestors, so a DISABLED flip anywhere, or a seat move,
+    /// reaches every one of them — the safe side, and the list is short.
+    disabled: Vec<NodeId>,
+}
+
+impl Watchers {
+    fn new(page: &Page) -> Watchers {
+        let mut w = Watchers { by_owner: Vec::new(), view: Vec::new(), disabled: Vec::new() };
+        w.extend(page);
+        w
+    }
+
+    /// Registers the `when`s of every node past the table's end (the
+    /// whole page the first time, the appended rows after a `grow`).
+    fn extend(&mut self, page: &Page) {
+        let from = self.by_owner.len();
+        let n = page.nodes.len();
+        self.by_owner.resize_with(n, Vec::new);
+        for i in from..n {
+            let id = NodeId::from_index(i);
+            let node = &page.nodes[i];
+            for w in &page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize] {
+                let owner: NodeId = if w.of == NO_NODE { id } else { w.of };
+                match w.state {
+                    State::Held | State::Hovered | State::Focused | State::FocusWithin | State::Selected => self.by_owner[owner].push(id),
+                    State::StateDisabled => self.disabled.push(id),
+                    State::Arrangement(_) | State::ArrangementScreen(..) | State::ScreenOrientation(_) | State::ScreenClass(_) | State::ScreenPair(..) => self.view.push(id),
+                    // Declared on purpose: the root that WROTE the node
+                    // raises its states (`state_active`'s walk).
+                    State::Custom(s) => {
+                        let mut a = owner;
+                        while a != NO_NODE {
+                            if page.custom_states.iter().any(|(root, st)| *root == a && *st == s) {
+                                self.by_owner[a].push(id);
+                            }
+                            a = page.declared_parent(a);
+                        }
+                    }
+                }
+            }
+        }
+        // Every list, not only the new owners': an appended row may watch
+        // an older node.
+        for list in &mut self.by_owner {
+            list.sort();
+            list.dedup();
+        }
+        self.view.sort();
+        self.view.dedup();
+        self.disabled.sort();
+        self.disabled.dedup();
+    }
+}
+
+/// One concerned node's values before a flip — what its animatable
+/// keys showed, read from the retained look before the ladder moves it;
+/// the `from` of the tweens the flip's `transition` rule starts.
+#[derive(Clone, Copy)]
+struct Before {
+    node: NodeId,
+    /// Bit k set = an anim owns `ANIMATABLE[k]` on this node: no tween is
+    /// born on it (GP40: anim beats transition).
+    owned: u64,
+    /// Per `ANIMATABLE` key: the value shown (an in-flight tween's, else
+    /// the look's); `None` = nothing shown yet, the key's rest default
+    /// applies.
+    current: [Option<Value>; ANIMATABLE_COUNT],
+}
+
+/// The retained resolve's bookkeeping (B36-DES stage 2). The per-node
+/// tables hold the LADDER's answers — the file's placement and words
+/// with the active `when`s applied, before the tail (code writes,
+/// tweens, the anim layer) — so a resolve can put a node the tail
+/// touched last frame back to its ladder look and re-apply this frame's
+/// tail, without re-running the ladder.
+struct Retained {
+    /// Has a resolve filled the snapshot yet? `false` = the next one is
+    /// a full rebuild.
+    valid: bool,
+    /// The switch (`debug_set_retained`): off = every resolve is a full
+    /// rebuild.
+    on: bool,
+    watchers: Watchers,
+    /// Per node: the placement after the active `when`s (before writes
+    /// and placement tweens).
+    ladder_placement: Vec<Placement>,
+    /// Per node: the motion words declared on the node with the active
+    /// `when`s' on top (before tail motion words and the anim layer).
+    ladder_motion: Vec<Motion>,
+    /// Per node: the seat the active `when`s say (before a code write
+    /// of `seat`).
+    ladder_seat: Vec<NodeId>,
+    /// Per node: does the node's own visibility word show it — the
+    /// `own` half of the visibility fold (GP19), kept so the fold over
+    /// ancestors runs only when some word or seat changed.
+    own_visible: Vec<bool>,
+    /// The nodes whose final placement, motion, seat or override list
+    /// the tail touched last resolve — put back to the ladder tables
+    /// before the tail is rebuilt, and re-read into `shown`.
+    tail_touched: Vec<NodeId>,
+    /// Nodes with a code write added, changed or taken back since the
+    /// last resolve (`set_prop`, `clear_prop`) — each is a flip on
+    /// itself.
+    write_flips: Vec<NodeId>,
+    /// What the last resolve saw, diffed against the runtime to find
+    /// the flips (the state bits are diffed against `Resolved::states`,
+    /// the copy the last resolve took).
+    seen_arrangement: ArrangementId,
+    seen_screen: Vec<StrId>,
+    seen_customs: Vec<(NodeId, StrId)>,
+    seen_mask_on: bool,
+    /// The last resolve moved a seat: the `when disabled` watchers re-run
+    /// next time, because `disabled` reads placed parents from
+    /// `last_seat` — one resolve late, on every road.
+    seat_moved: bool,
+    /// Nodes the last resolve ran through their ladder (`debug_laddered`).
+    laddered: u32,
+    // Scratch buffers, kept so a steady frame allocates nothing.
+    reach: Vec<NodeId>,
+    entries: Vec<(NodeId, Prop)>,
+    before: Vec<Before>,
+    now: Vec<bool>,
+    touched: Vec<NodeId>,
+    presence: Vec<(NodeId, bool)>,
+    fixes: Vec<(usize, i64)>,
+}
+
+impl Retained {
+    fn new(page: &Page) -> Retained {
+        Retained {
+            valid: false,
+            on: true,
+            watchers: Watchers::new(page),
+            ladder_placement: Vec::new(),
+            ladder_motion: Vec::new(),
+            ladder_seat: Vec::new(),
+            own_visible: Vec::new(),
+            tail_touched: Vec::new(),
+            write_flips: Vec::new(),
+            seen_arrangement: BASE,
+            seen_screen: Vec::new(),
+            seen_customs: Vec::new(),
+            seen_mask_on: true,
+            seat_moved: false,
+            laddered: 0,
+            reach: Vec::new(),
+            entries: Vec::new(),
+            before: Vec::new(),
+            now: Vec::new(),
+            touched: Vec::new(),
+            presence: Vec::new(),
+            fixes: Vec::new(),
+        }
+    }
+}
+
 /// The parent `n` is laid out and drawn under, read from a seat table
 /// (`Resolved::seat`, or the Runtime's copy of it): the seat host while
 /// a `when … n.seat = name` holds, else the parent that wrote `n`. A
@@ -1824,7 +2257,7 @@ fn placed_parent_in(seat: &[NodeId], page: &Page, n: NodeId) -> NodeId {
 
 /// The current values: base placement with active poses applied, and the
 /// prop overrides the active states contribute.
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct Resolved {
     /// Per node: the channels an anim owns right now (`Channel::bit`) —
     /// playing, or a finished anim's held end. Draw reads it to let an anim
@@ -1879,6 +2312,41 @@ pub struct Resolved {
     /// The language keyed text shows (copied from the Runtime; one Arc
     /// bump per pass, no allocation).
     pub locale: Option<Arc<Locale>>,
+}
+
+/// Written by hand so `clone_from` copies INTO a host's existing buffers
+/// (a derived `Clone` would allocate a fresh snapshot per frame, which
+/// the retained resolve exists to avoid — B36-DES stage 2).
+impl Clone for Resolved {
+    fn clone(&self) -> Resolved {
+        let mut out = Resolved::default();
+        out.clone_from(self);
+        out
+    }
+
+    fn clone_from(&mut self, from: &Resolved) {
+        self.anim_owned.clone_from(&from.anim_owned);
+        self.anim_owned_props.clone_from(&from.anim_owned_props);
+        self.placement.clone_from(&from.placement);
+        self.overrides.clone_from(&from.overrides);
+        self.override_span.clone_from(&from.override_span);
+        self.override_tail = from.override_tail;
+        self.variant = from.variant;
+        self.scroll.clone_from(&from.scroll);
+        self.safe = from.safe;
+        self.motion.clone_from(&from.motion);
+        self.seat.clone_from(&from.seat);
+        self.states.clone_from(&from.states);
+        self.raised.clone_from(&from.raised);
+        self.repeat_rows.clone_from(&from.repeat_rows);
+        self.hiding.clone_from(&from.hiding);
+        self.auto.clone_from(&from.auto);
+        self.presence.clone_from(&from.presence);
+        self.caret = from.caret;
+        self.selection = from.selection;
+        self.sel_handles = from.sel_handles;
+        self.locale.clone_from(&from.locale);
+    }
 }
 
 impl Resolved {
@@ -2145,10 +2613,14 @@ pub fn deref(page: &Page, variant: StrId, v: Value) -> Value {
     }
 }
 
-/// The `when` ladder plus the anim layer on top (see `compose_anim`).
+/// The `when` ladder plus the anim layer on top (see `compose_anim`),
+/// built from scratch — no tweens, no visibility triggers, nothing kept.
+/// For code that holds `&Runtime` only (tests, `draw` self-checks); a
+/// frame takes `Runtime::resolve_retained`.
 pub fn resolve(page: &Page, rt: &Runtime) -> Resolved {
     let mut r = resolve_ladder(page, rt);
-    compose_anim(page, rt, &mut r);
+    let mut touched: Vec<NodeId> = Vec::new();
+    compose_anim(page, rt, &mut r, &mut touched);
     r
 }
 
@@ -2157,8 +2629,10 @@ pub fn resolve(page: &Page, rt: &Runtime) -> Resolved {
 /// the top of the ladder for that channel. Motion channels land in
 /// `Resolved::motion` over the `when` responses; `opacity` and `color.a`
 /// land as the LAST override, so `Resolved::num`/`color` answer with the
-/// anim's value like any other writer. Nothing multiplies.
-fn compose_anim(page: &Page, rt: &Runtime, r: &mut Resolved) {
+/// anim's value like any other writer. Nothing multiplies. Every node
+/// written is listed in `touched` (the retained resolve puts them back
+/// to their ladder look next frame).
+fn compose_anim(page: &Page, rt: &Runtime, r: &mut Resolved, touched: &mut Vec<NodeId>) {
     let mut apply = |node: NodeId, channel: Channel, v: f32| {
         match channel {
             Channel::Opacity => r.overrides.push((node, Prop { key: PropKey::Opacity, value: Value::VNum(v) })),
@@ -2168,6 +2642,7 @@ fn compose_anim(page: &Page, rt: &Runtime, r: &mut Resolved) {
             _ => r.motion[node].set(channel, v),
         }
         r.anim_owned[node] |= channel.bit();
+        touched.push(node);
     };
     for (node, channel, v) in &rt.held {
         apply(*node, *channel, *v);
@@ -2185,11 +2660,13 @@ fn compose_anim(page: &Page, rt: &Runtime, r: &mut Resolved) {
     }
     for (node, key, v) in &rt.held_props {
         apply_prop_lane(page, r, *node, *key, *v);
+        touched.push(*node);
     }
     for p in rt.players.iter().filter(|p| !p.stopped) {
         for (node, key) in &p.owns_props {
             if let Some(v) = get_pval(&rt.prop_anim, *node, *key) {
                 apply_prop_lane(page, r, *node, *key, v);
+                touched.push(*node);
             }
         }
     }
@@ -2238,29 +2715,10 @@ impl Resolved {
 
 fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
     let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], anim_owned_props: Vec::new(), placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), override_span: Vec::with_capacity(page.nodes.len()), override_tail: 0, variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), auto: Vec::new(), presence: Vec::new(), caret: rt.caret, selection: rt.selection, sel_handles: rt.sel_handles };
-    for (i, node) in page.nodes.iter().enumerate() {
+    for i in 0..page.nodes.len() {
         let id = NodeId::from_index(i);
-        let mut placement = node.placement;
-        // The text-only Button gets air around its label — a kind default,
-        // like its font size; a Button holding its own content spells its
-        // own padding. Decided here so layout and draw inset by ONE value.
-        if node.kind == Kind::Button && placement.padding == [0.0; 4] && node.children.1 == 0 {
-            placement.padding = BUTTON_PADDING;
-        }
-        // Active whens, lowest rank first; equal rank → the later line in
-        // the file wins (applied last), so the winner reads off the file.
-        let mut active: Vec<&When> = page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize].iter().filter(|w| rt.state_active(page, if w.of == NO_NODE { id } else { w.of }, w.state)).collect();
-        active.sort_by_key(|w| (w.state.priority(), w.line));
         let span_start: u32 = r.overrides.len() as u32;
-        for w in active {
-            for p in &page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize] {
-                if p.key.is_placement() {
-                    apply_placement(&mut placement, page, *p);
-                } else {
-                    r.overrides.push((id, *p));
-                }
-            }
-        }
+        let placement: Placement = ladder_node(page, rt, id, &mut r.overrides);
         r.override_span.push((span_start, r.overrides.len() as u32 - span_start));
         r.placement.push(placement);
     }
@@ -2292,37 +2750,105 @@ fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
         auto.push((d.node, shown));
     }
     r.auto = auto;
-    fold_seats_and_motion(page, &mut r);
+    fold_seats_and_motion(page, rt, &mut r);
     r
+}
+
+/// One node through its `when` ladder: the declared placement with the
+/// active `when`s' placement words applied is returned; their other
+/// words are pushed onto `out` in the order they win (lowest rank
+/// first; equal rank → the later line in the file, applied last, so
+/// the winner reads off the file). The one per-node rule every road
+/// shares — the from-scratch `resolve_ladder`, the retained full fill
+/// and the retained patch.
+///
+/// A static node (B36-DES stage 1) keeps its declared placement and has
+/// no `when` to scan: nothing pushed, nothing asked of the states.
+fn ladder_node(page: &Page, rt: &Runtime, id: NodeId, out: &mut Vec<(NodeId, Prop)>) -> Placement {
+    let node = &page.nodes[id];
+    let mut placement = node.placement;
+    // The text-only Button gets air around its label — a kind default,
+    // like its font size; a Button holding its own content spells its
+    // own padding. Decided here so layout and draw inset by ONE value.
+    if node.kind == Kind::Button && placement.padding == [0.0; 4] && node.children.1 == 0 {
+        placement.padding = BUTTON_PADDING;
+    }
+    if rt.is_static(id) {
+        return placement;
+    }
+    let mut active: Vec<&When> = page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize].iter().filter(|w| rt.state_active(page, if w.of == NO_NODE { id } else { w.of }, w.state)).collect();
+    active.sort_by_key(|w| (w.state.priority(), w.line));
+    for w in active {
+        for p in &page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize] {
+            if p.key.is_placement() {
+                apply_placement(&mut placement, page, *p);
+            } else {
+                out.push((id, *p));
+            }
+        }
+    }
+    placement
+}
+
+/// One node's motion and seat from its ladder alone: the motion words
+/// DECLARED on the node line are its resting transform (`Image
+/// pickerImage rotate=90` — every box takes the motion words,
+/// docs/gogo-design.md "Every box takes"; a declared `rotate=` once
+/// compiled clean and drew flat, todo-bugs.md #1), then the node's
+/// `when` entries on top, in ladder order. The tail (a code write of a
+/// motion word or `seat`, a motion tween, the anim layer) is applied
+/// after, by whoever holds the tail. A static node (B36-DES stage 1)
+/// sits at home with no motion words of its own — the rule refuses a
+/// node that declares any — so its props are not read.
+fn ladder_motion_and_seat(page: &Page, rt: &Runtime, id: NodeId, entries: &[(NodeId, Prop)]) -> (Motion, NodeId) {
+    let mut m = Motion::IDENTITY;
+    let mut seat = NO_NODE;
+    if !rt.is_static(id) {
+        for p in page.node_props(id) {
+            set_motion_word(&mut m, p.key, p.value);
+        }
+    }
+    for (_, p) in entries {
+        match p.key {
+            PropKey::SeatOf => seat = seat_of(page, p.value),
+            _ => set_motion_word(&mut m, p.key, p.value),
+        }
+    }
+    (m, seat)
+}
+
+/// The seat host a `seat = <name>` word names: `home` (or an unknown
+/// name, or a non-word) = the declared parent.
+fn seat_of(page: &Page, value: Value) -> NodeId {
+    match value {
+        Value::VIdent(name) if page.str(name) == "home" => NO_NODE,
+        Value::VIdent(name) => page.find(page.str(name)).unwrap_or(NO_NODE),
+        _ => NO_NODE,
+    }
 }
 
 /// The keys that are not props but placement facts: `x.seat = name`
 /// re-parents for layout, the motion words set the draw transform.
-fn fold_seats_and_motion(page: &Page, r: &mut Resolved) {
+/// Folds every node from its declared words and the whole override
+/// list in order (the from-scratch road); the retained road keeps the
+/// ladder half per node (`ladder_motion_and_seat`) and applies the tail
+/// as it pushes it.
+fn fold_seats_and_motion(page: &Page, rt: &Runtime, r: &mut Resolved) {
     for i in 0..page.nodes.len() {
         r.seat[i] = NO_NODE;
     }
-    // A motion word DECLARED on the node line is its resting transform
-    // (`Image pickerImage rotate=90` — every box takes the motion words,
-    // docs/gogo-design.md "Every box takes"); a `when` response then
-    // overrides it below. Needed because a declared `rotate=` compiled
-    // clean and drew flat (the brush page's vertical picker lay across
-    // the rail, todo-bugs.md #1). One pass over each node's own props —
-    // the same walk `Resolved::prop` takes for any declared value.
     for i in 0..page.nodes.len() {
-        for p in page.node_props(NodeId::from_index(i)) {
+        let id = NodeId::from_index(i);
+        if rt.is_static(id) {
+            continue;
+        }
+        for p in page.node_props(id) {
             set_motion_word(&mut r.motion[i], p.key, p.value);
         }
     }
     for (id, p) in &r.overrides {
         match p.key {
-            PropKey::SeatOf => {
-                r.seat[*id] = match p.value {
-                    Value::VIdent(name) if page.str(name) == "home" => NO_NODE,
-                    Value::VIdent(name) => page.find(page.str(name)).unwrap_or(NO_NODE),
-                    _ => NO_NODE,
-                };
-            }
+            PropKey::SeatOf => r.seat[*id] = seat_of(page, p.value),
             _ => set_motion_word(&mut r.motion[*id], p.key, p.value),
         }
     }
@@ -2463,6 +2989,11 @@ const ANIMATABLE: &[PropKey] = &[
     PropKey::Angle,
 ];
 
+/// The `ANIMATABLE` list's length — the width of a `Before` row (one
+/// slot per key) and of its owned-keys bitmask (`u64`, so at most 64).
+const ANIMATABLE_COUNT: usize = ANIMATABLE.len();
+const _: () = assert!(ANIMATABLE_COUNT <= 64, "the owned-keys mask is a u64");
+
 /// May the anim door drive this key (GP40)? The `transition` list, plus
 /// the live stop family — their numbers ride in the key, so the const
 /// list can't carry them.
@@ -2582,8 +3113,58 @@ fn when_writes(page: &Page, node: NodeId, channel: Channel, who: NodeId) -> bool
 
 /// `resolve` plus motion: starts tweens for the state changes since the
 /// last call (where a `transition` rule times them) and overlays the
-/// in-flight tween values. Call once per frame after `tick`.
+/// in-flight tween values. Call once per frame after `tick`. The
+/// by-value door: runs `Runtime::resolve_retained` and hands back a copy
+/// of the look — for tests and one-off reads; a host that resolves every
+/// frame borrows `Runtime::resolved()` instead.
 pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
+    rt.resolve_retained(page).clone()
+}
+
+/// May this resolve patch the retained look `r` in place? `false` = a
+/// full rebuild. The one list of the fallbacks (B36-DES stage 2):
+/// - the road is switched off (`debug_set_retained`);
+/// - nothing has been resolved yet;
+/// - the node count changed (`grow` under `set_items`/`set_count`, or
+///   any table out of step with the page);
+/// - the theme variant changed (every declared color re-derefs; the
+///   static look table is rebuilt);
+/// - the locale changed;
+/// - the static mask was switched.
+/// Everything else — a state, custom-state, arrangement or screen flip,
+/// a code write or its clearing, a tick — is found by diffing the
+/// runtime against what the last resolve saw (`gather_reach`).
+fn full_rebuild_needed(rt: &Runtime, r: &Resolved, n: usize) -> bool {
+    let t = &rt.retained;
+    let same_locale: bool = match (&r.locale, &rt.locale) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        _ => false,
+    };
+    !t.on || !t.valid || r.placement.len() != n || r.override_span.len() != n || r.states.len() != n || t.ladder_placement.len() != n || t.watchers.by_owner.len() != n || r.variant != rt.variant || !same_locale || t.seen_mask_on != rt.static_mask_on
+}
+
+/// The retained resolve's body (`Runtime::resolve_retained`): `r` is the
+/// look the last resolve left (empty before the first), patched into
+/// the current one. The order is the shape of the old from-scratch
+/// road, each pass narrowed to the nodes it can change:
+/// 1. the rule anims for this frame's state changes (whole page, small);
+/// 2. what the concerned nodes SHOWED, captured before anything moves —
+///    the `from` of the tweens seeded in step 7;
+/// 3. the `when` ladder: every node on a full rebuild, else the reached
+///    set (`gather_reach`, `reladder`);
+/// 4. the per-resolve copies (states, scroll, raised, rows, …);
+/// 5. the tail's first half — the code writes — over the ladder tables,
+///    then the drivers (GP33);
+/// 6. the visibility triggers (GP19), folded only when some own word or
+///    seat changed;
+/// 7. the rect glides and the tween seeding, then the driver glides;
+/// 8. the tail's second half — the in-flight tweens and the anim layer;
+/// 9. `shown`, re-read for the reached and tail-touched nodes.
+fn resolve_into(page: &Page, rt: &mut Runtime, r: &mut Resolved) {
+    // The declared looks the static nodes' skipped loops read (B36-DES
+    // stage 1) follow the theme variant and the row count.
+    rt.refresh_static_look(page);
     let changes = std::mem::take(&mut rt.changes);
     // Tweens born this resolve start at the FLIP's time, not the
     // resolve's (the ticks in between counted toward them).
@@ -2620,7 +3201,135 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
             }
         }
     }
-    let mut r = resolve_ladder(page, rt);
+    let n = page.nodes.len();
+    let full: bool = full_rebuild_needed(rt, r, n);
+    // `go_instant` (GP37): the flip restyles but times nothing — its
+    // change never meets a rule.
+    let instant_flips = std::mem::take(&mut rt.instant_flips);
+    let instant_view = |who: NodeId, to: &Option<State>| who == NO_NODE && matches!(to, Some(State::Arrangement(a)) if instant_flips.contains(a));
+    // What the concerned nodes showed before this frame's flips — read
+    // from the retained look now, before the ladder moves it. Only a
+    // node the flip can reach is worth the per-key lookups: its own
+    // state, a watched owner's, or the view's (the same `watches` test
+    // the rule search below makes). A tile's HELD flip touches the tile
+    // and its watchers, not all 1175 nodes — asking every node × key
+    // first cost 10-17 ms per press on the effect page (B36 trace).
+    // A static node (B36-DES stage 1) shows the same declared value
+    // before and after any flip — no tween can be born on it — unless
+    // the theme variant changed since the last look, when its declared
+    // colors DO differ and the long road decides (it never spawns one
+    // either way in practice; the fallback keeps the roads identical).
+    let prev_variant: StrId = r.variant;
+    let mut before: Vec<Before> = std::mem::take(&mut rt.retained.before);
+    before.clear();
+    if !changes.is_empty() && rt.retained.valid {
+        for (i, node) in page.nodes.iter().enumerate() {
+            let id = NodeId::from_index(i);
+            if rt.is_static(id) && prev_variant == rt.variant {
+                continue;
+            }
+            let concerned: bool = changes.iter().any(|(who, _, to)| !instant_view(*who, to) && (*who == NO_NODE || *who == id || page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize].iter().any(|w| w.of == *who)));
+            if !concerned {
+                continue;
+            }
+            let mut b = Before { node: id, owned: 0, current: [None; ANIMATABLE_COUNT] };
+            for (k, key) in ANIMATABLE.iter().enumerate() {
+                // GP40, user call: anim beats transition — a lane a
+                // player owns (or a held pose keeps) spawns no tween.
+                if rt.anim_owns_prop_now(id, *key) {
+                    b.owned |= 1u64 << k;
+                    continue;
+                }
+                b.current[k] = rt.tweens.iter().find(|t| t.node == id && t.key == *key).map(|t| t.value()).or_else(|| if key.is_placement() { r.placement.get(i).and_then(|p| placement_value(p, *key)) } else { r.prop(page, id, *key) });
+            }
+            before.push(b);
+        }
+    }
+    // The ladder. The tail (everything from `override_tail` on) is
+    // rebuilt below; the ladder part is rebuilt whole or patched for
+    // the reached nodes.
+    let mut reach: Vec<NodeId> = std::mem::take(&mut rt.retained.reach);
+    reach.clear();
+    if full {
+        fill_ladder_full(page, rt, r);
+    } else {
+        r.overrides.truncate(r.override_tail as usize);
+        rt.gather_reach(r, &mut reach);
+        reladder(page, rt, r, &reach);
+    }
+    rt.retained.laddered = if full { n as u32 } else { reach.len() as u32 };
+    // The per-resolve copies. `states` AFTER `gather_reach`, which diffs
+    // the copy the last resolve took against the runtime's.
+    r.variant = rt.variant;
+    r.scroll.clone_from(&rt.scroll);
+    r.safe = rt.safe;
+    r.states.clone_from(&rt.states);
+    r.raised.clone_from(&rt.raised);
+    r.locale.clone_from(&rt.locale);
+    r.caret = rt.caret;
+    r.selection = rt.selection;
+    r.sel_handles = rt.sel_handles;
+    r.repeat_rows.truncate(rt.pools.len());
+    for (k, p) in rt.pools.iter().enumerate() {
+        let rows = p.live.iter().map(|s| p.slots[*s as usize]);
+        match r.repeat_rows.get_mut(k) {
+            Some(e) => {
+                e.0 = p.repeat;
+                e.1.clear();
+                e.1.extend(rows);
+            }
+            None => r.repeat_rows.push((p.repeat, rows.collect())),
+        }
+    }
+    // The tail, first half: the code writes win over states. A node the
+    // tail touched last frame goes back to its ladder look first.
+    r.anim_owned.clear();
+    r.anim_owned.resize(n, 0);
+    r.anim_owned_props.clear();
+    let prev_touched: Vec<NodeId> = std::mem::take(&mut rt.retained.tail_touched);
+    let mut touched: Vec<NodeId> = std::mem::take(&mut rt.retained.touched);
+    touched.clear();
+    if !full {
+        for id in &prev_touched {
+            let i = id.index();
+            r.placement[i] = rt.retained.ladder_placement[i];
+            r.motion[i] = rt.retained.ladder_motion[i];
+            r.seat[i] = rt.retained.ladder_seat[i];
+        }
+    }
+    for (id, p) in &rt.writes {
+        if p.key.is_placement() {
+            apply_placement(&mut r.placement[*id], page, *p);
+        } else {
+            push_tail(page, r, *id, *p);
+        }
+        touched.push(*id);
+    }
+    // GP33: the driver — each control's live value maps onto its
+    // automatic slots' shown fraction (a glide in flight shows its eased
+    // value); a presence slot follows its custom state on the control.
+    // The presence list is compared with last frame's: a flip there
+    // changes a presence slot's own visibility word below.
+    let mut old_presence: Vec<(NodeId, bool)> = std::mem::take(&mut rt.retained.presence);
+    std::mem::swap(&mut old_presence, &mut r.presence);
+    r.presence.clear();
+    r.auto.clear();
+    for d in &page.drivers {
+        if d.state != NO_STR {
+            r.presence.push((d.node, rt.customs.iter().any(|e| *e == (d.root, d.state))));
+            continue;
+        }
+        let shown = if let Some(g) = rt.auto_glides.iter().find(|g| g.node == d.node) {
+            g.shown
+        } else if let Some(v) = r.num(page, d.root, PropKey::Value) {
+            driver_fraction(page, r, d, v)
+        } else {
+            rt.auto_rest.iter().find(|(n, _)| *n == d.node).map(|(_, f)| *f).unwrap_or_else(|| baked_frac(page, d.node))
+        };
+        r.auto.push((d.node, shown));
+    }
+    let presence_changed: bool = old_presence != r.presence;
+    rt.retained.presence = old_presence;
     // `on:show` / `on:hide` fire on ANY writer of visibility (GP19, the
     // shipped visibility_changed door in gogo_visibility_fx.gd) — a `when`
     // response, an arrangement pose or a raw code write all count; the
@@ -2631,35 +3340,56 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
     // on the player's finish; a show mid-hide cancels the hide and plays
     // the show anim from the current values.
     {
-        let n = page.nodes.len();
         // The ladder's own word, before the mid-hide override — the
-        // override must not hide the flip it exists to serve.
-        let own: Vec<bool> = (0..n).map(|i| {
-            let id = NodeId::from_index(i);
-            !page.repeats.iter().any(|rp| rp.template == id)
-                && match page.nodes[i].auto {
-                    // GP33: presence follows its live state, not the bake.
-                    Auto::Presence(baked) => r.presence.iter().find(|(n, _)| *n == id).map(|(_, b)| *b).unwrap_or(baked),
-                    _ => true,
+        // override must not hide the flip it exists to serve. Kept per
+        // node between resolves (`own_visible`): re-read for the reached
+        // nodes, and for every node after a rebuild or a presence flip.
+        let mut own: Vec<bool> = std::mem::take(&mut rt.retained.own_visible);
+        let mut own_changed: bool = false;
+        if full || presence_changed || own.len() != n {
+            own.clear();
+            own.extend((0..n).map(|i| own_word(page, rt, r, NodeId::from_index(i))));
+            own_changed = true;
+        } else {
+            for id in &reach {
+                let word: bool = own_word(page, rt, r, *id);
+                if own[id.index()] != word {
+                    own[id.index()] = word;
+                    own_changed = true;
                 }
-                && !matches!(r.ident(page, id, PropKey::Visibility), Some("gone") | Some("space_only"))
-        }).collect();
+            }
+        }
+        // What the user sees is the node's own word folded with its
+        // placed ancestors' — unchanged for every node when no own word
+        // and no seat changed since the last resolve, so the fold and
+        // the trigger scan run only then (or while nodes still await
+        // their baseline).
+        let seat_changed: bool = seat_table_moved(&rt.last_seat, &r.seat);
+        let mut now: Vec<bool> = std::mem::take(&mut rt.retained.now);
+        now.clear();
+        if own_changed || seat_changed || rt.vis_seen.len() < n {
+            for i in 0..n {
+                let mut a = NodeId::from_index(i);
+                now.push(loop {
+                    if !own[a] {
+                        break false;
+                    }
+                    // Placed: what the user sees folds the host a seat
+                    // moved the node under, not the parent that wrote
+                    // it (B25).
+                    let parent = r.placed_parent(page, a);
+                    if parent == NO_NODE {
+                        break true;
+                    }
+                    a = parent;
+                });
+            }
+        }
+        rt.retained.own_visible = own;
         let baselined = rt.vis_seen.len().min(n);
-        for i in 0..n {
+        for i in 0..now.len() {
             let id = NodeId::from_index(i);
-            let mut a = id;
-            let now = loop {
-                if !own[a] {
-                    break false;
-                }
-                // Placed: what the user sees folds the host a seat moved
-                // the node under, not the parent that wrote it (B25).
-                let parent = r.placed_parent(page, a);
-                if parent == NO_NODE {
-                    break true;
-                }
-                a = parent;
-            };
+            let now: bool = now[i];
             if i >= baselined {
                 // First sight of this node (first resolve, or a repeat
                 // clone appended since): its visibility is state, not a
@@ -2694,14 +3424,15 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
                 rt.play_action(page, id, "hide", Finish::HideWhen(id));
             }
         }
+        rt.retained.now = now;
         // A hide fired or cancelled just above changes who defers — the
-        // ladder's copy predates it.
-        r.hiding = rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(h) => Some(h), _ => None }).collect();
+        // kept list predates it.
+        r.hiding.clear();
+        r.hiding.extend(rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish {
+            Finish::HideWhen(h) => Some(h),
+            _ => None,
+        }));
     }
-    // `go_instant` (GP37): the flip restyles but times nothing — its
-    // change never meets a rule.
-    let instant_flips = std::mem::take(&mut rt.instant_flips);
-    let instant_view = |who: NodeId, to: &Option<State>| who == NO_NODE && matches!(to, Some(State::Arrangement(a)) if instant_flips.contains(a));
     // An arrangement flip with a timed view rule: the boxes it re-poses
     // glide to their new rects (`Runtime::glide`).
     for (who, from, to) in &changes {
@@ -2726,66 +3457,56 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
             }
         }
     }
-    let prev: Option<Box<Resolved>> = rt.last_resolved.take();
-    if let (false, Some(prev)) = (changes.is_empty(), prev.as_deref()) {
-        for (i, node) in page.nodes.iter().enumerate() {
-            let id = NodeId::from_index(i);
-            // Only a node the flip can reach is worth the per-key lookups:
-            // its own state, a watched owner's, or the view's (the same
-            // `watches` test the rule search below makes). A tile's HELD
-            // flip touches the tile and its watchers, not all 1175 nodes —
-            // asking every node × key first cost 10-17 ms per press on the
-            // effect page (B36 trace).
-            let concerned: bool = changes.iter().any(|(who, _, to)| !instant_view(*who, to) && (*who == NO_NODE || *who == id || page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize].iter().any(|w| w.of == *who)));
-            if !concerned {
+    // The tween seeding: for every concerned node (captured above), a
+    // key whose value the flip moved gets a tween from what showed to
+    // the new ladder value, timed by the rule the flip meets. The
+    // targets read the ladder with the code writes on it — the anim
+    // layer lands later.
+    for b in &before {
+        let id: NodeId = b.node;
+        let i = id.index();
+        let node = &page.nodes[i];
+        for (k, key) in ANIMATABLE.iter().enumerate() {
+            if b.owned & (1u64 << k) != 0 {
                 continue;
             }
-            for key in ANIMATABLE {
-                // GP40, user call: anim beats transition — a lane a
-                // player owns (or a held pose keeps) spawns no tween.
-                // Asked of the runtime: the resolved here is the ladder
-                // only, `compose_anim` lands the anim layer later.
-                if rt.anim_owns_prop_now(id, *key) {
-                    continue;
-                }
-                let target = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key)) };
-                let Some(target) = target else { continue };
-                let current = rt.tweens.iter().find(|t| t.node == id && t.key == *key).map(|t| t.value()).or_else(|| if key.is_placement() { prev.placement.get(i).and_then(|p| placement_value(p, *key)) } else { prev.prop(page, id, *key) }).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key));
-                let Some(current) = current else { continue };
-                if current == target {
-                    continue;
-                }
-                // Which change moved this node: its own state, a watched owner's, or the view's.
-                let mut rule: Option<Transition> = None;
-                for (who, from, to) in &changes {
-                    if instant_view(*who, to) {
-                        continue;
-                    }
-                    let scope = if *who == NO_NODE { NO_NODE } else { *who };
-                    let watches = *who == NO_NODE
-                        || *who == id
-                        || page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize].iter().any(|w| w.of == *who);
-                    if !watches {
-                        continue;
-                    }
-                    // A node-level exact pose pair overrides the view rule for this node.
-                    // A watched owner's flip is timed by the DECLARING
-                    // scope's rules (GPAR10, the shipped one-timing-per-
-                    // flip); the target's own rules are the fallback.
-                    let node_rule = if scope == NO_NODE { find_rule(page, id, *from, *to).filter(|t| t.from.is_some() && t.to.is_some()) } else { find_rule(page, scope, *from, *to).or_else(|| find_rule(page, id, *from, *to)) };
-                    rule = node_rule.or_else(|| if scope == NO_NODE { find_rule(page, NO_NODE, *from, *to) } else { None });
-                    if rule.is_some() {
-                        break;
-                    }
-                }
-                let Some(rule) = rule else { continue };
-                if rule.duration <= 0.0 {
-                    continue;
-                }
-                let easing = if rule.easing == NO_STR { Easing::LINEAR } else { Easing::parse(page.str(rule.easing)).unwrap_or(Easing::LINEAR) };
-                rt.tweens.retain(|t| !(t.node == id && t.key == *key));
-                rt.tweens.push(Tween { node: id, key: *key, from: current, to: target, elapsed: late.min(rule.duration), duration: rule.duration, easing });
+            let target = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key)) };
+            let Some(target) = target else { continue };
+            let current = b.current[k].or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key));
+            let Some(current) = current else { continue };
+            if current == target {
+                continue;
             }
+            // Which change moved this node: its own state, a watched owner's, or the view's.
+            let mut rule: Option<Transition> = None;
+            for (who, from, to) in &changes {
+                if instant_view(*who, to) {
+                    continue;
+                }
+                let scope = if *who == NO_NODE { NO_NODE } else { *who };
+                let watches = *who == NO_NODE
+                    || *who == id
+                    || page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize].iter().any(|w| w.of == *who);
+                if !watches {
+                    continue;
+                }
+                // A node-level exact pose pair overrides the view rule for this node.
+                // A watched owner's flip is timed by the DECLARING
+                // scope's rules (GPAR10, the shipped one-timing-per-
+                // flip); the target's own rules are the fallback.
+                let node_rule = if scope == NO_NODE { find_rule(page, id, *from, *to).filter(|t| t.from.is_some() && t.to.is_some()) } else { find_rule(page, scope, *from, *to).or_else(|| find_rule(page, id, *from, *to)) };
+                rule = node_rule.or_else(|| if scope == NO_NODE { find_rule(page, NO_NODE, *from, *to) } else { None });
+                if rule.is_some() {
+                    break;
+                }
+            }
+            let Some(rule) = rule else { continue };
+            if rule.duration <= 0.0 {
+                continue;
+            }
+            let easing = if rule.easing == NO_STR { Easing::LINEAR } else { Easing::parse(page.str(rule.easing)).unwrap_or(Easing::LINEAR) };
+            rt.tweens.retain(|t| !(t.node == id && t.key == *key));
+            rt.tweens.push(Tween { node: id, key: *key, from: current, to: target, elapsed: late.min(rule.duration), duration: rule.duration, easing });
         }
     }
     // GP33: a driver target that moved re-arms the fraction glide by the
@@ -2797,7 +3518,7 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
             continue;
         }
         let Some(v) = r.num(page, d.root, PropKey::Value) else { continue };
-        let target = driver_fraction(page, &r, d, v);
+        let target = driver_fraction(page, r, d, v);
         // GP53: while the finger holds the control (`held` on its root)
         // a write lands DIRECT — the thumb stays under the finger, and a
         // glide in flight is dropped at the value; the release's settle
@@ -2845,42 +3566,262 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
             }
         }
     }
-    // Overlay in-flight tweens (they retarget from live values by construction).
+    // The tail, second half. In-flight tweens overlay (they retarget
+    // from live values by construction); a motion tween lands in the
+    // node's transform as it is pushed.
     for t in &rt.tweens {
         let v = t.value();
         if t.key.is_placement() {
             apply_placement(&mut r.placement[t.node], page, Prop { key: t.key, value: v });
         } else {
-            r.overrides.push((t.node, Prop { key: t.key, value: v }));
+            push_tail(page, r, t.node, Prop { key: t.key, value: v });
         }
+        touched.push(t.node);
     }
-    fold_seats_and_motion(page, &mut r);
-    // The Runtime's copy of the seat table (`last_seat`): the walks that
-    // run without this snapshot read placed parents from it.
-    rt.last_seat.clone_from(&r.seat);
     // The anim layer goes on last: an owning anim outranks a tween too.
-    compose_anim(page, rt, &mut r);
+    compose_anim(page, rt, r, &mut touched);
+    // The Runtime's copy of the seat table (`last_seat`): the walks that
+    // run without this snapshot read placed parents from it. A move
+    // since the last copy sends the `when disabled` watchers through
+    // their ladder next resolve (`gather_reach`).
+    rt.retained.seat_moved = seat_table_moved(&rt.last_seat, &r.seat);
+    rt.last_seat.clone_from(&r.seat);
     // What shows now, per node — the live value a new play starts from.
-    rt.shown.resize(page.nodes.len(), Motion::IDENTITY);
-    for i in 0..page.nodes.len() {
-        let id = NodeId::from_index(i);
+    // Re-read for the nodes this resolve moved: the reached ones and
+    // the ones the tail touched, last frame or this; every node after
+    // a rebuild.
+    // A static node (B36-DES stage 1) shows its declared opacity and
+    // fill alpha, read from the table instead of two override walks;
+    // its motion is kept as is — a `tap_pulse` swing lands there through
+    // `compose_anim` whatever the node's rule. The one exception is a
+    // tween standing on a static node (born on the variant-switch road
+    // above): that node reads the long way while the tween lives.
+    rt.shown.resize(n, Motion::IDENTITY);
+    let shown_of = |rt: &Runtime, r: &Resolved, id: NodeId| -> Motion {
+        let i = id.index();
         let mut m = r.motion[i];
-        m.opacity = r.num(page, id, PropKey::Opacity).unwrap_or(1.0);
-        m.color_a = r.color(page, id, PropKey::Color).map(|c| c.0[3] as f32 / 255.0).unwrap_or(1.0);
-        rt.shown[i] = m;
-    }
-    // Remember what is displayed now: the finished snapshot, copied into
-    // the kept buffer (the first resolve allocates it, every later one
-    // reuses its Vecs).
-    rt.last_resolved = Some(match prev {
-        Some(mut kept) => {
-            (*kept).clone_from(&r);
-            kept
+        if rt.is_static(id) && !rt.tweens.iter().any(|t| t.node == id) {
+            m.opacity = rt.static_look.opacity[i];
+            m.color_a = rt.static_look.color_a[i];
+        } else {
+            m.opacity = r.num(page, id, PropKey::Opacity).unwrap_or(1.0);
+            m.color_a = r.color(page, id, PropKey::Color).map(|c| c.0[3] as f32 / 255.0).unwrap_or(1.0);
         }
-        None => Box::new(r.clone()),
-    });
+        m
+    };
+    if full {
+        for i in 0..n {
+            let m = shown_of(rt, r, NodeId::from_index(i));
+            rt.shown[i] = m;
+        }
+    } else {
+        for k in 0..reach.len() + prev_touched.len() + touched.len() {
+            let id: NodeId = if k < reach.len() {
+                reach[k]
+            } else if k < reach.len() + prev_touched.len() {
+                prev_touched[k - reach.len()]
+            } else {
+                touched[k - reach.len() - prev_touched.len()]
+            };
+            let m = shown_of(rt, r, id);
+            rt.shown[id] = m;
+        }
+    }
+    // What the next resolve diffs against, and the scratch buffers back.
+    rt.retained.valid = true;
+    rt.retained.seen_arrangement = rt.arrangement;
+    rt.retained.seen_screen.clone_from(&rt.screen);
+    rt.retained.seen_customs.clone_from(&rt.customs);
+    rt.retained.seen_mask_on = rt.static_mask_on;
+    rt.retained.tail_touched = touched;
+    rt.retained.touched = prev_touched;
+    rt.retained.reach = reach;
+    rt.retained.before = before;
     let _ = lerp_value;
-    r
+}
+
+/// The nodes a resolve must run through their ladder, from what changed
+/// since the last one (B36-DES stage 2): the runtime's state bits
+/// against the copy the last look took (a changed bit on W reaches
+/// `by_owner[W]`; a changed DISABLED bit anywhere, or a seat move last
+/// resolve, reaches every `when disabled`), the arrangement and screen
+/// words against what was seen (a change reaches every view `when`),
+/// the raised custom states against what was seen (a root raised or
+/// cleared reaches `by_owner[root]`), plus the nodes with a write added
+/// or taken back. Sorted, no duplicates.
+///
+/// Diffed, not logged, on purpose: `states`, `arrangement` and `screen`
+/// are public fields and tests write `variant` bare; the data is the
+/// truth, whoever wrote it. The write list is the exception (it can be
+/// hundreds of entries on a pooled page), and its only doors are
+/// `set_prop` and `clear_prop`, which log.
+impl Runtime {
+    fn gather_reach(&mut self, r: &Resolved, out: &mut Vec<NodeId>) {
+        let t = &mut self.retained;
+        // A seat move changes which ancestors `disabled` folds — it
+        // matters only while some node carries DISABLED at all.
+        let mut disabled_flip: bool = std::mem::take(&mut t.seat_moved) && self.states.iter().any(|s| s & DISABLED != 0);
+        for (i, (now, seen)) in self.states.iter().zip(&r.states).enumerate() {
+            let flipped: u8 = now ^ seen;
+            if flipped == 0 {
+                continue;
+            }
+            out.extend_from_slice(&t.watchers.by_owner[i]);
+            if flipped & DISABLED != 0 {
+                disabled_flip = true;
+            }
+        }
+        if self.arrangement != t.seen_arrangement || self.screen != t.seen_screen {
+            out.extend_from_slice(&t.watchers.view);
+        }
+        for e in self.customs.iter().chain(&t.seen_customs) {
+            if !(self.customs.contains(e) && t.seen_customs.contains(e)) {
+                out.extend_from_slice(&t.watchers.by_owner[e.0]);
+            }
+        }
+        out.append(&mut t.write_flips);
+        if disabled_flip {
+            out.extend_from_slice(&t.watchers.disabled);
+        }
+        out.sort();
+        out.dedup();
+    }
+}
+
+/// The full rebuild of the ladder part, in place: every node through
+/// `ladder_node`, the override list in node order with the spans, and
+/// the ladder tables refilled. The buffers keep their capacity.
+fn fill_ladder_full(page: &Page, rt: &mut Runtime, r: &mut Resolved) {
+    let n = page.nodes.len();
+    r.overrides.clear();
+    r.override_span.clear();
+    r.placement.clear();
+    r.motion.clear();
+    r.seat.clear();
+    let mut ladder_placement: Vec<Placement> = std::mem::take(&mut rt.retained.ladder_placement);
+    let mut ladder_motion: Vec<Motion> = std::mem::take(&mut rt.retained.ladder_motion);
+    let mut ladder_seat: Vec<NodeId> = std::mem::take(&mut rt.retained.ladder_seat);
+    ladder_placement.clear();
+    ladder_motion.clear();
+    ladder_seat.clear();
+    for i in 0..n {
+        let id = NodeId::from_index(i);
+        let start: usize = r.overrides.len();
+        let placement: Placement = ladder_node(page, rt, id, &mut r.overrides);
+        r.override_span.push((start as u32, (r.overrides.len() - start) as u32));
+        let (m, seat) = ladder_motion_and_seat(page, rt, id, &r.overrides[start..]);
+        r.placement.push(placement);
+        ladder_placement.push(placement);
+        r.motion.push(m);
+        ladder_motion.push(m);
+        r.seat.push(seat);
+        ladder_seat.push(seat);
+    }
+    r.override_tail = r.overrides.len() as u32;
+    rt.retained.ladder_placement = ladder_placement;
+    rt.retained.ladder_motion = ladder_motion;
+    rt.retained.ladder_seat = ladder_seat;
+    // Everything is fresh: nothing to put back, no write left to reach.
+    rt.retained.tail_touched.clear();
+    rt.retained.write_flips.clear();
+}
+
+/// Patches the reached nodes' ladder answers in place. `r.overrides`
+/// holds the ladder part only (the tail was cut off) in node order, so
+/// a node whose entries changed has its span spliced — the entries
+/// after it shift by the difference, and one pass at the end moves
+/// every later span start by the deltas before it, so the list reads
+/// exactly as a full rebuild would write it (`override_of` stays a read
+/// of the node's own few entries).
+fn reladder(page: &Page, rt: &mut Runtime, r: &mut Resolved, reach: &[NodeId]) {
+    let mut entries: Vec<(NodeId, Prop)> = std::mem::take(&mut rt.retained.entries);
+    let mut fixes: Vec<(usize, i64)> = std::mem::take(&mut rt.retained.fixes);
+    fixes.clear();
+    // The sum of the deltas spliced so far: the recorded start of every
+    // later span is stale by this much until the pass below.
+    let mut shift: i64 = 0;
+    for id in reach {
+        let i = id.index();
+        entries.clear();
+        let placement: Placement = ladder_node(page, rt, *id, &mut entries);
+        let (start0, len) = r.override_span[i];
+        let start: usize = (start0 as i64 + shift) as usize;
+        let len: usize = len as usize;
+        if r.overrides[start..start + len] != entries[..] {
+            r.overrides.splice(start..start + len, entries.iter().copied());
+            let delta: i64 = entries.len() as i64 - len as i64;
+            if delta != 0 {
+                fixes.push((i, delta));
+                shift += delta;
+            }
+            r.override_span[i].1 = entries.len() as u32;
+        }
+        let (m, seat) = ladder_motion_and_seat(page, rt, *id, &entries);
+        r.placement[i] = placement;
+        rt.retained.ladder_placement[i] = placement;
+        r.motion[i] = m;
+        rt.retained.ladder_motion[i] = m;
+        r.seat[i] = seat;
+        rt.retained.ladder_seat[i] = seat;
+    }
+    // Any splice moves the spans after it, even when the deltas sum to
+    // nothing (+2 then -2 leaves the spans between them shifted).
+    if !fixes.is_empty() {
+        let mut k: usize = 0;
+        let mut run: i64 = 0;
+        for (j, span) in r.override_span.iter_mut().enumerate() {
+            while k < fixes.len() && fixes[k].0 < j {
+                run += fixes[k].1;
+                k += 1;
+            }
+            if run != 0 {
+                span.0 = (span.0 as i64 + run) as u32;
+            }
+        }
+        r.override_tail = (r.override_tail as i64 + shift) as u32;
+    }
+    rt.retained.entries = entries;
+    rt.retained.fixes = fixes;
+}
+
+/// The node's own visibility word: does it show itself (the `own` half
+/// of the GP19 fold — the ancestors are folded by the caller). A static
+/// node's word is its declared one (B36-DES stage 1), read from the
+/// table with no override walk; a repeat template never shows; a
+/// presence slot follows its live state, not the bake (GP33).
+fn own_word(page: &Page, rt: &Runtime, r: &Resolved, id: NodeId) -> bool {
+    let i = id.index();
+    if rt.is_static(id) {
+        return rt.static_look.own_visible[i];
+    }
+    !page.repeats.iter().any(|rp| rp.template == id)
+        && match page.nodes[i].auto {
+            Auto::Presence(baked) => r.presence.iter().find(|(n, _)| *n == id).map(|(_, b)| *b).unwrap_or(baked),
+            _ => true,
+        }
+        && !matches!(r.ident(page, id, PropKey::Visibility), Some("gone") | Some("space_only"))
+}
+
+/// Does any node sit under a different placed parent in `now` than in
+/// `last` (the seat table a previous resolve left)? A table shorter
+/// than the arena — empty before the first resolve, or behind a `grow`
+/// — reads as "at home" for the missing rows, the way
+/// `placed_parent_in` reads it.
+fn seat_table_moved(last: &[NodeId], now: &[NodeId]) -> bool {
+    now.iter().enumerate().any(|(i, s)| last.get(i).copied().unwrap_or(NO_NODE) != *s)
+}
+
+/// Pushes one tail entry (a code write, a tween value) and lands what
+/// it means for the placed tree and the draw transform at once — the
+/// seat word re-parents, a motion word sets the transform — over the
+/// node's ladder look. Placement keys never come here (they apply to
+/// `Resolved::placement`).
+fn push_tail(page: &Page, r: &mut Resolved, id: NodeId, p: Prop) {
+    r.overrides.push((id, p));
+    match p.key {
+        PropKey::SeatOf => r.seat[id] = seat_of(page, p.value),
+        _ => set_motion_word(&mut r.motion[id], p.key, p.value),
+    }
 }
 
 #[cfg(test)]

@@ -83,7 +83,7 @@ pub trait KeyName: Copy {
 /// allocations: the index and one arena holding every string), read with
 /// one index and one branch. A key the load did not cover falls back to
 /// its English from the build's `KEYS` table.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Locale {
     /// The build's `(name, English)` per key — the fallback.
     english: &'static [(&'static str, &'static str)],
