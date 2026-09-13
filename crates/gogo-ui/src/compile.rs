@@ -5889,7 +5889,6 @@ impl<'a> Compiler<'a> {
             }
             let pp = &self.page.nodes[parent].placement;
             let siblings_size: [bool; 2] = {
-                let p = &self.page.nodes[parent];
                 let mut any = [false, false];
                 for s in self.page.children(parent) {
                     if s.index() == i || matches!(self.page.prop(s, PropKey::Overlay), Some(Value::VBool(true))) {

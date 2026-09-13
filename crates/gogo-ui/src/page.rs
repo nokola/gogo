@@ -43,7 +43,10 @@ macro_rules! id_newtype {
             }
 
             /// The id `by` slots on (a clone's shift, a bind site's offset
-            /// from its row root) — an arena fact, so crate-private.
+            /// from its row root) — an arena fact, so crate-private. The
+            /// macro stamps it on every id kind; only some kinds shift, so
+            /// the unused copies are allowed.
+            #[allow(dead_code)]
             pub(crate) const fn offset(self, by: u32) -> $name {
                 $name(self.0 + by)
             }

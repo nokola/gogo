@@ -1425,7 +1425,7 @@ impl Runtime {
                 page.strings.push(String::new());
             }
             page.strings.push(text.to_string());
-            let id = StrId::from_index((page.strings.len() - 1));
+            let id = StrId::from_index(page.strings.len() - 1);
             self.owned_text[node] = id;
             id
         };
