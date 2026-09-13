@@ -382,12 +382,13 @@ pub struct Runtime {
     pub owned_text: Vec<StrId>,
     /// The displayed value per (node, key) after the last resolve — the
     /// `from` of the next tween.
-    /// What each node showed after the last resolve, one slot per node
-    /// per `ANIMATABLE` key (node × ANIMATABLE.len() + key index), `None`
-    /// where the key had no value. A flat (node, prop) list was scanned
-    /// linearly per node per key when a state flipped — nodes² × keys², the
-    /// 140 ms frame after every press on the 1175-node effect page (B36).
-    last: Vec<Option<Value>>,
+    /// The previous resolve's finished snapshot — what each node SHOWED
+    /// last frame, which a state flip's tween seeding starts from. Kept by
+    /// copying the finished `Resolved` into this buffer (its allocations
+    /// reused, so a frame pays a memcpy), instead of rebuilding a table of
+    /// every node × animatable key through `prop()` on every resolve — 14
+    /// thousand lookups a frame, 3-11 ms on the effect page (B36 trace).
+    last_resolved: Option<Box<Resolved>>,
 }
 
 impl Runtime {
@@ -438,7 +439,7 @@ impl Runtime {
             edit_bar: None,
             motion: vec![Motion::IDENTITY; page.nodes.len()],
             owned_text: vec![NO_STR; page.nodes.len()],
-            last: Vec::new(),
+            last_resolved: None,
             glide_start: None,
             glide_node_rules: Vec::new(),
             rect_tweens: Vec::new(),
@@ -1835,6 +1836,15 @@ pub struct Resolved {
     pub placement: Vec<Placement>,
     /// (node, prop) — later entries win.
     pub overrides: Vec<(NodeId, Prop)>,
+    /// Per node: where its own `when` overrides sit in `overrides`
+    /// (start, len) — the ladder pushes them node by node, so a lookup
+    /// reads a node's few entries instead of walking the whole list
+    /// (B36 trace: 30 thousand walks over a few hundred entries were the
+    /// 14 ms resolve on the effect page). Entries from `override_tail`
+    /// on are the code writes, anim channels and tweens, pushed after the
+    /// ladder in no node order; they win, so a lookup reads them first.
+    pub override_span: Vec<(u32, u32)>,
+    pub override_tail: u32,
     pub variant: StrId,
     /// Per node: the Scroll offset (copied from the Runtime).
     pub scroll: Vec<[f32; 2]>,
@@ -1874,13 +1884,21 @@ pub struct Resolved {
 impl Resolved {
     /// The prop's current value: state overrides → node props → kind
     /// defaults. `$refs` are followed through the theme.
+    /// The override that wins for `key` on `node`, if any: the tail (code
+    /// writes, anims, tweens — pushed last, so they win) newest first,
+    /// then the node's own `when` entries newest first.
+    pub fn override_of(&self, node: NodeId, key: PropKey) -> Option<Value> {
+        let tail = self.override_tail as usize;
+        if let Some((_, p)) = self.overrides[tail.min(self.overrides.len())..].iter().rev().find(|(n, p)| *n == node && p.key == key) {
+            return Some(p.value);
+        }
+        let (start, len) = *self.override_span.get(node.index())?;
+        self.overrides[start as usize..(start + len) as usize].iter().rev().find(|(_, p)| p.key == key).map(|(_, p)| p.value)
+    }
+
     pub fn prop(&self, page: &Page, node: NodeId, key: PropKey) -> Option<Value> {
         let raw = self
-            .overrides
-            .iter()
-            .rev()
-            .find(|(n, p)| *n == node && p.key == key)
-            .map(|(_, p)| p.value)
+            .override_of(node, key)
             .or_else(|| page.prop(node, key))
             .or_else(|| page.kind_default(page.nodes[node].kind, key, self.variant))?;
         Some(deref(page, self.variant, raw))
@@ -1906,7 +1924,7 @@ impl Resolved {
         };
         // `color.a = 0.5` in a `when`: the fill keeps its hue, alpha alone moves.
         if key == PropKey::Color {
-            if let Some(Value::VNum(a)) = self.overrides.iter().rev().find(|(n, p)| *n == node && p.key == PropKey::ColorA).map(|(_, p)| p.value) {
+            if let Some(Value::VNum(a)) = self.override_of(node, PropKey::ColorA) {
                 c = c.with_opacity(a);
             }
         }
@@ -1974,7 +1992,7 @@ impl Resolved {
     fn inherited(&self, page: &Page, node: NodeId, key: PropKey) -> Option<Value> {
         let mut n = node;
         loop {
-            let own = self.overrides.iter().rev().find(|(i, p)| *i == n && p.key == key).map(|(_, p)| p.value).or_else(|| page.prop(n, key));
+            let own = self.override_of(n, key).or_else(|| page.prop(n, key));
             if let Some(v) = own {
                 return Some(deref(page, self.variant, v));
             }
@@ -2219,7 +2237,7 @@ impl Resolved {
 }
 
 fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
-    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], anim_owned_props: Vec::new(), placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), auto: Vec::new(), presence: Vec::new(), caret: rt.caret, selection: rt.selection, sel_handles: rt.sel_handles };
+    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], anim_owned_props: Vec::new(), placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), override_span: Vec::with_capacity(page.nodes.len()), override_tail: 0, variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), auto: Vec::new(), presence: Vec::new(), caret: rt.caret, selection: rt.selection, sel_handles: rt.sel_handles };
     for (i, node) in page.nodes.iter().enumerate() {
         let id = NodeId::from_index(i);
         let mut placement = node.placement;
@@ -2233,6 +2251,7 @@ fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
         // the file wins (applied last), so the winner reads off the file.
         let mut active: Vec<&When> = page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize].iter().filter(|w| rt.state_active(page, if w.of == NO_NODE { id } else { w.of }, w.state)).collect();
         active.sort_by_key(|w| (w.state.priority(), w.line));
+        let span_start: u32 = r.overrides.len() as u32;
         for w in active {
             for p in &page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize] {
                 if p.key.is_placement() {
@@ -2242,8 +2261,10 @@ fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
                 }
             }
         }
+        r.override_span.push((span_start, r.overrides.len() as u32 - span_start));
         r.placement.push(placement);
     }
+    r.override_tail = r.overrides.len() as u32;
     // Code writes win over states.
     for (id, p) in &rt.writes {
         if p.key.is_placement() {
@@ -2705,11 +2726,21 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
             }
         }
     }
-    if !changes.is_empty() && !rt.last.is_empty() {
+    let prev: Option<Box<Resolved>> = rt.last_resolved.take();
+    if let (false, Some(prev)) = (changes.is_empty(), prev.as_deref()) {
         for (i, node) in page.nodes.iter().enumerate() {
             let id = NodeId::from_index(i);
-            let _ = node;
-            for (ki, key) in ANIMATABLE.iter().enumerate() {
+            // Only a node the flip can reach is worth the per-key lookups:
+            // its own state, a watched owner's, or the view's (the same
+            // `watches` test the rule search below makes). A tile's HELD
+            // flip touches the tile and its watchers, not all 1175 nodes —
+            // asking every node × key first cost 10-17 ms per press on the
+            // effect page (B36 trace).
+            let concerned: bool = changes.iter().any(|(who, _, to)| !instant_view(*who, to) && (*who == NO_NODE || *who == id || page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize].iter().any(|w| w.of == *who)));
+            if !concerned {
+                continue;
+            }
+            for key in ANIMATABLE {
                 // GP40, user call: anim beats transition — a lane a
                 // player owns (or a held pose keeps) spawns no tween.
                 // Asked of the runtime: the resolved here is the ladder
@@ -2719,7 +2750,7 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
                 }
                 let target = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key)) };
                 let Some(target) = target else { continue };
-                let current = rt.tweens.iter().find(|t| t.node == id && t.key == *key).map(|t| t.value()).or_else(|| rt.last.get(i * ANIMATABLE.len() + ki).copied().flatten()).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key));
+                let current = rt.tweens.iter().find(|t| t.node == id && t.key == *key).map(|t| t.value()).or_else(|| if key.is_placement() { prev.placement.get(i).and_then(|p| placement_value(p, *key)) } else { prev.prop(page, id, *key) }).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key));
                 let Some(current) = current else { continue };
                 if current == target {
                     continue;
@@ -2838,15 +2869,16 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
         m.color_a = r.color(page, id, PropKey::Color).map(|c| c.0[3] as f32 / 255.0).unwrap_or(1.0);
         rt.shown[i] = m;
     }
-    // Remember what is displayed now.
-    rt.last.clear();
-    rt.last.resize(page.nodes.len() * ANIMATABLE.len(), None);
-    for i in 0..page.nodes.len() {
-        let id = NodeId::from_index(i);
-        for (ki, key) in ANIMATABLE.iter().enumerate() {
-            rt.last[i * ANIMATABLE.len() + ki] = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)) };
+    // Remember what is displayed now: the finished snapshot, copied into
+    // the kept buffer (the first resolve allocates it, every later one
+    // reuses its Vecs).
+    rt.last_resolved = Some(match prev {
+        Some(mut kept) => {
+            (*kept).clone_from(&r);
+            kept
         }
-    }
+        None => Box::new(r.clone()),
+    });
     let _ = lerp_value;
     r
 }
