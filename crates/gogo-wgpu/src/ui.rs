@@ -3,7 +3,8 @@
 //! handful of draw calls; the page's rects are epx and are scaled to device
 //! pixels here (`gogo` never sees a device pixel). Text is shaped by the
 //! `text` crate into glyph quads over its coverage atlas (texture 0);
-//! images are RGBA textures added by the shell (`add_image`). A gradient
+//! images are RGBA textures the host's image table writes through
+//! `write_image_texture_only` (the table records the size alongside). A gradient
 //! arrives as one quad per stop pair (its `band`); a `RotatePush` turns
 //! every quad until its pop about the given center, a `SwingPush` turns
 //! them in 3D about a vertical hinge under a perspective camera (the
@@ -79,7 +80,8 @@ struct Texture {
     width: u32,
     height: u32,
     /// The texture itself, so a same-size re-upload writes in place
-    /// (`update_image`); None for the externals' entries and the atlas.
+    /// (`write_image_texture_only`); None for the externals' entries and
+    /// the atlas.
     texture: Option<wgpu::Texture>,
 }
 
@@ -364,8 +366,9 @@ impl UiRenderer {
         );
     }
 
-    /// Registers an RGBA8 image under `key` (the `source=` id).
-    pub fn add_image(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: ImageKey, rgba: &[u8], width: u32, height: u32) {
+    /// Registers an RGBA8 image under `key` (the `source=` id) — a fresh
+    /// texture; `write_image_texture_only` is the door in.
+    fn add_image(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: ImageKey, rgba: &[u8], width: u32, height: u32) {
         // sRGB bytes in, sRGB bytes out: the surface is non-sRGB (the canvas
         // blit copies encoded bytes), so an sRGB texture here would be
         // decoded on sample and never re-encoded — every image too dark.
@@ -376,12 +379,15 @@ impl UiRenderer {
         self.set_slot(key, (self.textures.len() - 1) as TexId);
     }
 
-    /// Re-uploads an image the page shows: the same-size texture is written
-    /// IN PLACE, a new size (or a key never added) takes `add_image`.
-    /// Needed for pictures that refresh while shown — the mask panel's
-    /// tiles re-render on every effect pass and the preset strip per open;
-    /// a fresh texture per refresh would pile up for the session.
-    pub fn update_image(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: ImageKey, rgba: &[u8], width: u32, height: u32) {
+    /// Writes an image's pixels — the TEXTURE ONLY. Page code never calls
+    /// this: the host's image table is the door (`ImageTable::upload_image`
+    /// in app_wgpu), because layout needs the picture's size as well and a
+    /// texture written without it draws into a 0-wide box (todo-bugs B26).
+    /// The same-size texture is written IN PLACE, a new size (or a key
+    /// never added) takes `add_image` — pictures that refresh while shown
+    /// (the mask panel's tiles per effect pass, the preset strip per open)
+    /// would otherwise pile up a fresh texture per refresh for the session.
+    pub fn write_image_texture_only(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: ImageKey, rgba: &[u8], width: u32, height: u32) {
         let slot: Option<TexId> = self.images.get(key.index()).copied().flatten();
         if let Some(entry) = slot.map(|s| &self.textures[s as usize]) {
             if let Some(tex) = &entry.texture {
