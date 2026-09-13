@@ -29,14 +29,21 @@
 //! the spec's Placement section: the sizing triad, alignment as position
 //! only, margins as inset / offset / pin, `spacing`/`gap` in stacks,
 //! weighted fills, Layers minimum = biggest child, Scroll content takes
-//! the viewport. No invalidation graph: a dirty frame lays the whole page
-//! out again — at these page sizes that is cheaper than tracking.
+//! the viewport.
+//!
+//! Two roads: `layout` lays the whole page out from scratch (the
+//! reference, and what a one-off caller wants); `LayoutCache` keeps the
+//! last answer and, after a change that reaches a few nodes, re-lays only
+//! their subtrees up to the first box whose size cannot depend on its
+//! children (B36-DES stage 3). The two must agree bit for bit — the
+//! equivalence pin runs both after every step.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::sync::Arc;
 
+use crate::locale::Locale;
 use crate::page::*;
-use crate::runtime::Resolved;
+use crate::runtime::{ResolveChanges, Resolved};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rect {
@@ -82,6 +89,16 @@ pub trait TextMeasure {
     /// the same), so a host answers from a table, not a string match.
     fn image_size(&self, _key: ImageKey) -> Option<(f32, f32)> {
         None
+    }
+    /// A number that changes whenever this measure would answer the same
+    /// question differently (another epx, another default font, an image
+    /// whose size the host learned since). Needed because the retained
+    /// layout (`LayoutCache`) keeps measured sizes between frames and
+    /// only re-measures what the page changed — it cannot see the host's
+    /// side, so the host says so here and the cache takes the full road.
+    /// A measure that never changes answers a constant.
+    fn identity(&self) -> u64 {
+        0
     }
 }
 
@@ -192,55 +209,87 @@ enum AspectDrive {
     Fit,
 }
 
+/// One `size_at` answer a node keeps: the question — the width offered
+/// (`f32` bits; `u32::MAX` = unbounded) and whether it was the node's
+/// FINAL width (`size_final`) — and the answer.
+#[derive(Clone, Copy, Debug)]
+struct Memo {
+    avail: u32,
+    final_w: bool,
+    w: f32,
+    h: f32,
+}
+
 struct Lay<'a> {
     page: &'a Page,
     res: &'a Resolved,
     text: &'a dyn TextMeasure,
+    /// Per node: the rect as PLACED — before the reveal pass shrinks a
+    /// revealed box (`reveal`). What `place_children` of a box starts
+    /// from, so the retained road keeps this table and derives the shown
+    /// one.
     rects: Vec<Rect>,
     /// Per node and axis: does the room this box hands its children come
     /// from a number the author wrote? True for an exact size or a cap on
     /// the box itself, passed on unchanged by a box that merely fills its
     /// parent, false for a hug box (sized by content) and for the viewport.
     written: Vec<[bool; 2]>,
-    /// `size_at` answers per (node, width bits; `u32::MAX` = unbounded):
-    /// a parent asks for each child's measure more than once per pass.
-    memo: RefCell<HashMap<(NodeId, u32, bool), (f32, f32)>>,
+    /// Per node: its `size_at` answers — a parent asks for each child's
+    /// measure more than once per pass (a stack asks per width). Kept per
+    /// node, not in one map, so the retained road can forget one node's
+    /// answers when its content changed and keep everyone else's.
+    memo: RefCell<Vec<Vec<Memo>>>,
+    /// How many measures ran the long way (`size_at_uncached`) — the
+    /// locality counter the equivalence pin reads.
+    measured: Cell<u32>,
 }
 
 pub fn layout(page: &Page, res: &Resolved, viewport: Rect, text: &dyn TextMeasure) -> Vec<Rect> {
-    let mut lay = Lay { page, res, text, rects: vec![Rect::ZERO; page.nodes.len()], written: vec![[false; 2]; page.nodes.len()], memo: RefCell::new(HashMap::new()) };
-    if !page.nodes.is_empty() {
-        // The viewport is not a number the author wrote.
-        lay.place(NodeId::new(0), viewport, [false, false]);
-    }
-    // GP40 reveal on a STRETCHED axis: the shown extent is factor × the
-    // node's OWN extent, never the parent's grant (the shipped D93 rule) —
-    // hug axes already carry the scaled measure, a stretch clamps back.
-    // A `fill` axis has no own extent (a bare Rectangle measures 0): it
-    // shows the fraction of what it was GRANTED — the slider fill bar,
-    // `reveal_x` = the value's share of the track (user call 2026-09-05;
-    // before this the bar was 0 wide at every value and no pin looked).
+    let n = page.nodes.len();
+    let mut lay = Lay::new(page, res, text, vec![Rect::ZERO; n], vec![[false; 2]; n], vec![Vec::new(); n]);
+    lay.place_root(viewport);
+    // The reveal pass never reads a rect but its own node's, so it can
+    // run in place here; the retained road keeps the placed table apart.
     for id in page.node_ids() {
-        let fx = res.num(page, id, PropKey::RevealX).map(|f| f.clamp(0.0, 1.0));
-        let fy = res.num(page, id, PropKey::RevealY).map(|f| f.clamp(0.0, 1.0));
-        if let Some(f) = fx.filter(|f| *f < 1.0) {
-            if matches!(lay.placement(id).width, Len::Fill(_)) {
-                lay.rects[id].w *= f;
-            } else {
-                let (sw, _) = lay.size_at(id, Some(lay.rects[id].w));
-                lay.rects[id].w = lay.rects[id].w.min(sw);
-            }
-        }
-        if let Some(f) = fy.filter(|f| *f < 1.0) {
-            if matches!(lay.placement(id).height, Len::Fill(_)) {
-                lay.rects[id].h *= f;
-            } else {
-                let (_, sh) = lay.size_at(id, Some(lay.rects[id].w));
-                lay.rects[id].h = lay.rects[id].h.min(sh);
-            }
-        }
+        let placed = lay.rects[id];
+        lay.rects[id] = lay.reveal(id, placed);
     }
     lay.rects
+}
+
+/// The keys the layout pass reads off the look (`Resolved::prop` and its
+/// wrappers) — besides the placement words, which live in
+/// `Resolved::placement`. The retained road treats a change on any other
+/// key as draw-only: a `when held background=` press lays out nothing.
+/// Kept next to the pass so a new `res.num(..)` here grows this list.
+pub(crate) fn layout_reads(key: PropKey) -> bool {
+    key.is_placement()
+        || matches!(
+            key,
+            PropKey::Text
+                | PropKey::Wrap
+                | PropKey::ClipText
+                | PropKey::FontSize
+                | PropKey::Font
+                | PropKey::Spacing
+                | PropKey::BorderThickness
+                | PropKey::RevealX
+                | PropKey::RevealY
+                | PropKey::Overlay
+                | PropKey::Cols
+                | PropKey::Span
+                | PropKey::FullRow
+                | PropKey::Bars
+                | PropKey::Allow
+                | PropKey::Orientation
+                | PropKey::Aspect
+                | PropKey::Source
+                | PropKey::Visibility
+                | PropKey::ColSpan
+                | PropKey::RowSpan
+                | PropKey::RowHeight
+                | PropKey::SeatOf
+        )
 }
 
 /// Which axis a stack runs on.
@@ -251,6 +300,50 @@ enum Axis {
 }
 
 impl<'a> Lay<'a> {
+    fn new(page: &'a Page, res: &'a Resolved, text: &'a dyn TextMeasure, rects: Vec<Rect>, written: Vec<[bool; 2]>, memo: Vec<Vec<Memo>>) -> Lay<'a> {
+        Lay { page, res, text, rects, written, memo: RefCell::new(memo), measured: Cell::new(0) }
+    }
+
+    /// The whole page into `viewport`, root down.
+    fn place_root(&mut self, viewport: Rect) {
+        if !self.page.nodes.is_empty() {
+            // The viewport is not a number the author wrote.
+            self.place(NodeId::new(0), viewport, [false, false]);
+        }
+    }
+
+    /// GP40 reveal: the rect a node SHOWS given the one it was placed at.
+    /// On a STRETCHED axis the shown extent is factor × the node's OWN
+    /// extent, never the parent's grant (the shipped D93 rule) — hug axes
+    /// already carry the scaled measure, a stretch clamps back. A `fill`
+    /// axis has no own extent (a bare Rectangle measures 0): it shows the
+    /// fraction of what it was GRANTED — the slider fill bar, `reveal_x`
+    /// = the value's share of the track (user call 2026-09-05; before
+    /// this the bar was 0 wide at every value and no pin looked). Reads
+    /// no rect but `placed`, so the pass can run in any order.
+    fn reveal(&self, id: NodeId, placed: Rect) -> Rect {
+        let mut r = placed;
+        let fx = self.res.num(self.page, id, PropKey::RevealX).map(|f| f.clamp(0.0, 1.0));
+        let fy = self.res.num(self.page, id, PropKey::RevealY).map(|f| f.clamp(0.0, 1.0));
+        if let Some(f) = fx.filter(|f| *f < 1.0) {
+            if matches!(self.placement(id).width, Len::Fill(_)) {
+                r.w *= f;
+            } else {
+                let (sw, _) = self.size_at(id, Some(placed.w));
+                r.w = r.w.min(sw);
+            }
+        }
+        if let Some(f) = fy.filter(|f| *f < 1.0) {
+            if matches!(self.placement(id).height, Len::Fill(_)) {
+                r.h *= f;
+            } else {
+                let (_, sh) = self.size_at(id, Some(placed.w));
+                r.h = r.h.min(sh);
+            }
+        }
+        r
+    }
+
     fn node(&self, id: NodeId) -> &Node {
         &self.page.nodes[id]
     }
@@ -354,13 +447,17 @@ impl<'a> Lay<'a> {
     }
 
     fn size_at_flag(&self, id: NodeId, avail_w: Option<f32>, final_w: bool) -> (f32, f32) {
-        let key = (id, avail_w.map_or(u32::MAX, f32::to_bits), final_w);
-        if let Some(v) = self.memo.borrow().get(&key) {
-            return *v;
+        let avail: u32 = avail_w.map_or(u32::MAX, f32::to_bits);
+        // The borrow ends before the long road below asks the children
+        // (which borrow the memo again).
+        let kept: Option<(f32, f32)> = self.memo.borrow()[id.index()].iter().find(|m| m.avail == avail && m.final_w == final_w).map(|m| (m.w, m.h));
+        if let Some(v) = kept {
+            return v;
         }
-        let v = self.size_at_uncached(id, avail_w, final_w);
-        self.memo.borrow_mut().insert(key, v);
-        v
+        self.measured.set(self.measured.get() + 1);
+        let (w, h) = self.size_at_uncached(id, avail_w, final_w);
+        self.memo.borrow_mut()[id.index()].push(Memo { avail, final_w, w, h });
+        (w, h)
     }
 
     /// The main-axis word a stack reads: no word on the main axis hugs
@@ -1622,6 +1719,556 @@ pub fn scroll_axes_of(page: &Page, res: &Resolved, id: NodeId) -> (bool, bool) {
         let sx = !matches!(p.width, Len::Hug(_)) || p.max_width.is_some();
         let sy = !matches!(p.height, Len::Hug(_)) || p.max_height.is_some();
         (sx, sy)
+}
+
+// ----- the retained road (B36-DES stage 3) --------------------------------
+
+/// Can nothing under this box change its size? `true` for an exact width
+/// AND height, or — on a Scroll — a scrolling axis with no cap (its
+/// measure reports nothing on that axis; the content scrolls past). This
+/// is where the retained road's walk up from a changed node STOPS: a
+/// change under such a box moves nothing outside it, because every road
+/// that places its siblings or its ancestors asks only `size_at` of the
+/// box (an exact axis answers the number whatever the content) and the
+/// box's own rect follows its own words and the frame its parent hands
+/// it. A `fill` box under an exact free parent would hold too, but a
+/// fill child of a STACK floors its slot at its content (`main_min`), so
+/// the rule stays with exact and scrolling axes. What is not a box at
+/// all — a `repeat` (its rows take the host's slots) and a Grid `row`
+/// (the Grid places the cells) — never stops the walk, and neither does
+/// a Grid CELL: a cell past the track count is never placed at all
+/// (`place_grid` skips it), which only the Grid knows, so the walk goes
+/// on to the Grid and the Grid places its cells again.
+fn content_free(page: &Page, res: &Resolved, id: NodeId) -> bool {
+    let node = &page.nodes[id];
+    if matches!(node.kind, Kind::Repeat | Kind::GridRow) {
+        return false;
+    }
+    let parent: NodeId = res.placed_parent(page, id);
+    if parent != NO_NODE && parent.index() < page.nodes.len() && page.nodes[parent].kind == Kind::GridRow {
+        return false;
+    }
+    let p = &res.placement[id];
+    let (sx, sy) = if node.kind == Kind::Scroll { scroll_axes_of(page, res, id) } else { (false, false) };
+    let free_w = matches!(p.width, Len::Exact(_)) || (sx && p.max_width.is_none());
+    let free_h = matches!(p.height, Len::Exact(_)) || (sy && p.max_height.is_none());
+    free_w && free_h
+}
+
+/// Is `id` laid out at all right now? A box that is not placed keeps the
+/// zero rect, and placing its children into that zero frame would write
+/// rects the full road never writes. Placed = the page root (placed by
+/// `place_root` whatever its own visibility word — a page starts
+/// `visibility=gone` and is shown by `on:show`; only a CHILD's word
+/// keeps it out, through its parent's `visible_children`), or a child
+/// that is not `gone` of a placed parent — and, under a `repeat`, a live
+/// row (a pool slot not shown is never placed).
+fn shown(page: &Page, res: &Resolved, id: NodeId) -> bool {
+    let n = page.nodes.len();
+    let mut a = id;
+    loop {
+        if a.index() >= n {
+            return false;
+        }
+        let p = res.placed_parent(page, a);
+        if p == NO_NODE || p.index() >= n {
+            return true;
+        }
+        if res.gone(page, a) {
+            return false;
+        }
+        if page.nodes[p].kind == Kind::Repeat && !res.children(page, p).contains(&a) {
+            return false;
+        }
+        a = p;
+    }
+}
+
+/// The placed tree as first-child / next-sibling lists (children in
+/// index order), for walking a box's subtree without allocating per node
+/// — the same shape `draw::moved_rects` builds.
+pub(crate) fn placed_child_lists(page: &Page, res: &Resolved, first_child: &mut Vec<NodeId>, next_sibling: &mut Vec<NodeId>) {
+    let n = page.nodes.len();
+    first_child.clear();
+    first_child.resize(n, NO_NODE);
+    next_sibling.clear();
+    next_sibling.resize(n, NO_NODE);
+    for j in (0..n).rev() {
+        let parent = res.placed_parent(page, NodeId::from_index(j));
+        if parent != NO_NODE && parent.index() < n {
+            next_sibling[j] = first_child[parent.index()];
+            first_child[parent.index()] = NodeId::from_index(j);
+        }
+    }
+}
+
+/// The nodes in one list and not the other.
+pub(crate) fn sym_diff_nodes(a: &[NodeId], b: &[NodeId], out: &mut Vec<NodeId>) {
+    out.extend(a.iter().filter(|x| !b.contains(x)));
+    out.extend(b.iter().filter(|x| !a.contains(x)));
+}
+
+/// The nodes whose entry differs between two per-node lists (`auto`,
+/// `presence`): entry by entry when the lists are the same length (a
+/// slider glide moves one slot's fraction per frame — only that slot),
+/// every node of both otherwise.
+pub(crate) fn diff_pairs<T: PartialEq>(old: &[(NodeId, T)], new: &[(NodeId, T)], out: &mut Vec<NodeId>) {
+    if old.len() == new.len() {
+        for (a, b) in old.iter().zip(new) {
+            if a.0 != b.0 || a.1 != b.1 {
+                out.push(a.0);
+                out.push(b.0);
+            }
+        }
+    } else {
+        out.extend(old.iter().chain(new).map(|(node, _)| *node));
+    }
+}
+
+/// Do two override lists answer differently for any key `counts`? A
+/// lookup takes the LAST entry for a key (`Resolved::override_of`), so
+/// only that one counts per key.
+fn keys_differ(old: &[(NodeId, Prop)], new: &[(NodeId, Prop)], counts: impl Fn(PropKey) -> bool) -> bool {
+    let last = |list: &[(NodeId, Prop)], key: PropKey| list.iter().rev().find(|(_, p)| p.key == key).map(|(_, p)| p.value);
+    old.iter().chain(new).any(|(_, p)| counts(p.key) && last(old, p.key) != last(new, p.key))
+}
+
+/// The keys a node's DESCENDANTS read off it (`Resolved::inherited`: a
+/// Label takes the nearest ancestor's font words). A change on one of
+/// these changes the subtree's picture, not only the node's own.
+fn inherits(key: PropKey) -> bool {
+    matches!(key, PropKey::Font | PropKey::FontSize | PropKey::FontColor)
+}
+
+/// A kept copy of the look's per-node tables — the placement and the
+/// override list with its spans — and the compare that finds which
+/// nodes changed since. Needed because the retained roads (layout, draw)
+/// re-run only what changed, and comparing the tables themselves is what
+/// makes that complete: every value layout and draw read is in here, so
+/// nothing a resolve moves can slip by unmarked. The one change a
+/// compare cannot see — a string rewritten in place — the runtime
+/// reports (`ResolveChanges::rewritten`).
+#[derive(Default)]
+pub(crate) struct LookCopy {
+    placement: Vec<Placement>,
+    overrides: Vec<(NodeId, Prop)>,
+    override_span: Vec<(u32, u32)>,
+    override_tail: u32,
+    /// Scratch for the tail compare: entry indices sorted by node, and
+    /// one node's entries from each side.
+    old_idx: Vec<u32>,
+    new_idx: Vec<u32>,
+    old_group: Vec<(NodeId, Prop)>,
+    new_group: Vec<(NodeId, Prop)>,
+}
+
+impl LookCopy {
+    pub(crate) fn take(&mut self, res: &Resolved) {
+        self.placement.clone_from(&res.placement);
+        self.overrides.clone_from(&res.overrides);
+        self.override_span.clone_from(&res.override_span);
+        self.override_tail = res.override_tail;
+    }
+
+    /// Whether the copy is of a page with `n` nodes.
+    pub(crate) fn fits(&self, n: usize) -> bool {
+        self.placement.len() == n && self.override_span.len() == n
+    }
+
+    /// Pushes onto `out` every node whose placement or effective override
+    /// values differ between the copy and `res`. `layout_only`: an
+    /// override difference counts only on a key layout reads
+    /// (`layout_reads`) — a `when held background=` press marks nothing.
+    /// `inherited`, when given, takes the nodes whose font words changed
+    /// (`inherits`) — their whole subtree reads them. The ladder part is
+    /// compared per node (its span); the tail (writes, tweens, anim lanes
+    /// — no node order) is compared as a list and, when it differs, per
+    /// node with each node's entries in their order: a node's lookups
+    /// depend only on its own entries' order, and that order is fixed by
+    /// the phases the tail is pushed in.
+    pub(crate) fn diff(&mut self, res: &Resolved, layout_only: bool, out: &mut Vec<NodeId>, mut inherited: Option<&mut Vec<NodeId>>) {
+        let n = self.placement.len().min(res.placement.len());
+        for i in 0..n {
+            let id = NodeId::from_index(i);
+            if self.placement[i] != res.placement[i] {
+                out.push(id);
+                continue;
+            }
+            let (os, ol) = self.override_span[i];
+            let (ns, nl) = res.override_span[i];
+            let old = &self.overrides[os as usize..(os + ol) as usize];
+            let new = &res.overrides[ns as usize..(ns + nl) as usize];
+            if old != new {
+                if !layout_only || keys_differ(old, new, layout_reads) {
+                    out.push(id);
+                }
+                if let Some(inh) = inherited.as_deref_mut() {
+                    if keys_differ(old, new, inherits) {
+                        inh.push(id);
+                    }
+                }
+            }
+        }
+        let old_tail = &self.overrides[self.override_tail as usize..];
+        let new_tail = &res.overrides[res.override_tail as usize..];
+        if old_tail == new_tail {
+            return;
+        }
+        self.old_idx.clear();
+        self.old_idx.extend(0..old_tail.len() as u32);
+        self.old_idx.sort_by_key(|i| old_tail[*i as usize].0);
+        self.new_idx.clear();
+        self.new_idx.extend(0..new_tail.len() as u32);
+        self.new_idx.sort_by_key(|i| new_tail[*i as usize].0);
+        let (mut a, mut b) = (0usize, 0usize);
+        loop {
+            let na: Option<NodeId> = self.old_idx.get(a).map(|i| old_tail[*i as usize].0);
+            let nb: Option<NodeId> = self.new_idx.get(b).map(|i| new_tail[*i as usize].0);
+            let node: NodeId = match (na, nb) {
+                (Some(x), Some(y)) => x.min(y),
+                (Some(x), None) => x,
+                (None, Some(y)) => y,
+                (None, None) => break,
+            };
+            self.old_group.clear();
+            while a < self.old_idx.len() && old_tail[self.old_idx[a] as usize].0 == node {
+                self.old_group.push(old_tail[self.old_idx[a] as usize]);
+                a += 1;
+            }
+            self.new_group.clear();
+            while b < self.new_idx.len() && new_tail[self.new_idx[b] as usize].0 == node {
+                self.new_group.push(new_tail[self.new_idx[b] as usize]);
+                b += 1;
+            }
+            if self.old_group != self.new_group {
+                if !layout_only || keys_differ(&self.old_group, &self.new_group, layout_reads) {
+                    out.push(node);
+                }
+                if let Some(inh) = inherited.as_deref_mut() {
+                    if keys_differ(&self.old_group, &self.new_group, inherits) {
+                        inh.push(node);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What the last `LayoutCache::run` did — the equivalence pin reads it
+/// to prove a change stayed local.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LayoutStats {
+    /// The whole page was laid out again.
+    pub full: bool,
+    /// Measures that ran the long way (`size_at_uncached`); 0 when the
+    /// change touched no layout word.
+    pub measured: u32,
+    /// Boxes whose children were placed again.
+    pub roots: u32,
+}
+
+/// The retained layout (B36-DES stage 3): the last answer kept between
+/// frames — the placed rects, the shown rects, the `written` table and
+/// every node's measures — and re-laid only where the look changed.
+///
+/// The rule: a node whose layout words changed (`LookCopy::diff` over
+/// the keys `layout_reads`, a visibility fold change, a driver fraction,
+/// a rewritten string) dirties itself; the walk up its PLACED ancestry
+/// stops at the first clean box that `content_free` — that box's rect
+/// and measure cannot have changed, so its children are placed again
+/// from the rect it kept (`place_children`), the subtree's measures
+/// forgotten first, and the shown rects derived for the subtree. A
+/// Scroll whose offset moved re-places its children from the same rect
+/// with every measure kept — an offset is read by placement only. If a
+/// walk reaches the root the whole page is laid out again, as it is on
+/// the first run, another viewport or measure (`TextMeasure::identity`),
+/// a node-count, seat, repeat-row, theme, locale or inset change, or a
+/// resolve the cache did not see (`ResolveChanges::serial`).
+pub struct LayoutCache {
+    on: bool,
+    valid: bool,
+    seen_serial: u64,
+    viewport: Rect,
+    identity: u64,
+    variant: StrId,
+    locale: Option<Arc<Locale>>,
+    safe: [f32; 4],
+    seat: Vec<NodeId>,
+    repeat_rows: Vec<(NodeId, Vec<NodeId>)>,
+    scroll: Vec<[f32; 2]>,
+    hiding: Vec<NodeId>,
+    presence: Vec<(NodeId, bool)>,
+    auto: Vec<(NodeId, f32)>,
+    look: LookCopy,
+    /// Per node: the rect as placed (`Lay::rects`).
+    placed: Vec<Rect>,
+    /// Per node: the rect shown (`Lay::reveal` of `placed`) — the answer.
+    rects: Vec<Rect>,
+    written: Vec<[bool; 2]>,
+    memo: Vec<Vec<Memo>>,
+    // Scratch, kept so a steady frame allocates nothing.
+    changed: Vec<NodeId>,
+    dirty: Vec<bool>,
+    roots: Vec<(NodeId, bool)>,
+    first_child: Vec<NodeId>,
+    next_sibling: Vec<NodeId>,
+    stack: Vec<NodeId>,
+    stats: LayoutStats,
+}
+
+impl Default for LayoutCache {
+    fn default() -> LayoutCache {
+        LayoutCache {
+            on: true,
+            valid: false,
+            seen_serial: 0,
+            viewport: Rect::ZERO,
+            identity: 0,
+            variant: NO_STR,
+            locale: None,
+            safe: [0.0; 4],
+            seat: Vec::new(),
+            repeat_rows: Vec::new(),
+            scroll: Vec::new(),
+            hiding: Vec::new(),
+            presence: Vec::new(),
+            auto: Vec::new(),
+            look: LookCopy::default(),
+            placed: Vec::new(),
+            rects: Vec::new(),
+            written: Vec::new(),
+            memo: Vec::new(),
+            changed: Vec::new(),
+            dirty: Vec::new(),
+            roots: Vec::new(),
+            first_child: Vec::new(),
+            next_sibling: Vec::new(),
+            stack: Vec::new(),
+            stats: LayoutStats::default(),
+        }
+    }
+}
+
+impl LayoutCache {
+    /// The switch: off = every run is the full road (for the equivalence
+    /// pin and for bisecting a layout that differs between the roads).
+    pub fn set_on(&mut self, on: bool) {
+        self.on = on;
+        self.valid = false;
+    }
+
+    pub fn stats(&self) -> LayoutStats {
+        self.stats
+    }
+
+    /// The shown rects for `res` in `viewport` — the same answer `layout`
+    /// gives, re-laid only where `res` differs from what the last run
+    /// saw. `changes` is the runtime's report for `res`.
+    pub fn run(&mut self, page: &Page, res: &Resolved, changes: &ResolveChanges, viewport: Rect, text: &dyn TextMeasure) -> &[Rect] {
+        let n = page.nodes.len();
+        let same_locale: bool = match (&self.locale, &res.locale) {
+            (None, None) => true,
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        let seen_resolve: bool = changes.serial == self.seen_serial || changes.serial == self.seen_serial + 1;
+        let full: bool = !self.on
+            || !self.valid
+            || changes.full
+            || !seen_resolve
+            || !self.look.fits(n)
+            || res.placement.len() != n
+            || res.scroll.len() != n
+            || res.seat.len() != n
+            || self.placed.len() != n
+            || viewport != self.viewport
+            || text.identity() != self.identity
+            || res.variant != self.variant
+            || !same_locale
+            || res.safe != self.safe
+            || res.seat != self.seat
+            || res.repeat_rows != self.repeat_rows;
+        if full {
+            self.full(page, res, changes, viewport, text);
+        } else {
+            self.patch(page, res, changes, viewport, text);
+        }
+        &self.rects
+    }
+
+    fn full(&mut self, page: &Page, res: &Resolved, changes: &ResolveChanges, viewport: Rect, text: &dyn TextMeasure) {
+        let n = page.nodes.len();
+        self.placed.clear();
+        self.placed.resize(n, Rect::ZERO);
+        self.written.clear();
+        self.written.resize(n, [false; 2]);
+        self.memo.resize_with(n, Vec::new);
+        for m in &mut self.memo {
+            m.clear();
+        }
+        let mut lay = Lay::new(page, res, text, std::mem::take(&mut self.placed), std::mem::take(&mut self.written), std::mem::take(&mut self.memo));
+        lay.place_root(viewport);
+        self.rects.clear();
+        self.rects.extend(page.node_ids().map(|id| lay.reveal(id, lay.rects[id])));
+        self.stats = LayoutStats { full: true, measured: lay.measured.get(), roots: 1 };
+        self.placed = lay.rects;
+        self.written = lay.written;
+        self.memo = lay.memo.into_inner();
+        self.remember(res, changes, viewport, text);
+        self.valid = true;
+    }
+
+    /// What the next run compares against.
+    fn remember(&mut self, res: &Resolved, changes: &ResolveChanges, viewport: Rect, text: &dyn TextMeasure) {
+        self.seen_serial = changes.serial;
+        self.viewport = viewport;
+        self.identity = text.identity();
+        self.variant = res.variant;
+        self.locale.clone_from(&res.locale);
+        self.safe = res.safe;
+        self.seat.clone_from(&res.seat);
+        self.repeat_rows.clone_from(&res.repeat_rows);
+        self.scroll.clone_from(&res.scroll);
+        self.hiding.clone_from(&res.hiding);
+        self.presence.clone_from(&res.presence);
+        self.auto.clone_from(&res.auto);
+        self.look.take(res);
+    }
+
+    fn patch(&mut self, page: &Page, res: &Resolved, changes: &ResolveChanges, viewport: Rect, text: &dyn TextMeasure) {
+        let n = page.nodes.len();
+        // 1. The nodes whose layout inputs changed.
+        let mut changed: Vec<NodeId> = std::mem::take(&mut self.changed);
+        changed.clear();
+        self.look.diff(res, true, &mut changed, None);
+        sym_diff_nodes(&self.hiding, &res.hiding, &mut changed);
+        diff_pairs(&self.presence, &res.presence, &mut changed);
+        diff_pairs(&self.auto, &res.auto, &mut changed);
+        if changes.serial == self.seen_serial + 1 {
+            changed.extend_from_slice(&changes.rewritten);
+        }
+        // A Scroll whose offset moved (against the table the last run
+        // laid out by) re-places its own children; one that is a Grid
+        // cell is re-placed by its Grid like any changed node
+        // (`content_free` on cells).
+        let mut roots: Vec<(NodeId, bool)> = std::mem::take(&mut self.roots);
+        roots.clear();
+        for i in 0..n {
+            if self.scroll[i] != res.scroll[i] {
+                let id = NodeId::from_index(i);
+                let parent: NodeId = res.placed_parent(page, id);
+                if parent != NO_NODE && parent.index() < n && page.nodes[parent].kind == Kind::GridRow {
+                    changed.push(id);
+                } else {
+                    roots.push((id, false));
+                }
+            }
+        }
+        changed.retain(|c| c.index() < n);
+        changed.sort();
+        changed.dedup();
+        if changed.is_empty() && roots.is_empty() {
+            // Nothing layout reads moved: the tables equal the copies,
+            // so there is nothing to copy either.
+            self.stats = LayoutStats { full: false, measured: 0, roots: 0 };
+            self.seen_serial = changes.serial;
+            self.changed = changed;
+            self.roots = roots;
+            return;
+        }
+        // 2. Each changed node dirties itself; the walk up finds the box
+        // to re-place from. Reaching the root = the whole page.
+        let mut dirty: Vec<bool> = std::mem::take(&mut self.dirty);
+        dirty.clear();
+        dirty.resize(n, false);
+        for c in &changed {
+            dirty[c.index()] = true;
+        }
+        for c in &changed {
+            let mut a: NodeId = res.placed_parent(page, *c);
+            loop {
+                if a == NO_NODE || a.index() >= n {
+                    self.changed = changed;
+                    self.dirty = dirty;
+                    self.roots = roots;
+                    self.full(page, res, changes, viewport, text);
+                    return;
+                }
+                if !dirty[a.index()] && content_free(page, res, a) {
+                    roots.push((a, true));
+                    break;
+                }
+                a = res.placed_parent(page, a);
+            }
+        }
+        // 3. One root per box (a box named for a scroll move and for a
+        // change keeps the re-measure), none under another — the box
+        // above re-places it anyway.
+        roots.sort_by(|x, y| x.0.cmp(&y.0).then(y.1.cmp(&x.1)));
+        roots.dedup_by_key(|r| r.0);
+        let mut i = 0;
+        while i < roots.len() {
+            let r: NodeId = roots[i].0;
+            let covered: bool = roots.iter().any(|(q, _)| *q != r && res.placed_is_under(page, r, *q));
+            if covered {
+                roots.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        // 4. Forget the re-measured subtrees: their measures and rects
+        // (a child gone now keeps the zero rect the full road gives it).
+        placed_child_lists(page, res, &mut self.first_child, &mut self.next_sibling);
+        self.memo.resize_with(n, Vec::new);
+        for k in 0..roots.len() {
+            let (r, remeasure) = roots[k];
+            if !remeasure {
+                continue;
+            }
+            self.stack.clear();
+            self.push_children(r);
+            while let Some(d) = self.stack.pop() {
+                self.memo[d.index()].clear();
+                self.placed[d.index()] = Rect::ZERO;
+                self.rects[d.index()] = Rect::ZERO;
+                self.push_children(d);
+            }
+        }
+        // 5. Place each root's children again from the rect it kept, and
+        // derive the subtree's shown rects.
+        let mut lay = Lay::new(page, res, text, std::mem::take(&mut self.placed), std::mem::take(&mut self.written), std::mem::take(&mut self.memo));
+        for k in 0..roots.len() {
+            let r: NodeId = roots[k].0;
+            if !shown(page, res, r) {
+                continue;
+            }
+            let frame: Rect = lay.rects[r];
+            lay.place_children(r, frame);
+            self.stack.clear();
+            self.push_children(r);
+            while let Some(d) = self.stack.pop() {
+                self.rects[d.index()] = lay.reveal(d, lay.rects[d]);
+                self.push_children(d);
+            }
+        }
+        self.stats = LayoutStats { full: false, measured: lay.measured.get(), roots: roots.len() as u32 };
+        self.placed = lay.rects;
+        self.written = lay.written;
+        self.memo = lay.memo.into_inner();
+        self.changed = changed;
+        self.dirty = dirty;
+        self.roots = roots;
+        self.remember(res, changes, viewport, text);
+    }
+
+    /// Pushes `id`'s placed children onto the scratch stack.
+    fn push_children(&mut self, id: NodeId) {
+        let mut c: NodeId = self.first_child[id.index()];
+        while c != NO_NODE {
+            self.stack.push(c);
+            c = self.next_sibling[c.index()];
+        }
+    }
 }
 
 #[cfg(test)]

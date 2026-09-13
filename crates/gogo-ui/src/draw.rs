@@ -3,9 +3,10 @@
 //! in file order, so later = on top). Opacity multiplies down the walk.
 //! `gogo` never sees a device pixel; rects are epx.
 
-use crate::layout::{CHECK_BOX_EPX, DEFAULT_FONT_SIZE, MARK_TEXT_GAP, Rect, SCROLL_BAR_EPX, TOGGLE_PILL};
+use crate::anim::Motion;
+use crate::layout::{CHECK_BOX_EPX, DEFAULT_FONT_SIZE, LookCopy, MARK_TEXT_GAP, Rect, SCROLL_BAR_EPX, TOGGLE_PILL, placed_child_lists};
 use crate::page::*;
-use crate::runtime::{DISABLED, Resolved, SELECTED};
+use crate::runtime::{DISABLED, ResolveChanges, Resolved, SELECTED};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextAlign {
@@ -203,7 +204,7 @@ pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
     if page.nodes.is_empty() {
         return out;
     }
-    walk(page, res, rects, NodeId::new(0), 1.0, None, &mut out);
+    walk(page, res, rects, NodeId::new(0), 1.0, None, &mut out, None, false);
     out
 }
 
@@ -221,7 +222,7 @@ pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
 pub fn draw_subtree(page: &Page, res: &Resolved, rects: &[Rect], root: NodeId) -> Vec<Draw> {
     let mut out = Vec::new();
     if rects.len() > root.index() {
-        walk(page, res, rects, root, 1.0, None, &mut out);
+        walk(page, res, rects, root, 1.0, None, &mut out, None, false);
     }
     out
 }
@@ -240,7 +241,7 @@ pub fn draw_except(page: &Page, res: &Resolved, rects: &[Rect], skip: NodeId) ->
     if page.nodes.is_empty() {
         return out;
     }
-    walk(page, res, rects, NodeId::new(0), 1.0, Some(skip), &mut out);
+    walk(page, res, rects, NodeId::new(0), 1.0, Some(skip), &mut out, None, false);
     out
 }
 
@@ -391,7 +392,93 @@ pub(crate) fn clips(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId) -> 
     matches!(node.kind, Kind::Scroll | Kind::List | Kind::Slot) || res.bool(page, id, PropKey::ClipContents).unwrap_or(false) || (node.kind == Kind::Label && res.bool(page, id, PropKey::ClipText).unwrap_or(false)) || written_overflow
 }
 
-fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, skip: Option<NodeId>, out: &mut Vec<Draw>) {
+/// The retained draw's bookkeeping for one walk (B36-DES stage 3,
+/// `DrawCache`): what last frame's list holds per node, so a node whose
+/// subtree is clean has its run COPIED from that list instead of walked,
+/// and the tables the walk fills in for the next frame.
+struct Patch<'p> {
+    /// Last frame's list — the source of the copied runs.
+    prev: &'p [Draw],
+    /// Per node: its run in `prev` (start, end) — the node's own commands
+    /// and its whole subtree's, pops included.
+    span_old: &'p [(u32, u32)],
+    /// Per node: the walk's inputs from outside the subtree last frame —
+    /// the ancestors' opacity product and whether an ancestor's
+    /// translate/scale moved the rects (`moved_rects` in `walk`) — and
+    /// the frame stamp of the last visit. A run is copied only when all
+    /// three match: same opacity, no moved rects either time, visited
+    /// last frame (a subtree under a box that was `gone` was not walked
+    /// and holds a stale run).
+    ctx_old: &'p [(f32, bool, u32)],
+    /// Per node: does its subtree (itself included) hold a node whose
+    /// look or rect changed? Only a clean subtree is copied.
+    dirty_sub: &'p [bool],
+    /// The placed tree, for stamping a copied subtree's nodes.
+    first_child: &'p [NodeId],
+    next_sibling: &'p [NodeId],
+    /// This frame's stamp.
+    frame: u32,
+    // Filled by the walk.
+    span_new: Vec<(u32, u32)>,
+    ctx_new: Vec<(f32, bool, u32)>,
+    /// Per node: the `clips` answer (carried over for copied nodes) —
+    /// the cache asks it for a changed node's parent next frame.
+    clip: Vec<bool>,
+    stack: Vec<NodeId>,
+    /// Commands copied rather than emitted (the locality counter's
+    /// other half).
+    copied: usize,
+}
+
+impl Patch<'_> {
+    /// Books a copied run: every node of `id`'s subtree that the last
+    /// walk visited keeps last frame's span moved by `delta`, its
+    /// context, and takes this frame's stamp. A node the last walk did
+    /// not reach (under a `gone` or `space_only` box, a repeat slot not
+    /// live) keeps its stale stamp and is not descended into — its run
+    /// is not in the list, and when its box shows again it must be
+    /// walked, never copied.
+    fn shift_subtree(&mut self, id: NodeId, delta: i64) {
+        let last: u32 = self.frame.wrapping_sub(1);
+        self.stack.clear();
+        self.stack.push(id);
+        while let Some(d) = self.stack.pop() {
+            let i = d.index();
+            if self.ctx_old[i].2 != last {
+                continue;
+            }
+            let (s, e) = self.span_old[i];
+            self.span_new[i] = ((s as i64 + delta) as u32, (e as i64 + delta) as u32);
+            self.ctx_new[i] = (self.ctx_old[i].0, self.ctx_old[i].1, self.frame);
+            let mut c: NodeId = self.first_child[i];
+            while c != NO_NODE {
+                self.stack.push(c);
+                c = self.next_sibling[c.index()];
+            }
+        }
+    }
+}
+
+/// One node and its subtree onto `out`. `patch`: the retained road's
+/// books (`None` = the plain walk); `under_motion`: an ancestor's
+/// translate or scale moved `rects` (never copy under it — the run was
+/// made from other rects).
+#[allow(clippy::too_many_arguments)]
+fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, skip: Option<NodeId>, out: &mut Vec<Draw>, mut patch: Option<&mut Patch<'_>>, under_motion: bool) {
+    let start: usize = out.len();
+    if let Some(p) = patch.as_deref_mut() {
+        let (o, m, stamp) = p.ctx_old[id.index()];
+        if !under_motion && !m && stamp == p.frame.wrapping_sub(1) && o == opacity && !p.dirty_sub[id.index()] {
+            let (s, e) = p.span_old[id.index()];
+            out.extend_from_slice(&p.prev[s as usize..e as usize]);
+            p.copied += (e - s) as usize;
+            p.shift_subtree(id, start as i64 - s as i64);
+            return;
+        }
+        p.span_new[id.index()] = (start as u32, start as u32);
+        p.ctx_new[id.index()] = (opacity, under_motion, p.frame);
+        p.clip[id.index()] = false;
+    }
     if skip == Some(id) || res.gone(page, id) || res.hidden(page, id) {
         return;
     }
@@ -458,6 +545,9 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
     // surface: no chrome unless the file paints it.
     let templated = node.kind.is_press_surface() && node.kind != Kind::Button && node.children.1 > 0;
     let clip = clips(page, res, rects, id);
+    if let Some(p) = patch.as_deref_mut() {
+        p.clip[id.index()] = clip;
+    }
     if clip {
         out.push(Draw::ClipPush(rect));
     }
@@ -862,11 +952,11 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
             moved_rects[i] = Rect::new(cx + (r.x - cx) * motion.scale[0] + motion.translate[0], cy + (r.y - cy) * motion.scale[1] + motion.translate[1], r.w * motion.scale[0], r.h * motion.scale[1]);
         }
         for c in res.paint_children(page, id) {
-            walk(page, res, &moved_rects, c, opacity, skip, out);
+            walk(page, res, &moved_rects, c, opacity, skip, out, patch.as_deref_mut(), true);
         }
     } else {
         for c in res.paint_children(page, id) {
-            walk(page, res, rects, c, opacity, skip, out);
+            walk(page, res, rects, c, opacity, skip, out, patch.as_deref_mut(), under_motion);
         }
     }
     if matches!(node.kind, Kind::Scroll | Kind::List) && res.ident(page, id, PropKey::Bars) != Some("never") {
@@ -943,6 +1033,9 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
                 _ => {}
             }
         }
+    }
+    if let Some(p) = patch.as_deref_mut() {
+        p.span_new[id.index()].1 = out.len() as u32;
     }
 }
 
@@ -1182,6 +1275,383 @@ fn hit_laid_at(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any:
         }
     }
     None
+}
+
+// ----- the retained road (B36-DES stage 3) --------------------------------
+
+/// What the last `DrawCache::run` did — the equivalence pin reads it to
+/// prove a change stayed local.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DrawStats {
+    /// The whole list was walked again.
+    pub full: bool,
+    /// Commands a walk emitted; the rest of the list was copied from
+    /// last frame's.
+    pub emitted: u32,
+    /// Nodes whose look or rect changed since the last run (before the
+    /// parents that read them join) — the reason for a big `emitted`.
+    pub dirty: u32,
+}
+
+/// The retained draw list (B36-DES stage 3): the list is built again
+/// every run, but a node whose subtree is clean has its run copied from
+/// last frame's list (`Patch`) and only the changed subtrees are walked.
+///
+/// A node is dirty when its look changed (`LookCopy::diff`, every key),
+/// its shown rect, motion, state bits, anim ownership, scroll offset,
+/// hiding/presence/driver entry, the caret or selection on it, or a
+/// string rewritten in place. A dirty node's ancestors are walked again
+/// too (their run holds it) but their own commands are copied nowhere —
+/// they are cheap, the subtrees beside the dirty one are the copies. A
+/// changed node also dirties its parent when the parent's `clips` answer
+/// moved (it reads the children's rects and words) or when a Scroll or
+/// List's bar reads a child's changed rect. The paint order itself is
+/// not patched: a seat move, a row change or a raise, like a node-count
+/// change, a theme switch or a list the host altered, walks everything.
+pub struct DrawCache {
+    on: bool,
+    valid: bool,
+    seen_serial: u64,
+    /// The visit stamp (`Patch::frame`), advanced per walk.
+    frame: u32,
+    /// The length of the list handed out last — a host that changed the
+    /// list since gets a full walk, never a copy from a list this cache
+    /// did not build.
+    expected_len: usize,
+    span: Vec<(u32, u32)>,
+    ctx: Vec<(f32, bool, u32)>,
+    clip: Vec<bool>,
+    // What the next run compares against.
+    rects: Vec<Rect>,
+    motion: Vec<Motion>,
+    states: Vec<u8>,
+    anim_owned: Vec<u16>,
+    anim_owned_props: Vec<(NodeId, PropKey)>,
+    raised: Vec<(NodeId, i32)>,
+    seat: Vec<NodeId>,
+    repeat_rows: Vec<(NodeId, Vec<NodeId>)>,
+    hiding: Vec<NodeId>,
+    presence: Vec<(NodeId, bool)>,
+    auto: Vec<(NodeId, f32)>,
+    scroll: Vec<[f32; 2]>,
+    caret: Option<(NodeId, u32)>,
+    selection: Option<(NodeId, u32, u32)>,
+    sel_handles: bool,
+    variant: StrId,
+    look: LookCopy,
+    // Scratch, kept so a steady frame allocates nothing.
+    next: Vec<Draw>,
+    changed: Vec<NodeId>,
+    /// Nodes whose font words changed: their whole subtree reads them
+    /// (`Resolved::inherited`), so it is walked, never copied.
+    inherited: Vec<NodeId>,
+    dirty: Vec<bool>,
+    /// Per node: its `clips` answer was already asked this run.
+    clip_asked: Vec<bool>,
+    rect_changed: Vec<bool>,
+    dirty_sub: Vec<bool>,
+    first_child: Vec<NodeId>,
+    next_sibling: Vec<NodeId>,
+    span_new: Vec<(u32, u32)>,
+    ctx_new: Vec<(f32, bool, u32)>,
+    clip_new: Vec<bool>,
+    stack: Vec<NodeId>,
+    stats: DrawStats,
+}
+
+impl Default for DrawCache {
+    fn default() -> DrawCache {
+        DrawCache {
+            on: true,
+            valid: false,
+            seen_serial: 0,
+            frame: 0,
+            expected_len: 0,
+            span: Vec::new(),
+            ctx: Vec::new(),
+            clip: Vec::new(),
+            rects: Vec::new(),
+            motion: Vec::new(),
+            states: Vec::new(),
+            anim_owned: Vec::new(),
+            anim_owned_props: Vec::new(),
+            raised: Vec::new(),
+            seat: Vec::new(),
+            repeat_rows: Vec::new(),
+            hiding: Vec::new(),
+            presence: Vec::new(),
+            auto: Vec::new(),
+            scroll: Vec::new(),
+            caret: None,
+            selection: None,
+            sel_handles: false,
+            variant: NO_STR,
+            look: LookCopy::default(),
+            next: Vec::new(),
+            changed: Vec::new(),
+            inherited: Vec::new(),
+            dirty: Vec::new(),
+            clip_asked: Vec::new(),
+            rect_changed: Vec::new(),
+            dirty_sub: Vec::new(),
+            first_child: Vec::new(),
+            next_sibling: Vec::new(),
+            span_new: Vec::new(),
+            ctx_new: Vec::new(),
+            clip_new: Vec::new(),
+            stack: Vec::new(),
+            stats: DrawStats::default(),
+        }
+    }
+}
+
+impl DrawCache {
+    /// The switch: off = every run walks the whole list (for the
+    /// equivalence pin and for bisecting a list that differs between the
+    /// roads).
+    pub fn set_on(&mut self, on: bool) {
+        self.on = on;
+        self.valid = false;
+    }
+
+    pub fn stats(&self) -> DrawStats {
+        self.stats
+    }
+
+    /// Brings `out` — the list this cache handed out last time (or any
+    /// list; one it did not build is walked whole) — up to date with
+    /// `res` and the shown `rects`: the same list `draw` gives.
+    /// `changes` is the runtime's report for `res`.
+    pub fn run(&mut self, page: &Page, res: &Resolved, changes: &ResolveChanges, rects: &[Rect], out: &mut Vec<Draw>) {
+        let n = page.nodes.len();
+        let seen_resolve: bool = changes.serial == self.seen_serial || changes.serial == self.seen_serial + 1;
+        let full: bool = !self.on
+            || !self.valid
+            || changes.full
+            || !seen_resolve
+            || self.span.len() != n
+            || self.rects.len() != n
+            || rects.len() != n
+            || out.len() != self.expected_len
+            || !self.look.fits(n)
+            || res.motion.len() != n
+            || res.states.len() != n
+            || res.anim_owned.len() != n
+            || res.seat.len() != n
+            || res.scroll.len() != n
+            || res.seat != self.seat
+            || res.repeat_rows != self.repeat_rows
+            || res.raised != self.raised
+            || res.variant != self.variant;
+        if full {
+            self.emit(page, res, rects, out, true);
+            self.remember(res, changes, rects);
+            self.valid = true;
+        } else {
+            self.patch(page, res, changes, rects, out);
+        }
+    }
+
+    fn patch(&mut self, page: &Page, res: &Resolved, changes: &ResolveChanges, rects: &[Rect], out: &mut Vec<Draw>) {
+        let n = page.nodes.len();
+        // 1. The nodes whose picture may have changed.
+        let mut changed: Vec<NodeId> = std::mem::take(&mut self.changed);
+        changed.clear();
+        let mut inherited: Vec<NodeId> = std::mem::take(&mut self.inherited);
+        inherited.clear();
+        self.look.diff(res, false, &mut changed, Some(&mut inherited));
+        self.rect_changed.clear();
+        self.rect_changed.resize(n, false);
+        for i in 0..n {
+            let id = NodeId::from_index(i);
+            if rects[i] != self.rects[i] {
+                self.rect_changed[i] = true;
+                changed.push(id);
+            } else if res.motion[i] != self.motion[i] || res.states[i] != self.states[i] || res.anim_owned[i] != self.anim_owned[i] || res.scroll[i] != self.scroll[i] {
+                changed.push(id);
+            }
+        }
+        if res.anim_owned_props != self.anim_owned_props {
+            changed.extend(self.anim_owned_props.iter().chain(&res.anim_owned_props).map(|(node, _)| *node));
+        }
+        crate::layout::sym_diff_nodes(&self.hiding, &res.hiding, &mut changed);
+        crate::layout::diff_pairs(&self.presence, &res.presence, &mut changed);
+        crate::layout::diff_pairs(&self.auto, &res.auto, &mut changed);
+        if self.caret != res.caret {
+            changed.extend(self.caret.iter().chain(&res.caret).map(|(node, _)| *node));
+        }
+        if self.selection != res.selection || self.sel_handles != res.sel_handles {
+            changed.extend(self.selection.iter().chain(&res.selection).map(|(node, _, _)| *node));
+        }
+        if changes.serial == self.seen_serial + 1 {
+            changed.extend_from_slice(&changes.rewritten);
+        }
+        changed.retain(|c| c.index() < n);
+        changed.sort();
+        changed.dedup();
+        let dirty_count: u32 = changed.len() as u32;
+        if changed.is_empty() {
+            self.stats = DrawStats { full: false, emitted: 0, dirty: 0 };
+            self.seen_serial = changes.serial;
+            self.changed = changed;
+            self.inherited = inherited;
+            return;
+        }
+        if changed.len() * 2 > n {
+            // Most of the page moved (a pan of a strip that IS the page:
+            // every rect under the Scroll is new) — nothing worth copying,
+            // and the parent and subtree passes below would only cost.
+            // The plain walk, booked like a full one. On the S24's main
+            // page the patched road ran slower than `draw` before this.
+            self.changed = changed;
+            self.inherited = inherited;
+            self.emit(page, res, rects, out, true);
+            self.stats.dirty = dirty_count;
+            self.remember(res, changes, rects);
+            return;
+        }
+        // 2. Dirty marks — a node with changed font words dirties its
+        // whole placed subtree — then the parents that read a changed
+        // child.
+        placed_child_lists(page, res, &mut self.first_child, &mut self.next_sibling);
+        self.dirty.clear();
+        self.dirty.resize(n, false);
+        for c in &changed {
+            self.dirty[c.index()] = true;
+        }
+        for k in 0..inherited.len() {
+            let root: NodeId = inherited[k];
+            if root.index() >= n {
+                continue;
+            }
+            self.stack.clear();
+            self.stack.push(root);
+            while let Some(d) = self.stack.pop() {
+                self.dirty[d.index()] = true;
+                let mut c: NodeId = self.first_child[d.index()];
+                while c != NO_NODE {
+                    self.stack.push(c);
+                    c = self.next_sibling[c.index()];
+                }
+            }
+        }
+        self.inherited = inherited;
+        // A parent's `clips` is asked ONCE per run: it walks every child
+        // with prop lookups, and asking it per changed child made a row
+        // of tiles cost tiles × children each frame.
+        self.clip_asked.clear();
+        self.clip_asked.resize(n, false);
+        for k in 0..changed.len() {
+            let c: NodeId = changed[k];
+            let p: NodeId = res.placed_parent(page, c);
+            if p == NO_NODE || p.index() >= n {
+                continue;
+            }
+            // A Scroll's or List's bar is as long as its children's
+            // rects say (a List's rows sit under a `repeat`).
+            let bar_owner: NodeId = if page.nodes[p].kind == Kind::Repeat { res.placed_parent(page, p) } else { p };
+            if bar_owner != NO_NODE && bar_owner.index() < n && matches!(page.nodes[bar_owner].kind, Kind::Scroll | Kind::List) && self.rect_changed[c.index()] {
+                self.dirty[bar_owner.index()] = true;
+            }
+            if !self.dirty[p.index()] && !self.clip_asked[p.index()] {
+                self.clip_asked[p.index()] = true;
+                if clips(page, res, rects, p) != self.clip[p.index()] {
+                    self.dirty[p.index()] = true;
+                }
+            }
+        }
+        // 3. A dirty node's ancestors are walked again (their runs hold
+        // it); everything beside the dirty subtrees is copied.
+        self.dirty_sub.clear();
+        self.dirty_sub.resize(n, false);
+        for i in 0..n {
+            if !self.dirty[i] {
+                continue;
+            }
+            let mut a = NodeId::from_index(i);
+            while a != NO_NODE && a.index() < n && !self.dirty_sub[a.index()] {
+                self.dirty_sub[a.index()] = true;
+                a = res.placed_parent(page, a);
+            }
+        }
+        self.changed = changed;
+        self.emit(page, res, rects, out, false);
+        self.stats.dirty = dirty_count;
+        self.remember(res, changes, rects);
+    }
+
+    /// One walk over the page into a fresh list, copying every clean
+    /// subtree's run from `out` (last frame's list); `everything` = walk
+    /// every node (the full road). `out` then holds the new list.
+    fn emit(&mut self, page: &Page, res: &Resolved, rects: &[Rect], out: &mut Vec<Draw>, everything: bool) {
+        let n = page.nodes.len();
+        self.frame = self.frame.wrapping_add(1);
+        if everything {
+            placed_child_lists(page, res, &mut self.first_child, &mut self.next_sibling);
+            self.dirty_sub.clear();
+            self.dirty_sub.resize(n, true);
+        }
+        self.span.resize(n, (0, 0));
+        self.ctx.resize(n, (1.0, false, 0));
+        self.clip.resize(n, false);
+        let mut span_new: Vec<(u32, u32)> = std::mem::take(&mut self.span_new);
+        span_new.clone_from(&self.span);
+        let mut ctx_new: Vec<(f32, bool, u32)> = std::mem::take(&mut self.ctx_new);
+        ctx_new.clone_from(&self.ctx);
+        let mut clip_new: Vec<bool> = std::mem::take(&mut self.clip_new);
+        clip_new.clone_from(&self.clip);
+        let mut next: Vec<Draw> = std::mem::take(&mut self.next);
+        next.clear();
+        let mut patch = Patch {
+            prev: &out[..],
+            span_old: &self.span,
+            ctx_old: &self.ctx,
+            dirty_sub: &self.dirty_sub,
+            first_child: &self.first_child,
+            next_sibling: &self.next_sibling,
+            frame: self.frame,
+            span_new,
+            ctx_new,
+            clip: clip_new,
+            stack: std::mem::take(&mut self.stack),
+            copied: 0,
+        };
+        if n > 0 {
+            walk(page, res, rects, NodeId::new(0), 1.0, None, &mut next, Some(&mut patch), false);
+        }
+        let Patch { span_new, ctx_new, clip, stack, copied, .. } = patch;
+        self.stats = DrawStats { full: everything, emitted: (next.len() - copied) as u32, dirty: n as u32 };
+        self.span_new = std::mem::replace(&mut self.span, span_new);
+        self.ctx_new = std::mem::replace(&mut self.ctx, ctx_new);
+        self.clip_new = std::mem::replace(&mut self.clip, clip);
+        self.stack = stack;
+        std::mem::swap(out, &mut next);
+        self.next = next;
+        self.expected_len = out.len();
+    }
+
+    /// What the next run compares against.
+    fn remember(&mut self, res: &Resolved, changes: &ResolveChanges, rects: &[Rect]) {
+        self.seen_serial = changes.serial;
+        self.rects.clear();
+        self.rects.extend_from_slice(rects);
+        self.motion.clone_from(&res.motion);
+        self.states.clone_from(&res.states);
+        self.anim_owned.clone_from(&res.anim_owned);
+        self.anim_owned_props.clone_from(&res.anim_owned_props);
+        self.raised.clone_from(&res.raised);
+        self.seat.clone_from(&res.seat);
+        self.repeat_rows.clone_from(&res.repeat_rows);
+        self.hiding.clone_from(&res.hiding);
+        self.presence.clone_from(&res.presence);
+        self.auto.clone_from(&res.auto);
+        self.scroll.clone_from(&res.scroll);
+        self.caret = res.caret;
+        self.selection = res.selection;
+        self.sel_handles = res.sel_handles;
+        self.variant = res.variant;
+        self.look.take(res);
+    }
 }
 
 #[cfg(test)]

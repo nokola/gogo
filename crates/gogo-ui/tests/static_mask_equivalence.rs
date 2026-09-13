@@ -12,10 +12,25 @@
 //! some dynamic), and the retained road to be really local on the
 //! effect page (one Button flip re-ladders a handful of nodes), so the
 //! pin cannot pass vacuously.
+//!
+//! Stage (3) rides the same script: after every step each road also
+//! lays out and draws — the full road (`layout`, `draw`) beside the
+//! retained one (`Runtime::layout_retained`, `Runtime::draw_retained`)
+//! — and the rects (bit for bit) and the draw lists must be equal. The
+//! script grows the steps layout cares about: a scroll on every Scroll
+//! and List, a label rewritten in place, a viewport change (the full
+//! road, asserted). The effect page's Button flip must lay out nothing
+//! and re-emit under a hundred commands.
+use gogo::draw::DrawStats;
+use gogo::layout::LayoutStats;
 use gogo::page::State;
 use gogo::runtime::{DISABLED, FOCUSED, FOCUS_WITHIN, HELD, HOVERED, Item, ItemValue, Resolved, Runtime, SELECTED, resolve_animated};
-use gogo::{ArrangementId, BASE, CompileOptions, Finish, Kind, NO_NODE, NO_STR, NodeId, Page, PropKey, Value, compile, compile_file_with, has_errors};
+use gogo::{ArrangementId, BASE, CompileOptions, Draw, Finish, FixedAdvance, Kind, NO_NODE, NO_STR, NodeId, Page, PropKey, Rect, Value, compile, compile_file_with, draw, has_errors, layout};
 use std::path::{Path, PathBuf};
+
+/// The box every fixture lays out in; `WIDER` is the viewport-change step.
+const VIEWPORT: Rect = Rect { x: 0.0, y: 0.0, w: 400.0, h: 800.0 };
+const WIDER: Rect = Rect { x: 0.0, y: 0.0, w: 520.0, h: 900.0 };
 
 // ---------------------------------------------------------------- fixtures
 
@@ -202,6 +217,13 @@ struct Roads {
     page_ret: Page,
     rt_ret: Runtime,
     steps: usize,
+    /// The box the page lays out in this step (`set_viewport`).
+    viewport: Rect,
+    /// The draw lists the two retained-road runtimes hand out and take
+    /// back: the retained one's, and the switched-off one's (which must
+    /// walk whole every time).
+    draws_ret: Vec<Draw>,
+    draws_off: Vec<Draw>,
 }
 
 impl Roads {
@@ -214,13 +236,22 @@ impl Roads {
         rt_off.debug_set_retained(false);
         let mut rt_full = Runtime::new(&page_full);
         rt_full.debug_set_retained(false);
+        // The stage-3 switch off: this runtime's `layout_retained` and
+        // `draw_retained` must take the full road every step.
+        rt_full.debug_set_retained_layout(false);
         let rt_ret = Runtime::new(&page_ret);
-        Roads { name: name.to_string(), page_off, rt_off, page_full, rt_full, page_ret, rt_ret, steps: 0 }
+        Roads { name: name.to_string(), page_off, rt_off, page_full, rt_full, page_ret, rt_ret, steps: 0, viewport: VIEWPORT, draws_ret: Vec::new(), draws_off: Vec::new() }
+    }
+
+    fn set_viewport(&mut self, viewport: Rect) {
+        self.viewport = viewport;
     }
 
     /// Applies `f` to all three roads, resolves each, and asserts the
     /// three looks and shown tables equal — and that the look the
-    /// retained runtime keeps is the one it handed back.
+    /// retained runtime keeps is the one it handed back. Then lays out
+    /// and draws each road and asserts the retained rects and list equal
+    /// the full road's (`layout_and_draw`).
     fn step(&mut self, what: &str, mut f: impl FnMut(&mut Page, &mut Runtime)) {
         f(&mut self.page_off, &mut self.rt_off);
         f(&mut self.page_full, &mut self.rt_full);
@@ -238,6 +269,59 @@ impl Roads {
         assert_eq!(self.rt_full.shown, self.rt_off.shown, "{}: after step {} `{what}` the shown table differs between mask on and off", self.name, self.steps);
         assert_eq!(self.rt_ret.shown, self.rt_full.shown, "{}: after step {} `{what}` the shown table differs between retained and full", self.name, self.steps);
         assert!(*self.rt_ret.resolved() == ret, "{}: after step {} `{what}` the runtime's kept look is not the one it returned", self.name, self.steps);
+        self.layout_and_draw(what, &off, &full, &ret);
+    }
+
+    /// Stage (3): every road lays out and glides (so the three runtimes
+    /// stay in step — `glide` feeds `%` anim endpoints back), then the
+    /// rects and the draw list of the retained road are checked against
+    /// the full road bit for bit, and the switched-off road is checked
+    /// to have walked everything.
+    fn layout_and_draw(&mut self, what: &str, off: &Resolved, full: &Resolved, ret: &Resolved) {
+        let vp: Rect = self.viewport;
+        // Mask-off road: the plain layout, glided so this runtime stays
+        // in step with the other two (its draw list is nobody's reference).
+        let rects_off: Vec<Rect> = layout(&self.page_off, off, vp, &FixedAdvance);
+        let _shown_off: Vec<Rect> = self.rt_off.glide(rects_off);
+        // Retained-off road: the caches switched off must equal the plain functions.
+        let rects_full: Vec<Rect> = layout(&self.page_full, full, vp, &FixedAdvance);
+        let rects_full_cache: Vec<Rect> = self.rt_full.layout_retained(&self.page_full, vp, &FixedAdvance).to_vec();
+        self.same_rects(what, "the switched-off retained layout", &rects_full_cache, "`layout`", &rects_full);
+        assert!(self.rt_full.debug_layout_stats().full, "{}: after step {} `{what}` the switched-off retained layout did not take the full road", self.name, self.steps);
+        let shown_full: Vec<Rect> = self.rt_full.glide(rects_full);
+        let draws_full: Vec<Draw> = draw(&self.page_full, full, &shown_full);
+        self.rt_full.draw_retained(&self.page_full, &shown_full, &mut self.draws_off);
+        let draws_off: Vec<Draw> = std::mem::take(&mut self.draws_off);
+        self.same_draws(what, "the switched-off retained draw", &draws_off, "`draw`", &draws_full);
+        self.draws_off = draws_off;
+        assert!(self.rt_full.debug_draw_stats().full, "{}: after step {} `{what}` the switched-off retained draw did not walk everything", self.name, self.steps);
+        // Retained road: the caches on.
+        let rects_ref: Vec<Rect> = layout(&self.page_ret, ret, vp, &FixedAdvance);
+        let rects_ret: Vec<Rect> = self.rt_ret.layout_retained(&self.page_ret, vp, &FixedAdvance).to_vec();
+        self.same_rects(what, "the retained layout", &rects_ret, "`layout`", &rects_ref);
+        let shown_ret: Vec<Rect> = self.rt_ret.glide(rects_ret);
+        let draws_ref: Vec<Draw> = draw(&self.page_ret, ret, &shown_ret);
+        self.rt_ret.draw_retained(&self.page_ret, &shown_ret, &mut self.draws_ret);
+        let draws_ret: Vec<Draw> = std::mem::take(&mut self.draws_ret);
+        self.same_draws(what, "the retained draw", &draws_ret, "`draw`", &draws_ref);
+        self.draws_ret = draws_ret;
+    }
+
+    fn same_rects(&self, what: &str, a_name: &str, a: &[Rect], b_name: &str, b: &[Rect]) {
+        if a.len() != b.len() {
+            panic!("{}: after step {} `{what}` {a_name} has {} rects, {b_name} {}", self.name, self.steps, a.len(), b.len());
+        }
+        if let Some(i) = (0..a.len()).find(|i| a[*i] != b[*i]) {
+            let node = self.page_ret.nodes.get(i).map(|n| self.page_ret.str(n.name).to_string()).unwrap_or_default();
+            panic!("{}: after step {} `{what}` {a_name} differs from {b_name} at node {i} (`{node}`): {:?} vs {:?}; layout stats {:?}", self.name, self.steps, a[i], b[i], self.rt_ret.debug_layout_stats());
+        }
+    }
+
+    fn same_draws(&self, what: &str, a_name: &str, a: &[Draw], b_name: &str, b: &[Draw]) {
+        let n = a.len().max(b.len());
+        if let Some(i) = (0..n).find(|i| a.get(*i) != b.get(*i)) {
+            panic!("{}: after step {} `{what}` {a_name} differs from {b_name} at command {i} of {}/{}: {:?} vs {:?}; draw stats {:?}", self.name, self.steps, a.len(), b.len(), a.get(i), b.get(i), self.rt_ret.debug_draw_stats());
+        }
     }
 
     fn resolve(&mut self, what: &str) {
@@ -512,6 +596,31 @@ fn run_script(name: &str, page: Page) -> (usize, usize) {
         roads.step("show it again", |page, rt| rt.set_visible(page, p, true));
         roads.step("take the visibility write back", |_, rt| rt.clear_prop(p, PropKey::Visibility));
     }
+    // Stage (3), the steps layout cares about. A scroll offset on every
+    // Scroll and List (the Scroll re-places its children, nothing else),
+    // moved and back.
+    let scrolls: Vec<NodeId> = of_kind(roads.page(), &[Kind::Scroll, Kind::List]);
+    for s in &scrolls {
+        roads.step("scroll a Scroll", |_, rt| rt.set_scroll(*s, [7.0, 13.0]));
+        roads.tick("tick after the scroll", 0.05);
+        roads.step("scroll it back", |_, rt| rt.set_scroll(*s, [0.0, 0.0]));
+    }
+    // A label's text from code: the first write interns a slot, the next
+    // two rewrite it IN PLACE (the look shows the same string id — only
+    // the runtime's report tells the retained layout), then the write
+    // goes and the file's text is back.
+    if let Some(label) = of_kind(roads.page(), &[Kind::Label]).first().copied() {
+        roads.step("write a label's text", |page, rt| rt.set_text(page, label, "a longer line of words for the row"));
+        roads.step("rewrite it in place, shorter", |page, rt| rt.set_text(page, label, "short"));
+        roads.step("rewrite it in place, longer", |page, rt| rt.set_text(page, label, "and a much longer line of words that wraps somewhere in a narrow box"));
+        roads.step("take the text write back", |_, rt| rt.clear_prop(label, PropKey::Text));
+    }
+    // A viewport change is the full road, and back.
+    roads.set_viewport(WIDER);
+    roads.resolve("a wider viewport");
+    assert!(roads.rt_ret.debug_layout_stats().full, "{name}: a viewport change must take the full layout road");
+    roads.set_viewport(VIEWPORT);
+    roads.resolve("the viewport back");
     // Anims: play the first few, tick three frames each.
     let anims: Vec<gogo::StrId> = roads.page().anim_heads.iter().take(3).map(|h| h.anim).collect();
     for a in &anims {
@@ -678,11 +787,25 @@ fn app_pages_resolve_the_same_with_the_mask_on_and_off() {
     }
 }
 
-/// The retained road is really local on the big page: one Button HELD
+/// One frame of a host: resolve, the retained layout, the glide, the
+/// retained draw. Returns how many nodes the resolve re-laddered and
+/// what the two retained roads did.
+fn frame(page: &Page, rt: &mut Runtime, draws: &mut Vec<Draw>) -> (u32, LayoutStats, DrawStats) {
+    resolve_animated(page, rt);
+    let rects: Vec<Rect> = rt.layout_retained(page, VIEWPORT, &FixedAdvance).to_vec();
+    let shown: Vec<Rect> = rt.glide(rects);
+    rt.draw_retained(page, &shown, draws);
+    (rt.debug_laddered(), rt.debug_layout_stats(), rt.debug_draw_stats())
+}
+
+/// The retained roads are really local on the big page: one Button HELD
 /// flip on the effect page re-ladders the Button and its watchers, not
 /// the page; the tick after it re-ladders nothing (no state moved); a
-/// full rebuild is the first resolve only. The counts are printed so a
-/// run shows them (`--nocapture`).
+/// full rebuild is the first resolve only. Stage (3): the press writes
+/// a background, no layout word — the retained layout measures nothing
+/// and re-places no box, and the retained draw re-emits the Button's
+/// commands and its ancestors' own, under a hundred, the rest copied.
+/// The counts are printed so a run shows them (`--nocapture`).
 #[test]
 fn a_button_flip_on_the_effect_page_stays_local() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app/ui/effect_page.gogo");
@@ -695,25 +818,28 @@ fn a_button_flip_on_the_effect_page_stays_local() {
     // and other repeat clones `set_items` adds at runtime.
     assert!(n >= 250, "effect_page.gogo has {n} nodes — the big fixture this pin exists for shrank?");
     let mut rt = Runtime::new(&page);
-    resolve_animated(&page, &mut rt);
-    assert_eq!(rt.debug_laddered() as usize, n, "the first resolve is a full rebuild");
+    let mut draws: Vec<Draw> = Vec::new();
+    let (first, first_lay, first_draw) = frame(&page, &mut rt, &mut draws);
+    assert_eq!(first as usize, n, "the first resolve is a full rebuild");
+    assert!(first_lay.full && first_draw.full, "the first layout and draw are the full roads");
     // One settled frame: the rebuild's seat table may send the `when
     // disabled` watchers through once (`disabled` reads placed parents a
     // resolve late); a press after that is the steady-state case.
-    resolve_animated(&page, &mut rt);
-    let settled: u32 = rt.debug_laddered();
+    let (settled, _, _) = frame(&page, &mut rt, &mut draws);
     let button: NodeId = (0..n).map(NodeId::from_index).find(|id| page.nodes[*id].kind == Kind::Button && page.nodes[*id].whens.1 > 0).expect("a Button with a `when` of its own");
     rt.set_state(button, HELD, true);
-    resolve_animated(&page, &mut rt);
-    let pressed: u32 = rt.debug_laddered();
+    let (pressed, lay, dr) = frame(&page, &mut rt, &mut draws);
     rt.tick(&mut page, 0.05);
-    resolve_animated(&page, &mut rt);
-    let ticked: u32 = rt.debug_laddered();
+    let (ticked, lay_tick, dr_tick) = frame(&page, &mut rt, &mut draws);
     rt.set_state(button, HELD, false);
-    resolve_animated(&page, &mut rt);
-    let released: u32 = rt.debug_laddered();
-    println!("effect page: {n} nodes; the settled frame re-laddered {settled}, a Button HELD flip {pressed}, the tick after it {ticked}, the release {released}");
+    let (released, lay_rel, dr_rel) = frame(&page, &mut rt, &mut draws);
+    println!("effect page: {n} nodes, {} draw commands; the settled frame re-laddered {settled}, a Button HELD flip {pressed}, the tick after it {ticked}, the release {released}", draws.len());
+    println!("effect page: the press measured {} nodes over {} boxes (full: {}) and re-emitted {} commands (full: {}); the tick {} / {} / {}; the release {} / {} / {}", lay.measured, lay.roots, lay.full, dr.emitted, dr.full, lay_tick.measured, dr_tick.emitted, dr_tick.full, lay_rel.measured, dr_rel.emitted, dr_rel.full);
     assert!(pressed < 50, "the press re-laddered {pressed} of {n} nodes — the reach is not local");
     assert!(ticked < 50, "a tick with no state change re-laddered {ticked} nodes");
     assert!(released < 50, "the release re-laddered {released} of {n} nodes — the reach is not local");
+    for (when, l, d) in [("press", lay, dr), ("tick", lay_tick, dr_tick), ("release", lay_rel, dr_rel)] {
+        assert!(!l.full && l.measured < 100, "the {when} took the layout road for {} measures (full: {}) — the change is not local", l.measured, l.full);
+        assert!(!d.full && d.emitted < 100, "the {when} re-emitted {} draw commands (full: {}) — the change is not local", d.emitted, d.full);
+    }
 }

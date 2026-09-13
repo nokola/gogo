@@ -6,9 +6,29 @@
 use std::sync::Arc;
 
 use crate::anim::{Channel, Easing, Finish, Motion, Player, Tween, get_pval, lerp_value, prop_lane};
-use crate::layout::{BUTTON_PADDING, Rect};
+use crate::draw::{Draw, DrawCache, DrawStats};
+use crate::layout::{BUTTON_PADDING, LayoutCache, LayoutStats, Rect, TextMeasure};
 use crate::locale::{KeyName, Locale};
 use crate::page::*;
+
+/// What the last resolve tells the retained layout and draw list
+/// (B36-DES stage 3; `Runtime::resolve_changes`). The two find what
+/// changed by comparing the look with the copy they kept
+/// (`layout::LookCopy`); this is the part a compare cannot tell.
+#[derive(Clone, Debug, Default)]
+pub struct ResolveChanges {
+    /// Counts the resolves. A cache that last compared at serial k may
+    /// patch at k (nothing resolved since) or k + 1; anything else is a
+    /// resolve it never compared against, so it takes the full road.
+    pub serial: u64,
+    /// This resolve rebuilt the whole look (`full_rebuild_needed`).
+    pub full: bool,
+    /// Nodes whose text was rewritten IN PLACE since the resolve before
+    /// (`set_text` on a slot the node owns): the look shows the same
+    /// string id before and after, so only this list says the words
+    /// changed.
+    pub rewritten: Vec<NodeId>,
+}
 
 pub const HELD: u8 = 1;
 
@@ -412,6 +432,16 @@ pub struct Runtime {
     /// The declared looks the skipped loops fill in for static nodes,
     /// derived once per page and theme variant (`refresh_static_look`).
     static_look: DeclaredLook,
+    /// The last resolve's report for the retained layout and draw list
+    /// (B36-DES stage 3): `resolve_changes`.
+    resolve_changes: ResolveChanges,
+    /// Nodes whose text `set_text` rewrote in place since the last
+    /// resolve — moved into `resolve_changes.rewritten` there.
+    pending_rewrites: Vec<NodeId>,
+    /// The retained layout and draw list (B36-DES stage 3):
+    /// `layout_retained`, `draw_retained`.
+    retained_layout: LayoutCache,
+    retained_draw: DrawCache,
 }
 
 impl Runtime {
@@ -468,6 +498,10 @@ impl Runtime {
             written: vec![false; page.nodes.len()],
             static_mask_on: true,
             static_look: DeclaredLook::default(),
+            resolve_changes: ResolveChanges::default(),
+            pending_rewrites: Vec::new(),
+            retained_layout: LayoutCache::default(),
+            retained_draw: DrawCache::default(),
             glide_start: None,
             glide_node_rules: Vec::new(),
             rect_tweens: Vec::new(),
@@ -1482,6 +1516,9 @@ impl Runtime {
             slot.clear();
             slot.push_str(text);
             self.dirty = true;
+            // The look keeps the same string id: the retained layout
+            // learns of the new words from this list alone.
+            self.pending_rewrites.push(node);
             owned
         } else {
             if page.strings.is_empty() {
@@ -1886,6 +1923,53 @@ impl Runtime {
     /// retained road. For the pin that proves a flip stays local.
     pub fn debug_laddered(&self) -> u32 {
         self.retained.laddered
+    }
+
+    /// The last resolve's report for the retained layout and draw list
+    /// (B36-DES stage 3): its serial, whether it rebuilt everything, and
+    /// the strings rewritten in place since the one before.
+    pub fn resolve_changes(&self) -> &ResolveChanges {
+        &self.resolve_changes
+    }
+
+    /// The retained layout (B36-DES stage 3): the rects of the current
+    /// look (`resolved()`) in `viewport` — the same answer `layout`
+    /// gives, re-laid only where the look changed since the last call
+    /// (`layout::LayoutCache`). Call once per frame after
+    /// `resolve_retained`; hand the answer to `glide`.
+    pub fn layout_retained(&mut self, page: &Page, viewport: Rect, text: &dyn TextMeasure) -> &[Rect] {
+        self.retained_layout.run(page, &self.resolved, &self.resolve_changes, viewport, text)
+    }
+
+    /// The retained draw list (B36-DES stage 3): brings `out` — the list
+    /// this runtime handed out last time — up to date with the current
+    /// look and the shown `rects` (after `glide`): the same list `draw`
+    /// gives, every clean subtree's commands copied from last frame's
+    /// (`draw::DrawCache`). The `above_children` split (`draw_except`,
+    /// `draw_subtree`) has no retained road.
+    pub fn draw_retained(&mut self, page: &Page, rects: &[Rect], out: &mut Vec<Draw>) {
+        self.retained_draw.run(page, &self.resolved, &self.resolve_changes, rects, out);
+    }
+
+    /// Switches the retained layout and draw list (B36-DES stage 3) —
+    /// on by default; off = the full roads every frame. For the
+    /// equivalence pin (the retained rects and list must equal the full
+    /// roads') and for bisecting a picture that differs between them.
+    pub fn debug_set_retained_layout(&mut self, on: bool) {
+        self.retained_layout.set_on(on);
+        self.retained_draw.set_on(on);
+        self.dirty = true;
+    }
+
+    /// What the last `layout_retained` did — for the pin that proves a
+    /// change stays local.
+    pub fn debug_layout_stats(&self) -> LayoutStats {
+        self.retained_layout.stats()
+    }
+
+    /// What the last `draw_retained` did.
+    pub fn debug_draw_stats(&self) -> DrawStats {
+        self.retained_draw.stats()
     }
 
     /// The retained resolve (B36-DES stage 2): brings `resolved()` up to
@@ -3627,6 +3711,11 @@ fn resolve_into(page: &Page, rt: &mut Runtime, r: &mut Resolved) {
             rt.shown[id] = m;
         }
     }
+    // The report for the retained layout and draw list (B36-DES stage 3).
+    rt.resolve_changes.serial = rt.resolve_changes.serial.wrapping_add(1);
+    rt.resolve_changes.full = full;
+    rt.resolve_changes.rewritten.clear();
+    rt.resolve_changes.rewritten.append(&mut rt.pending_rewrites);
     // What the next resolve diffs against, and the scratch buffers back.
     rt.retained.valid = true;
     rt.retained.seen_arrangement = rt.arrangement;
