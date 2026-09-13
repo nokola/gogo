@@ -842,6 +842,14 @@ fn a_restarted_hide_restores_the_as_built_values_on_finish() {
 /// the shipped catch freezes the glide and nothing else. Before: the
 /// touch snapped the softened overshoot to the edge, jumping the content
 /// under the finger.
+///
+/// B36: and the pan that follows the catch continues from the SAME pull.
+/// Its first sample past the deadzone (17 epx deeper) moves the content
+/// deeper by no more than the finger's move, never back toward the edge.
+/// Before: the pan start re-seeded from the shown (softened) offset and
+/// softened it again — a raw −40 pull shows −16.6; re-seeded from −16.6
+/// and pulled 17 more it showed −14.7, a jump TOWARD the edge under a
+/// finger pulling away from it.
 #[test]
 fn catching_a_spring_keeps_the_pull_under_the_finger() {
     let mut fx = Fx::new(OCCLUDED);
@@ -853,7 +861,96 @@ fn catching_a_spring_keeps_the_pull_under_the_finger() {
     fx.touch(Phase::Down, 50.0, 30.0, 0.15);
     let caught = fx.scroll("sv");
     assert!((caught[1] - pulled[1]).abs() < 1.0, "the pull stayed under the finger: {caught:?} vs {pulled:?}");
-    fx.touch(Phase::Up, 50.0, 30.0, 0.2);
+    // The pan resumes from the caught pull: 17 epx deeper past the deadzone.
+    fx.touch(Phase::Move, 50.0, 47.0, 0.2);
+    let panned = fx.scroll("sv");
+    assert!(panned[1] < caught[1], "B36: the first pan sample pulls deeper, never back toward the edge: {caught:?} -> {panned:?}");
+    assert!(caught[1] - panned[1] <= 17.0, "B36: by at most the finger's 17 epx (softened): {caught:?} -> {panned:?}");
+    fx.touch(Phase::Up, 50.0, 47.0, 0.25);
+}
+
+/// A sideways strip whose content is ten times wider than its viewport
+/// (the Porta preset strip's shape: `Scroll allow=horizontal`).
+const WIDE_STRIP: &str = "View v { Scroll sv allow=horizontal, width=100, height=100, halign=left, valign=top { Row row { Rectangle wide width=1000, height=80 } } }";
+
+/// B36 (user-seen on the Porta preset strip, S24: press, hold, swipe left
+/// to right, lift — repeated, every swipe after the first opened with the
+/// strip snapping part-way back toward the edge before it followed the
+/// finger): each swipe pulls past the start edge, the lift springs the
+/// pull back over ~0.4 s, and the next press lands mid-spring and catches
+/// it. On every repeat the first pan sample past the deadzone moves the
+/// content deeper by at most the finger's own move (7 epx here, softened),
+/// never back toward the edge — the pan continues from the caught raw
+/// pull, as the addon's `_arm_pan` keeps the live overscroll. Before: the
+/// pan start re-seeded from the shown offset, softening it twice, and the
+/// content jumped 1-2 epx back toward the edge on every repeat, halving
+/// the pull each time.
+#[test]
+fn repeated_swipes_into_the_edge_never_snap_back_on_the_next_press() {
+    let mut fx = Fx::new(WIDE_STRIP);
+    assert_eq!(fx.axes("sv"), (true, false));
+    assert!(fx.rect("row").w > 100.0, "content wider than the viewport: {:?}", fx.rect("row"));
+    for rep in 0..3 {
+        let t0 = rep as f64 * 10.0;
+        fx.touch(Phase::Down, 20.0, 50.0, t0);
+        fx.touch(Phase::Move, 30.0, 50.0, t0 + 0.01);
+        let before = fx.scroll("sv")[0];
+        assert!(!fx.input.is_gliding(), "repeat {rep}: the press caught the spring");
+        // The crossing move: 17 epx from the press, 7 epx since the last sample.
+        fx.touch(Phase::Move, 37.0, 50.0, t0 + 0.02);
+        let after = fx.scroll("sv")[0];
+        assert!(after < before, "repeat {rep}: the first pan sample pulls deeper, never back toward the edge: {before} -> {after}");
+        assert!(before - after <= 7.0, "repeat {rep}: by at most the finger's 7 epx: {before} -> {after}");
+        fx.touch(Phase::Move, 57.0, 50.0, t0 + 0.03);
+        fx.touch(Phase::Move, 77.0, 50.0, t0 + 0.04);
+        fx.touch(Phase::Move, 97.0, 50.0, t0 + 0.05);
+        assert!(fx.scroll("sv")[0] < -15.0, "repeat {rep}: pulled well past the start edge: {:?}", fx.scroll("sv"));
+        // The finger rests, then lifts: a pure spring back, no glide.
+        fx.touch(Phase::Up, 97.0, 50.0, t0 + 0.5);
+        assert!(fx.input.is_gliding(), "repeat {rep}: the lift springs the pull back");
+        // ~0.15 s later the next press lands mid-spring.
+        for _ in 0..9 {
+            fx.tick(0.016);
+        }
+        assert!(fx.input.is_gliding() && fx.scroll("sv")[0] < -5.0, "repeat {rep}: still springing: {:?}", fx.scroll("sv"));
+    }
+}
+
+/// B36, the second half (S24 trace: the strip went the WRONG way on the
+/// very first swipe): the frame after a lift took ~140 ms on the device,
+/// and the glide integrator fed that whole gap into one explicit step —
+/// damping × dt above 1 flips the velocity's sign, so a 37 epx pull-back
+/// slung the strip to its far end (+324 = the range) and back. The
+/// integrator now steps at most `GLIDE_MAX_STEP` at a time: a fast swipe
+/// past the start edge, lifted, then ONE 146 ms tick lands within the
+/// softened pull (never past the edge by more than a soft bounce, never
+/// anywhere near the far end), and one long tick equals many short ones.
+#[test]
+fn a_long_frame_after_a_lift_never_slings_the_strip_past_its_range() {
+    let swipe = |fx: &mut Fx| {
+        fx.touch(Phase::Down, 10.0, 50.0, 0.0);
+        for i in 1..=5 {
+            // 20 epx per 10 ms: a fast finger, past the deadzone on the first move.
+            fx.touch(Phase::Move, 10.0 + 20.0 * i as f32, 50.0, 0.01 * i as f64);
+        }
+        fx.touch(Phase::Up, 110.0, 50.0, 0.05);
+        assert!(fx.input.is_gliding(), "the lift glides / springs");
+        assert!(fx.scroll("sv")[0] < -10.0, "pulled past the start edge: {:?}", fx.scroll("sv"));
+    };
+    let mut long = Fx::new(WIDE_STRIP);
+    swipe(&mut long);
+    let pulled: f32 = long.scroll("sv")[0];
+    long.tick(0.146);
+    let after_long: f32 = long.scroll("sv")[0];
+    assert!(after_long <= 3.0, "one 146 ms tick never slings the content past the edge: {pulled} -> {after_long}");
+    assert!(after_long >= pulled - 1.0, "and never deeper than the pull it started from: {pulled} -> {after_long}");
+    let mut short = Fx::new(WIDE_STRIP);
+    swipe(&mut short);
+    for _ in 0..146 {
+        short.tick(0.001);
+    }
+    let after_short: f32 = short.scroll("sv")[0];
+    assert!((after_long - after_short).abs() < 1.5, "one long tick equals many short ones: {after_long} vs {after_short}");
 }
 
 /// GPAR6: `edit` fires per CHANGED value, not per touch sample (the

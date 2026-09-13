@@ -993,8 +993,39 @@ pub(crate) fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option
     if res.motion.iter().all(|m| m.translate == [0.0, 0.0] && m.scale == [1.0, 1.0] && m.swing == 0.0) {
         return None;
     }
+    let n: usize = page.nodes.len().min(rects.len());
     let mut out = rects.to_vec();
-    for i in 0..page.nodes.len().min(out.len()) {
+    // Membership is by PLACED ancestry: a later sibling's subtree shares
+    // the index range (Node::subtree_end), so a swinging button must not
+    // drag its neighbours' hit rects along, and a node seated under the
+    // mover sits outside the range altogether (B25). The placed tree is
+    // built ONCE as first-child / next-sibling lists, and each mover
+    // visits its own subtree — asking "is j under i" for every pair
+    // instead cost movers × nodes × depth, which was the 140 ms frame
+    // after a press on the effect page (B36 trace, S24).
+    let mut first_child: Vec<NodeId> = vec![NO_NODE; n];
+    let mut next_sibling: Vec<NodeId> = vec![NO_NODE; n];
+    for j in (0..n).rev() {
+        let parent = res.placed_parent(page, NodeId::from_index(j));
+        if parent != NO_NODE && parent.index() < n {
+            next_sibling[j] = first_child[parent.index()];
+            first_child[parent.index()] = NodeId::from_index(j);
+        }
+    }
+    let mut stack: Vec<NodeId> = Vec::new();
+    let mut subtree = |root: usize, stack: &mut Vec<NodeId>, apply: &mut dyn FnMut(usize)| {
+        stack.clear();
+        stack.push(NodeId::from_index(root));
+        while let Some(node) = stack.pop() {
+            apply(node.index());
+            let mut c = first_child[node.index()];
+            while c != NO_NODE {
+                stack.push(c);
+                c = next_sibling[c.index()];
+            }
+        }
+    };
+    for i in 0..n {
         let m = &res.motion[i];
         if m.swing != 0.0 {
             let (sin, cos) = m.swing.to_radians().sin_cos();
@@ -1005,16 +1036,11 @@ pub(crate) fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option
                 let ratio = ((focal + dx * sin) / focal).max(0.05);
                 cx + (hinge + dx * cos - cx) / ratio
             };
-            // Every node, by PLACED ancestry: a node seated under the
-            // door has an index outside the door's range (B25).
-            for j in 0..out.len() {
-                if !res.placed_is_under(page, NodeId::from_index(j), NodeId::from_index(i)) {
-                    continue;
-                }
+            subtree(i, &mut stack, &mut |j: usize| {
                 let r = out[j];
                 let (l, rr) = (project(r.x), project(r.right()));
                 out[j] = Rect::new(l.min(rr), r.y, (rr - l).abs(), r.h);
-            }
+            });
         }
         if m.translate == [0.0, 0.0] && m.scale == [1.0, 1.0] {
             continue;
@@ -1023,18 +1049,10 @@ pub(crate) fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option
         // walk order like the draw pass.
         let p = pivot_frac(page, res, NodeId::from_index(i));
         let (cx, cy) = (out[i].x + out[i].w * p.0, out[i].y + out[i].h * p.1);
-        // Membership is by PLACED ancestry, over every node — a later
-        // sibling's subtree shares the index range (Node::subtree_end),
-        // so a swinging button must not drag its neighbours' hit rects
-        // along, and a node seated under the mover sits outside the
-        // range altogether (B25).
-        for j in 0..out.len() {
-            if !res.placed_is_under(page, NodeId::from_index(j), NodeId::from_index(i)) {
-                continue;
-            }
+        subtree(i, &mut stack, &mut |j: usize| {
             let r = out[j];
             out[j] = Rect::new(cx + (r.x - cx) * m.scale[0] + m.translate[0], cy + (r.y - cy) * m.scale[1] + m.translate[1], r.w * m.scale[0], r.h * m.scale[1]);
-        }
+        });
     }
     Some(out)
 }

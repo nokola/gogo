@@ -382,7 +382,12 @@ pub struct Runtime {
     pub owned_text: Vec<StrId>,
     /// The displayed value per (node, key) after the last resolve — the
     /// `from` of the next tween.
-    last: Vec<(NodeId, Prop)>,
+    /// What each node showed after the last resolve, one slot per node
+    /// per `ANIMATABLE` key (node × ANIMATABLE.len() + key index), `None`
+    /// where the key had no value. A flat (node, prop) list was scanned
+    /// linearly per node per key when a state flipped — nodes² × keys², the
+    /// 140 ms frame after every press on the 1175-node effect page (B36).
+    last: Vec<Option<Value>>,
 }
 
 impl Runtime {
@@ -2704,7 +2709,7 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
         for (i, node) in page.nodes.iter().enumerate() {
             let id = NodeId::from_index(i);
             let _ = node;
-            for key in ANIMATABLE {
+            for (ki, key) in ANIMATABLE.iter().enumerate() {
                 // GP40, user call: anim beats transition — a lane a
                 // player owns (or a held pose keeps) spawns no tween.
                 // Asked of the runtime: the resolved here is the ladder
@@ -2714,7 +2719,7 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
                 }
                 let target = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key)) };
                 let Some(target) = target else { continue };
-                let current = rt.tweens.iter().find(|t| t.node == id && t.key == *key).map(|t| t.value()).or_else(|| rt.last.iter().find(|(n, p)| *n == id && p.key == *key).map(|(_, p)| p.value)).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key));
+                let current = rt.tweens.iter().find(|t| t.node == id && t.key == *key).map(|t| t.value()).or_else(|| rt.last.get(i * ANIMATABLE.len() + ki).copied().flatten()).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key));
                 let Some(current) = current else { continue };
                 if current == target {
                     continue;
@@ -2835,13 +2840,11 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
     }
     // Remember what is displayed now.
     rt.last.clear();
+    rt.last.resize(page.nodes.len() * ANIMATABLE.len(), None);
     for i in 0..page.nodes.len() {
         let id = NodeId::from_index(i);
-        for key in ANIMATABLE {
-            let v = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)) };
-            if let Some(v) = v {
-                rt.last.push((id, Prop { key: *key, value: v }));
-            }
+        for (ki, key) in ANIMATABLE.iter().enumerate() {
+            rt.last[i * ANIMATABLE.len() + ki] = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)) };
         }
     }
     let _ = lerp_value;

@@ -53,6 +53,10 @@ pub const FLING_STALE: f32 = 0.12;
 pub const SPRING_STIFFNESS: f32 = 200.0;
 /// Under critical (2·√stiffness ≈ 28): one soft bounce.
 pub const SPRING_DAMPING: f32 = 24.0;
+/// The longest step the glide integrator takes (s); a longer frame is
+/// split into equal steps. 24 × 0.01 keeps the damping term well under
+/// the sign-flip line (see the glide tick).
+pub const GLIDE_MAX_STEP: f32 = 0.01;
 /// Finger epx → shown epx at the edge, softening toward a quarter of the viewport.
 pub const OVERSCROLL_GIVE: f32 = 0.5;
 /// A Toggle finger wobble below this stays a tap.
@@ -243,6 +247,11 @@ struct Press {
     caught_fling: bool,
     /// The unclamped scroll position while panning (`raw` past the edges).
     accum: [f32; 2],
+    /// The Scroll whose glide or spring this press stopped, with its raw
+    /// unclamped position at that moment. A pan that later starts on THAT
+    /// Scroll continues from this raw value, not from the softened offset
+    /// it shows (B36 — see the pan start).
+    caught_raw: Option<(NodeId, [f32; 2])>,
     /// A Slider's or Toggle's value when the finger landed (a cancelled
     /// drag restores it; a release on it reports nothing).
     value_from: f32,
@@ -1892,7 +1901,7 @@ impl Input {
                 }
                 if let Some((f, hi_end)) = grabbed {
                     self.drag_handle = Some(hi_end);
-                    self.press = Some(Press { node: f, kind: Kind::Input, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: false, accum: [0.0; 2], value_from: 0.0, behavior: None, registered: 0, toggle_moved: false, release_owed: false, raw: None });
+                    self.press = Some(Press { node: f, kind: Kind::Input, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: false, accum: [0.0; 2], caught_raw: None, value_from: 0.0, behavior: None, registered: 0, toggle_moved: false, release_owed: false, raw: None });
                     return events;
                 }
                 // A glide is stopped only by a touch that lands ON the
@@ -2010,7 +2019,7 @@ impl Input {
                 if let Some(action) = raw {
                     let r = rects[node];
                     self.push_event(rt, &mut events, node, EventKind::Pointer { phase: Phase::Down, x: t.x - r.x, y: t.y - r.y }, Some(action));
-                    self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum: [0.0; 2], value_from: 0.0, behavior: None, registered: 0, toggle_moved: false, release_owed: false, raw });
+                    self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum: [0.0; 2], caught_raw: None, value_from: 0.0, behavior: None, registered: 0, toggle_moved: false, release_owed: false, raw });
                     return events;
                 }
                 let scroll = if matches!(kind, Kind::Scroll | Kind::List) { Some(node) } else { scroll_ancestor(page, res, node) };
@@ -2053,7 +2062,7 @@ impl Input {
                     (Some(s), _) => rt.scroll[s],
                     (None, _) => [0.0; 2],
                 };
-                self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum, value_from, behavior, registered, toggle_moved: false, release_owed: pressed, raw: None });
+                self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum, caught_raw: caught_accum, value_from, behavior, registered, toggle_moved: false, release_owed: pressed, raw: None });
             }
             Phase::Move => {
                 let Some(mut p) = self.press else { return events };
@@ -2112,7 +2121,25 @@ impl Input {
                                 p.panning = true;
                                 self.release(page, rt, &mut events, &mut p);
                                 self.cancel_press(page, rt, &mut events, &p);
-                                p.accum = rt.scroll[scroll];
+                                // B36 (user-seen: repeating press-hold-swipe-lift
+                                // on the preset strip, every swipe after the
+                                // first opened with the strip snapping part-way
+                                // back toward the edge before it followed the
+                                // finger). A press that catches a mid-spring
+                                // bounce keeps the live overscroll (the addon's
+                                // `_arm_pan` rule: catching a bounce must not
+                                // snap), so the pan continues from the RAW
+                                // unclamped position the catch stored. Seeding
+                                // from the shown offset instead softens an
+                                // already-softened value — raw -60 shows -28.7,
+                                // re-seeded from -28.7 it shows -14.2 — halving
+                                // the pull on every repeat. The raw value is
+                                // only meaningful for the Scroll it was caught
+                                // on; any other taker starts from what it shows.
+                                p.accum = match p.caught_raw {
+                                    Some((caught, raw)) if caught == scroll => raw,
+                                    _ => rt.scroll[scroll],
+                                };
                             }
                             None => p.scroll = None,
                         }
@@ -2446,20 +2473,32 @@ impl Input {
         let axes = scroll_axes(page, res, f.scroll);
         let range = scroll_range(page, res, rects, f.scroll);
         let before = rt.scroll[f.scroll];
-        for i in 0..2 {
-            let on = if i == 0 { axes.0 } else { axes.1 };
-            if !on {
-                f.v[i] = 0.0;
-                continue;
+        // The spring and the friction integrate in steps no longer than
+        // GLIDE_MAX_STEP. The addon steps once per Godot frame, which is
+        // steady; here a stalled host frame (B36 trace on the S24: 140 ms
+        // right after a lift) fed the whole gap into one explicit step —
+        // damping × dt above 1 flips the velocity's sign and stiffness ×
+        // dt² above 1 overshoots, so a 37 epx pull-back slung the strip
+        // to its far end (the user saw the strip go the WRONG way). Same
+        // numbers as the addon at a normal frame rate, stable at any.
+        let steps: u32 = (dt / GLIDE_MAX_STEP).ceil().max(1.0) as u32;
+        let h: f32 = dt / steps as f32;
+        for _ in 0..steps {
+            for i in 0..2 {
+                let on = if i == 0 { axes.0 } else { axes.1 };
+                if !on {
+                    f.v[i] = 0.0;
+                    continue;
+                }
+                let raw = f.accum[i] - f.accum[i].clamp(0.0, range[i]);
+                if raw != 0.0 {
+                    // Beyond an edge: a damped spring pulls the excess back.
+                    f.v[i] += (-SPRING_STIFFNESS * raw - SPRING_DAMPING * f.v[i]) * h;
+                } else {
+                    f.v[i] *= (-FLING_FRICTION * h).exp();
+                }
+                f.accum[i] += f.v[i] * h;
             }
-            let raw = f.accum[i] - f.accum[i].clamp(0.0, range[i]);
-            if raw != 0.0 {
-                // Beyond an edge: a damped spring pulls the excess back.
-                f.v[i] += (-SPRING_STIFFNESS * raw - SPRING_DAMPING * f.v[i]) * dt;
-            } else {
-                f.v[i] *= (-FLING_FRICTION * dt).exp();
-            }
-            f.accum[i] += f.v[i] * dt;
         }
         let raw = apply_accum(rt, rects, f.scroll, range, axes, &mut f.accum);
         let moved = rt.scroll[f.scroll] != before;
