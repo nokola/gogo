@@ -129,14 +129,15 @@ fn new_pool(page: &Page, repeat: NodeId) -> Pool {
     let mut empties: Vec<NodeId> = page.children(repeat).filter(|c| page.nodes[*c].kind == Kind::Empty).collect();
     // A List-level `empty { }` (D128) is this repeat's zero-items view
     // too: it hides once rows exist — and its spacing slot goes with it —
-    // exactly like the repeat's own block (GPAR96).
-    let mut a = page.nodes[repeat].parent;
+    // exactly like the repeat's own block (GPAR96). Declared on purpose:
+    // the List that WROTE the repeat owns it, wherever a seat moves it.
+    let mut a = page.declared_parent(repeat);
     while a != NO_NODE {
         if page.nodes[a].kind == Kind::List {
             empties.extend(page.children(a).filter(|c| page.nodes[*c].kind == Kind::Empty));
             break;
         }
-        a = page.nodes[a].parent;
+        a = page.declared_parent(a);
     }
     Pool { repeat, slots: Vec::new(), live: Vec::new(), keyed: Vec::new(), scratch: Vec::new(), empties }
 }
@@ -223,10 +224,29 @@ pub struct Runtime {
     pub screen: Vec<StrId>,
     /// Per node: the state bits above.
     pub states: Vec<u8>,
-    /// Per node: scroll offset (Scroll nodes).
+    /// Per node: scroll offset (Scroll nodes). Code writes it through
+    /// `set_scroll`; a raw write never dirties or clamps (B31).
     pub scroll: Vec<[f32; 2]>,
     /// Set by anything that changes what layout/draw would produce.
     pub dirty: bool,
+    /// Scroll nodes whose offset code just set (`set_scroll`): the input
+    /// tick clamps each to its content range once the node is idle and
+    /// drops it from here. Not clamped at the write — the range needs a
+    /// layout — and never at layout, which holds a copy of this runtime
+    /// and cannot write back (B31).
+    pub(crate) scroll_clamp_pending: Vec<NodeId>,
+    /// `reset_view_state` asked the input machine to forget its focus
+    /// owner; `Input::tick` reads and clears it. The owner lives on
+    /// `Input`, the focus bits and caret here — so the reset has two
+    /// halves.
+    pub(crate) focus_reset_pending: bool,
+    /// A plain copy of `Resolved::seat` from the last `resolve_animated`
+    /// (the road every host's frame takes). `disabled` and the state
+    /// chains walk PLACED parents from it (B25), because they run inside
+    /// the resolve that builds the next table, or from doors that hold
+    /// no `Resolved` (`Input::reset`, `unhover`). Empty until the first
+    /// frame: every node at its declared home.
+    pub(crate) last_seat: Vec<NodeId>,
     /// The language every `text="x"/key` on this page shows (`set_locale`);
     /// `None` = the literals as written. Shared between pages — one table,
     /// swapped whole, so a switch is one relayout and never a half state.
@@ -375,6 +395,9 @@ impl Runtime {
             // `choice`'s `value=`).
             states: page.nodes.iter().map(|n| n.initial_states).collect(),
             scroll: vec![[0.0; 2]; page.nodes.len()],
+            scroll_clamp_pending: Vec::new(),
+            focus_reset_pending: false,
+            last_seat: Vec::new(),
             // GP33: each driven slot's fraction at rest starts at the
             // baked value; drivers move it.
             auto_rest: page.drivers.iter().filter(|d| d.state == NO_STR).map(|d| (d.node, baked_frac(page, d.node))).collect(),
@@ -640,6 +663,9 @@ impl Runtime {
         let unseen: Vec<bool> = (0..page.nodes.len()).map(|i| {
             matches!(res.ident(page, NodeId::from_index(i), PropKey::Visibility), Some("gone") | Some("hidden") | Some("space_only"))
         }).collect();
+        // Placed parents: a node seated under a hidden host is not drawn
+        // either, whatever its declared ancestors show (B25).
+        let placed: Vec<NodeId> = (0..page.nodes.len()).map(|i| res.placed_parent(page, NodeId::from_index(i))).collect();
         drop(res);
         for i in 0..page.nodes.len() {
             let mut n = NodeId::from_index(i);
@@ -649,7 +675,7 @@ impl Runtime {
                     hidden = true;
                     break;
                 }
-                let parent = page.nodes[n].parent;
+                let parent = placed[n];
                 if parent == NO_NODE {
                     break;
                 }
@@ -787,8 +813,9 @@ impl Runtime {
         self.show_empties(page, pi, zero);
         // The selection is kept BY KEY across reconciles (list.reorder-keeps):
         // re-assert it over the fresh rows; absent keys stay INERT in the
-        // List's memory and re-attach when their item returns.
-        let mut a = page.nodes[repeat].parent;
+        // List's memory and re-attach when their item returns. Declared
+        // on purpose: the List that WROTE the repeat owns its selection.
+        let mut a = page.declared_parent(repeat);
         while a != NO_NODE {
             if page.nodes[a].kind == Kind::List {
                 if self.list_sel.iter().any(|(n, _)| *n == a) {
@@ -796,7 +823,7 @@ impl Runtime {
                 }
                 break;
             }
-            a = page.nodes[a].parent;
+            a = page.declared_parent(a);
         }
         self.dirty = true;
         Ok(())
@@ -807,7 +834,7 @@ impl Runtime {
     pub fn list_rows(&self, page: &Page, list: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
         for p in &self.pools {
-            if p.repeat != list && page.is_under(p.repeat, list) {
+            if p.repeat != list && page.is_under(p.repeat, list) { // declared on purpose: a repeat belongs to the List that wrote it
                 out.extend(p.live.iter().map(|s| p.slots[*s as usize]));
             }
         }
@@ -1577,20 +1604,75 @@ impl Runtime {
         self.dirty = true;
     }
 
-    /// EFFECTIVE `disabled`: the node's own flag or any ancestor's — the
-    /// WPF IsEnabled law; a child cannot re-enable under a disabled parent.
+    /// EFFECTIVE `disabled`: the node's own flag or any PLACED ancestor's
+    /// — the WPF IsEnabled law; a child cannot re-enable under a disabled
+    /// parent, and a button seated into a disabled panel is disabled
+    /// (B25). The placed parents come from the last frame's seat table
+    /// (`last_seat`).
     pub fn disabled(&self, page: &Page, node: NodeId) -> bool {
         let mut n = node;
         loop {
             if self.has(n, DISABLED) {
                 return true;
             }
-            let parent = page.nodes[n].parent;
+            let parent = self.placed_parent(page, n);
             if parent == NO_NODE {
                 return false;
             }
             n = parent;
         }
+    }
+
+    /// The parent `n` is laid out and drawn under, from the last frame's
+    /// seat table (`last_seat`) — for the walks that run without a
+    /// `Resolved` in hand; everything that holds one asks
+    /// `Resolved::placed_parent`.
+    pub(crate) fn placed_parent(&self, page: &Page, n: NodeId) -> NodeId {
+        placed_parent_in(&self.last_seat, page, n)
+    }
+
+    /// Writes a Scroll's offset from code — the one door for it (B31).
+    /// Marks the page dirty (a raw `scroll[n] = …` never did, so the
+    /// strip drew stale) and asks the input tick to clamp the value to
+    /// the content range once the node is idle. The clamp waits because
+    /// the range needs a layout, and a pan or spring in flight on the
+    /// node owns the offset until it settles (the rubber band stores an
+    /// out-of-range offset on purpose).
+    pub fn set_scroll(&mut self, node: NodeId, offset: [f32; 2]) {
+        self.scroll[node] = offset;
+        if !self.scroll_clamp_pending.contains(&node) {
+            self.scroll_clamp_pending.push(node);
+        }
+        self.dirty = true;
+    }
+
+    /// A Scroll's offset in epx: how far its content moved up and left.
+    pub fn scroll_of(&self, node: NodeId) -> [f32; 2] {
+        self.scroll.get(node.index()).copied().unwrap_or([0.0; 2])
+    }
+
+    /// Forgets the view state the ENGINE holds, for a page reuse (B31):
+    /// every scroll offset back to 0 (through `set_scroll`, so the page
+    /// dirties), keyboard focus, caret, selection and the edit bar. A
+    /// page's own reset list is built from its fields and never sees
+    /// these — a reused effect page showed the preset strip where the
+    /// last effect left it. The focus OWNER sits on `Input`; the flag
+    /// asks its next tick to drop it.
+    pub fn reset_view_state(&mut self) {
+        for i in 0..self.scroll.len() {
+            if self.scroll[i] != [0.0; 2] {
+                self.set_scroll(NodeId::from_index(i), [0.0; 2]);
+            }
+        }
+        for s in &mut self.states {
+            *s &= !(FOCUSED | FOCUS_WITHIN);
+        }
+        self.focus_reset_pending = true;
+        self.caret = None;
+        self.selection = None;
+        self.sel_handles = false;
+        self.edit_bar = None;
+        self.dirty = true;
     }
 
     /// Moves the view to an arrangement by its typed handle — the
@@ -1704,13 +1786,15 @@ impl Runtime {
             State::Arrangement(i) => self.arrangement == i,
             // Raised on the control root; a `when <name>` anywhere in
             // that control responds — the walk finds the root above.
+            // Declared on purpose: the root that WROTE the node raises
+            // its states, wherever a seat moves the node.
             State::Custom(s) => {
                 let mut n = node;
                 while n != NO_NODE {
                     if self.customs.iter().any(|(cn, cs)| *cn == n && *cs == s) {
                         return true;
                     }
-                    n = page.nodes[n].parent;
+                    n = page.declared_parent(n);
                 }
                 false
             }
@@ -1718,6 +1802,17 @@ impl Runtime {
             State::ArrangementScreen(i, w) => self.arrangement == i && self.screen.contains(&w),
             State::ScreenPair(o, c) => self.screen.contains(&o) && self.screen.contains(&c),
         }
+    }
+}
+
+/// The parent `n` is laid out and drawn under, read from a seat table
+/// (`Resolved::seat`, or the Runtime's copy of it): the seat host while
+/// a `when … n.seat = name` holds, else the parent that wrote `n`. A
+/// table shorter than the arena (rows cloned since) means "at home".
+fn placed_parent_in(seat: &[NodeId], page: &Page, n: NodeId) -> NodeId {
+    match seat.get(n.index()).copied().unwrap_or(NO_NODE) {
+        NO_NODE => page.declared_parent(n),
+        host => host,
     }
 }
 
@@ -1878,7 +1973,9 @@ impl Resolved {
             if let Some(v) = own {
                 return Some(deref(page, self.variant, v));
             }
-            let parent = page.nodes[n].parent;
+            // Placed: a seated Label takes its host's font words, the
+            // way the addon's theme propagation follows the live tree.
+            let parent = self.placed_parent(page, n);
             if parent == NO_NODE {
                 break;
             }
@@ -1924,6 +2021,38 @@ impl Resolved {
             return false;
         }
         self.ident(page, node, PropKey::Visibility) == Some("gone")
+    }
+
+    /// The parent `n` is LAID OUT and DRAWN under: its seat host while a
+    /// `when … n.seat = name` holds, else the parent that wrote it
+    /// (`Page::declared_parent`).
+    ///
+    /// Why a named accessor: a running page has two trees — the declared
+    /// tree (the file's nesting) and this placed tree (after seat moves).
+    /// Layout and paint follow the placed one, so a walk that reads the
+    /// parent field bare picks the declared tree by accident, and a
+    /// seated button's taps, focus and clips then follow a parent it no
+    /// longer sits in (todo-bugs B25). Every walk names its tree: hit,
+    /// clip, focus, hover, scroll ancestor, disabled, presence, entrances,
+    /// inherited props and moved rects want this one.
+    pub fn placed_parent(&self, page: &Page, n: NodeId) -> NodeId {
+        placed_parent_in(&self.seat, page, n)
+    }
+
+    /// Whether `node` is `ancestor` or sits anywhere under it in the
+    /// PLACED tree (`placed_parent`); the declared one is
+    /// `Page::is_under`. `NO_NODE` is under nothing.
+    pub fn placed_is_under(&self, page: &Page, node: NodeId, ancestor: NodeId) -> bool {
+        let mut n: NodeId = node;
+        loop {
+            if n == ancestor {
+                return true;
+            }
+            if n == NO_NODE || n.index() >= page.nodes.len() {
+                return false;
+            }
+            n = self.placed_parent(page, n);
+        }
     }
 
     /// The nodes laid out and drawn under `id`: its own children that no
@@ -2497,7 +2626,9 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
                 if !own[a] {
                     break false;
                 }
-                let parent = page.nodes[a].parent;
+                // Placed: what the user sees folds the host a seat moved
+                // the node under, not the parent that wrote it (B25).
+                let parent = r.placed_parent(page, a);
                 if parent == NO_NODE {
                     break true;
                 }
@@ -2688,6 +2819,9 @@ pub fn resolve_animated(page: &Page, rt: &mut Runtime) -> Resolved {
         }
     }
     fold_seats_and_motion(page, &mut r);
+    // The Runtime's copy of the seat table (`last_seat`): the walks that
+    // run without this snapshot read placed parents from it.
+    rt.last_seat.clone_from(&r.seat);
     // The anim layer goes on last: an owning anim outranks a tween too.
     compose_anim(page, rt, &mut r);
     // What shows now, per node — the live value a new play starts from.

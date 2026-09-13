@@ -425,12 +425,14 @@ fn reachable(page: &Page, rt: &Runtime, res: &Resolved, node: NodeId) -> bool {
     if !page.nodes[node].focusable || rt.disabled(page, node) {
         return false;
     }
+    // Placed parents: a seated box is reachable under its host, not
+    // under the parent that wrote it (B25).
     let mut n = node;
     loop {
         if res.gone(page, n) || res.hidden(page, n) {
             return false;
         }
-        let p = page.nodes[n].parent;
+        let p = res.placed_parent(page, n);
         if p == NO_NODE {
             return true;
         }
@@ -438,15 +440,18 @@ fn reachable(page: &Page, rt: &Runtime, res: &Resolved, node: NodeId) -> bool {
     }
 }
 
-/// Writes a state bit on `node` and every ancestor — the looking-up
-/// states: `focus_within` (D129) and `hovered` (the chain reading, user
-/// call 2026-09-02 — the game staple: a settings row lights while its
-/// inner slider is key-focused or under the mouse).
+/// Writes a state bit on `node` and every PLACED ancestor — the
+/// looking-up states: `focus_within` (D129) and `hovered` (the chain
+/// reading, user call 2026-09-02 — the game staple: a settings row
+/// lights while its inner slider is key-focused or under the mouse). The
+/// chain climbs the drawn tree, so a seat host lights for its seated
+/// child (B25); it reads the Runtime's seat copy because `reset` and
+/// `unhover` hold no `Resolved`.
 fn set_chain(page: &Page, rt: &mut Runtime, node: NodeId, bit: u8, on: bool) {
     let mut n = node;
     loop {
         rt.set_state(n, bit, on);
-        let p = page.nodes[n].parent;
+        let p = rt.placed_parent(page, n);
         if p == NO_NODE {
             return;
         }
@@ -454,41 +459,38 @@ fn set_chain(page: &Page, rt: &mut Runtime, node: NodeId, bit: u8, on: bool) {
     }
 }
 
-fn scroll_ancestor(page: &Page, node: NodeId) -> Option<NodeId> {
-    let mut n = page.nodes[node].parent;
+/// The innermost Scroll/List `node` is laid out inside — placed, so a
+/// seated row pans the Scroll it sits in (B25).
+fn scroll_ancestor(page: &Page, res: &Resolved, node: NodeId) -> Option<NodeId> {
+    let mut n = res.placed_parent(page, node);
     while n != NO_NODE {
         if matches!(page.nodes[n].kind, Kind::Scroll | Kind::List) {
             return Some(n);
         }
-        n = page.nodes[n].parent;
+        n = res.placed_parent(page, n);
     }
     None
 }
 
 /// The List a row belongs to — the selection owner a tap reports to.
+/// Declared on purpose: the List that WROTE the row owns its selection,
+/// wherever a seat moves the row.
 fn list_ancestor(page: &Page, node: NodeId) -> Option<NodeId> {
-    let mut n = page.nodes[node].parent;
+    let mut n = page.declared_parent(node);
     while n != NO_NODE {
         if page.nodes[n].kind == Kind::List {
             return Some(n);
         }
-        n = page.nodes[n].parent;
+        n = page.declared_parent(n);
     }
     None
 }
 
-/// Is `node` inside `root`'s subtree (`root` itself counts)? The
+/// Is `node` inside `root`'s PLACED subtree (`root` itself counts)? The
 /// fling-catch uses it: only a touch that lands ON the gliding Scroll
 /// stops the glide — chrome drawn over it keeps its own press (D130).
-fn within(page: &Page, node: NodeId, root: NodeId) -> bool {
-    let mut n = node;
-    while n != NO_NODE {
-        if n == root {
-            return true;
-        }
-        n = page.nodes[n].parent;
-    }
-    false
+fn within(page: &Page, res: &Resolved, node: NodeId, root: NodeId) -> bool {
+    res.placed_is_under(page, node, root)
 }
 
 /// The innermost Scroll around `node` (`node` itself counts) that scrolls
@@ -506,7 +508,8 @@ fn scroll_taker(page: &Page, res: &Resolved, rects: &[Rect], node: NodeId, verti
                 return Some(n);
             }
         }
-        n = page.nodes[n].parent;
+        // Placed: the finger drags the Scroll the box is laid out in (B25).
+        n = res.placed_parent(page, n);
     }
     None
 }
@@ -961,7 +964,7 @@ fn changed(b: &Behavior_, from: f32, now: f32) -> bool {
 fn behavior_at(page: &Page, node: NodeId) -> Option<u32> {
     // By ancestry, not by index range: a later sibling's subtree shares
     // the control root's `id+1..subtree_end` range (Node::subtree_end).
-    page.behaviors.iter().position(|b| page.is_under(node, b.root)).map(|i| i as u32)
+    page.behaviors.iter().position(|b| page.is_under(node, b.root)).map(|i| i as u32) // declared on purpose: a behavior owns the nodes its root WROTE
 }
 
 /// The behavior with the control's LIVE range: a code write of `min=` /
@@ -1454,7 +1457,7 @@ impl Input {
     /// `follow_focus`) — clamped to the pannable range, never an
     /// overscroll; a glide on that Scroll stands down.
     fn scroll_into_view(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], node: NodeId) {
-        let mut s = scroll_ancestor(page, node);
+        let mut s = scroll_ancestor(page, res, node);
         while let Some(sc) = s {
             let v = rects[sc];
             let r = rects[node];
@@ -1484,7 +1487,7 @@ impl Input {
                     rt.dirty = true;
                 }
             }
-            s = scroll_ancestor(page, sc);
+            s = scroll_ancestor(page, res, sc);
         }
     }
 
@@ -1614,7 +1617,8 @@ impl Input {
             if matches!(page.nodes[c].kind, Kind::Slider | Kind::Toggle) {
                 break;
             }
-            let p = page.nodes[c].parent;
+            // Placed: the wheel turns the control the pointer is drawn over.
+            let p = res.placed_parent(page, c);
             n = if p == NO_NODE { None } else { Some(p) };
         }
         let Some(c) = n else { return events };
@@ -1907,7 +1911,7 @@ impl Input {
                 let hit_node = hit(page, res, rects, t.x, t.y, false);
                 let mut caught_accum: Option<(NodeId, [f32; 2])> = None;
                 let caught = match self.fling.take() {
-                    Some(f) if hit_node.is_some_and(|n| within(page, n, f.scroll)) => {
+                    Some(f) if hit_node.is_some_and(|n| within(page, res, n, f.scroll)) => {
                         let range = scroll_range(page, res, rects, f.scroll);
                         let raw = [f.accum[0] - f.accum[0].clamp(0.0, range[0]), f.accum[1] - f.accum[1].clamp(0.0, range[1])];
                         // The pull stays under the finger (GPAR5, the
@@ -2009,7 +2013,7 @@ impl Input {
                     self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum: [0.0; 2], value_from: 0.0, behavior: None, registered: 0, toggle_moved: false, release_owed: false, raw });
                     return events;
                 }
-                let scroll = if matches!(kind, Kind::Scroll | Kind::List) { Some(node) } else { scroll_ancestor(page, node) };
+                let scroll = if matches!(kind, Kind::Scroll | Kind::List) { Some(node) } else { scroll_ancestor(page, res, node) };
                 let pressed = (kind.is_press_surface() || kind == Kind::Slider || behavior.is_some()) && !caught;
                 if pressed {
                     rt.set_state(node, HELD, true);
@@ -2395,6 +2399,42 @@ impl Input {
                 }
             }
         }
+        // A page reuse forgot the focus owner on the Runtime's side
+        // (`reset_view_state`); this side drops it too, without a commit
+        // — the page is starting over, nobody is there to report to.
+        if rt.focus_reset_pending {
+            rt.focus_reset_pending = false;
+            self.focus = None;
+            self.focus_visible = false;
+            self.anchor = None;
+            self.committed.clear();
+        }
+        // Code-set offsets (`Runtime::set_scroll`) clamp to the content
+        // range here, once the node is idle: a pan or glide on it owns
+        // the offset until it settles, and stores an out-of-range value
+        // on purpose during the rubber band. Layout never clamps (B31).
+        if !rt.scroll_clamp_pending.is_empty() {
+            let panning: Option<NodeId> = self.press.as_ref().filter(|p| p.panning).and_then(|p| p.scroll);
+            let gliding: Option<NodeId> = self.fling.as_ref().map(|f| f.scroll);
+            let mut i = 0;
+            while i < rt.scroll_clamp_pending.len() {
+                let node = rt.scroll_clamp_pending[i];
+                if panning == Some(node) || gliding == Some(node) {
+                    i += 1;
+                    continue;
+                }
+                rt.scroll_clamp_pending.swap_remove(i);
+                if node.index() >= rects.len() {
+                    continue;
+                }
+                let range = scroll_range(page, res, rects, node);
+                let clamped = [rt.scroll[node][0].clamp(0.0, range[0]), rt.scroll[node][1].clamp(0.0, range[1])];
+                if rt.scroll[node] != clamped {
+                    rt.scroll[node] = clamped;
+                    rt.dirty = true;
+                }
+            }
+        }
         let Some(mut f) = self.fling else { return false };
         if let Some((s, expected)) = self.expected {
             if s == f.scroll && rt.scroll[s] != expected {
@@ -2538,7 +2578,7 @@ mod tests {
         let mut fx = Fx::new(src);
         let (a, b, c, d) = (fx.page.find("a").unwrap(), fx.page.find("b").unwrap(), fx.page.find("c").unwrap(), fx.page.find("d").unwrap());
         assert!(fx.page.subtree_end(a) > b, "the precondition: b's index sits inside a's range");
-        assert!(!fx.page.is_under(b, a) && fx.page.is_under(a, a));
+        assert!(!fx.page.is_under(b, a) && fx.page.is_under(a, a)); // declared on purpose: the arena precondition, no seats here
         let (_, rects) = fx.lay();
         let rb = rects[b];
         let ev = fx.touch(Phase::Down, rb.x + 5.0, rb.y + 5.0, 0.0);

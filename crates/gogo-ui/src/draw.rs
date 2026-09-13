@@ -375,7 +375,9 @@ pub(crate) fn clips(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId) -> 
         && (node.kind == Kind::Label || {
             let own = rects[id];
             let neg = |m: Option<f32>| m.map_or(false, |v| v < 0.0);
-            page.children(id).any(|c| {
+            // Placed children: what is laid out inside this box decides
+            // whether it clips, seat moves included (B25).
+            res.children(page, id).into_iter().any(|c| {
                 let r = rects[c];
                 let pc = &res.placement[c];
                 if res.gone(page, c) || res.bool(page, c, PropKey::Overlay).unwrap_or(false) {
@@ -1003,8 +1005,10 @@ pub(crate) fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option
                 let ratio = ((focal + dx * sin) / focal).max(0.05);
                 cx + (hinge + dx * cos - cx) / ratio
             };
-            for j in i..page.nodes[i].subtree_end as usize {
-                if !page.is_under(NodeId::from_index(j), NodeId::from_index(i)) {
+            // Every node, by PLACED ancestry: a node seated under the
+            // door has an index outside the door's range (B25).
+            for j in 0..out.len() {
+                if !res.placed_is_under(page, NodeId::from_index(j), NodeId::from_index(i)) {
                     continue;
                 }
                 let r = out[j];
@@ -1019,11 +1023,13 @@ pub(crate) fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option
         // walk order like the draw pass.
         let p = pivot_frac(page, res, NodeId::from_index(i));
         let (cx, cy) = (out[i].x + out[i].w * p.0, out[i].y + out[i].h * p.1);
-        // The range bounds the scan; membership is by ancestry — a later
-        // sibling's subtree shares the range (Node::subtree_end), and a
-        // swinging button must not drag its neighbours' hit rects along.
-        for j in i..page.nodes[i].subtree_end as usize {
-            if !page.is_under(NodeId::from_index(j), NodeId::from_index(i)) {
+        // Membership is by PLACED ancestry, over every node — a later
+        // sibling's subtree shares the index range (Node::subtree_end),
+        // so a swinging button must not drag its neighbours' hit rects
+        // along, and a node seated under the mover sits outside the
+        // range altogether (B25).
+        for j in 0..out.len() {
+            if !res.placed_is_under(page, NodeId::from_index(j), NodeId::from_index(i)) {
                 continue;
             }
             let r = out[j];
@@ -1061,7 +1067,11 @@ pub fn hit(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: boo
     // checks keep the raw screen point: scissors and wedge masks cut in
     // screen space, rotation or not. Zero cost while nothing rotates.
     let pts: Option<Vec<(f32, f32)>> = if res.motion.iter().any(|m| m.rotate != 0.0) {
-        let mut pts = vec![(x, y); page.nodes.len()];
+        // The turned point per ROTATING node first; then every node reads
+        // its nearest rotating PLACED ancestor-or-self. Two passes, not
+        // one index-ordered copy from the parent: a seated node's host
+        // can sit at a higher index than the node (B25).
+        let mut turned: Vec<Option<(f32, f32)>> = vec![None; page.nodes.len()];
         for i in 0..page.nodes.len().min(rects.len()) {
             let m = &res.motion[i];
             if m.rotate != 0.0 {
@@ -1070,9 +1080,18 @@ pub fn hit(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: boo
                 let (cx, cy) = (r.x + r.w * pv.0, r.y + r.h * pv.1);
                 let (s, c) = (-m.rotate).to_radians().sin_cos();
                 let (dx, dy) = (x - cx, y - cy);
-                pts[i] = (cx + dx * c - dy * s, cy + dx * s + dy * c);
-            } else if i > 0 {
-                pts[i] = pts[page.nodes[i].parent.index()];
+                turned[i] = Some((cx + dx * c - dy * s, cy + dx * s + dy * c));
+            }
+        }
+        let mut pts = vec![(x, y); page.nodes.len()];
+        for i in 0..page.nodes.len() {
+            let mut a = NodeId::from_index(i);
+            while a != NO_NODE {
+                if let Some(p) = turned[a.index()] {
+                    pts[i] = p;
+                    break;
+                }
+                a = res.placed_parent(page, a);
             }
         }
         Some(pts)
@@ -1124,7 +1143,10 @@ fn hit_laid_at(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any:
                     break;
                 }
             }
-            let parent = page.nodes[a].parent;
+            // PLACED parents: the finger follows the drawn tree, so a
+            // seated button takes taps when its declared parent is gone
+            // and none when its seat host is (B25).
+            let parent = res.placed_parent(page, a);
             if parent == NO_NODE {
                 break;
             }

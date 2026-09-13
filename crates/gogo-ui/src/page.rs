@@ -1813,9 +1813,27 @@ impl Page {
         NodeId::range(id.offset(1), self.subtree_end(id))
     }
 
-    /// Whether `node` is `root` or sits anywhere under it — a parent walk,
-    /// because the arena's index ranges are not subtrees (see
-    /// `Node::subtree_end`). `NO_NODE` is under nothing.
+    /// The parent that WROTE `n` — the file's nesting, seat moves ignored
+    /// (`NO_NODE` for a root).
+    ///
+    /// Why a named accessor: a running page has two trees. The declared
+    /// tree is this field; the placed tree is the same nodes after `when
+    /// … x.seat = name` moves (`Resolved::placed_parent`). Layout, paint
+    /// and input follow the placed tree, so a walk that reads the field
+    /// bare picks the declared tree by accident — a seated button's taps,
+    /// focus and clips then follow a parent it no longer sits in
+    /// (todo-bugs B25). Every walk names its tree; this one is for the
+    /// walks that ask "who authored this node" (a `when <name>` finds its
+    /// control root, a row finds its List).
+    pub fn declared_parent(&self, n: NodeId) -> NodeId {
+        self.nodes[n].parent
+    }
+
+    /// Whether `node` is `root` or sits anywhere under it in the DECLARED
+    /// tree (see `declared_parent`; the placed one is
+    /// `Resolved::placed_is_under`) — a parent walk, because the arena's
+    /// index ranges are not subtrees (see `Node::subtree_end`). `NO_NODE`
+    /// is under nothing.
     pub fn is_under(&self, node: NodeId, root: NodeId) -> bool {
         let mut n: NodeId = node;
         loop {

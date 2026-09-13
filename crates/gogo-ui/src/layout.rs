@@ -137,6 +137,61 @@ pub const MARK_TEXT_GAP: f32 = 8.0;
 /// A scroll bar's column (right) or row (bottom); Godot's default theme at 2× is 8 px.
 pub const SCROLL_BAR_EPX: f32 = 4.0;
 
+/// Does this kind place its children itself (a container), or do the
+/// children place themselves in it (a free parent)? The addon's defaults
+/// key off this split — its alias table (`gogo_resolver.gd` TYPE_ALIASES)
+/// makes these kinds a Godot `Container`, and a Container honours size
+/// flags where a plain `Control` ignores them. The Image centring default
+/// (`image_center_default`) is one such flag, so it holds under a Panel
+/// and not under a Layers or a Button (docs/todo-bugs.md B28-DES: the
+/// Rust roads had lumped Panel with Layers). `Choice` is a stack here (a
+/// scope in the addon); `List` bodies its statics in a VBoxContainer
+/// (`controls/list_root.gd`). Not here: `GridRow` and `Repeat` are not
+/// boxes — a cell's parent is the Grid, a repeat's items take the host's
+/// slots — see `placing_parent_kind`.
+pub fn is_container(kind: Kind) -> bool {
+    matches!(kind, Kind::Row | Kind::Column | Kind::Choice | Kind::Panel | Kind::ListItem | Kind::Grid | Kind::Scroll | Kind::Flow | Kind::Tiles | Kind::List)
+}
+
+/// An Image sized on both axes with no alignment written is an exact
+/// CENTRED box in a container parent (WPF Image parity, the addon's D28:
+/// `img_center` sets Godot's shrink-centre size flags, which only a
+/// Container honours — spec "Image", REFERENCE.md "Image"). Under a free
+/// parent (Layers, View, Button) the addon writes no anchor and the Image
+/// sits at the start edge, so the default is gated on `is_container`.
+/// One helper for every road that places children — stack, general
+/// (`place`, whose parent may be a Panel), Flow — so the scope cannot
+/// drift per road again (todo-bugs.md B28: the clone page's thumbnail sat
+/// at the top of its row because only the stack road centred). Tiles is
+/// the one container road that skips it (`place_tiles`).
+fn image_center_default(parent_kind: Kind, kind: Kind, p: &mut Placement) {
+    if kind != Kind::Image || !is_container(parent_kind) {
+        return;
+    }
+    if !(matches!(p.width, Len::Exact(_)) && matches!(p.height, Len::Exact(_))) {
+        return;
+    }
+    if p.halign == Align::AlignUnset {
+        p.halign = Align::Center;
+    }
+    if p.valign == Align::AlignUnset {
+        p.valign = Align::Center;
+    }
+}
+
+/// Which axis an `aspect=` derives the other from, once the sizing words
+/// are read (`Lay::aspect_drive`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AspectDrive {
+    /// The width is spelled (or, bare, the parent's offer): the height follows.
+    Width,
+    /// The height is spelled and the width is not: the width follows.
+    Height,
+    /// Both axes `fill` or both bare on a numeric ratio: the largest
+    /// ratio box that fits, centred.
+    Fit,
+}
+
 struct Lay<'a> {
     page: &'a Page,
     res: &'a Resolved,
@@ -595,21 +650,15 @@ impl<'a> Lay<'a> {
         (cw + inset[0] + inset[2], ch + inset[1] + inset[3])
     }
 
-    /// A numeric `aspect=` on any box (`natural` is not one — that is the
-    /// Image's own bitmap path). Read by `place` to derive the unspelled
-    /// axis (GPAR80).
-    fn aspect_number(&self, id: NodeId) -> Option<f32> {
+    /// The ratio (width / height) an `aspect=` asks for: the number
+    /// written, or for `natural` the picture's own size from the host.
+    /// `None` = no `aspect=`, or a `natural` whose picture the host has
+    /// not measured yet (a `loading=lazy` bitmap still decoding, a runtime
+    /// key not uploaded) — the box then has no ratio to follow. One
+    /// accessor for the measure road (`image_min`) and the place road
+    /// (`aspect_drive`), so both read the same picture (B26-DES).
+    fn aspect_ratio(&self, id: NodeId) -> Option<f32> {
         match self.res.prop(self.page, id, PropKey::Aspect) {
-            Some(Value::VNum(r)) if r > 0.0 => Some(r),
-            _ => None,
-        }
-    }
-
-    /// `aspect=natural` (the bitmap's ratio) or `aspect=<w/h>`: the axis
-    /// the file sized drives, the other follows; with neither, the width
-    /// the parent offers drives (WPF UniformToFill measure).
-    fn image_min(&self, id: NodeId, avail_w: Option<f32>) -> (f32, f32) {
-        let ratio: Option<f32> = match self.res.prop(self.page, id, PropKey::Aspect) {
             Some(Value::VNum(r)) if r > 0.0 => Some(r),
             Some(Value::VIdent(word)) if self.page.str(word) == "natural" => {
                 let key: Option<ImageKey> = match self.res.prop(self.page, id, PropKey::Source) {
@@ -619,8 +668,58 @@ impl<'a> Lay<'a> {
                 key.and_then(|k| self.text.image_size(k)).filter(|(_, h)| *h > 0.0).map(|(w, h)| w / h)
             }
             _ => None,
-        };
-        let Some(ratio) = ratio else { return (0.0, 0.0) };
+        }
+    }
+
+    /// What `place` derives from an `aspect=`, given the sizing words: the
+    /// ratio and which axis drives. `None` = nothing to derive at place
+    /// time — no ratio (`aspect_ratio`), or a `natural` with neither axis
+    /// spelled, which stays on the measure road (`image_min`: the width
+    /// the parent offers drives, the height follows the ratio) — the
+    /// catalog thumbnails (`effect_select.gogo`) rely on that.
+    /// Numeric: the spelled axis drives; both `fill` or both bare fit
+    /// (GPAR80, the addon's _aspect_fit rules). `natural`: the spelled
+    /// axis drives (the addon's EXPAND_FIT_WIDTH_PROPORTIONAL when only
+    /// the height is spelled, `gogo_resolver.gd` aspect_drive) — a `fill`
+    /// height in a 50-high row makes an 80x40 picture 100 wide, where
+    /// before it laid out 0 wide (todo-bugs.md B26). A `natural` with
+    /// both axes `fill` is left on the measure road too (the addon fits;
+    /// nothing spells it yet).
+    fn aspect_drive(&self, id: NodeId) -> Option<(f32, AspectDrive)> {
+        let ratio = self.aspect_ratio(id)?;
+        let p = self.placement(id);
+        let spelled = |len: Len| matches!(len, Len::Exact(_) | Len::Fill(_));
+        let natural = !matches!(self.res.prop(self.page, id, PropKey::Aspect), Some(Value::VNum(_)));
+        if natural {
+            return match (spelled(p.width), spelled(p.height)) {
+                (false, true) => Some((ratio, AspectDrive::Height)),
+                (true, false) => Some((ratio, AspectDrive::Width)),
+                _ => None,
+            };
+        }
+        let both_free = matches!(p.width, Len::Fill(_)) && matches!(p.height, Len::Fill(_)) || p.width == Len::Unset && p.height == Len::Unset;
+        let h_drives = matches!(p.height, Len::Exact(_)) || (matches!(p.height, Len::Fill(_)) && !spelled(p.width));
+        Some((ratio, if both_free { AspectDrive::Fit } else if h_drives { AspectDrive::Height } else { AspectDrive::Width }))
+    }
+
+    /// An Image whose `aspect=` derives the WIDTH from a spelled height:
+    /// the width once the height it gets is known. `image_min` cannot
+    /// answer this — a measure is asked per width, never per height (a
+    /// Row's cross axis is not in the question) — so the stack road asks
+    /// here after it knows the child's height (the addon's Container
+    /// grants the TextureRect's minimum, re-derived from its rect height).
+    fn width_from_height(&self, id: NodeId, h: f32) -> Option<f32> {
+        match self.aspect_drive(id)? {
+            (ratio, AspectDrive::Height) => Some(h * ratio),
+            _ => None,
+        }
+    }
+
+    /// `aspect=natural` (the bitmap's ratio) or `aspect=<w/h>`: the axis
+    /// the file sized drives, the other follows; with neither, the width
+    /// the parent offers drives (WPF UniformToFill measure).
+    fn image_min(&self, id: NodeId, avail_w: Option<f32>) -> (f32, f32) {
+        let Some(ratio) = self.aspect_ratio(id) else { return (0.0, 0.0) };
         let p = self.placement(id);
         match (p.width, p.height) {
             (Len::Exact(w), _) => (w, w / ratio),
@@ -685,12 +784,36 @@ impl<'a> Lay<'a> {
 
     // ----- placement ---------------------------------------------------------
 
+    /// The kind of the box that places `id` — its declared parent, looked
+    /// past the two nodes that are not boxes: a Grid's `row { }` (the
+    /// cell's parent is the Grid, as in the addon, where a row is no node)
+    /// and a `repeat` (its items take the host's slots, the way
+    /// `visible_children` lifts them). `None` for the root.
+    fn placing_parent_kind(&self, id: NodeId) -> Option<Kind> {
+        let mut parent = self.node(id).parent;
+        while parent != NO_NODE && parent.index() < self.page.nodes.len() {
+            let kind = self.node(parent).kind;
+            if !matches!(kind, Kind::GridRow | Kind::Repeat) {
+                return Some(kind);
+            }
+            parent = self.node(parent).parent;
+        }
+        None
+    }
+
     /// Lays `id` into `frame` (the space its parent offers, margins not yet
     /// applied) and recurses. `written`: per axis, whether the frame's
     /// extent is a number the author wrote (see `Lay::written`). The
     /// document root fills its viewport unless it says otherwise.
     fn place(&mut self, id: NodeId, frame: Rect, written: [bool; 2]) {
         let mut p = *self.placement(id);
+        // The general road serves container parents too (Panel, ListItem,
+        // a Scroll's content, a Grid's cells): their Image default holds
+        // here as in a stack. The parent is the DECLARED one — a seated
+        // occupant never reaches `place` (the Seat arm fits it).
+        if let Some(parent_kind) = self.placing_parent_kind(id) {
+            image_center_default(parent_kind, self.node(id).kind, &mut p);
+        }
         let m = self.margins(id);
         // An `automatic=` slot: the value picks its extent or its seat
         // along the host's width (the sliders here are horizontal).
@@ -732,27 +855,30 @@ impl<'a> Lay<'a> {
         // text, Flow rows).
         let (_, min_h) = self.size_final(id, w);
         let (y, h) = free_axis(frame.y, frame.h, p.height, p.valign, m[1], m[3], min_h, p.min_height, p.max_height, p.max_height_fill, written[1]);
-        // A numeric `aspect=` derives the unspelled axis from the driven
-        // one; both axes `fill` (or both bare) = the largest ratio box
-        // that fits, centered (GPAR80, the addon's _aspect_fit rules).
-        // `natural` stays the Image's own path (`image_min`).
-        let (x, y, w, h) = match self.aspect_number(id) {
-            Some(ratio) => {
-                let both_free = matches!(p.width, Len::Fill(_)) && matches!(p.height, Len::Fill(_)) || p.width == Len::Unset && p.height == Len::Unset;
-                let h_drives = matches!(p.height, Len::Exact(_)) || (matches!(p.height, Len::Fill(_)) && !matches!(p.width, Len::Exact(_) | Len::Fill(_)));
-                if both_free {
-                    let fw = h * ratio;
-                    let (w2, h2) = if fw <= w { (fw, h) } else { (w, w / ratio) };
-                    (x + (w - w2) / 2.0, y + (h - h2) / 2.0, w2, h2)
-                } else if h_drives {
-                    let w2 = h * ratio;
-                    let (x2, _) = free_axis(frame.x, frame.w, Len::Exact(w2), p.halign, m[0], m[2], w2, 0.0, None, false, written[0]);
-                    (x2, y, w2, h)
-                } else {
-                    let h2 = w / ratio;
-                    let (y2, _) = free_axis(frame.y, frame.h, Len::Exact(h2), p.valign, m[1], m[3], h2, 0.0, None, false, written[1]);
-                    (x, y2, w, h2)
-                }
+        // An `aspect=` derives the unspelled axis from the driven one
+        // (numeric or `natural` — `aspect_drive` says which axis; a
+        // `natural` with no axis spelled already came out of `image_min`
+        // above). Both axes `fill` (or both bare) on a number = the
+        // largest ratio box that fits, centered (GPAR80, the addon's
+        // _aspect_fit rules). The derived axis is re-seated as an exact
+        // size, so `halign=left` on a fill-height Image puts the derived
+        // width at the start edge instead of shrinking it to the 0 the
+        // measure answered (todo-bugs.md B26: the mask tiles drew nothing).
+        let (x, y, w, h) = match self.aspect_drive(id) {
+            Some((ratio, AspectDrive::Fit)) => {
+                let fw = h * ratio;
+                let (w2, h2) = if fw <= w { (fw, h) } else { (w, w / ratio) };
+                (x + (w - w2) / 2.0, y + (h - h2) / 2.0, w2, h2)
+            }
+            Some((ratio, AspectDrive::Height)) => {
+                let w2 = h * ratio;
+                let (x2, _) = free_axis(frame.x, frame.w, Len::Exact(w2), p.halign, m[0], m[2], w2, 0.0, None, false, written[0]);
+                (x2, y, w2, h)
+            }
+            Some((ratio, AspectDrive::Width)) => {
+                let h2 = w / ratio;
+                let (y2, _) = free_axis(frame.y, frame.h, Len::Exact(h2), p.valign, m[1], m[3], h2, 0.0, None, false, written[1]);
+                (x, y2, w, h2)
             }
             None => (x, y, w, h),
         };
@@ -811,7 +937,21 @@ impl<'a> Lay<'a> {
                 if node.kind == Kind::Gap {
                     if node.gap_fill { (0.0, node.gap) } else { (node.gap, 0.0) }
                 } else {
-                    (self.main_min(*c, axis, cross), self.fill_weight(*c, axis))
+                    // A Row child whose `aspect=` derives its width from
+                    // its height (`Image height=fill, aspect=natural`):
+                    // the slot is that width. The measure road answers 0
+                    // here — it is asked per width and never sees the
+                    // row's height (todo-bugs.md B26) — so the height
+                    // the child will get across the row is worked out
+                    // first, the way the cross axis below does it.
+                    let derived = if axis == Axis::X {
+                        let cp = self.placement(*c);
+                        let (_, cross_h) = free_axis(inner.y, inner.h, cp.height, cp.valign, None, None, 0.0, cp.min_height, cp.max_height, cp.max_height_fill, self.written[id][1]);
+                        self.width_from_height(*c, cross_h)
+                    } else {
+                        None
+                    };
+                    (derived.unwrap_or_else(|| self.main_min(*c, axis, cross)), self.fill_weight(*c, axis))
                 }
             })
             .collect();
@@ -826,16 +966,7 @@ impl<'a> Lay<'a> {
                 continue;
             }
             let mut p = *self.placement(*c);
-            // An Image sized on both axes is an exact CENTERED box in a
-            // stack (Godot's shrink_center default for it; spec "Image").
-            if node.kind == Kind::Image && matches!(p.width, Len::Exact(_)) && matches!(p.height, Len::Exact(_)) {
-                if p.halign == Align::AlignUnset {
-                    p.halign = Align::Center;
-                }
-                if p.valign == Align::AlignUnset {
-                    p.valign = Align::Center;
-                }
-            }
+            image_center_default(self.node(id).kind, node.kind, &mut p);
             // The cross axis is a free axis; the main axis is the slot. The
             // cross measure is taken at the width the child got.
             // `hug(n)` (GP34): the slot shares the leftover, the BOX
@@ -855,6 +986,9 @@ impl<'a> Lay<'a> {
             };
             let rect = if axis == Axis::Y {
                 let (min_w, _) = self.size_at(*c, Some(inner.w));
+                // A Column child whose `aspect=` derives its width from
+                // its height: the width follows the slot it got (B26).
+                let min_w = self.width_from_height(*c, main_size).unwrap_or(min_w);
                 let (x, w) = free_axis(inner.x, inner.w, p.width, p.halign, None, None, min_w, p.min_width, p.max_width, p.max_width_fill, self.written[id][0]);
                 Rect::new(x, main_pos, w, main_size)
             } else {
@@ -890,7 +1024,8 @@ impl<'a> Lay<'a> {
                 for i in col.first..col.end {
                     let c = children[i];
                     let (w, h) = sizes[i];
-                    let p = *self.placement(c);
+                    let mut p = *self.placement(c);
+                    image_center_default(Kind::Flow, self.node(c).kind, &mut p);
                     let h = if let Len::Fill(n) = p.height {
                         let stretched = if weights > 0.0 { h + extra * n / weights } else { h };
                         p.max_height.map_or(stretched, |c| stretched.min(c))
@@ -921,7 +1056,10 @@ impl<'a> Lay<'a> {
             for i in row.first..row.end {
                 let c = children[i];
                 let (w, h) = sizes[i];
-                let p = *self.placement(c);
+                // A Flow is a container (the addon's FlowContainer): the
+                // Image centring default holds on the line's cross axis.
+                let mut p = *self.placement(c);
+                image_center_default(Kind::Flow, self.node(c).kind, &mut p);
                 let w = if let Len::Fill(n) = p.width {
                     // The stretch stops at a numeric cap (the cap law:
                     // a box never grows past its cap).
@@ -1009,6 +1147,10 @@ impl<'a> Lay<'a> {
         }
     }
 
+    /// Tiles is a container in the addon, but its cells are fixed to the
+    /// lattice (a cell IS its slot: unit × span wide, its own height), so
+    /// the Image centring default (`image_center_default`) has no free
+    /// axis to act on here and is not applied.
     fn place_tiles(&mut self, id: NodeId, inner: Rect) {
         let (cells, _) = self.tiles_cells(id, inner.w);
         for (c, r) in cells {
