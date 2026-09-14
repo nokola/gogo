@@ -245,9 +245,37 @@ struct Lay<'a> {
     measured: Cell<u32>,
 }
 
+/// The tables a plain `layout` works in, kept by a caller that lays out
+/// on its own again and again (a child page's natural-size measure) so
+/// the second call allocates nothing. Nothing to read but through
+/// `layout_into`.
+#[derive(Default)]
+pub struct LayoutBuffers {
+    rects: Vec<Rect>,
+    written: Vec<[bool; 2]>,
+    memo: Vec<Vec<Memo>>,
+}
+
+/// The page laid out in `viewport` from scratch: one rect per node.
 pub fn layout(page: &Page, res: &Resolved, viewport: Rect, text: &dyn TextMeasure) -> Vec<Rect> {
+    let mut keep = LayoutBuffers::default();
+    layout_into(page, res, viewport, text, &mut keep);
+    keep.rects
+}
+
+/// `layout` in the caller's kept tables: the rects come back borrowed
+/// from `keep`, and a call after the first allocates nothing once the
+/// page stopped growing.
+pub fn layout_into<'b>(page: &Page, res: &Resolved, viewport: Rect, text: &dyn TextMeasure, keep: &'b mut LayoutBuffers) -> &'b [Rect] {
     let n = page.nodes.len();
-    let mut lay = Lay::new(page, res, text, vec![Rect::ZERO; n], vec![[false; 2]; n], vec![Vec::new(); n]);
+    let LayoutBuffers { mut rects, mut written, mut memo } = std::mem::take(keep);
+    rects.clear();
+    rects.resize(n, Rect::ZERO);
+    written.clear();
+    written.resize(n, [false; 2]);
+    memo.iter_mut().for_each(Vec::clear);
+    memo.resize_with(n, Vec::new);
+    let mut lay = Lay::new(page, res, text, rects, written, memo);
     lay.place_root(viewport);
     // The reveal pass never reads a rect but its own node's, so it can
     // run in place here; the retained road keeps the placed table apart.
@@ -255,7 +283,9 @@ pub fn layout(page: &Page, res: &Resolved, viewport: Rect, text: &dyn TextMeasur
         let placed = lay.rects[id];
         lay.rects[id] = lay.reveal(id, placed);
     }
-    lay.rects
+    let (rects, written, memo) = lay.into_tables();
+    *keep = LayoutBuffers { rects, written, memo };
+    &keep.rects
 }
 
 /// The keys the layout pass reads off the look (`Resolved::prop` and its
@@ -303,6 +333,11 @@ enum Axis {
 impl<'a> Lay<'a> {
     fn new(page: &'a Page, res: &'a Resolved, text: &'a dyn TextMeasure, rects: Vec<Rect>, written: Vec<[bool; 2]>, memo: Vec<Vec<Memo>>) -> Lay<'a> {
         Lay { page, res, text, rects, written, memo: RefCell::new(memo), measured: Cell::new(0) }
+    }
+
+    /// The tables back, for a caller that keeps them (`layout_into`).
+    fn into_tables(self) -> (Vec<Rect>, Vec<[bool; 2]>, Vec<Vec<Memo>>) {
+        (self.rects, self.written, self.memo.into_inner())
     }
 
     /// The whole page into `viewport`, root down.

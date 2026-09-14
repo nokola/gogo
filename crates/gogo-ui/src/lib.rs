@@ -35,7 +35,7 @@ pub use diag::{Diagnostic, Severity, has_errors};
 pub use draw::{Draw, Fit, GradientKind, Sampling, TextAlign, draw, hit};
 pub use frame::{Frame, KeptFrame};
 pub use input::{Behavior, Claim, Cx, Event, EventKind, Input, Key, KeyAction, MOUSE_ID, Mods, Phase, Touch};
-pub use layout::{FixedAdvance, Rect, TextMeasure, layout};
+pub use layout::{FixedAdvance, LayoutBuffers, Rect, TextMeasure, layout, layout_into};
 pub use locale::{KeyName, Keys, Locale};
 pub use runtime::{AnimName, ArrangementName};
 pub use page::{ArrangementId, BASE, BEHAVIOR_SLOTS, BUILTIN_BEHAVIORS, BehaviorSpec, ImageKey, Images, Kind, KeyId, KEYS_ARROWS, KEYS_ENTER, KEYS_HOME_END, KEYS_SPACE, NO_IMAGE, NO_KEY, NO_NODE, NO_STR, NodeId, Orientation, Page, Payload, PropKey, Color_Straight_Srgb_4xU8_RGBA, ScreenClass, StaticPage, StrId, Value};

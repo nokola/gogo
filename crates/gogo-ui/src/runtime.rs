@@ -1542,6 +1542,19 @@ impl Runtime {
         self.set_prop(node, PropKey::Text, Value::VText { text: id, key: NO_KEY });
     }
 
+    /// The text `node` shows: code's last `set_text`, else the declared
+    /// `text=` (a `when` write is not read here). For a code-behind that
+    /// needs the typed words at a tap (the caption page's name box) —
+    /// read off the writes, no look built, nothing allocated; the free
+    /// `resolve` for one string was the pattern the frame road ended (D43).
+    pub fn text_of<'a>(&self, page: &'a Page, node: NodeId) -> Option<&'a str> {
+        let written: Option<Value> = self.writes.iter().rev().find(|(n, p)| *n == node && p.key == PropKey::Text).map(|(_, p)| p.value);
+        match written.or_else(|| page.prop(node, PropKey::Text))? {
+            Value::VText { text, .. } => Some(page.str(text)),
+            _ => None,
+        }
+    }
+
     /// Shows the translation key `key` on `node` — the string follows the
     /// locale (`set_locale`). Takes only a build-emitted `Key`, so a key no
     /// page declares is a rustc error. `set_text` is the other write: a
