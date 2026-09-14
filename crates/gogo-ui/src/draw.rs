@@ -222,10 +222,17 @@ pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
 /// node the layout has no rect for.
 pub fn draw_subtree(page: &Page, res: &Resolved, rects: &[Rect], root: NodeId) -> Vec<Draw> {
     let mut out = Vec::new();
-    if rects.len() > root.index() {
-        walk(page, res, rects, root, 1.0, None, &mut out, None, Xform::IDENTITY);
-    }
+    draw_subtree_into(page, res, rects, root, &mut out);
     out
+}
+
+/// `draw_subtree` into a kept buffer (cleared first) — the frame road's
+/// `above_children` split, allocation-free once warm.
+pub fn draw_subtree_into(page: &Page, res: &Resolved, rects: &[Rect], root: NodeId, out: &mut Vec<Draw>) {
+    out.clear();
+    if rects.len() > root.index() {
+        walk(page, res, rects, root, 1.0, None, out, None, Xform::IDENTITY);
+    }
 }
 
 /// The page's draw list without ONE subtree — the half of a page that
@@ -239,11 +246,18 @@ pub fn draw_subtree(page: &Page, res: &Resolved, rects: &[Rect], root: NodeId) -
 /// this list and joins the draws after the children.
 pub fn draw_except(page: &Page, res: &Resolved, rects: &[Rect], skip: NodeId) -> Vec<Draw> {
     let mut out = Vec::new();
-    if page.nodes.is_empty() {
-        return out;
-    }
-    walk(page, res, rects, NodeId::new(0), 1.0, Some(skip), &mut out, None, Xform::IDENTITY);
+    draw_except_into(page, res, rects, skip, &mut out);
     out
+}
+
+/// `draw_except` into a kept buffer (cleared first) — the frame road's
+/// `above_children` split, allocation-free once warm.
+pub fn draw_except_into(page: &Page, res: &Resolved, rects: &[Rect], skip: NodeId, out: &mut Vec<Draw>) {
+    out.clear();
+    if page.nodes.is_empty() {
+        return;
+    }
+    walk(page, res, rects, NodeId::new(0), 1.0, Some(skip), out, None, Xform::IDENTITY);
 }
 
 /// The dashed border (`border_dash=`): one pass around the plate's

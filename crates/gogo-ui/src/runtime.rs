@@ -250,11 +250,6 @@ pub struct Runtime {
     pub scroll: Vec<[f32; 2]>,
     /// Set by anything that changes what layout/draw would produce.
     pub dirty: bool,
-    /// The glide just resolved a `%` anim endpoint into the anim layer
-    /// (a node that had no box at play laid out): the resolve this frame
-    /// was taken before it, so a host that draws from that resolve shows
-    /// the node at rest for one frame. `take_motion_stale` hands it out.
-    motion_stale: bool,
     /// Scroll nodes whose offset code just set (`set_scroll`): the input
     /// tick clamps each to its content range once the node is idle and
     /// drops it from here. Not clamped at the write — the range needs a
@@ -472,7 +467,6 @@ impl Runtime {
             instant_flips: Vec::new(),
             pending_settle: None,
             dirty: true,
-            motion_stale: false,
             locale: None,
             safe: [0.0; 4],
             writes: Vec::new(),
@@ -555,7 +549,15 @@ impl Runtime {
     /// were and where the layout put them. Call once per layout, after
     /// `tick`. A flip mid-glide retargets from the shown rect.
     pub fn glide(&mut self, rects: Vec<Rect>) -> Vec<Rect> {
-        let mut shown = rects.clone();
+        let mut shown: Vec<Rect> = rects;
+        self.glide_in_place(&mut shown);
+        shown
+    }
+
+    /// `glide` over the caller's buffer: `rects` holds the laid-out rects
+    /// on entry and the shown ones on exit — the frame road's version
+    /// (`frame_retained`), one copy fewer than `glide` (audit finding 7).
+    pub fn glide_in_place(&mut self, rects: &mut Vec<Rect>) {
         if let Some((duration, easing)) = self.glide_start.take() {
             if self.last_rects.len() == rects.len() {
                 for i in 0..rects.len() {
@@ -584,24 +586,25 @@ impl Runtime {
             }
         }
         for (node, from, to, elapsed, duration, easing) in &mut self.rect_tweens {
-            // A relayout (a resize, a text change) moves the target with it.
+            // A relayout (a resize, a text change) moves the target with it
+            // — `rects[node]` is still the laid-out rect here, each node
+            // tweens once.
             *to = rects[*node];
             let t = easing.apply((*elapsed / *duration).min(1.0));
             let lerp = |a: f32, b: f32| a + (b - a) * t;
-            shown[*node] = Rect::new(lerp(from.x, to.x), lerp(from.y, to.y), lerp(from.w, to.w), lerp(from.h, to.h));
+            rects[*node] = Rect::new(lerp(from.x, to.x), lerp(from.y, to.y), lerp(from.w, to.w), lerp(from.h, to.h));
         }
         self.glide_late = 0.0;
         self.rect_tweens.retain(|t| t.3 < t.4);
-        self.last_rects = shown.clone();
+        self.last_rects.clone_from(rects);
         // A `%` anim endpoint on a node that had no box at play (hidden
-        // then) reads its fraction now that the node laid out.
+        // then) reads its fraction now that the node laid out — into the
+        // anim layer; `compose_motion` carries it to the look this frame.
         for p in &mut self.players {
             if p.resolve_pending_percent(&self.last_rects, &mut self.motion) {
                 self.dirty = true;
-                self.motion_stale = true;
             }
         }
-        shown
     }
 
     /// Plays `anim` on this page (`play(name)`); a newer player owns the
@@ -1335,15 +1338,6 @@ impl Runtime {
     /// OS event froze it mid-flight (the effect page's switch settle, a
     /// code-opened band). The Godot addon polled its `gogo_anims` group
     /// the same way: every pump keeps its membership current.
-    /// Did the last `glide` move the anim layer under this frame's resolve
-    /// (a `%` endpoint resolved late)? Cleared by the read. A host that
-    /// answers `true` resolves again before it draws, so a sheet hidden at
-    /// play first shows one height below its seat, never at rest for a
-    /// frame (B38: the slide looked like it ran twice).
-    pub fn take_motion_stale(&mut self) -> bool {
-        std::mem::take(&mut self.motion_stale)
-    }
-
     pub fn is_moving(&self) -> bool {
         !self.rect_tweens.is_empty() || !self.auto_glides.is_empty() || !self.tweens.is_empty() || !self.players.is_empty() || !self.pulses.is_empty() || !self.changes.is_empty()
     }
@@ -1965,6 +1959,62 @@ impl Runtime {
     /// `draw_subtree`) has no retained road.
     pub fn draw_retained(&mut self, page: &Page, rects: &[Rect], out: &mut Vec<Draw>) {
         self.retained_draw.run(page, &self.resolved, &self.resolve_changes, rects, out);
+    }
+
+    /// Stamps the anim layer's motion channels — translate, scale, rotate,
+    /// swing: the held end poses, the live players, the tap pulses — onto
+    /// the kept look's `motion`, after the glide. The resolve stamped them
+    /// too, but a `%` endpoint on a node that had no box at play lands in
+    /// the glide, after that resolve (B38: the settings sheet drew at its
+    /// seat for one frame, then jumped below the screen and slid). Players
+    /// × owned channels: no allocation, no second resolve, no change serial
+    /// bumped — the draw cache diffs `motion` per node and walks only the
+    /// mover's subtree.
+    pub fn compose_motion(&mut self) {
+        let Runtime { resolved, held, players, motion, pulses, .. } = self;
+        let n: usize = resolved.motion.len();
+        let mut stamp = |node: NodeId, channel: Channel, v: f32| {
+            if node.index() < n && !matches!(channel, Channel::Opacity | Channel::ColorA | Channel::RevealX | Channel::RevealY) {
+                resolved.motion[node].set(channel, v);
+            }
+        };
+        for (node, channel, v) in held.iter() {
+            stamp(*node, *channel, *v);
+        }
+        for p in players.iter().filter(|p| !p.stopped) {
+            for (node, channel) in &p.owns {
+                stamp(*node, *channel, motion[*node].get(*channel));
+            }
+        }
+        for p in pulses.iter() {
+            stamp(p.node, Channel::Swing, p.angle());
+        }
+    }
+
+    /// One frame's look, layout and draw list in the one order that is
+    /// right — resolve, the retained layout, glide, the anim motion, the
+    /// retained draw list — into the caller's buffers, kept between frames
+    /// so nothing allocates once warm. Every host draws through here: the
+    /// order is the runtime's, never a host's to get wrong (B38 was a host
+    /// drawing from the resolve taken before the glide; three hosts spelled
+    /// the sequence by hand). `split`: the `above_children` road — the page
+    /// without that subtree into `draws`, the subtree into the second
+    /// buffer; no retained road there, the full walk each frame as before.
+    /// Call after `tick` and the input tick; clears `dirty`.
+    pub fn frame_retained(&mut self, page: &Page, viewport: Rect, text: &dyn TextMeasure, rects: &mut Vec<Rect>, draws: &mut Vec<Draw>, split: Option<(NodeId, &mut Vec<Draw>)>) {
+        self.resolve_retained(page);
+        rects.clear();
+        rects.extend_from_slice(self.layout_retained(page, viewport, text));
+        self.glide_in_place(rects);
+        self.compose_motion();
+        match split {
+            Some((top, above)) => {
+                crate::draw::draw_except_into(page, &self.resolved, rects, top, draws);
+                crate::draw::draw_subtree_into(page, &self.resolved, rects, top, above);
+            }
+            None => self.retained_draw.run(page, &self.resolved, &self.resolve_changes, rects, draws),
+        }
+        self.dirty = false;
     }
 
     /// Switches the retained layout and draw list (B36-DES stage 3) —
