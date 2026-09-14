@@ -109,6 +109,10 @@ pub struct UiRenderer {
     tile_pipeline: Option<wgpu::RenderPipeline>,
     screen_buffer: wgpu::Buffer,
     screen_bind: wgpu::BindGroup,
+    /// The size the screen uniform holds on the GPU: written only when
+    /// the size changes (D34) — a stroke's frames never change it, and
+    /// on the GLES road every buffer write is an EGL context switch.
+    screen_written: Option<(u32, u32)>,
     tex_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     /// Nearest-texel sampling for `sampling=pixel` Images.
@@ -190,6 +194,7 @@ impl UiRenderer {
             tile_pipeline: None,
             screen_buffer,
             screen_bind,
+            screen_written: None,
             tex_layout,
             sampler,
             sampler_pixel,
@@ -695,7 +700,10 @@ impl UiRenderer {
         if !self.quads.is_empty() {
             queue.write_buffer(&self.quad_buffer, 0, bytemuck::cast_slice(&self.quads));
         }
-        queue.write_buffer(&self.screen_buffer, 0, bytemuck::bytes_of(&Screen { size: [screen.0 as f32, screen.1 as f32], _pad: [0.0; 2] }));
+        if self.screen_written != Some(screen) {
+            queue.write_buffer(&self.screen_buffer, 0, bytemuck::bytes_of(&Screen { size: [screen.0 as f32, screen.1 as f32], _pad: [0.0; 2] }));
+            self.screen_written = Some(screen);
+        }
     }
 
     fn close_batch(&mut self, first: &mut u32, scissor: Option<[u32; 4]>, tex: TexId, pixel: bool) {
