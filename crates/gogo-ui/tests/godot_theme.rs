@@ -966,7 +966,7 @@ fn knob_instance_line_builds() {
 #[test]
 fn instance_line_size_arg_sizes_the_instance() {
     let fx = Fx::new("widget W {\n    Layers body { Rectangle r 10x10 }\n}\nView v { W k 96x96, halign=left, valign=top }\n");
-    let root = fx.res.children(&fx.page, NodeId::new(0))[0];
+    let root = fx.res.children(&fx.page, NodeId::new(0)).next().unwrap();
     let r = fx.rects[root.index()];
     assert_eq!((r.w, r.h), (96.0, 96.0), "{r:?}");
 }

@@ -4,9 +4,10 @@
 //! `gogo` never sees a device pixel; rects are epx.
 
 use crate::anim::Motion;
-use crate::layout::{CHECK_BOX_EPX, DEFAULT_FONT_SIZE, LookCopy, MARK_TEXT_GAP, Rect, SCROLL_BAR_EPX, TOGGLE_PILL, placed_child_lists};
+use crate::layout::{CHECK_BOX_EPX, DEFAULT_FONT_SIZE, LookCopy, MARK_TEXT_GAP, Rect, SCROLL_BAR_EPX, TOGGLE_PILL};
 use crate::page::*;
 use crate::runtime::{DISABLED, ResolveChanges, Resolved, SELECTED};
+use crate::tree::PlacedTree;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextAlign {
@@ -204,7 +205,7 @@ pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
     if page.nodes.is_empty() {
         return out;
     }
-    walk(page, res, rects, NodeId::new(0), 1.0, None, &mut out, None, false);
+    walk(page, res, rects, NodeId::new(0), 1.0, None, &mut out, None, Xform::IDENTITY);
     out
 }
 
@@ -222,7 +223,7 @@ pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
 pub fn draw_subtree(page: &Page, res: &Resolved, rects: &[Rect], root: NodeId) -> Vec<Draw> {
     let mut out = Vec::new();
     if rects.len() > root.index() {
-        walk(page, res, rects, root, 1.0, None, &mut out, None, false);
+        walk(page, res, rects, root, 1.0, None, &mut out, None, Xform::IDENTITY);
     }
     out
 }
@@ -241,7 +242,7 @@ pub fn draw_except(page: &Page, res: &Resolved, rects: &[Rect], skip: NodeId) ->
     if page.nodes.is_empty() {
         return out;
     }
-    walk(page, res, rects, NodeId::new(0), 1.0, Some(skip), &mut out, None, false);
+    walk(page, res, rects, NodeId::new(0), 1.0, Some(skip), &mut out, None, Xform::IDENTITY);
     out
 }
 
@@ -378,7 +379,7 @@ pub(crate) fn clips(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId) -> 
             let neg = |m: Option<f32>| m.map_or(false, |v| v < 0.0);
             // Placed children: what is laid out inside this box decides
             // whether it clips, seat moves included (B25).
-            res.children(page, id).into_iter().any(|c| {
+            res.children(page, id).any(|c| {
                 let r = rects[c];
                 let pc = &res.placement[c];
                 if res.gone(page, c) || res.bool(page, c, PropKey::Overlay).unwrap_or(false) {
@@ -404,7 +405,8 @@ struct Patch<'p> {
     span_old: &'p [(u32, u32)],
     /// Per node: the walk's inputs from outside the subtree last frame —
     /// the ancestors' opacity product and whether an ancestor's
-    /// translate/scale moved the rects (`moved_rects` in `walk`) — and
+    /// translate/scale moved the rects (a non-identity `Xform` in
+    /// `walk`) — and
     /// the frame stamp of the last visit. A run is copied only when all
     /// three match: same opacity, no moved rects either time, visited
     /// last frame (a subtree under a box that was `gone` was not walked
@@ -414,8 +416,7 @@ struct Patch<'p> {
     /// look or rect changed? Only a clean subtree is copied.
     dirty_sub: &'p [bool],
     /// The placed tree, for stamping a copied subtree's nodes.
-    first_child: &'p [NodeId],
-    next_sibling: &'p [NodeId],
+    tree: &'p PlacedTree,
     /// This frame's stamp.
     frame: u32,
     // Filled by the walk.
@@ -450,22 +451,19 @@ impl Patch<'_> {
             let (s, e) = self.span_old[i];
             self.span_new[i] = ((s as i64 + delta) as u32, (e as i64 + delta) as u32);
             self.ctx_new[i] = (self.ctx_old[i].0, self.ctx_old[i].1, self.frame);
-            let mut c: NodeId = self.first_child[i];
-            while c != NO_NODE {
-                self.stack.push(c);
-                c = self.next_sibling[c.index()];
-            }
+            self.stack.extend(self.tree.children(d));
         }
     }
 }
 
 /// One node and its subtree onto `out`. `patch`: the retained road's
-/// books (`None` = the plain walk); `under_motion`: an ancestor's
-/// translate or scale moved `rects` (never copy under it — the run was
-/// made from other rects).
+/// books (`None` = the plain walk); `xf`: what the ancestors' translate
+/// and scale did to every rect under them (`Xform`) — a run under a
+/// non-identity one is never copied: it was made from other rects.
 #[allow(clippy::too_many_arguments)]
-fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, skip: Option<NodeId>, out: &mut Vec<Draw>, mut patch: Option<&mut Patch<'_>>, under_motion: bool) {
+fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, skip: Option<NodeId>, out: &mut Vec<Draw>, mut patch: Option<&mut Patch<'_>>, xf: Xform) {
     let start: usize = out.len();
+    let under_motion: bool = !xf.is_identity();
     if let Some(p) = patch.as_deref_mut() {
         let (o, m, stamp) = p.ctx_old[id.index()];
         if !under_motion && !m && stamp == p.frame.wrapping_sub(1) && o == opacity && !p.dirty_sub[id.index()] {
@@ -485,7 +483,8 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
     let node = &page.nodes[id];
     let motion = res.motion.get(id.index()).copied().unwrap_or(crate::anim::Motion::IDENTITY);
     let pivot = pivot_frac(page, res, id);
-    let rect = moved(rects[id], &motion, pivot);
+    let base: Rect = xf.apply(rects[id]);
+    let rect = moved(base, &motion, pivot);
     // `scale` means the whole picture at that size (Godot's canvas
     // transform, GPAR43): the rects shrink in the child shift below, and
     // the sizes that come from props, not rects — glyph size, corner
@@ -941,49 +940,40 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
         _ => {}
     }
 
-    if motion.translate != [0.0, 0.0] || motion.scale != [1.0, 1.0] {
-        // Children move with their parent: shift their rects by the same
-        // transform (scale about this node's `pivot=` point, default the
-        // center — the same fixed point `moved` held for the node itself).
-        let mut moved_rects: Vec<Rect> = rects.to_vec();
-        let (cx, cy) = (rects[id].x + rects[id].w * pivot.0, rects[id].y + rects[id].h * pivot.1);
-        for i in (id.index() + 1)..node.subtree_end as usize {
-            let r = rects[i];
-            moved_rects[i] = Rect::new(cx + (r.x - cx) * motion.scale[0] + motion.translate[0], cy + (r.y - cy) * motion.scale[1] + motion.translate[1], r.w * motion.scale[0], r.h * motion.scale[1]);
-        }
-        for c in res.paint_children(page, id) {
-            walk(page, res, &moved_rects, c, opacity, skip, out, patch.as_deref_mut(), true);
-        }
-    } else {
-        for c in res.paint_children(page, id) {
-            walk(page, res, rects, c, opacity, skip, out, patch.as_deref_mut(), under_motion);
-        }
+    // Children move with their parent: they inherit this walk's transform
+    // with the node's translate and scale folded in (scale about the
+    // `pivot=` point, default the center — the same fixed point `moved`
+    // held for the node itself). Carried down the placed tree, never
+    // stamped over an index range: a repeat's cloned rows sit past every
+    // ancestor's range (todo-bugs.md B37).
+    let child_xf: Xform = if motion.translate != [0.0, 0.0] || motion.scale != [1.0, 1.0] { xf.then_motion(base, &motion, pivot) } else { xf };
+    for c in res.paint_children(page, id) {
+        walk(page, res, rects, c, opacity, skip, out, patch.as_deref_mut(), child_xf);
     }
     if matches!(node.kind, Kind::Scroll | Kind::List) && res.ident(page, id, PropKey::Bars) != Some("never") {
         // Godot's auto scroll bars: a gray grabber in the right column /
         // bottom row, as long as the viewport's share of the content —
         // which is the UNION of the children's rects (a Scroll's one
         // content box; a List's whole stacked body).
-        let mut kids = res.children(page, id);
         let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
         let mut any = false;
-        let mut i = 0;
-        while i < kids.len() {
-            let c = kids[i];
-            i += 1;
-            if page.nodes[c].kind == Kind::Repeat {
-                kids.extend(res.children(page, c));
-                continue;
-            }
-            let r = rects[c];
+        let mut fold = |c: NodeId| {
+            let r = xf.apply(rects[c]);
             if r.w <= 0.0 && r.h <= 0.0 {
-                continue;
+                return;
             }
             any = true;
             lo[0] = lo[0].min(r.x);
             lo[1] = lo[1].min(r.y);
             hi[0] = hi[0].max(r.right());
             hi[1] = hi[1].max(r.bottom());
+        };
+        for c in res.children(page, id) {
+            if page.nodes[c].kind == Kind::Repeat {
+                res.children(page, c).for_each(&mut fold);
+            } else {
+                fold(c);
+            }
         }
         let (content_w, content_h) = if any { (hi[0] - lo[0], hi[1] - lo[1]) } else { (0.0, 0.0) };
         let grabber = mul_alpha(SCROLL_GRABBER, opacity);
@@ -1039,6 +1029,48 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
     }
 }
 
+/// The axis-aligned transform a walk carries down from every moving
+/// ancestor: what their `translate` and `scale` (about a pivot) did to
+/// the rects under them, folded into one scale-then-translate, so a
+/// descendant's rest rect maps to its drawn rect in one step. Needed
+/// because the rows a repeat clones after the build live past every
+/// ancestor's index range: shifting `id+1..subtree_end` left the font
+/// strip's names standing while the settings sheet slid under them
+/// (todo-bugs.md B37). The transform rides the placed tree instead, so
+/// whatever the walk reaches under a mover moves with it — and no rect
+/// array is copied per moving node.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct Xform {
+    scale: [f32; 2],
+    translate: [f32; 2],
+}
+
+impl Xform {
+    const IDENTITY: Xform = Xform { scale: [1.0, 1.0], translate: [0.0, 0.0] };
+
+    fn is_identity(self) -> bool {
+        self == Xform::IDENTITY
+    }
+
+    /// `r` as the ancestors' motion shows it.
+    fn apply(self, r: Rect) -> Rect {
+        Rect::new(r.x * self.scale[0] + self.translate[0], r.y * self.scale[1] + self.translate[1], r.w * self.scale[0], r.h * self.scale[1])
+    }
+
+    /// This transform followed by `m`'s translate and scale about the
+    /// pivot point of `base` (the node's rect as this transform shows
+    /// it) — what the node's children inherit. Scale about a point c:
+    /// x' = c + (x - c) * s + t = x * s + (c * (1 - s) + t), so the fold
+    /// stays one scale and one translate per axis.
+    fn then_motion(self, base: Rect, m: &crate::anim::Motion, pivot: (f32, f32)) -> Xform {
+        let (cx, cy) = (base.x + base.w * pivot.0, base.y + base.h * pivot.1);
+        Xform {
+            scale: [self.scale[0] * m.scale[0], self.scale[1] * m.scale[1]],
+            translate: [self.translate[0] * m.scale[0] + cx * (1.0 - m.scale[0]) + m.translate[0], self.translate[1] * m.scale[1] + cy * (1.0 - m.scale[1]) + m.translate[1]],
+        }
+    }
+}
+
 /// The node's own rect under its motion channels — scale holds the
 /// `pivot=` point still (default the center).
 fn moved(r: Rect, m: &crate::anim::Motion, pivot: (f32, f32)) -> Rect {
@@ -1088,38 +1120,16 @@ pub(crate) fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option
     }
     let n: usize = page.nodes.len().min(rects.len());
     let mut out = rects.to_vec();
-    // Membership is by PLACED ancestry: a later sibling's subtree shares
-    // the index range (Node::subtree_end), so a swinging button must not
-    // drag its neighbours' hit rects along, and a node seated under the
-    // mover sits outside the range altogether (B25). The placed tree is
-    // built ONCE as first-child / next-sibling lists, and each mover
-    // visits its own subtree — asking "is j under i" for every pair
-    // instead cost movers × nodes × depth, which was the 140 ms frame
-    // after a press on the effect page (B36 trace, S24).
-    let mut first_child: Vec<NodeId> = vec![NO_NODE; n];
-    let mut next_sibling: Vec<NodeId> = vec![NO_NODE; n];
-    for j in (0..n).rev() {
-        let parent = res.placed_parent(page, NodeId::from_index(j));
-        if parent != NO_NODE && parent.index() < n {
-            next_sibling[j] = first_child[parent.index()];
-            first_child[parent.index()] = NodeId::from_index(j);
-        }
-    }
-    let mut stack: Vec<NodeId> = Vec::new();
-    let mut subtree = |root: usize, stack: &mut Vec<NodeId>, apply: &mut dyn FnMut(usize)| {
-        stack.clear();
-        stack.push(NodeId::from_index(root));
-        while let Some(node) = stack.pop() {
-            apply(node.index());
-            let mut c = first_child[node.index()];
-            while c != NO_NODE {
-                stack.push(c);
-                c = next_sibling[c.index()];
-            }
-        }
-    };
+    // Membership is by the PLACED tree (`Resolved::tree`): a later
+    // sibling's subtree shares a mover's index range (Node::subtree_end),
+    // a node seated under the mover sits outside the range altogether
+    // (B25), and a repeat's cloned rows sit past it (B37). Each mover
+    // visits its own subtree along the tables — no child lists built
+    // per call, no "is j under i" per pair (the 140 ms frame after a
+    // press on the effect page, B36 trace, S24).
     for i in 0..n {
         let m = &res.motion[i];
+        let mover = NodeId::from_index(i);
         if m.swing != 0.0 {
             let (sin, cos) = m.swing.to_radians().sin_cos();
             let door = out[i];
@@ -1129,23 +1139,30 @@ pub(crate) fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option
                 let ratio = ((focal + dx * sin) / focal).max(0.05);
                 cx + (hinge + dx * cos - cx) / ratio
             };
-            subtree(i, &mut stack, &mut |j: usize| {
-                let r = out[j];
+            for j in res.tree.subtree(mover) {
+                if j.index() >= n {
+                    continue;
+                }
+                let r = out[j.index()];
                 let (l, rr) = (project(r.x), project(r.right()));
-                out[j] = Rect::new(l.min(rr), r.y, (rr - l).abs(), r.h);
-            });
+                out[j.index()] = Rect::new(l.min(rr), r.y, (rr - l).abs(), r.h);
+            }
         }
         if m.translate == [0.0, 0.0] && m.scale == [1.0, 1.0] {
             continue;
         }
-        // Ancestors sit at lower indices, so nested motions compose in
-        // walk order like the draw pass.
-        let p = pivot_frac(page, res, NodeId::from_index(i));
+        // Ancestors sit at lower indices (rows are cloned after their
+        // repeat), so nested motions compose in walk order like the draw
+        // pass.
+        let p = pivot_frac(page, res, mover);
         let (cx, cy) = (out[i].x + out[i].w * p.0, out[i].y + out[i].h * p.1);
-        subtree(i, &mut stack, &mut |j: usize| {
-            let r = out[j];
-            out[j] = Rect::new(cx + (r.x - cx) * m.scale[0] + m.translate[0], cy + (r.y - cy) * m.scale[1] + m.translate[1], r.w * m.scale[0], r.h * m.scale[1]);
-        });
+        for j in res.tree.subtree(mover) {
+            if j.index() >= n {
+                continue;
+            }
+            let r = out[j.index()];
+            out[j.index()] = Rect::new(cx + (r.x - cx) * m.scale[0] + m.translate[0], cy + (r.y - cy) * m.scale[1] + m.translate[1], r.w * m.scale[0], r.h * m.scale[1]);
+        }
     }
     Some(out)
 }
@@ -1350,8 +1367,6 @@ pub struct DrawCache {
     clip_asked: Vec<bool>,
     rect_changed: Vec<bool>,
     dirty_sub: Vec<bool>,
-    first_child: Vec<NodeId>,
-    next_sibling: Vec<NodeId>,
     span_new: Vec<(u32, u32)>,
     ctx_new: Vec<(f32, bool, u32)>,
     clip_new: Vec<bool>,
@@ -1394,8 +1409,6 @@ impl Default for DrawCache {
             clip_asked: Vec::new(),
             rect_changed: Vec::new(),
             dirty_sub: Vec::new(),
-            first_child: Vec::new(),
-            next_sibling: Vec::new(),
             span_new: Vec::new(),
             ctx_new: Vec::new(),
             clip_new: Vec::new(),
@@ -1513,7 +1526,6 @@ impl DrawCache {
         // 2. Dirty marks — a node with changed font words dirties its
         // whole placed subtree — then the parents that read a changed
         // child.
-        placed_child_lists(page, res, &mut self.first_child, &mut self.next_sibling);
         self.dirty.clear();
         self.dirty.resize(n, false);
         for c in &changed {
@@ -1528,11 +1540,7 @@ impl DrawCache {
             self.stack.push(root);
             while let Some(d) = self.stack.pop() {
                 self.dirty[d.index()] = true;
-                let mut c: NodeId = self.first_child[d.index()];
-                while c != NO_NODE {
-                    self.stack.push(c);
-                    c = self.next_sibling[c.index()];
-                }
+                self.stack.extend(res.tree.children(d));
             }
         }
         self.inherited = inherited;
@@ -1587,7 +1595,6 @@ impl DrawCache {
         let n = page.nodes.len();
         self.frame = self.frame.wrapping_add(1);
         if everything {
-            placed_child_lists(page, res, &mut self.first_child, &mut self.next_sibling);
             self.dirty_sub.clear();
             self.dirty_sub.resize(n, true);
         }
@@ -1607,8 +1614,7 @@ impl DrawCache {
             span_old: &self.span,
             ctx_old: &self.ctx,
             dirty_sub: &self.dirty_sub,
-            first_child: &self.first_child,
-            next_sibling: &self.next_sibling,
+            tree: &res.tree,
             frame: self.frame,
             span_new,
             ctx_new,
@@ -1617,7 +1623,7 @@ impl DrawCache {
             copied: 0,
         };
         if n > 0 {
-            walk(page, res, rects, NodeId::new(0), 1.0, None, &mut next, Some(&mut patch), false);
+            walk(page, res, rects, NodeId::new(0), 1.0, None, &mut next, Some(&mut patch), Xform::IDENTITY);
         }
         let Patch { span_new, ctx_new, clip, stack, copied, .. } = patch;
         self.stats = DrawStats { full: everything, emitted: (next.len() - copied) as u32, dirty: n as u32 };

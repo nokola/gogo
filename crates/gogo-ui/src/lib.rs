@@ -4,6 +4,14 @@
 //! list. The host program supplies what gogo cannot know (`CompileOptions`,
 //! `BuildOptions`). Design: `docs/gogo-design.md`.
 
+// A deprecated item is a build error in this crate. The arena's
+// index-range accessors were fenced this way first and then removed
+// (todo-bugs.md B37: a range test stood in for a subtree walk four
+// times; `Node::subtree_end` is a newtype only page.rs can read, the
+// walks are `Page::descendants` and `Resolved::tree`). The fence stays for the
+// next item that has to go: a new use fails to build, never warns.
+#![deny(deprecated)]
+
 pub mod anim;
 pub mod ast;
 pub mod color;
@@ -19,6 +27,7 @@ pub mod locale;
 pub mod page;
 pub mod parser;
 pub mod runtime;
+pub mod tree;
 
 pub use compile::{CompileOptions, Compiled, compile, compile_with};
 pub use diag::{Diagnostic, Severity, has_errors};

@@ -80,7 +80,7 @@ impl Fx {
     /// (Godot: `get_parent()` + `get_index()`).
     fn children_of(&self, parent: &str) -> Vec<String> {
         let (res, _) = self.lay();
-        res.children(&self.page, self.id(parent)).iter().map(|c| self.page.str(self.page.nodes[c.index()].name).to_string()).collect()
+        res.children(&self.page, self.id(parent)).map(|c| self.page.str(self.page.nodes[c.index()].name).to_string()).collect()
     }
 
     /// `set_screen_class("landscapeSmall")` etc. `None` = Godot's `""`:

@@ -10,6 +10,7 @@ use crate::draw::{Draw, DrawCache, DrawStats};
 use crate::layout::{BUTTON_PADDING, LayoutCache, LayoutStats, Rect, TextMeasure};
 use crate::locale::{KeyName, Locale};
 use crate::page::*;
+use crate::tree::{Children, PlacedTree};
 
 /// What the last resolve tells the retained layout and draw list
 /// (B36-DES stage 3; `Runtime::resolve_changes`). The two find what
@@ -771,7 +772,7 @@ impl Runtime {
         for p in &self.pools {
             for s in &p.live {
                 let root = p.slots[*s as usize];
-                if node >= root && node < page.subtree_end(root) {
+                if page.is_under(node, root) { // declared on purpose: a row's key is what the template WROTE under it, seats aside
                     return p.keyed[*s as usize].as_ref().map(|(k, _)| k);
                 }
             }
@@ -1152,18 +1153,18 @@ impl Runtime {
     /// so per-slot parts stay addressable (GradientEdit's marks).
     fn grow_pool(&mut self, page: &mut Page, pi: usize, info: &RepeatInfo) -> u32 {
         let idx = self.pools[pi].slots.len() as u32;
-        let root = page.clone_subtree(info.template);
+        let cloned: Cloned = page.clone_subtree(info.template);
+        let root: NodeId = cloned.root;
         let rep = page.str(page.nodes[info.node].name).to_string();
         let from = format!("{rep}/item");
         let to = format!("{rep}/{idx}");
-        let end = page.subtree_end(root);
         // The clone's driven slots start at their baked rest like the
         // template's did at `Runtime::new` — a landed glide writes its
         // rest here, and without an entry the next resolve re-armed the
         // glide from the baked fraction, forever.
-        let rests: Vec<(NodeId, f32)> = page.drivers.iter().filter(|d| d.state == NO_STR && d.node >= root && d.node < end).map(|d| (d.node, baked_frac(page, d.node))).collect();
+        let rests: Vec<(NodeId, f32)> = page.drivers.iter().filter(|d| d.state == NO_STR && cloned.contains(d.node)).map(|d| (d.node, baked_frac(page, d.node))).collect();
         self.auto_rest.extend(rests);
-        for ni in NodeId::range(root, end) {
+        for ni in cloned.ids() {
             let nm = page.nodes[ni].name;
             if nm == NO_STR {
                 continue;
@@ -1184,7 +1185,6 @@ impl Runtime {
         // its own nodes under the slot's name. Needed because a host
         // plays them per row (`play("<rep>/2/item/delete")`); without
         // the copy the play finds nothing and "finishes" the same frame.
-        let t_end = page.subtree_end(info.template);
         let delta: u32 = root.index() as u32 - info.template.index() as u32;
         let heads: Vec<AnimHead> = page.anim_heads.iter().filter(|h| {
             let s = page.str(h.anim);
@@ -1196,7 +1196,7 @@ impl Runtime {
             let tracks: Vec<AnimTrack> = page.anims.iter().filter(|t| t.anim == h.anim).copied().collect();
             for mut t in tracks {
                 t.anim = id;
-                if t.node >= info.template && t.node < t_end {
+                if page.is_under(t.node, info.template) { // declared on purpose: the template's own body, as written
                     t.node = t.node.offset(delta);
                 }
                 page.anims.push(t);
@@ -2378,6 +2378,10 @@ pub struct Resolved {
     /// Keyed repeats' live row roots, in shown order (copied from the
     /// Runtime) — `children` hands them to layout, draw and hit.
     pub repeat_rows: Vec<(NodeId, Vec<NodeId>)>,
+    /// The placed tree as tables (`PlacedTree`): every walk's children,
+    /// parents and subtrees — built once per resolve that moved a seat,
+    /// changed a repeat's rows or a raise, or grew the page.
+    pub tree: PlacedTree,
     /// Nodes mid deferred hide (GP19): a `when` flipped them hidden but
     /// their `on:hide` anim still plays — layout, draw and input keep them
     /// until the player finishes (`gone`/`hidden` answer false for them).
@@ -2423,6 +2427,7 @@ impl Clone for Resolved {
         self.states.clone_from(&from.states);
         self.raised.clone_from(&from.raised);
         self.repeat_rows.clone_from(&from.repeat_rows);
+        self.tree.clone_from(&from.tree);
         self.hiding.clone_from(&from.hiding);
         self.auto.clone_from(&from.auto);
         self.presence.clone_from(&from.presence);
@@ -2632,28 +2637,17 @@ impl Resolved {
 
     /// The nodes laid out and drawn under `id`: its own children that no
     /// `when` seated elsewhere, plus whoever is seated here.
-    pub fn children(&self, page: &Page, id: NodeId) -> Vec<NodeId> {
-        let mut out: Vec<NodeId> = page.children(id).filter(|c| self.seat.get(c.index()).copied().unwrap_or(NO_NODE) == NO_NODE).collect();
-        if page.nodes[id].kind == Kind::Seat {
-            out.extend(self.seat.iter().enumerate().filter(|(_, s)| **s == id).map(|(i, _)| NodeId::from_index(i)));
-        }
-        if page.nodes[id].kind == Kind::Repeat {
-            if let Some((_, rows)) = self.repeat_rows.iter().find(|(r, _)| *r == id) {
-                out.extend(rows.iter().copied());
-            }
-        }
-        out
+    pub fn children(&self, page: &Page, id: NodeId) -> Children<'_> {
+        let _ = page; // the tree was built from it; kept so every caller reads the same
+        self.tree.children(id)
     }
 
     /// `children` in PAINT order: siblings sorted by their raise (stable,
     /// so equal raises keep the file's order). Draw and hit use this;
     /// layout keeps the file's order.
-    pub fn paint_children(&self, page: &Page, id: NodeId) -> Vec<NodeId> {
-        let mut out = self.children(page, id);
-        if !self.raised.is_empty() {
-            out.sort_by_key(|c| self.raised.iter().find(|(n, _)| n == c).map(|(_, r)| *r).unwrap_or(0));
-        }
-        out
+    pub fn paint_children(&self, page: &Page, id: NodeId) -> Children<'_> {
+        let _ = page;
+        self.tree.paint_children(id)
     }
 
     /// `visibility=space_only` — laid out (the slot holds), not drawn,
@@ -2705,6 +2699,7 @@ pub fn resolve(page: &Page, rt: &Runtime) -> Resolved {
     let mut r = resolve_ladder(page, rt);
     let mut touched: Vec<NodeId> = Vec::new();
     compose_anim(page, rt, &mut r, &mut touched);
+    r.tree.build(page, &r.seat, &r.repeat_rows, &r.raised);
     r
 }
 
@@ -2798,7 +2793,7 @@ impl Resolved {
 }
 
 fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
-    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], anim_owned_props: Vec::new(), placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), override_span: Vec::with_capacity(page.nodes.len()), override_tail: 0, variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), auto: Vec::new(), presence: Vec::new(), caret: rt.caret, selection: rt.selection, sel_handles: rt.sel_handles };
+    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], anim_owned_props: Vec::new(), placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), override_span: Vec::with_capacity(page.nodes.len()), override_tail: 0, variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), tree: PlacedTree::default(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), auto: Vec::new(), presence: Vec::new(), caret: rt.caret, selection: rt.selection, sel_handles: rt.sel_handles };
     for i in 0..page.nodes.len() {
         let id = NodeId::from_index(i);
         let span_start: u32 = r.overrides.len() as u32;
@@ -3348,21 +3343,29 @@ fn resolve_into(page: &Page, rt: &mut Runtime, r: &mut Resolved) {
     r.scroll.clone_from(&rt.scroll);
     r.safe = rt.safe;
     r.states.clone_from(&rt.states);
+    let raised_changed: bool = r.raised != rt.raised;
     r.raised.clone_from(&rt.raised);
     r.locale.clone_from(&rt.locale);
     r.caret = rt.caret;
     r.selection = rt.selection;
     r.sel_handles = rt.sel_handles;
+    let mut rows_changed: bool = r.repeat_rows.len() != rt.pools.len();
     r.repeat_rows.truncate(rt.pools.len());
     for (k, p) in rt.pools.iter().enumerate() {
         let rows = p.live.iter().map(|s| p.slots[*s as usize]);
         match r.repeat_rows.get_mut(k) {
             Some(e) => {
-                e.0 = p.repeat;
-                e.1.clear();
-                e.1.extend(rows);
+                if e.0 != p.repeat || !e.1.iter().copied().eq(rows.clone()) {
+                    rows_changed = true;
+                    e.0 = p.repeat;
+                    e.1.clear();
+                    e.1.extend(rows);
+                }
             }
-            None => r.repeat_rows.push((p.repeat, rows.collect())),
+            None => {
+                rows_changed = true;
+                r.repeat_rows.push((p.repeat, rows.collect()));
+            }
         }
     }
     // The tail, first half: the code writes win over states. A node the
@@ -3670,6 +3673,12 @@ fn resolve_into(page: &Page, rt: &mut Runtime, r: &mut Resolved) {
     // their ladder next resolve (`gather_reach`).
     rt.retained.seat_moved = seat_table_moved(&rt.last_seat, &r.seat);
     rt.last_seat.clone_from(&r.seat);
+    // The placed tree the walks read (`Resolved::tree`): rebuilt only when
+    // something that shapes it moved — a seat, a repeat's rows, a raise,
+    // the node count — else last resolve's tables stand.
+    if full || raised_changed || rows_changed || rt.retained.seat_moved || r.tree.len() != n {
+        r.tree.build(page, &r.seat, &r.repeat_rows, &r.raised);
+    }
     // What shows now, per node — the live value a new play starts from.
     // Re-read for the nodes this resolve moved: the reached ones and
     // the ones the tail touched, last frame or this; every node after

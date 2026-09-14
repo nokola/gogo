@@ -531,24 +531,23 @@ fn scroll_range(page: &Page, res: &Resolved, rects: &[Rect], scroll: NodeId) -> 
     let viewport = rects[scroll];
     let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
     let mut any = false;
-    let mut kids = res.children(page, scroll);
-    let mut i = 0;
-    while i < kids.len() {
-        let c = kids[i];
-        i += 1;
-        if page.nodes[c].kind == Kind::Repeat {
-            kids.extend(res.children(page, c));
-            continue;
-        }
+    let mut fold = |c: NodeId| {
         let r = rects[c];
         if r.w <= 0.0 && r.h <= 0.0 {
-            continue;
+            return;
         }
         any = true;
         lo[0] = lo[0].min(r.x);
         lo[1] = lo[1].min(r.y);
         hi[0] = hi[0].max(r.right());
         hi[1] = hi[1].max(r.bottom());
+    };
+    for c in res.children(page, scroll) {
+        if page.nodes[c].kind == Kind::Repeat {
+            res.children(page, c).for_each(&mut fold);
+        } else {
+            fold(c);
+        }
     }
     if !any {
         return [0.0, 0.0];
@@ -2616,7 +2615,7 @@ mod tests {
         let src = "control S $value=0, $min=0, $max=10 {\n behavior slider by $value in $min..$max\n Layers width=fill, height=20 { slot track width=fill, height=fill { Rectangle width=fill, height=fill } }\n}\nView v {\n Column {\n  S a width=fill\n  Layers b interactive=true, width=fill, height=40, on:pointer=raw\n  Button c tap_pulse=true, width=fill, height=30\n  Button d width=fill, height=30\n }\n}\n";
         let mut fx = Fx::new(src);
         let (a, b, c, d) = (fx.page.find("a").unwrap(), fx.page.find("b").unwrap(), fx.page.find("c").unwrap(), fx.page.find("d").unwrap());
-        assert!(fx.page.subtree_end(a) > b, "the precondition: b's index sits inside a's range");
+        assert!(fx.page.descendants(a).any(|n| n > b), "the precondition: a's body sits past b in the arena (children-first)");
         assert!(!fx.page.is_under(b, a) && fx.page.is_under(a, a)); // declared on purpose: the arena precondition, no seats here
         let (_, rects) = fx.lay();
         let rb = rects[b];

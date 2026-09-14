@@ -3677,7 +3677,7 @@ impl<'a> Compiler<'a> {
             if self.widget_stack.iter().any(|w| w == &n.type_word) {
                 let path = self.widget_stack.join(" -> ");
                 self.error("G5003", n.line, format!("widget cycle: {path} -> {} — a widget cannot contain itself", n.type_word));
-                return TmpNode { node: Node { kind: Kind::Layers, line: n.line, ..Node::EMPTY }, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new(), key_claim: 0, wearing: Vec::new(), driver: None, live: None };
+                return TmpNode { node: Node::fresh(Kind::Layers, n.line), props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new(), key_claim: 0, wearing: Vec::new(), driver: None, live: None };
             }
             // A `for=` widget fills its host's body and nothing else —
             // anywhere else its `when` lines would answer the wrong node.
@@ -4008,7 +4008,7 @@ impl<'a> Compiler<'a> {
                 self.error("G0043", n.line, format!("unknown flag `{f}`"));
             }
         }
-        let mut node = Node { kind, line: n.line, ..Node::EMPTY };
+        let mut node = Node::fresh(kind, n.line);
         node.type_name = self.intern(&n.type_word);
         // The instance's name wins over the widget body's; body names are
         // scoped per instance (`inst/name`).
@@ -5051,7 +5051,17 @@ impl<'a> Compiler<'a> {
         id
     }
 
-    fn place_children(&mut self, id: NodeId, children: Vec<TmpNode>) {
+    fn place_children(&mut self, id: NodeId, mut children: Vec<TmpNode>) {
+        // A repeat's template goes LAST among its children and its body is
+        // laid out FIRST, so `template..subtree_end` is exactly the
+        // template's subtree — the one range `Page::clone_subtree` copies
+        // whole (a row keeps every node's offset from its root). The order
+        // among a repeat's children is invisible: only `empty { }` shows,
+        // and only until rows arrive.
+        let is_repeat: bool = self.page.nodes[id].kind == Kind::Repeat;
+        if is_repeat {
+            children.sort_by_key(|c| c.node.kind != Kind::Empty);
+        }
         let first = self.page.nodes.len() as u32;
         let count = children.len() as u32;
         let mut slots: Vec<(NodeId, Vec<TmpNode>)> = Vec::new();
@@ -5060,10 +5070,13 @@ impl<'a> Compiler<'a> {
             slots.push((cid, child.children));
         }
         self.page.nodes[id].children = (first, count);
+        if is_repeat && slots.len() > 1 {
+            slots.rotate_right(1); // the template (last) lays out first
+        }
         for (cid, rest) in slots {
             self.place_children(cid, rest);
         }
-        self.page.nodes[id].subtree_end = self.page.nodes.len() as u32;
+        self.page.finish_subtree(id);
     }
 
     fn gap(&mut self, node: &mut Node, n: &AstNode, parent_kind: Option<Kind>) {
@@ -5583,8 +5596,8 @@ impl<'a> Compiler<'a> {
             let template = self.page.children(node).find(|c| self.page.nodes[*c].kind != Kind::Empty);
             if let Some(template) = template {
                 let first = self.page.bind_sites.len() as u32;
-                let t_end = self.page.subtree_end(template);
-                for ni in NodeId::range(template, t_end) {
+                let sites: Vec<NodeId> = std::iter::once(template).chain(self.page.descendants(template)).collect();
+                for ni in sites {
                     let (p0, pc) = self.page.nodes[ni].props;
                     for k in 0..pc {
                         if let Value::VItem(f) = self.page.props[(p0 + k) as usize].value {
@@ -6090,7 +6103,8 @@ impl<'a> Compiler<'a> {
                     } else {
                         // G9014 (advisory): the List flips SELECTED on the
                         // ROW root — a `when selected` below it never fires.
-                        for d in self.page.subtree_scan(root).collect::<Vec<NodeId>>() {
+                        let scan: Vec<NodeId> = self.page.descendants(root).collect();
+                        for d in scan {
                             let (w0, wc) = self.page.nodes[d].whens;
                             for w in &self.page.whens[w0 as usize..(w0 + wc) as usize] {
                                 if w.state != State::Selected {
@@ -6229,15 +6243,16 @@ impl<'a> Compiler<'a> {
         // GP52/GP53: the contracts' `behavior` rows — the instance roots
         // exist now; the behavior also needs the slots its spec reads
         // (`slot track` for the finger to map over, a toggle's `slot
-        // thumb`). Found by ancestry, not by index range: the arena is
-        // children-first, so `rid..subtree_end` holds later siblings too
-        // and a body missing its slot would borrow a neighbor's.
+        // thumb`). Found by the declared walk (`Page::descendants`), never
+        // an index range: the arena is children-first, so a range past the
+        // root holds later siblings too and a body missing its slot would
+        // borrow a neighbor's.
         for pb in std::mem::take(&mut self.pending_behaviors) {
             let Some(rid) = self.page.find(&pb.path) else { continue };
             let mut slots = [NO_NODE; BEHAVIOR_SLOTS];
             let mut missing = false;
             for (i, want) in pb.spec.slots.iter().enumerate() {
-                let found = NodeId::range(rid, self.page.subtree_end(rid)).find(|n| self.page.is_under(*n, rid) && self.page.nodes[*n].kind == Kind::Slot && self.page.str(self.page.nodes[*n].name).rsplit('/').next() == Some(*want));
+                let found = self.page.descendants(rid).find(|n| self.page.nodes[*n].kind == Kind::Slot && self.page.str(self.page.nodes[*n].name).rsplit('/').next() == Some(*want));
                 match found {
                     Some(n) => slots[i] = n,
                     None => {
@@ -6432,11 +6447,16 @@ mod tests {
         assert_eq!(names, vec!["root", "col", "bg", "a", "r", "d", "b", "c"]);
         let col = p.find("col").unwrap();
         assert_eq!(p.nodes[col].children, (3, 3));
-        assert_eq!(p.nodes[col].subtree_end, 8);
         let r = p.find("r").unwrap();
         assert_eq!(p.nodes[r].children, (6, 2));
         assert_eq!(p.nodes[r].parent, col);
-        assert_eq!(p.nodes[0].subtree_end, 8);
+        // The declared walk is pre-order over the nesting, not the arena:
+        // `r`'s body comes before `d`, and `bg` (right after `col` in the
+        // arena) is not under `col`.
+        let names = |ids: Vec<NodeId>| -> Vec<&str> { ids.iter().map(|n| p.str(p.nodes[*n].name)).collect() };
+        assert_eq!(names(p.descendants(col).collect()), vec!["a", "r", "b", "c", "d"]);
+        assert_eq!(names(p.descendants(NodeId::new(0)).collect()), vec!["col", "a", "r", "b", "c", "d", "bg"]);
+        assert_eq!(names(p.descendants(r).collect()), vec!["b", "c"]);
     }
 
     #[test]

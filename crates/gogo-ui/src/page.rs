@@ -37,8 +37,12 @@ macro_rules! id_newtype {
                 $name(i as u32)
             }
 
-            /// Every id from `from` up to (not including) `to`, in order.
-            pub fn range(from: $name, to: $name) -> impl DoubleEndedIterator<Item = $name> + ExactSizeIterator + Clone {
+            /// Every id from `from` up to (not including) `to`, in order. The
+            /// arena's one contiguous run that IS a subtree is a clone's
+            /// (`Cloned::ids`), so this stays private to the arena's own code;
+            /// the macro stamps it on every id kind, only `NodeId` uses it.
+            #[allow(dead_code)]
+            fn range(from: $name, to: $name) -> impl DoubleEndedIterator<Item = $name> + ExactSizeIterator + Clone {
                 (from.0..to.0).map($name)
             }
 
@@ -1433,6 +1437,35 @@ pub struct AnimHead {
     pub speed: f32,
 }
 
+/// One past the last id `Page::clone_subtree` copies for a node — the
+/// arena's placement mark, a number only this module can read. The
+/// arena is children-first (a parent's children together, then their
+/// own bodies), so for most nodes `id+1..` up to this mark also holds
+/// later siblings and their bodies: a range test stood in for a subtree
+/// walk four times (todo-bugs.md B37). A newtype with a private value
+/// keeps every reader outside this file on the walks (`Page::descendants`,
+/// `is_under`, `Resolved::tree`); the emitted page literal builds it
+/// through `new`, the one public door, which yields nothing back.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SubtreeEnd(u32);
+
+impl SubtreeEnd {
+    /// For the emitted page literal (the build writes what the compiler
+    /// placed); code has no reason to call it.
+    #[doc(hidden)]
+    pub const fn new(raw: u32) -> SubtreeEnd {
+        SubtreeEnd(raw)
+    }
+}
+
+/// Prints as the constructor call: the emitted page literal (`emit.rs`)
+/// is `Debug` output.
+impl std::fmt::Debug for SubtreeEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SubtreeEnd::new({})", self.0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Node {
     pub kind: Kind,
@@ -1449,13 +1482,13 @@ pub struct Node {
     pub parent: NodeId,
     /// Direct children: first index and count (contiguous).
     pub children: (u32, u32),
-    /// One past the last descendant. NOT a contiguous subtree: a parent's
-    /// children are pushed together (so `children` is one range) before
-    /// their own children, so later siblings and THEIR subtrees sit inside
-    /// `id+1..subtree_end` too. Ask `Page::is_under` for membership; the
-    /// range only bounds a scan. (A slider press landed on the picker
-    /// beside it through a range test, 2026-09-05.)
-    pub subtree_end: u32,
+    /// One past the last id `Page::clone_subtree` copies for this node
+    /// (`SubtreeEnd`: readable in this module only). Its two users are the
+    /// compiler's placement (`finish_subtree`) and the clone, whose
+    /// template the compiler places so that the range IS its subtree.
+    /// Everything else walks `descendants` / `is_under`, or the resolve's
+    /// placed tree (`Resolved::tree`).
+    pub subtree_end: SubtreeEnd,
     pub placement: Placement,
     pub props: (u32, u32),
     pub whens: (u32, u32),
@@ -1529,6 +1562,12 @@ pub struct ChoiceGroup {
 }
 
 impl Node {
+    /// A fresh node of `kind` from source `line`, every other field at
+    /// rest — the compiler's starting point.
+    pub const fn fresh(kind: Kind, line: u32) -> Node {
+        Node { kind, line, ..Node::EMPTY }
+    }
+
     pub const EMPTY: Node = Node {
         kind: Kind::Layers,
         type_name: NO_STR,
@@ -1536,7 +1575,7 @@ impl Node {
         widget: NO_STR,
         parent: NO_NODE,
         children: (0, 0),
-        subtree_end: 0,
+        subtree_end: SubtreeEnd(0),
         placement: Placement::DEFAULT,
         props: (0, 0),
         whens: (0, 0),
@@ -1687,6 +1726,67 @@ pub const KEYS_HOME_END: u8 = 2;
 pub const KEYS_ENTER: u8 = 4;
 pub const KEYS_SPACE: u8 = 8;
 
+/// The walk `Page::descendants` runs: down to the first declared child,
+/// else across to the next declared sibling (`children` is one range, so
+/// that is `id + 1` while inside the parent's range), else up by the
+/// declared parent until a sibling is found or the root is reached.
+pub struct Descendants<'a> {
+    page: &'a Page,
+    root: NodeId,
+    cur: NodeId,
+}
+
+impl Iterator for Descendants<'_> {
+    type Item = NodeId;
+
+    fn next(&mut self) -> Option<NodeId> {
+        let c = self.cur;
+        if c == NO_NODE {
+            return None;
+        }
+        let nodes = &self.page.nodes;
+        let (first, count) = nodes[c].children;
+        let mut succ = if count > 0 { NodeId(first) } else { NO_NODE };
+        let mut n = c;
+        while succ == NO_NODE && n != self.root {
+            let p = nodes[n].parent;
+            if p == NO_NODE {
+                break;
+            }
+            let (pf, pc) = nodes[p].children;
+            if n.0 + 1 >= pf && n.0 + 1 < pf + pc {
+                succ = NodeId(n.0 + 1);
+            } else {
+                n = p;
+            }
+        }
+        self.cur = succ;
+        Some(c)
+    }
+}
+
+/// The nodes `Page::clone_subtree` appended: one contiguous run of ids,
+/// the root first, then the copied body in the template's order. The
+/// arena's only range that IS a subtree — the runtime seats a fresh row
+/// through it (renames, drivers, per-row anims) instead of an ancestor's
+/// index range, which is not one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cloned {
+    pub root: NodeId,
+    end: NodeId,
+}
+
+impl Cloned {
+    /// Every cloned id, the root first.
+    pub fn ids(&self) -> impl DoubleEndedIterator<Item = NodeId> + ExactSizeIterator + Clone {
+        NodeId::range(self.root, self.end)
+    }
+
+    pub fn contains(&self, id: NodeId) -> bool {
+        id >= self.root && id < self.end
+    }
+}
+
 impl Page {
     /// The `keys` claim on an instance root — 0 when nothing claims.
     pub fn key_claim(&self, node: NodeId) -> u8 {
@@ -1725,8 +1825,16 @@ impl Page {
     /// values live in the Runtime's write layer, never in the arena.
     /// Node ids only ever grow: a freed slot is reused, never removed,
     /// so no id ever re-means.
-    pub fn clone_subtree(&mut self, src: NodeId) -> NodeId {
-        let end: NodeId = NodeId(self.nodes[src].subtree_end);
+    ///
+    /// The copy is the range `src..subtree_end` moved whole, so every
+    /// node keeps its offset from the root (the generated `<Repeat>Slot::at`
+    /// and the bind sites rely on that). That range is exactly the
+    /// template's subtree because the compiler places a repeat's template
+    /// last among its children and lays its body out before the empties'
+    /// (`place_children`) — checked here in debug builds.
+    pub fn clone_subtree(&mut self, src: NodeId) -> Cloned {
+        let end: NodeId = NodeId(self.nodes[src].subtree_end.0);
+        debug_assert!((src.0 + 1..end.0).all(|i| self.is_under(NodeId(i), src)), "a repeat template's range holds a node outside its subtree — `place_children` must place the template last and lay it out first");
         let base: NodeId = NodeId::from_index(self.nodes.len());
         let delta: u32 = base.0 - src.0;
         let shift = |n: NodeId| NodeId(n.0 + delta);
@@ -1737,7 +1845,7 @@ impl Page {
                 n.parent = shift(n.parent);
             }
             n.children.0 += delta;
-            n.subtree_end += delta;
+            n.subtree_end = SubtreeEnd(n.subtree_end.0 + delta);
             let (w0, wc) = n.whens;
             let nw0 = self.whens.len() as u32;
             for wi in w0..w0 + wc {
@@ -1770,7 +1878,7 @@ impl Page {
         self.live_texts.extend(lives);
         let feels: Vec<Transition> = self.transitions.iter().filter(|t| t.node != NO_NODE && t.node >= src && t.node < end).map(|t| Transition { node: shift(t.node), ..*t }).collect();
         self.transitions.extend(feels);
-        base
+        Cloned { root: base, end: NodeId(base.0 + (end.0 - src.0)) }
     }
 
     pub fn str(&self, id: StrId) -> &str {
@@ -1803,17 +1911,23 @@ impl Page {
         (0..self.nodes.len()).map(NodeId::from_index)
     }
 
-    /// One past the last id `Node::subtree_end` bounds for `id` — the
-    /// scan `id+1..subtree_end(id)` covers every descendant (and later
-    /// siblings; ask `is_under` for membership).
-    pub fn subtree_end(&self, id: NodeId) -> NodeId {
-        NodeId(self.nodes[id].subtree_end)
+    /// Every node under `id` in the DECLARED tree (the file's nesting),
+    /// parents before children, `id` itself left out. A walk over the
+    /// `children` ranges and the `declared_parent` links — no stack, no
+    /// allocation — and never an index range: the arena is children-first,
+    /// so `id+1..subtree_end` holds later siblings too (todo-bugs.md B37).
+    /// A repeat's cloned rows are not declared under it (`children` does
+    /// not list them); the placed walk is `Resolved::tree`.
+    pub fn descendants(&self, id: NodeId) -> Descendants<'_> {
+        let (first, count) = self.nodes[id].children;
+        Descendants { page: self, root: id, cur: if count > 0 { NodeId(first) } else { NO_NODE } }
     }
 
-    /// The ids after `id` up to its `subtree_end` — a scan that covers
-    /// every descendant (see `Node::subtree_end`: later siblings too).
-    pub fn subtree_scan(&self, id: NodeId) -> impl DoubleEndedIterator<Item = NodeId> + ExactSizeIterator + Clone {
-        NodeId::range(id.offset(1), self.subtree_end(id))
+    /// The compiler's close of a placed subtree: `id`'s body is complete
+    /// and the arena's end is one past its last descendant (the clone's
+    /// range, `Node::subtree_end`).
+    pub(crate) fn finish_subtree(&mut self, id: NodeId) {
+        self.nodes[id].subtree_end = SubtreeEnd(self.nodes.len() as u32);
     }
 
     /// The parent that WROTE `n` — the file's nesting, seat moves ignored
@@ -1980,7 +2094,8 @@ mod id_tests {
         w[KeyId::new(0)] = 7;
         assert_eq!(w[0], 7);
         assert_eq!(format!("{:?}", NodeId::new(3)), "NodeId::new(3)");
-        assert_eq!(NodeId::range(NodeId::new(2), NodeId::new(5)).collect::<Vec<NodeId>>(), vec![NodeId::new(2), NodeId::new(3), NodeId::new(4)]);
+        let range: Vec<NodeId> = NodeId::range(NodeId::new(2), NodeId::new(5)).collect();
+        assert_eq!(range, vec![NodeId::new(2), NodeId::new(3), NodeId::new(4)]);
         assert!(NodeId::new(2) < NO_NODE);
     }
 }

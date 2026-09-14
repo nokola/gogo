@@ -1344,7 +1344,7 @@ impl<'a> Lay<'a> {
             if n.kind == Kind::ListItem {
                 continue;
             }
-            if n.kind == Kind::Row && self.res.children(self.page, c).iter().any(|g| self.node(*g).kind == Kind::Repeat) {
+            if n.kind == Kind::Row && self.res.children(self.page, c).any(|g| self.node(g).kind == Kind::Repeat) {
                 continue;
             }
             let (cw, ch) = self.child_extent(c, inner_w);
@@ -1777,28 +1777,10 @@ fn shown(page: &Page, res: &Resolved, id: NodeId) -> bool {
         if res.gone(page, a) {
             return false;
         }
-        if page.nodes[p].kind == Kind::Repeat && !res.children(page, p).contains(&a) {
+        if page.nodes[p].kind == Kind::Repeat && !res.children(page, p).any(|c| c == a) {
             return false;
         }
         a = p;
-    }
-}
-
-/// The placed tree as first-child / next-sibling lists (children in
-/// index order), for walking a box's subtree without allocating per node
-/// — the same shape `draw::moved_rects` builds.
-pub(crate) fn placed_child_lists(page: &Page, res: &Resolved, first_child: &mut Vec<NodeId>, next_sibling: &mut Vec<NodeId>) {
-    let n = page.nodes.len();
-    first_child.clear();
-    first_child.resize(n, NO_NODE);
-    next_sibling.clear();
-    next_sibling.resize(n, NO_NODE);
-    for j in (0..n).rev() {
-        let parent = res.placed_parent(page, NodeId::from_index(j));
-        if parent != NO_NODE && parent.index() < n {
-            next_sibling[j] = first_child[parent.index()];
-            first_child[parent.index()] = NodeId::from_index(j);
-        }
     }
 }
 
@@ -2010,8 +1992,6 @@ pub struct LayoutCache {
     changed: Vec<NodeId>,
     dirty: Vec<bool>,
     roots: Vec<(NodeId, bool)>,
-    first_child: Vec<NodeId>,
-    next_sibling: Vec<NodeId>,
     stack: Vec<NodeId>,
     stats: LayoutStats,
 }
@@ -2041,8 +2021,6 @@ impl Default for LayoutCache {
             changed: Vec::new(),
             dirty: Vec::new(),
             roots: Vec::new(),
-            first_child: Vec::new(),
-            next_sibling: Vec::new(),
             stack: Vec::new(),
             stats: LayoutStats::default(),
         }
@@ -2218,7 +2196,8 @@ impl LayoutCache {
         }
         // 4. Forget the re-measured subtrees: their measures and rects
         // (a child gone now keeps the zero rect the full road gives it).
-        placed_child_lists(page, res, &mut self.first_child, &mut self.next_sibling);
+        // Every placed child, the repeat slots not shown too
+        // (`PlacedTree::all_children`): a slot that left keeps no rect.
         self.memo.resize_with(n, Vec::new);
         for k in 0..roots.len() {
             let (r, remeasure) = roots[k];
@@ -2226,12 +2205,12 @@ impl LayoutCache {
                 continue;
             }
             self.stack.clear();
-            self.push_children(r);
+            self.stack.extend(res.tree.all_children(r));
             while let Some(d) = self.stack.pop() {
                 self.memo[d.index()].clear();
                 self.placed[d.index()] = Rect::ZERO;
                 self.rects[d.index()] = Rect::ZERO;
-                self.push_children(d);
+                self.stack.extend(res.tree.all_children(d));
             }
         }
         // 5. Place each root's children again from the rect it kept, and
@@ -2245,10 +2224,10 @@ impl LayoutCache {
             let frame: Rect = lay.rects[r];
             lay.place_children(r, frame);
             self.stack.clear();
-            self.push_children(r);
+            self.stack.extend(res.tree.all_children(r));
             while let Some(d) = self.stack.pop() {
                 self.rects[d.index()] = lay.reveal(d, lay.rects[d]);
-                self.push_children(d);
+                self.stack.extend(res.tree.all_children(d));
             }
         }
         self.stats = LayoutStats { full: false, measured: lay.measured.get(), roots: roots.len() as u32 };
@@ -2259,15 +2238,6 @@ impl LayoutCache {
         self.dirty = dirty;
         self.roots = roots;
         self.remember(res, changes, viewport, text);
-    }
-
-    /// Pushes `id`'s placed children onto the scratch stack.
-    fn push_children(&mut self, id: NodeId) {
-        let mut c: NodeId = self.first_child[id.index()];
-        while c != NO_NODE {
-            self.stack.push(c);
-            c = self.next_sibling[c.index()];
-        }
     }
 }
 
