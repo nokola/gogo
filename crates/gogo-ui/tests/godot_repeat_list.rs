@@ -29,6 +29,7 @@
 //!   `on_built` hook ordering.
 //! - `list.root-class` (12781): the root's GDScript class.
 use gogo::draw::{Draw, draw};
+use gogo::KeptFrame;
 use gogo::input::{Event, EventKind, Input, Phase, Touch};
 use gogo::layout::{FixedAdvance, Rect, layout};
 use gogo::page::{Action, Kind, NodeId, PropKey, palette_color};
@@ -67,9 +68,8 @@ fn lay(page: &Page, rt: &Runtime) -> Vec<Rect> {
 /// screen, in tree order (a `gone` node draws nothing, so the `empty`
 /// block's text appears only while it shows).
 fn texts(page: &Page, rt: &Runtime) -> Vec<String> {
-    let res = resolve(page, rt);
-    let rects = layout(page, &res, FRAME, &FixedAdvance);
-    draw(page, &res, &rects).iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(page.str(*text).to_string()) } else { None }).collect()
+    let f = KeptFrame::fresh(page, resolve(page, rt), FRAME, &FixedAdvance);
+    draw(page, f.frame()).iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(page.str(*text).to_string()) } else { None }).collect()
 }
 
 /// The node that shows the item's text: the item itself when it has no
@@ -123,9 +123,8 @@ impl Fx {
         lay(&self.page, &self.rt)
     }
     fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) -> Vec<Event> {
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, FRAME, &FixedAdvance);
-        self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase, x, y, t, id: 1 })
+        let f = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), FRAME, &FixedAdvance);
+        self.input.touch(&self.page, &mut self.rt, f.frame(), &FixedAdvance, Touch { phase, x, y, t, id: 1 })
     }
     /// A tap at the middle of `node` (Godot's `_conf_press(at, true/false)`).
     fn tap(&mut self, node: NodeId, t: f64) -> Vec<Event> {
@@ -713,10 +712,10 @@ fn bare_row_default_looks() {
     let items = fx.items("tasks");
     let row0 = fx.rects()[items[0].index()];
     let plate = |fx: &Fx, i: usize| -> Option<[u8; 4]> {
-        let res = resolve(&fx.page, &fx.rt);
-        let rects = lay(&fx.page, &fx.rt);
+        let f = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), FRAME, &FixedAdvance);
+        let rects = f.rects();
         let r = rects[items[i].index()];
-        draw(&fx.page, &res, &rects).iter().find_map(|d| match d {
+        draw(&fx.page, f.frame()).iter().find_map(|d| match d {
             Draw::Quad { rect, color, .. } if *rect == r => Some(color.0),
             _ => None,
         })
@@ -768,10 +767,10 @@ fn styled_row_restyles_on_selected_and_held() {
     let (x, y) = (items[0], items[1]);
     fx.rt.set_state(y, SELECTED, true);
     assert!((fx.opacity(y) - 0.4).abs() < 1e-3 && (fx.opacity(x) - 1.0).abs() < 1e-3, "list.checked-restyles: y={} x={}", fx.opacity(y), fx.opacity(x));
-    let res = resolve(&fx.page, &fx.rt);
-    let rects = fx.rects();
+    let f = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), FRAME, &FixedAdvance);
+    let rects = f.rects();
     let accent = palette_color("accent").expect("accent").0;
-    let plate = draw(&fx.page, &res, &rects).iter().find_map(|d| match d {
+    let plate = draw(&fx.page, f.frame()).iter().find_map(|d| match d {
         Draw::Quad { rect, color, .. } if *rect == rects[y.index()] => Some(*color),
         _ => None,
     });
@@ -879,10 +878,10 @@ fn select_off_refuses_writes_and_drops_the_checked_default() {
     assert!(!fx.rt.has(items[0], SELECTED), "a tap never checks under off");
     // list.off-no-checked-default: the held default still shades the row…
     let plate = |fx: &Fx| -> Option<[u8; 4]> {
-        let res = resolve(&fx.page, &fx.rt);
-        let rects = lay(&fx.page, &fx.rt);
+        let f = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), FRAME, &FixedAdvance);
+        let rects = f.rects();
         let r = rects[items[0].index()];
-        draw(&fx.page, &res, &rects).iter().find_map(|d| match d {
+        draw(&fx.page, f.frame()).iter().find_map(|d| match d {
             Draw::Quad { rect, color, .. } if *rect == r => Some(color.0),
             _ => None,
         })
@@ -928,9 +927,8 @@ fn hug_list_is_its_content() {
 fn viewport_list_starved_by_a_hug_parent_warns() {
     let mut fx = Fx::new("View v { Column smenu halign=left, valign=top { Button sb text=\"x\"; List starving { empty { } repeat t capacity=1 { ListItem { Label text=\"\" } } }; List sized height=100 { empty { } repeat u capacity=1 { ListItem { Label text=\"\" } } }; List hugsafe height=hug { empty { } repeat w capacity=1 { ListItem { Label text=\"\" } } } } }");
     let check = |fx: &Fx, name: &str| -> bool {
-        let res = resolve(&fx.page, &fx.rt);
-        let rects = layout(&fx.page, &res, FRAME, &FixedAdvance);
-        starved(&fx.page, &res, &fx.rt, &rects).contains(&fx.page.find(name).unwrap())
+        let f = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), FRAME, &FixedAdvance);
+        starved(&fx.page, f.frame(), &fx.rt).contains(&fx.page.find(name).unwrap())
     };
     // list.starved-warns: the hug Column hands the viewport its fixed
     // minimum — zero — and the nudge names it.

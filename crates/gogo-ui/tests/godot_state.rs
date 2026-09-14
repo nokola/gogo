@@ -24,8 +24,9 @@
 //! - `explain.compiled/filter/regime/engine-default/dead-safe`
 //!   (6609-6615): readout prints anchors, grow, mouse_filter, live Control.
 use gogo::draw::{DEFAULT_BUTTON_BACKGROUND, DEFAULT_TEXT_COLOR, Draw, draw, hit};
+use gogo::KeptFrame;
 use gogo::input::{Input, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{Align, PropKey, Color_Straight_Srgb_4xU8_RGBA, State};
 use gogo::runtime::{DISABLED, HELD, HOVERED, Resolved, Runtime, SELECTED, resolve, resolve_animated};
 use gogo::{Compiled, Page, Severity, compile};
@@ -71,18 +72,17 @@ impl Fx {
     fn res(&mut self) -> Resolved {
         resolve_animated(&self.page, &mut self.rt)
     }
-    fn lay(&mut self) -> (Resolved, Vec<Rect>) {
+    fn lay(&mut self) -> KeptFrame {
         let res = self.res();
-        let rects = layout(&self.page, &res, FRAME, &FixedAdvance);
-        (res, rects)
+        KeptFrame::fresh(&self.page, res, FRAME, &FixedAdvance)
     }
     fn draws(&mut self) -> Vec<Draw> {
-        let (res, rects) = self.lay();
-        draw(&self.page, &res, &rects)
+        let f = self.lay();
+        draw(&self.page, f.frame())
     }
     fn rect(&mut self, name: &str) -> Rect {
         let id = (self.id(name)).index();
-        self.lay().1[id]
+        self.lay().rects()[id]
     }
     /// Godot's `for i in 20: st._process(0.016)`.
     fn ticks(&mut self, n: usize) {
@@ -92,8 +92,8 @@ impl Fx {
         }
     }
     fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) {
-        let (res, rects) = self.lay();
-        self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase, x, y, t, id: 1 });
+        let f = self.lay();
+        self.input.touch(&self.page, &mut self.rt, f.frame(), &FixedAdvance, Touch { phase, x, y, t, id: 1 });
     }
     fn background(&mut self, name: &str) -> Option<Color_Straight_Srgb_4xU8_RGBA> {
         let id = self.id(name);
@@ -712,7 +712,8 @@ fn stretchy_and_scrolled_sizes_stay_quiet() {
 fn explain_facts_placement_and_caps() {
     let mut fx = Fx::new("View v { Layers l { Button fab 50x50, halign=right, valign=bottom, margin=16 } }");
     let fab = (fx.id("fab")).index();
-    let (res, rects) = fx.lay();
+    let f = fx.lay();
+    let (res, rects) = (f.look(), f.rects());
     let p = res.placement[fab];
     assert_eq!((p.halign, p.valign), (Align::End, Align::End), "{p:?}");
     // `margin=16` on a right/bottom-aligned exact box pins the near edges;
@@ -781,11 +782,10 @@ fn space_only_holds_its_space_invisibly() {
 fn explain_facts_input_provenance() {
     let fx = Fx::new("View v { Layers l {\n    Rectangle plain 8x8, halign=left, valign=top\n    Rectangle catcher interactive=true, touch_target=off, 60x60, halign=right, valign=top\n    Button ghost text=\"x\", interactive=false, touch_target=off, halign=right, valign=bottom\n} }");
     let catcher = fx.id("catcher");
-    let res = resolve(&fx.page, &fx.rt);
-    let rects = layout(&fx.page, &res, FRAME, &FixedAdvance);
-    assert_eq!(hit(&fx.page, &res, &rects, 4.0, 4.0, false), None, "passive default: transparent");
-    assert_eq!(hit(&fx.page, &res, &rects, 396.0, 4.0, false), Some(catcher), "interactive=true claims input");
-    assert_eq!(hit(&fx.page, &res, &rects, 396.0, 396.0, false), None, "interactive=false: hit-invisible");
+    let f = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), FRAME, &FixedAdvance);
+    assert_eq!(hit(&fx.page, f.frame(), 4.0, 4.0, false), None, "passive default: transparent");
+    assert_eq!(hit(&fx.page, f.frame(), 396.0, 4.0, false), Some(catcher), "interactive=true claims input");
+    assert_eq!(hit(&fx.page, f.frame(), 396.0, 396.0, false), None, "interactive=false: hit-invisible");
 }
 
 /// GP31 (the shipped _bake_view_transitions / _validate_control_transition

@@ -13,8 +13,9 @@
 //! D129 VISIBLE focus: a key grant shows the ring, a tap parks focus
 //! with no ring — except on an Input, whose caret always warrants one.
 use gogo::draw::{Draw, draw};
+use gogo::KeptFrame;
 use gogo::input::{Event, EventKind, Input, Key, Mods, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{BUTTON_FOCUS_RING, BUTTON_FOCUS_RING_EPX, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
 use gogo::runtime::{DISABLED, FOCUS_WITHIN, FOCUSED, HOVERED, Runtime, SELECTED, resolve};
 use gogo::{Page, compile};
@@ -36,22 +37,21 @@ impl Fx {
         Fx { page, rt, input: Input::new(), now: 0.0 }
     }
     fn key(&mut self, k: Key) -> Vec<Event> {
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        self.input.key(&mut self.page, &mut self.rt, &res, &rects, k, Mods::NONE)
+        let f = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        self.input.key(&mut self.page, &mut self.rt, f.frame(), k, Mods::NONE)
     }
     fn tap(&mut self, node: &str) -> Vec<Event> {
         let id = self.page.find(node).unwrap();
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        let f = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        let rects = f.rects();
         let r = rects[id.index()];
         let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         // Taps sit a second apart: two same-spot taps within the
         // double-click window would word-select in a field.
         self.now += 1.0;
         let t = self.now;
-        let mut ev = self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x, y, t, id: 1 });
-        ev.extend(self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x, y, t: t + 0.1, id: 1 }));
+        let mut ev = self.input.touch(&self.page, &mut self.rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Down, x, y, t, id: 1 });
+        ev.extend(self.input.touch(&self.page, &mut self.rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Up, x, y, t: t + 0.1, id: 1 }));
         ev
     }
     fn id(&self, name: &str) -> NodeId {
@@ -62,14 +62,13 @@ impl Fx {
         self.page.node_ids().find(|n| self.rt.has(*n, FOCUSED))
     }
     fn hover_xy(&mut self, x: f32, y: f32) {
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        self.input.hover(&self.page, &mut self.rt, &res, &rects, x, y);
+        let f = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        self.input.hover(&self.page, &mut self.rt, f.frame(), x, y);
     }
     fn hover_at(&mut self, name: &str) {
         let id = self.id(name);
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        let f = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        let rects = f.rects();
         let r = rects[id.index()];
         self.hover_xy(r.x + r.w / 2.0, r.y + r.h / 2.0);
     }
@@ -78,9 +77,8 @@ impl Fx {
         res.num(&self.page, self.id(name), PropKey::Value).unwrap_or(-1.0)
     }
     fn draws(&self) -> Vec<Draw> {
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        draw(&self.page, &res, &rects)
+        let f = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        draw(&self.page, f.frame())
     }
 }
 
@@ -308,15 +306,15 @@ fn a_focused_toggles_arrows_pick_its_sides() {
 #[test]
 fn a_wheel_tick_steps_the_control_under_the_pointer() {
     let mut fx = Fx::new(ROW_SRC);
-    let res = resolve(&fx.page, &fx.rt);
-    let rects = layout(&fx.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let f = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let rects = f.rects();
     let r = rects[(fx.id("s")).index()];
-    let ev = fx.input.wheel(&fx.page, &mut fx.rt, &res, &rects, r.x + r.w / 2.0, r.y + r.h / 2.0, true);
+    let ev = fx.input.wheel(&fx.page, &mut fx.rt, f.frame(), r.x + r.w / 2.0, r.y + r.h / 2.0, true);
     assert_eq!(fx.value("s"), 40.0, "up increments");
     assert!(ev.iter().any(|e| matches!(e.kind, EventKind::Change(_))), "{ev:#?}");
     assert_eq!(fx.input.focused(), Some(fx.id("s")), "the wheel takes focus");
     assert_eq!(fx.ring(), None, "parked — a wheel is pointer driving");
-    let away = fx.input.wheel(&fx.page, &mut fx.rt, &res, &rects, 350.0, 700.0, true);
+    let away = fx.input.wheel(&fx.page, &mut fx.rt, f.frame(), 350.0, 700.0, true);
     assert!(away.is_empty(), "nothing steppable there");
 }
 
@@ -398,16 +396,16 @@ fn a_mouse_press_captures_hover() {
     let mut fx = Fx::new(ROW_SRC);
     fx.hover_at("a");
     assert!(fx.rt.has(fx.id("a"), HOVERED));
-    let res = resolve(&fx.page, &fx.rt);
-    let rects = layout(&fx.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let f = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let rects = f.rects();
     let r = rects[(fx.id("a")).index()];
-    fx.input.touch(&fx.page, &mut fx.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x: r.x + r.w / 2.0, y: r.y + r.h / 2.0, t: 0.0, id: 1 });
+    fx.input.touch(&fx.page, &mut fx.rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Down, x: r.x + r.w / 2.0, y: r.y + r.h / 2.0, t: 0.0, id: 1 });
     fx.hover_xy(350.0, 700.0);
     assert!(fx.rt.has(fx.id("a"), HOVERED), "the press holds the hovered look off-box");
     let rs = rects[(fx.id("s")).index()];
     fx.hover_xy(rs.x + rs.w / 2.0, rs.y + rs.h / 2.0);
     assert!(!fx.rt.has(fx.id("s"), HOVERED), "nothing new hovers mid-press");
-    fx.input.touch(&fx.page, &mut fx.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x: 350.0, y: 700.0, t: 0.2, id: 1 });
+    fx.input.touch(&fx.page, &mut fx.rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Up, x: 350.0, y: 700.0, t: 0.2, id: 1 });
     assert!(!fx.rt.has(fx.id("a"), HOVERED), "released elsewhere: hover clears");
 }
 

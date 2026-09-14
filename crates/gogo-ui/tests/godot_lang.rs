@@ -22,11 +22,12 @@
 //! - `cookbook.border-padding-float`'s `border_width_left == 1` clause
 //!   (2318): Godot stylebox paints whole-px borders; Rust keeps the float.
 use gogo::ast::{AstItem, AstNode, AstValue, Document};
+use gogo::KeptFrame;
 use gogo::draw::{Draw, Fit, draw, hit};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{Kind, NO_STR, PropKey, Color_Straight_Srgb_4xU8_RGBA, State, Value};
 use gogo::parser::parse;
-use gogo::runtime::{Resolved, Runtime, SELECTED, resolve};
+use gogo::runtime::{Runtime, SELECTED, resolve};
 use gogo::{Compiled, Page, compile};
 
 const VIEW: Rect = Rect { x: 0.0, y: 0.0, w: 400.0, h: 400.0 };
@@ -53,22 +54,21 @@ fn message(src: &str, code: &str) -> String {
 
 struct Laid {
     page: Page,
-    res: Resolved,
-    rects: Vec<Rect>,
+    kept: KeptFrame,
 }
 
 impl Laid {
     fn rect(&self, name: &str) -> Rect {
-        self.rects[(self.id(name)).index()]
+        self.kept.rects()[(self.id(name)).index()]
     }
     fn id(&self, name: &str) -> gogo::NodeId {
         self.page.find(name).unwrap_or_else(|| panic!("no node {name:?}"))
     }
     fn draws(&self) -> Vec<Draw> {
-        draw(&self.page, &self.res, &self.rects)
+        draw(&self.page, self.kept.frame())
     }
     fn hit(&self, x: f32, y: f32) -> Option<gogo::NodeId> {
-        hit(&self.page, &self.res, &self.rects, x, y, false)
+        hit(&self.page, self.kept.frame(), x, y, false)
     }
     fn center(&self, name: &str) -> (f32, f32) {
         let r = self.rect(name);
@@ -83,9 +83,8 @@ fn lay(src: &str) -> Laid {
 fn lay_in(src: &str, viewport: Rect) -> Laid {
     let c = ok(src);
     let rt = Runtime::new(&c.page);
-    let res = resolve(&c.page, &rt);
-    let rects = layout(&c.page, &res, viewport, &FixedAdvance);
-    Laid { page: c.page, res, rects }
+    let f = KeptFrame::fresh(&c.page, resolve(&c.page, &rt), viewport, &FixedAdvance);
+    Laid { page: c.page, kept: f }
 }
 
 fn near(a: f32, b: f32) -> bool {
@@ -188,15 +187,15 @@ fn resolver_basics_stack_build() {
     let l = lay("View v {\n Column panel spacing=8 {\n  Label title text=\"Hi\", vertical_alignment=center\n  Slider vol min=1, max=300, value=80\n  Rectangle fill\n }\n}\n");
     let panel = l.id("panel");
     assert_eq!(l.page.nodes[panel.index()].kind, Kind::Column);
-    assert_eq!(l.res.num(&l.page, panel, PropKey::Spacing), Some(8.0));
+    assert_eq!(l.kept.look().num(&l.page, panel, PropKey::Spacing), Some(8.0));
     for name in ["panel", "title", "vol", "fill"] {
         assert!(l.page.find(name).is_some(), "named {name}");
     }
     let title = l.id("title");
-    assert!(matches!(l.res.prop(&l.page, title, PropKey::Text), Some(Value::VText { text, .. }) if l.page.str(text) == "Hi"));
+    assert!(matches!(l.kept.look().prop(&l.page, title, PropKey::Text), Some(Value::VText { text, .. }) if l.page.str(text) == "Hi"));
     let vol = l.id("vol");
-    assert_eq!((l.res.num(&l.page, vol, PropKey::Min), l.res.num(&l.page, vol, PropKey::Max), l.res.slider_value(&l.page, vol)), (Some(1.0), Some(300.0), 80.0));
-    assert_eq!(l.res.ident(&l.page, title, PropKey::TextValign), Some("center"));
+    assert_eq!((l.kept.look().num(&l.page, vol, PropKey::Min), l.kept.look().num(&l.page, vol, PropKey::Max), l.kept.look().slider_value(&l.page, vol)), (Some(1.0), Some(300.0), 80.0));
+    assert_eq!(l.kept.look().ident(&l.page, title, PropKey::TextValign), Some("center"));
 }
 
 /// `_resolver_basics` 277-285 (pins.ok, grow, anchor, margin): a centered,
@@ -459,9 +458,9 @@ fn cookbook_center_inside_a_column() {
 #[test]
 fn cookbook_text_alignment_and_wrap() {
     let l = lay("View v {\n Column c {\n  Label caption text=\"fullscreen\", font_size=12, horizontal_alignment=center\n  Label rowLabel text=\"save + share\", font_size=15, min_height=48, vertical_alignment=center\n  Label blurb text=\"A longer description that wraps onto several lines\",\n   font_size=13, min_width=180, wrap=true\n }\n}\n");
-    assert_eq!(l.res.ident(&l.page, l.id("caption"), PropKey::TextHalign), Some("center"));
-    assert_eq!(l.res.ident(&l.page, l.id("rowLabel"), PropKey::TextValign), Some("center"));
-    assert_eq!(l.res.bool(&l.page, l.id("blurb"), PropKey::Wrap), Some(true));
+    assert_eq!(l.kept.look().ident(&l.page, l.id("caption"), PropKey::TextHalign), Some("center"));
+    assert_eq!(l.kept.look().ident(&l.page, l.id("rowLabel"), PropKey::TextValign), Some("center"));
+    assert_eq!(l.kept.look().bool(&l.page, l.id("blurb"), PropKey::Wrap), Some(true));
     assert!(has("View v { Label b text=\"x\", autowrap_mode=word_smart }", "G0041"), "the Godot key is refused with the fix");
 }
 
@@ -714,7 +713,7 @@ fn epx_layout_stays_in_epx_and_px_is_refused() {
 #[test]
 fn epx_scalar_props_are_raw() {
     let l = lay("View v { Slider s value=80, max=100 }");
-    assert_eq!(l.res.slider_value(&l.page, l.id("s")), 80.0);
+    assert_eq!(l.kept.look().slider_value(&l.page, l.id("s")), 80.0);
 }
 
 /// `_epx_tests` 3057 (epx.percent-error): `min_height=50%` is refused
@@ -814,7 +813,7 @@ fn vocab_gap_in_a_column() {
     assert_eq!(l.page.nodes[mid as usize].kind, Kind::Gap);
     assert_eq!((l.page.nodes[mid as usize].gap, l.page.nodes[mid as usize].gap_fill), (12.0, false));
     assert!(near(l.rect("b").y - l.rect("a").bottom(), 12.0), "a={:?} b={:?}", l.rect("a"), l.rect("b"));
-    let g = l.rects[mid as usize];
+    let g = l.kept.rects()[mid as usize];
     assert_eq!(l.hit(g.x + 5.0, g.y + 5.0), None, "a gap takes no input");
     assert_eq!(l.page.nodes[mid as usize].name, NO_STR);
     assert!(l.page.find("gap").is_none());
@@ -830,11 +829,11 @@ fn vocab_gap_axis_and_fill_forms() {
     let l = lay("View v { Column c { gap fill } }");
     let g = l.page.children(l.id("c")).next().unwrap();
     assert!(l.page.nodes[g].gap_fill);
-    assert_eq!(l.rects[g].h, 400.0, "{:?}", l.rects[g]);
+    assert_eq!(l.kept.rects()[g].h, 400.0, "{:?}", l.kept.rects()[g]);
     let l = lay("View v { Row r { gap fill } }");
     let g = l.page.children(l.id("r")).next().unwrap();
     assert!(l.page.nodes[g].gap_fill);
-    assert_eq!(l.rects[g].w, 400.0, "{:?}", l.rects[g]);
+    assert_eq!(l.kept.rects()[g].w, 400.0, "{:?}", l.kept.rects()[g]);
 }
 
 /// `_vocab_tests` 12437-12441 (vocab.gap-top-level, gap-in-flow, gap-in-

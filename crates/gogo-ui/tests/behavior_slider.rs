@@ -13,8 +13,9 @@
 //! effect slider end to end); a stepped instance steps by `step=`.
 
 use gogo::compile;
+use gogo::KeptFrame;
 use gogo::input::{Event, EventKind, Input, Key, Mods, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{NodeId, Page, PropKey, Value};
 use gogo::runtime::{DISABLED, Resolved, Runtime, resolve};
 
@@ -24,7 +25,8 @@ struct Fx {
     page: Page,
     rt: Runtime,
     input: Input,
-    rects: Vec<Rect>,
+    /// The frame the last touch or key saw (laid out fresh for each).
+    kept: KeptFrame,
 }
 
 impl Fx {
@@ -33,19 +35,18 @@ impl Fx {
         assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
         let page = c.page;
         let rt = Runtime::new(&page);
-        let res = resolve(&page, &rt);
-        let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        Fx { page, rt, input: Input::default(), rects }
+        let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        Fx { page, rt, input: Input::default(), kept: f }
     }
 
     fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) -> Vec<Event> {
-        let res = resolve(&self.page, &self.rt);
-        self.input.touch(&self.page, &mut self.rt, &res, &self.rects, &FixedAdvance, Touch { phase, x, y, t, id: 1 })
+        self.kept = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        self.input.touch(&self.page, &mut self.rt, self.kept.frame(), &FixedAdvance, Touch { phase, x, y, t, id: 1 })
     }
 
     fn key(&mut self, k: Key) -> Vec<Event> {
-        let res = resolve(&self.page, &self.rt);
-        self.input.key(&mut self.page, &mut self.rt, &res, &self.rects, k, Mods::NONE)
+        self.kept = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        self.input.key(&mut self.page, &mut self.rt, self.kept.frame(), k, Mods::NONE)
     }
 
     fn value(&self, node: NodeId) -> f32 {
@@ -143,8 +144,8 @@ fn drag_signals_are_the_fingers_and_only_when_declared() {
     fx.key(Key::Tab);
     let ev = fx.key(Key::Right);
     assert!(signals(&fx.page, &ev).is_empty(), "{ev:?}");
-    let res = fx.res();
-    let ev = fx.input.wheel(&fx.page, &mut fx.rt, &res, &fx.rects, 200.0, 10.0, true);
+    fx.kept = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let ev = fx.input.wheel(&fx.page, &mut fx.rt, fx.kept.frame(), 200.0, 10.0, true);
     assert!(signals(&fx.page, &ev).is_empty(), "{ev:?}");
 
     let plain = "control Plain $value=0, $min=0, $max=10, $step=0 {\n    behavior slider by $value in $min..$max\n    state_builtin focused\n    Layers width=fill, height=60 { slot track width=fill, height=10 { Rectangle width=fill, height=fill, color=#FF0000FF } }\n}\n";
@@ -162,8 +163,8 @@ fn drag_signals_are_the_fingers_and_only_when_declared() {
 fn the_wheel_steps_the_row_under_the_pointer() {
     let mut fx = Fx::new(&format!("{SLIDER_PHONE}View v {{ SliderPhone s value=2 }}"));
     let s = fx.page.find("s").unwrap();
-    let res = fx.res();
-    let ev = fx.input.wheel(&fx.page, &mut fx.rt, &res, &fx.rects, 200.0, 10.0, true);
+    fx.kept = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let ev = fx.input.wheel(&fx.page, &mut fx.rt, fx.kept.frame(), 200.0, 10.0, true);
     assert_eq!(changes(&ev), vec![2.5], "{ev:?}");
     assert_eq!(fx.value(s), 2.5);
 }
@@ -196,8 +197,8 @@ fn a_disabled_instance_answers_nothing() {
     fx.rt.set_state(s, DISABLED, true);
     let ev = fx.touch(Phase::Down, 200.0, 30.0, 0.0);
     assert!(edits(&ev).is_empty(), "{ev:?}");
-    let res = fx.res();
-    let ev = fx.input.wheel(&fx.page, &mut fx.rt, &res, &fx.rects, 200.0, 10.0, true);
+    fx.kept = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let ev = fx.input.wheel(&fx.page, &mut fx.rt, fx.kept.frame(), 200.0, 10.0, true);
     assert!(changes(&ev).is_empty(), "{ev:?}");
     // No write ever landed: the root still has no live Value prop.
     assert!(fx.value(s).is_nan(), "a write leaked through: {}", fx.value(s));

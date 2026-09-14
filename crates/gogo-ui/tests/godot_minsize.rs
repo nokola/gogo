@@ -33,9 +33,10 @@
 //! tall; at `font_size=16` 8.8 and 20. Godot measured Roboto, so pixel
 //! numbers below are the FixedAdvance ones, relations are kept as written.
 use gogo::draw::{Draw, draw};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::KeptFrame;
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{Len, Page};
-use gogo::runtime::{Resolved, Runtime, resolve};
+use gogo::runtime::{Runtime, resolve};
 use gogo::{Compiled, Orientation, ScreenClass, compile};
 
 fn ok(src: &str) -> Compiled {
@@ -52,10 +53,8 @@ fn errs(src: &str) -> bool {
     gogo::has_errors(&compile(src, &|_| None).diags)
 }
 
-fn lay(page: &Page, rt: &Runtime, w: f32, h: f32) -> (Resolved, Vec<Rect>) {
-    let res = resolve(page, rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, w, h), &FixedAdvance);
-    (res, rects)
+fn lay(page: &Page, rt: &Runtime, w: f32, h: f32) -> KeptFrame {
+    KeptFrame::fresh(page, resolve(page, rt), Rect::new(0.0, 0.0, w, h), &FixedAdvance)
 }
 
 fn rect(page: &Page, rects: &[Rect], name: &str) -> Rect {
@@ -84,7 +83,8 @@ fn hug_plate_under_a_fill_cap_holds_one_line_when_the_text_fits() {
     let c = ok("View v {\n Panel plate halign=center, valign=top, width=hug, height=hug, max_width=fill {\n  Column {\n   Label msg text=\"a sentence long enough to stack many many lines when wrapped at nothing\", font_size=16, wrap=true\n  }\n }\n}\n");
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 800.0, 600.0);
+    let f = lay(&page, &rt, 800.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let msg = rect(&page, &rects, "msg");
     let plate = rect(&page, &rects, "plate");
     // 71 chars × 8.8 = 624.8 fits the 800 frame: exactly one 20-epx line.
@@ -103,7 +103,8 @@ fn hug_chain_with_a_layers_hop_keeps_one_line() {
     let c = ok("View v {\n Layers host {\n  Panel plate halign=center, valign=top, width=hug, height=hug, padding=10 {\n   Layers inner {\n    Column col {\n     Label msg text=\"one finger pans, two fingers rotate\", font_size=16, wrap=true\n    }\n   }\n  }\n }\n}\n");
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 700.0, 600.0);
+    let f = lay(&page, &rt, 700.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let plate = rect(&page, &rects, "plate");
     let msg = rect(&page, &rects, "msg");
     // 35 chars × 8.8 = 308 + 2 × 10 padding.
@@ -130,7 +131,8 @@ fn chain_hug_wrap_label_raises_no_g1004_because_it_binds_at_the_frame() {
     let c = ok(long);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 700.0, 600.0);
+    let f = lay(&page, &rt, 700.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let msg = rect(&page, &rects, "msg");
     let plate = rect(&page, &rects, "plate");
     assert!(near(msg.h, 40.0), "two lines: {msg:?}");
@@ -151,7 +153,8 @@ fn seat_measures_its_occupant_by_declared_width_intent() {
     let page = c.page;
     let mut rt = Runtime::new(&page);
     rt.go_id(gogo::ArrangementId::new(0));
-    let (_, rects) = lay(&page, &rt, 400.0, 400.0);
+    let f = lay(&page, &rt, 400.0, 400.0);
+    let (_, rects) = (f.look(), f.rects());
     // 33 chars × 8.25 = 272.25 unwrapped.
     let unwrapped = 272.25;
     let hug_seat = rect(&page, &rects, "hugSeat");
@@ -180,7 +183,8 @@ fn a_fill_occupant_in_a_row_seat_reports_wrapped() {
     let page = c.page;
     let mut rt = Runtime::new(&page);
     rt.go_id(gogo::ArrangementId::new(0));
-    let (_, rects) = lay(&page, &rt, 400.0, 400.0);
+    let f = lay(&page, &rt, 400.0, 400.0);
+    let (_, rects) = (f.look(), f.rects());
     let fill_seat = rect(&page, &rects, "fillSeat");
     assert!(fill_seat.w < 272.25 * 0.5, "fill occupant should wrap: {fill_seat:?}");
 }
@@ -210,7 +214,8 @@ fn a_posed_exact_width_binds_wrap_while_seated_and_fill_returns_after() {
     let page = c.page;
     let mut rt = Runtime::new(&page);
     rt.set_screen(&page, Orientation::Landscape, ScreenClass::LandscapeSmall);
-    let (_, rects) = lay(&page, &rt, 680.0, 320.0);
+    let f = lay(&page, &rt, 680.0, 320.0);
+    let (_, rects) = (f.look(), f.rects());
     let seat = rect(&page, &rects, "infoSeat");
     let occ = rect(&page, &rects, "occ");
     let blurb = rect(&page, &rects, "blurb");
@@ -219,7 +224,8 @@ fn a_posed_exact_width_binds_wrap_while_seated_and_fill_returns_after() {
     // 51 chars × 8.8 = 448.8 unwrapped (> 150); bound at 120 it folds.
     assert!(blurb.h > 20.0 * 2.5, "wraps under the posed width: {blurb:?}");
     rt.set_screen(&page, Orientation::Portrait, ScreenClass::PortraitMedium);
-    let (_, rects) = lay(&page, &rt, 360.0, 740.0);
+    let f = lay(&page, &rt, 360.0, 740.0);
+    let (_, rects) = (f.look(), f.rects());
     let occ = rect(&page, &rects, "occ");
     let seat = rect(&page, &rects, "infoSeat");
     assert!(near(occ.w, 140.0) && near(occ.y, 200.0), "home again at fill width: {occ:?}");
@@ -239,7 +245,8 @@ fn a_wrap_label_on_a_rows_main_axis_gets_its_whole_line() {
     let c = ok(src);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 400.0, 400.0);
+    let f = lay(&page, &rt, 400.0, 400.0);
+    let (_, rects) = (f.look(), f.rects());
     let s = rect(&page, &rects, "s");
     // 22 chars × 8.25 = 181.5, one line.
     assert!(near(s.w, 181.5) && near(s.h, 18.75), "{s:?}");
@@ -255,7 +262,8 @@ fn a_floored_button_gives_its_fill_wrap_label_the_floor() {
     let c = ok(src);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 400.0, 400.0);
+    let f = lay(&page, &rt, 400.0, 400.0);
+    let (_, rects) = (f.look(), f.rects());
     let cap = rect(&page, &rects, "cap");
     assert!(near(cap.w, 88.0), "{cap:?}");
     assert!(near(cap.h, 3.0 * 18.75), "wraps at the floor: {cap:?}");
@@ -273,7 +281,8 @@ fn a_fill_wrap_label_under_a_hug_chain_is_warned_about() {
     let c = compile(src, &|_| None);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 360.0, 600.0);
+    let f = lay(&page, &rt, 360.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let cap = rect(&page, &rects, "cap");
     assert!(c.diags.iter().any(|d| d.code == "G1004"), "no G1004; label landed at {cap:?}; diags {:#?}", c.diags);
 }
@@ -288,7 +297,8 @@ fn a_bound_fill_chain_gives_the_wrap_label_the_host_width() {
     let c = ok(src);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 360.0, 600.0);
+    let f = lay(&page, &rt, 360.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let cap = rect(&page, &rects, "cap");
     assert!(near(cap.w, 360.0), "{cap:?}");
 }
@@ -303,7 +313,8 @@ fn a_cap_gives_wrap_a_width_to_bind_at() {
     let c = ok(src);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 700.0, 600.0);
+    let f = lay(&page, &rt, 700.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let plate = rect(&page, &rects, "plate");
     let msg = rect(&page, &rects, "msg");
     assert!(near(plate.w, 200.0), "{plate:?}");
@@ -319,7 +330,8 @@ fn a_bare_hug_plate_is_silent_and_one_line() {
     let c = ok(src);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 700.0, 600.0);
+    let f = lay(&page, &rt, 700.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let plate = rect(&page, &rects, "plate");
     // 29 chars × 8.25 = 239.25, one line.
     assert!(near(plate.w, 239.25) && near(plate.h, 18.75), "{plate:?}");
@@ -336,7 +348,8 @@ fn hug_under_a_column_takes_natural_floor_and_cap() {
     let c = ok("View v {\n Column chost {\n  Panel cplate width=hug, padding=10 {\n   Label cmsg text=\"a hint line that would have slivered\", font_size=16, wrap=true\n  }\n  Panel cfloor width=hug, min_width=400, padding=10 {\n   Label flmsg text=\"short\", font_size=16, wrap=true\n  }\n  Layers ccap width=hug, max_width=120, halign=left {\n   Label capmsg text=\"a long enough sentence to overflow one hundred twenty pixels\", font_size=16, wrap=true\n  }\n }\n}\n");
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 700.0, 600.0);
+    let f = lay(&page, &rt, 700.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let cplate = rect(&page, &rects, "cplate");
     let cmsg = rect(&page, &rects, "cmsg");
     // 36 chars × 8.8 = 316.8 + 20 padding.
@@ -349,7 +362,8 @@ fn hug_under_a_column_takes_natural_floor_and_cap() {
     // Live: a longer text re-widens the plate.
     let cmsg_id = page.find("cmsg").unwrap();
     rt.set_text(&mut page, cmsg_id, "a hint line that would have slivered, now grown even longer");
-    let (_, rects) = lay(&page, &rt, 700.0, 600.0);
+    let f = lay(&page, &rt, 700.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let grown = rect(&page, &rects, "cplate");
     // 59 chars × 8.8 = 519.2 + 20.
     assert!(near(grown.w, 539.2) && grown.w > cplate.w + 10.0, "{grown:?}");
@@ -378,7 +392,8 @@ fn a_hug_cap_binds_under_a_column() {
     let c = ok("View v { Column col width=300, halign=left, valign=top { Panel p width=hug, max_width=100, halign=left { Rectangle r 200x10, color=red } } }");
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 300.0, 200.0);
+    let f = lay(&page, &rt, 300.0, 200.0);
+    let (_, rects) = (f.look(), f.rects());
     let p = rect(&page, &rects, "p");
     assert!(near(p.w, 100.0), "the cap binds: {p:?}");
 }
@@ -393,7 +408,8 @@ fn hug_cap_hugs_under_binds_at_and_shrinks_back() {
     let c = ok("View v {\n Layers host {\n  Panel plate width=hug, max_width=200, halign=center, valign=top, padding=12 {\n   Label msg text=\"hi\", font_size=16, wrap=true\n  }\n  Panel bare width=hug, max_width=90, valign=top, padding=4 {\n   Label barelbl text=\"a line with room to wrap\", font_size=16, wrap=true\n  }\n }\n}\n");
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 360.0, 600.0);
+    let f = lay(&page, &rt, 360.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let plate = rect(&page, &rects, "plate");
     // "hi" = 2 × 8.8 = 17.6 + 24 padding.
     let expect = 41.6;
@@ -403,13 +419,15 @@ fn hug_cap_hugs_under_binds_at_and_shrinks_back() {
     assert!(near(bare.w, 90.0) && near(bare.x, 0.0), "bare cap binds flush left: {bare:?}");
     let msg = page.find("msg").unwrap();
     rt.set_text(&mut page, msg, "this toast line is long enough to overflow the two hundred epx cap comfortably");
-    let (_, rects) = lay(&page, &rt, 360.0, 600.0);
+    let f = lay(&page, &rt, 360.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let plate = rect(&page, &rects, "plate");
     let msg_r = rect(&page, &rects, "msg");
     assert!(near(plate.w, 200.0), "{plate:?}");
     assert!(msg_r.h > 20.0, "wraps: {msg_r:?}");
     rt.set_text(&mut page, msg, "hi");
-    let (_, rects) = lay(&page, &rt, 360.0, 600.0);
+    let f = lay(&page, &rt, 360.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let plate = rect(&page, &rects, "plate");
     assert!(near(plate.w, expect), "shrinks back: {plate:?}");
 }
@@ -423,12 +441,13 @@ fn a_written_cap_holds_over_rigid_content_and_clips() {
     let c = ok("View v {\n Layers host {\n  Panel rigid width=hug, max_width=90, valign=top, padding=4 {\n   Rectangle wide 200x20, color=#FFFFFFFF\n  }\n  Panel tall height=hug, max_height=50, valign=top, halign=left, padding=4 {\n   Rectangle high 30x120, color=#FFFFFFFF\n  }\n }\n}\n");
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (res, rects) = lay(&page, &rt, 360.0, 600.0);
+    let f = lay(&page, &rt, 360.0, 600.0);
+    let rects = f.rects();
     let rigid = rect(&page, &rects, "rigid");
     let tall = rect(&page, &rects, "tall");
     assert!(near(rigid.w, 90.0), "{rigid:?}");
     assert!(near(tall.h, 50.0), "{tall:?}");
-    let draws = draw(&page, &res, &rects);
+    let draws = draw(&page, f.frame());
     assert!(clips_at(&draws, rigid), "{draws:#?}");
     assert!(clips_at(&draws, tall), "{draws:#?}");
 }
@@ -445,18 +464,21 @@ fn an_uncapped_hug_box_follows_hides_and_text_both_ways() {
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
     let span = |r: Rect| near(r.x, 10.0) && near(r.w, 340.0);
-    let (_, rects) = lay(&page, &rt, 360.0, 600.0);
+    let f = lay(&page, &rt, 360.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let base = rect(&page, &rects, "lpanel");
     assert!(base.h >= 120.0 && near(base.h, 120.0), "{base:?}");
     assert!(span(base), "{base:?}");
     let lrow2 = page.find("lrow2").unwrap();
     rt.set_visible(&mut page, lrow2, false);
-    let (_, rects) = lay(&page, &rt, 360.0, 600.0);
+    let f = lay(&page, &rt, 360.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let hidden = rect(&page, &rects, "lpanel");
     assert!(near(hidden.h, base.h - 40.0), "{hidden:?} baseline {base:?}");
     assert!(span(hidden), "{hidden:?}");
     rt.set_visible(&mut page, lrow2, true);
-    let (_, rects) = lay(&page, &rt, 360.0, 600.0);
+    let f = lay(&page, &rt, 360.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let back = rect(&page, &rects, "lpanel");
     assert!(near(back.h, base.h) && span(back), "{back:?}");
     // Text on an uncapped hug: shorter shrinks, longer grows back.
@@ -465,11 +487,13 @@ fn an_uncapped_hug_box_follows_hides_and_text_both_ways() {
     assert!(near(w0, 245.6), "{w0}");
     let ltlabel = page.find("ltlabel").unwrap();
     rt.set_text(&mut page, ltlabel, "hi");
-    let (_, rects) = lay(&page, &rt, 360.0, 600.0);
+    let f = lay(&page, &rt, 360.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let short = rect(&page, &rects, "ltext");
     assert!(short.w < w0 - 20.0, "{short:?} w0={w0}");
     rt.set_text(&mut page, ltlabel, "a much longer declared line");
-    let (_, rects) = lay(&page, &rt, 360.0, 600.0);
+    let f = lay(&page, &rt, 360.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let grown = rect(&page, &rects, "ltext");
     assert!(near(grown.w, w0), "{grown:?} w0={w0}");
 }
@@ -530,7 +554,8 @@ fn aspect_derives_the_unspelled_axis() {
     let c = ok("View v { Layers ahost {\n Rectangle fixed_drive width=200, aspect=2, halign=left, valign=top\n Rectangle fill_drive width=fill, aspect=4, margin_left=20, margin_right=20, valign=top\n Rectangle fitbox width=fill, height=fill, aspect=1\n} }\n");
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 400.0, 300.0);
+    let f = lay(&page, &rt, 400.0, 300.0);
+    let (_, rects) = (f.look(), f.rects());
     let fd = rect(&page, &rects, "fixed_drive");
     assert_eq!((fd.w, fd.h), (200.0, 100.0), "{fd:?}");
     let fl = rect(&page, &rects, "fill_drive");
@@ -552,7 +577,8 @@ fn border_insets_content_in_layout_on_every_kind() {
     let mut rt = Runtime::new(&page);
     let rep = page.find("t").unwrap();
     rt.set_count(&mut page, rep, 1);
-    let (_, rects) = lay(&page, &rt, 400.0, 400.0);
+    let f = lay(&page, &rt, 400.0, 400.0);
+    let (_, rects) = (f.look(), f.rects());
     let li = rect(&page, &rects, "t/0/li");
     let r = rect(&page, &rects, "t/0/r");
     assert_eq!(r.x - li.x, 8.0, "border 3 + padding 5: li={li:?} r={r:?}");
@@ -571,7 +597,8 @@ fn aligned_capped_margins_count_once() {
     let c = ok(src);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 400.0, 400.0);
+    let f = lay(&page, &rt, 400.0, 400.0);
+    let (_, rects) = (f.look(), f.rects());
     assert_eq!(rect(&page, &rects, "a").x, 12.0, "{:?}", rect(&page, &rects, "a"));
     assert_eq!(rect(&page, &rects, "b").right(), 388.0, "{:?}", rect(&page, &rects, "b"));
     let c = rect(&page, &rects, "c");
@@ -589,12 +616,14 @@ fn crossed_band_refuses_and_a_floor_beside_an_exact_size_builds_and_clamps() {
     assert!(codes("View v { Layers { Panel p width=hug, min_width=300, max_width=100 } }").contains(&"G1013".to_string()));
     let c = ok("View v { Layers { Panel p size=100x40, min_height=50, halign=left, valign=top } }");
     let rt = Runtime::new(&c.page);
-    let (_res, rects) = lay(&c.page, &rt, 400.0, 800.0);
+    let f = lay(&c.page, &rt, 400.0, 800.0);
+    let rects = f.rects();
     let p = (c.page.find("p").unwrap()).index();
     assert_eq!((rects[p].w, rects[p].h), (100.0, 50.0), "the floor beats the smaller written height");
     let c = ok("View v { Column { Panel q width=100, height=40, min_width=120 } }");
     let rt = Runtime::new(&c.page);
-    let (_res, rects) = lay(&c.page, &rt, 400.0, 800.0);
+    let f = lay(&c.page, &rt, 400.0, 800.0);
+    let rects = f.rects();
     let q = (c.page.find("q").unwrap()).index();
     assert_eq!(rects[q].w, 120.0, "the clamp holds on a stack child too");
 }
@@ -616,7 +645,8 @@ fn the_min_max_band_clamps_natural_size() {
     let c = ok(BAND_SRC);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 600.0, 600.0);
+    let f = lay(&page, &rt, 600.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     assert!(near(rect(&page, &rects, "floorp").w, 100.0), "{:?}", rect(&page, &rects, "floorp"));
     assert!(near(rect(&page, &rects, "midp").w, 108.0), "{:?}", rect(&page, &rects, "midp"));
     let capp = rect(&page, &rects, "capp");
@@ -635,10 +665,11 @@ fn in_the_band_the_written_cap_beats_rigid_content() {
     let c = ok(BAND_SRC);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (res, rects) = lay(&page, &rt, 600.0, 600.0);
+    let f = lay(&page, &rt, 600.0, 600.0);
+    let rects = f.rects();
     let rigidp = rect(&page, &rects, "rigidp");
     assert!(near(rigidp.w, 120.0), "{rigidp:?}");
-    assert!(clips_at(&draw(&page, &res, &rects), rigidp));
+    assert!(clips_at(&draw(&page, f.frame()), rigidp));
 }
 
 // ------------------------------------------------------- max-*=fill cap
@@ -656,7 +687,8 @@ fn a_fill_cap_hugs_under_and_margins_shift_the_midpoint() {
     let c = ok(FILL_CAP_SRC);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 360.0, 600.0);
+    let f = lay(&page, &rt, 360.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let fplate = rect(&page, &rects, "fplate");
     assert!(near(fplate.w, 41.6) && fplate.w < 336.0, "{fplate:?}");
     let skew = rect(&page, &rects, "skew");
@@ -682,9 +714,11 @@ fn a_fill_cap_binds_at_the_live_frame_when_the_text_is_long() {
     let mut rt = Runtime::new(&page);
     let fmsg = page.find("fmsg").unwrap();
     rt.set_text(&mut page, fmsg, "this toast line is long enough to overflow the live frame width comfortably and then some");
-    let (_, rects) = lay(&page, &rt, 360.0, 600.0);
+    let f = lay(&page, &rt, 360.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let at360 = rect(&page, &rects, "fplate");
-    let (_, rects) = lay(&page, &rt, 300.0, 600.0);
+    let f = lay(&page, &rt, 300.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let at300 = rect(&page, &rects, "fplate");
     let root300 = rects[0];
     assert!(near(at360.w, 336.0), "binds at 360 - 24: {at360:?}; at 300: {at300:?} root {root300:?}");
@@ -729,7 +763,8 @@ fn a_capped_fill_centers_on_a_columns_cross_axis() {
     let c = ok("View v { Column col width=300, halign=left, valign=top { Rectangle p width=fill, max_width=100, height=10, halign=center, color=red } }");
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 300.0, 200.0);
+    let f = lay(&page, &rt, 300.0, 200.0);
+    let (_, rects) = (f.look(), f.rects());
     let p = rect(&page, &rects, "p");
     assert!(near(p.w, 100.0) && near(p.x, 100.0), "capped, centered: {p:?}");
 }
@@ -746,12 +781,14 @@ fn a_capped_fill_fills_narrow_and_sides_when_the_cap_binds() {
     let c = ok("View v {\n Layers cfHost {\n  Rectangle band width=fill, max_width=200, halign=center, valign=top, height=40, color=#333333FF\n  Rectangle lband width=fill, max_width=200, halign=left, valign=top, margin_top=60, height=40, color=#444444FF\n  Rectangle mband width=fill, max_width=200, halign=center, valign=top, margin_top=120, margin_left=20, margin_right=40, height=40, color=#555555FF\n  Rectangle vband height=fill, max_height=50, valign=top, halign=left, width=40, color=#666666FF\n }\n}\n");
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 150.0, 600.0);
+    let f = lay(&page, &rt, 150.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let band = rect(&page, &rects, "band");
     assert!(near(band.w, 150.0) && near(band.x, 0.0), "{band:?}");
     let mband = rect(&page, &rects, "mband");
     assert!(near(mband.w, 90.0) && near(mband.x, 20.0), "{mband:?}");
-    let (_, rects) = lay(&page, &rt, 600.0, 600.0);
+    let f = lay(&page, &rt, 600.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let band = rect(&page, &rects, "band");
     assert!(near(band.w, 200.0) && near(band.x, 200.0), "{band:?}");
     let lband = rect(&page, &rects, "lband");
@@ -759,7 +796,8 @@ fn a_capped_fill_fills_narrow_and_sides_when_the_cap_binds() {
     let mband = rect(&page, &rects, "mband");
     assert!(near(mband.w, 200.0) && near(mband.x, 190.0), "{mband:?}");
     assert!(near(rect(&page, &rects, "vband").h, 50.0), "{:?}", rect(&page, &rects, "vband"));
-    let (_, rects) = lay(&page, &rt, 150.0, 600.0);
+    let f = lay(&page, &rt, 150.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     assert!(near(rect(&page, &rects, "band").w, 150.0), "{:?}", rect(&page, &rects, "band"));
 }
 
@@ -771,10 +809,11 @@ fn a_capped_fill_keeps_its_cap_over_rigid_content() {
     let c = ok("View v {\n Layers f2Host {\n  Panel floored width=fill, max_width=100, halign=center, valign=top {\n   Rectangle wide2 180x20, color=#FFFFFFFF\n  }\n }\n}\n");
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (res, rects) = lay(&page, &rt, 600.0, 200.0);
+    let f = lay(&page, &rt, 600.0, 200.0);
+    let rects = f.rects();
     let floored = rect(&page, &rects, "floored");
     assert!(near(floored.w, 100.0), "{floored:?}");
-    assert!(clips_at(&draw(&page, &res, &rects), floored));
+    assert!(clips_at(&draw(&page, f.frame()), floored));
 }
 
 // -------------------------------------------------------- container cap
@@ -792,7 +831,8 @@ fn a_capped_layers_under_a_column_follows_content_between_floor_and_cap() {
     let page = c.page;
     let mut rt = Runtime::new(&page);
     let row_and_below = |rt: &Runtime| {
-        let (_, rects) = lay(&page, rt, 40.0, 120.0);
+        let f = lay(&page, rt, 40.0, 120.0);
+        let (_, rects) = (f.look(), f.rects());
         (rect(&page, &rects, "ccRow").h, rect(&page, &rects, "ccBelow").y)
     };
     let (h, y) = row_and_below(&rt);
@@ -818,11 +858,12 @@ fn content_past_a_container_cap_is_clipped_not_overdrawn() {
     let page = c.page;
     let mut rt = Runtime::new(&page);
     rt.go_id(gogo::ArrangementId::new(1));
-    let (res, rects) = lay(&page, &rt, 40.0, 120.0);
+    let f = lay(&page, &rt, 40.0, 120.0);
+    let rects = f.rects();
     let row = rect(&page, &rects, "ccRow");
     let content = rect(&page, &rects, "ccContent");
     assert!(content.h > row.h + 20.0, "content={content:?} row={row:?}");
-    assert!(clips_at(&draw(&page, &res, &rects), row), "{:#?}", draw(&page, &res, &rects));
+    assert!(clips_at(&draw(&page, f.frame()), row), "{:#?}", draw(&page, f.frame()));
 }
 
 /// `_container_cap_tests` 1363-1371 (ccap.err-non-layers,
@@ -836,7 +877,8 @@ fn stacking_axis_number_cap_binds_and_fill_cap_refuses() {
     let c = ok("View v { Column col width=100, halign=left, valign=top { Panel p height=hug, max_height=60 { Rectangle r 10x200, color=red }; Rectangle after 10x10, color=red } }");
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 100.0, 400.0);
+    let f = lay(&page, &rt, 100.0, 400.0);
+    let (_, rects) = (f.look(), f.rects());
     let p = rect(&page, &rects, "p");
     let after = rect(&page, &rects, "after");
     assert!(near(p.h, 60.0), "the number binds on the stacking axis: {p:?}");
@@ -856,11 +898,13 @@ fn a_seated_glyph_stays_put_when_its_minimum_changes() {
     let c = ok("arrangement grown\nView v {\n Button seatHost 50x90 {\n  Column spacing=0 {\n   gap 43\n   Rectangle seatGlyph width=16, halign=center\n  }\n }\n}\nwhen grown { seatGlyph.height = 4 }\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    let (_, rects) = lay(&page, &rt, 200.0, 200.0);
+    let f = lay(&page, &rt, 200.0, 200.0);
+    let (_, rects) = (f.look(), f.rects());
     let glyph = rect(&page, &rects, "seatGlyph");
     assert!(near(glyph.x, 17.0) && near(glyph.y, 43.0), "{glyph:?}");
     rt.go_id(gogo::ArrangementId::new(0));
-    let (_, rects) = lay(&page, &rt, 200.0, 200.0);
+    let f = lay(&page, &rt, 200.0, 200.0);
+    let (_, rects) = (f.look(), f.rects());
     let glyph = rect(&page, &rects, "seatGlyph");
     assert!(near(glyph.x, 17.0) && near(glyph.y, 43.0) && near(glyph.h, 4.0), "{glyph:?}");
 }

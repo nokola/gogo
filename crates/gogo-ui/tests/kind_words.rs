@@ -5,7 +5,8 @@
 //! match Godot; these pins cover what E8 decides differently or adds.
 
 use gogo::draw::{Draw, draw};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::KeptFrame;
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{Kind, PropKey, Color_Straight_Srgb_4xU8_RGBA, legal};
 use gogo::runtime::{Runtime, resolve};
 use gogo::{CompileOptions, Compiled, Diagnostic, Page, compile, compile_with};
@@ -30,10 +31,10 @@ fn error(src: &str) -> (String, String) {
 fn scene(src: &str) -> (Page, Vec<Rect>, Vec<Draw>) {
     let c = ok(src);
     let rt = Runtime::new(&c.page);
-    let res = resolve(&c.page, &rt);
-    let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-    let draws = draw(&c.page, &res, &rects);
-    (c.page, rects, draws)
+    let f = KeptFrame::fresh(&c.page, resolve(&c.page, &rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+    let rects = f.rects();
+    let draws = draw(&c.page, f.frame());
+    (c.page, rects.to_vec(), draws)
 }
 
 fn rect_of(page: &Page, rects: &[Rect], name: &str) -> Rect {

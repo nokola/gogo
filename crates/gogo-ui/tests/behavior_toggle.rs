@@ -9,8 +9,9 @@
 //! release's settle glides by the control's feel.
 
 use gogo::compile;
+use gogo::KeptFrame;
 use gogo::input::{Event, EventKind, Input, Key, Mods, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{NodeId, Page, PropKey, Value};
 use gogo::runtime::{Resolved, Runtime, SELECTED, resolve, resolve_animated};
 
@@ -22,7 +23,8 @@ struct Fx {
     page: Page,
     rt: Runtime,
     input: Input,
-    rects: Vec<Rect>,
+    /// The frame the last touch or key saw (laid out fresh for each).
+    kept: KeptFrame,
 }
 
 impl Fx {
@@ -31,19 +33,18 @@ impl Fx {
         assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
         let page = c.page;
         let rt = Runtime::new(&page);
-        let res = resolve(&page, &rt);
-        let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        Fx { page, rt, input: Input::default(), rects }
+        let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        Fx { page, rt, input: Input::default(), kept: f }
     }
 
     fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) -> Vec<Event> {
-        let res = resolve(&self.page, &self.rt);
-        self.input.touch(&self.page, &mut self.rt, &res, &self.rects, &FixedAdvance, Touch { phase, x, y, t, id: 1 })
+        self.kept = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        self.input.touch(&self.page, &mut self.rt, self.kept.frame(), &FixedAdvance, Touch { phase, x, y, t, id: 1 })
     }
 
     fn key(&mut self, k: Key) -> Vec<Event> {
-        let res = resolve(&self.page, &self.rt);
-        self.input.key(&mut self.page, &mut self.rt, &res, &self.rects, k, Mods::NONE)
+        self.kept = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        self.input.key(&mut self.page, &mut self.rt, self.kept.frame(), k, Mods::NONE)
     }
 
     fn value(&self, node: NodeId) -> f32 {
@@ -171,8 +172,8 @@ fn keys_and_wheel_pick_sides() {
     assert_eq!(fx.value(s), 1.0);
     fx.key(Key::Home);
     assert_eq!(fx.value(s), 0.0);
-    let res = fx.res();
-    let ev = fx.input.wheel(&fx.page, &mut fx.rt, &res, &fx.rects, 60.0, 30.0, true);
+    fx.kept = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let ev = fx.input.wheel(&fx.page, &mut fx.rt, fx.kept.frame(), 60.0, 30.0, true);
     assert_eq!(changes(&ev), vec![true], "{ev:?}");
     assert!(signals(&fx.page, &ev).is_empty(), "the edges belong to the finger");
 }

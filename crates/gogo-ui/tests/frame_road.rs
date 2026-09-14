@@ -11,7 +11,7 @@ use gogo::draw::{Draw, draw};
 use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::NodeId;
 use gogo::runtime::{Runtime, resolve};
-use gogo::{Compiled, compile};
+use gogo::{Compiled, KeptFrame, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
@@ -37,9 +37,13 @@ fn view() -> Rect {
 
 /// The road's list is the plain `draw` of a fresh resolve taken after the
 /// glide — the one true answer, however the steps are ordered inside.
-fn same_as_fresh(page: &gogo::Page, rt: &Runtime, rects: &[Rect], draws: &[Draw]) {
-    let fresh = resolve(page, rt);
-    let reference: Vec<Draw> = draw(page, &fresh, rects);
+/// (The fresh frame glides too: the same frame's glide again is the
+/// same rects, so it stands in for the road's.)
+fn same_as_fresh(page: &gogo::Page, rt: &mut Runtime, rects: &[Rect], draws: &[Draw]) {
+    let mut fresh = KeptFrame::fresh(page, resolve(page, rt), view(), &FixedAdvance);
+    fresh.glide(rt);
+    assert_eq!(fresh.rects(), rects, "the road's rects are the fresh frame's, glided");
+    let reference: Vec<Draw> = draw(page, fresh.frame());
     assert_eq!(format!("{draws:?}"), format!("{reference:?}"), "the road's list is a fresh resolve's after the glide");
 }
 
@@ -60,19 +64,19 @@ fn a_sheet_hidden_at_play_first_draws_one_height_below_its_seat() {
     rt.frame_retained(&page, view(), &FixedAdvance, &mut rects, &mut draws, None);
     let first: Rect = quad(&draws, RED).expect("the sheet draws once shown");
     assert!((first.y - 400.0).abs() < 0.5, "first drawn frame one sheet-height below the seat (y 400): {first:?}");
-    same_as_fresh(&page, &rt, &rects, &draws);
+    same_as_fresh(&page, &mut rt, &rects, &draws);
     rt.tick(&mut page, 0.5);
     rt.frame_retained(&page, view(), &FixedAdvance, &mut rects, &mut draws, None);
     let mid: Rect = quad(&draws, RED).unwrap();
     assert!(mid.y > 300.5 && mid.y < 399.5, "mid-slide: {mid:?}");
-    same_as_fresh(&page, &rt, &rects, &draws);
+    same_as_fresh(&page, &mut rt, &rects, &draws);
     for _ in 0..12 {
         rt.tick(&mut page, 0.1);
     }
     rt.frame_retained(&page, view(), &FixedAdvance, &mut rects, &mut draws, None);
     let end: Rect = quad(&draws, RED).unwrap();
     assert!((end.y - 300.0).abs() < 0.5, "at rest at its seat: {end:?}");
-    same_as_fresh(&page, &rt, &rects, &draws);
+    same_as_fresh(&page, &mut rt, &rects, &draws);
 }
 
 /// The `above_children` split: the page without the named subtree into
@@ -90,6 +94,8 @@ fn the_split_road_draws_the_page_and_the_top_subtree_apart() {
     rt.frame_retained(&page, view(), &FixedAdvance, &mut rects, &mut draws, Some((top, &mut above)));
     assert!(quad(&draws, RED).is_some() && quad(&draws, GREEN).is_none(), "the page without `top`: {draws:?}");
     assert!(quad(&above, GREEN).is_some() && quad(&above, RED).is_none(), "`top` alone: {above:?}");
-    let whole: Vec<Draw> = draw(&page, &resolve(&page, &rt), &rects);
+    let fresh = KeptFrame::fresh(&page, resolve(&page, &rt), view(), &FixedAdvance);
+    assert_eq!(fresh.rects(), &rects[..], "the split road's rects are a fresh frame's");
+    let whole: Vec<Draw> = draw(&page, fresh.frame());
     assert_eq!(draws.len() + above.len(), whole.len(), "the two halves are the whole page");
 }

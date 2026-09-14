@@ -29,8 +29,9 @@
 use std::path::PathBuf;
 
 use gogo::anim::Finish;
+use gogo::KeptFrame;
 use gogo::draw::{Draw, GradientKind, draw};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
 use gogo::runtime::{HOVERED, Runtime, resolve};
 use gogo::{BuildOptions, Compiled, Diagnostic, Page, build_pages, compile, has_errors};
@@ -102,10 +103,10 @@ fn lane<'a>(all: &'a [Lane], node: &str, channel: &str) -> &'a Lane {
 fn scene(src: &str) -> (Page, Vec<Rect>, Vec<Draw>) {
     let c = ok(src);
     let rt = Runtime::new(&c.page);
-    let res = resolve(&c.page, &rt);
-    let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-    let draws = draw(&c.page, &res, &rects);
-    (c.page, rects, draws)
+    let f = KeptFrame::fresh(&c.page, resolve(&c.page, &rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+    let rects = f.rects();
+    let draws = draw(&c.page, f.frame());
+    (c.page, rects.to_vec(), draws)
 }
 
 /// A drawn gradient: its kind, compass angle and the stops (position,
@@ -537,9 +538,8 @@ fn images_are_embedded_at_build_and_a_missing_file_fails_it() {
     let c = ok("View v { Image a source=\"res://gogo_lazy_test.png\" }");
     let key = c.images.get("res://gogo_lazy_test.png").expect("a source= is interned");
     let rt = Runtime::new(&c.page);
-    let res = resolve(&c.page, &rt);
-    let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-    let draws = draw(&c.page, &res, &rects);
+    let f = KeptFrame::fresh(&c.page, resolve(&c.page, &rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+    let draws = draw(&c.page, f.frame());
     assert!(draws.iter().any(|d| matches!(d, Draw::Image { image, .. } if *image == key)), "the draw carries the build-wide image id: {draws:#?}");
     let _ = std::fs::remove_dir_all(&dir);
 
@@ -702,9 +702,8 @@ fn stops_are_live_per_stop_properties() {
     let mut rt = Runtime::new(&c.page);
     let g = c.page.find("g").unwrap();
     rt.set_prop(g, PropKey::StopColor(1), Value::VColor(Color_Straight_Srgb_4xU8_RGBA([0xE5, 0x14, 0x00, 0xFF])));
-    let res = resolve(&c.page, &rt);
-    let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-    let list = gradients(&draw(&c.page, &res, &rects));
+    let f = KeptFrame::fresh(&c.page, resolve(&c.page, &rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+    let list = gradients(&draw(&c.page, f.frame()));
     assert_eq!(list[0].stops[0].1, Color_Straight_Srgb_4xU8_RGBA([0xE5, 0x14, 0x00, 0xFF]), "{list:#?}");
     assert_eq!(list[0].stops[1].1, Color_Straight_Srgb_4xU8_RGBA([0x00, 0x00, 0x00, 0xFF]), "the other stop holds: {list:#?}");
 }
@@ -857,9 +856,8 @@ fn circle_disc_ring_and_when_color() {
     let mut rt = Runtime::new(&page);
     let id = page.find("c").unwrap();
     let fill = |rt: &Runtime| {
-        let res = resolve(&page, rt);
-        let rects = layout(&page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-        circles(&draw(&page, &res, &rects))[0].1
+        let f = KeptFrame::fresh(&page, resolve(&page, rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+        circles(&draw(&page, f.frame()))[0].1
     };
     assert_eq!(fill(&rt), Color_Straight_Srgb_4xU8_RGBA([0xFF, 0xFF, 0xFF, 0xFF]));
     rt.set_state(id, HOVERED, true);

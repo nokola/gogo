@@ -15,9 +15,10 @@
 //! - `_component_host_seat_tests` (all 6): root anchors vs container size
 //!   flags; the shell seats a page root here.
 use gogo::draw::{Draw, draw, hit};
+use gogo::KeptFrame;
 use gogo::layout::{FixedAdvance, Rect, TextMeasure, layout};
 use gogo::page::{PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{DISABLED, Resolved, Runtime, resolve};
+use gogo::runtime::{DISABLED, Runtime, resolve};
 use gogo::{Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
@@ -35,10 +36,8 @@ fn fails(src: &str) -> bool {
 }
 
 /// resolve + layout at `w`×`h` epx with the fixed-advance text ruler.
-fn lay(page: &Page, rt: &Runtime, w: f32, h: f32) -> (Resolved, Vec<Rect>) {
-    let res = resolve(page, rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, w, h), &FixedAdvance);
-    (res, rects)
+fn lay(page: &Page, rt: &Runtime, w: f32, h: f32) -> KeptFrame {
+    KeptFrame::fresh(page, resolve(page, rt), Rect::new(0.0, 0.0, w, h), &FixedAdvance)
 }
 
 fn rect_of(page: &Page, rects: &[Rect], name: &str) -> Rect {
@@ -113,8 +112,8 @@ fn slot_keeping_space_only_works_under_containers_too() {
  Rectangle after 10x10, color=red } }";
     let c = ok(src);
     let rt = Runtime::new(&c.page);
-    let res = resolve(&c.page, &rt);
-    let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let f = KeptFrame::fresh(&c.page, resolve(&c.page, &rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let rects = f.rects();
     let after = rects[(c.page.find("after").unwrap()).index()];
     assert_eq!(after.y, 10.0, "the seat holds its 10-epx slot: {rects:?}");
 }
@@ -130,8 +129,9 @@ fn hidden_keeps_its_seat_and_gone_releases_it() {
     let c = ok(src);
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
-    let (res, rects) = lay(&page, &rt, 400.0, 400.0);
-    let list = draw(&page, &res, &rects);
+    let f = lay(&page, &rt, 400.0, 400.0);
+    let (res, rects) = (f.look(), f.rects());
+    let list = draw(&page, f.frame());
     // vis.hidden-flag: neither hidden mode paints or takes a touch.
     assert!(quad_of(&list, BLUE).is_some(), "{list:#?}");
     assert!(quad_of(&list, ORANGE).is_none(), "hidden painted: {list:#?}");
@@ -139,7 +139,7 @@ fn hidden_keeps_its_seat_and_gone_releases_it() {
     let vseat = page.find("vseat").unwrap();
     let vgone = page.find("vgone").unwrap();
     let va = page.find("va").unwrap();
-    let under_finger = hit(&page, &res, &rects, 150.0, 40.0, true);
+    let under_finger = hit(&page, f.frame(), 150.0, 40.0, true);
     assert!(under_finger != Some(vseat) && under_finger != Some(vgone), "{under_finger:?}");
     // vis.of
     assert!(res.hidden(&page, vseat) && !res.gone(&page, vseat));
@@ -149,17 +149,20 @@ fn hidden_keeps_its_seat_and_gone_releases_it() {
     assert_eq!(size_of(&page, &rects, "vwrap"), (200.0, 48.0), "{rects:?}");
     // vis.toggle-stable
     set_visibility(&mut page, &mut rt, "vseat", "visible");
-    let (res, rects) = lay(&page, &rt, 400.0, 400.0);
+    let f = lay(&page, &rt, 400.0, 400.0);
+    let rects = f.rects();
     assert_eq!(size_of(&page, &rects, "vwrap"), (200.0, 48.0), "{rects:?}");
-    assert!(quad_of(&draw(&page, &res, &rects), ORANGE).is_some());
+    assert!(quad_of(&draw(&page, f.frame()), ORANGE).is_some());
     // vis.toggle-back
     set_visibility(&mut page, &mut rt, "vseat", "space_only");
-    let (res, rects) = lay(&page, &rt, 400.0, 400.0);
+    let f = lay(&page, &rt, 400.0, 400.0);
+    let rects = f.rects();
     assert_eq!(size_of(&page, &rects, "vwrap"), (200.0, 48.0), "{rects:?}");
-    assert!(quad_of(&draw(&page, &res, &rects), ORANGE).is_none());
+    assert!(quad_of(&draw(&page, f.frame()), ORANGE).is_none());
     // vis.gone-releases
     set_visibility(&mut page, &mut rt, "vseat", "gone");
-    let (_, rects) = lay(&page, &rt, 400.0, 400.0);
+    let f = lay(&page, &rt, 400.0, 400.0);
+    let (_, rects) = (f.look(), f.rects());
     assert_eq!(size_of(&page, &rects, "vwrap"), (120.0, 24.0), "{rects:?}");
 }
 
@@ -202,17 +205,20 @@ fn overlay_never_counts_upward_but_keeps_its_own_size() {
     let c = ok(src);
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
-    let (res, rects) = lay(&page, &rt, 400.0, 400.0);
+    let f = lay(&page, &rt, 400.0, 400.0);
+    let rects = f.rects();
     assert_eq!(size_of(&page, &rects, "owrap"), (120.0, 24.0), "{rects:?}");
     assert_eq!(rect_of(&page, &rects, "oslop"), Rect::new(-12.0, -12.0, 300.0, 90.0), "{rects:?}");
-    assert!(quad_of(&draw(&page, &res, &rects), ORANGE).is_some());
+    assert!(quad_of(&draw(&page, f.frame()), ORANGE).is_some());
     set_visibility(&mut page, &mut rt, "oslop", "gone");
-    let (_, rects) = lay(&page, &rt, 400.0, 400.0);
+    let f = lay(&page, &rt, 400.0, 400.0);
+    let (_, rects) = (f.look(), f.rects());
     assert_eq!(size_of(&page, &rects, "owrap"), (120.0, 24.0), "{rects:?}");
     set_visibility(&mut page, &mut rt, "oslop", "visible");
-    let (res, rects) = lay(&page, &rt, 400.0, 400.0);
+    let f = lay(&page, &rt, 400.0, 400.0);
+    let rects = f.rects();
     assert_eq!(size_of(&page, &rects, "owrap"), (120.0, 24.0), "{rects:?}");
-    assert!(quad_of(&draw(&page, &res, &rects), ORANGE).is_some());
+    assert!(quad_of(&draw(&page, f.frame()), ORANGE).is_some());
 }
 
 /// `_overlay_tests` 11955-11975 (ovl.nested-build, nested-inside-counts,
@@ -223,7 +229,8 @@ fn overlay_never_counts_upward_but_keeps_its_own_size() {
 fn overlay_inside_still_measures_like_any_box() {
     let src = "View nhost {\n Layers nwrap width=hug, height=hug, halign=left, valign=top {\n  Rectangle nbase color=#4488CCFF, width=50, height=20, halign=left, valign=top\n  Layers nouter overlay=true, width=hug, height=hug, halign=left, valign=top {\n   Rectangle ninner color=#22CC44FF, width=200, height=70, halign=left, valign=top\n   Rectangle nnested color=#CC8844FF, overlay=true, width=400, height=5, halign=left, valign=top\n  }\n }\n}\n";
     let c = ok(src);
-    let (_, rects) = lay(&c.page, &Runtime::new(&c.page), 400.0, 400.0);
+    let f = lay(&c.page, &Runtime::new(&c.page), 400.0, 400.0);
+    let (_, rects) = (f.look(), f.rects());
     assert_eq!(size_of(&c.page, &rects, "nouter"), (200.0, 70.0), "{rects:?}");
     assert_eq!(size_of(&c.page, &rects, "nwrap"), (50.0, 20.0), "{rects:?}");
 }
@@ -237,7 +244,8 @@ fn overlay_inside_still_measures_like_any_box() {
 fn overlay_never_widens_the_scroll_range() {
     let src = "View shost {\n Scroll sview width=100, height=80, halign=left, valign=top, allow=vertical, bars=never {\n  Layers scontent width=fill, height=hug {\n   Rectangle srow color=#4488CCFF, width=60, height=200, halign=left, valign=top\n   Rectangle sbig color=#CC8844FF, overlay=true, width=500, height=900, halign=left, valign=top\n  }\n }\n}\n";
     let c = ok(src);
-    let (_, rects) = lay(&c.page, &Runtime::new(&c.page), 400.0, 400.0);
+    let f = lay(&c.page, &Runtime::new(&c.page), 400.0, 400.0);
+    let (_, rects) = (f.look(), f.rects());
     assert_eq!(size_of(&c.page, &rects, "scontent"), (100.0, 200.0), "{rects:?}");
 }
 
@@ -282,8 +290,8 @@ fn disabled_cascades_down_and_own_flags_survive() {
     assert!(rt.disabled(&page, db1), "the panel's disabled did not reach the button");
     assert!(rt.disabled(&page, dlbl));
     // dis.when-fires (FLIP, GPAR11: 0.3 ancestor dim × 0.5 authored)
-    let (res, rects) = lay(&page, &rt, 400.0, 400.0);
-    let list = draw(&page, &res, &rects);
+    let f = lay(&page, &rt, 400.0, 400.0);
+    let list = draw(&page, f.frame());
     assert!(about(text_alpha(&page, &list, "grey me"), 0.3 * 0.5), "{}", text_alpha(&page, &list, "grey me"));
     // dis.no-opt-out
     rt.set_state(db1, DISABLED, false);
@@ -291,8 +299,8 @@ fn disabled_cascades_down_and_own_flags_survive() {
     // dis.two-layer + dis.when-releases
     rt.set_state(grp, DISABLED, false);
     assert!(!rt.disabled(&page, db1) && rt.disabled(&page, db2), "db1={} db2={}", rt.disabled(&page, db1), rt.disabled(&page, db2));
-    let (res, rects) = lay(&page, &rt, 400.0, 400.0);
-    let list = draw(&page, &res, &rects);
+    let f = lay(&page, &rt, 400.0, 400.0);
+    let list = draw(&page, f.frame());
     assert_eq!(text_alpha(&page, &list, "grey me"), 255);
     // dis.engine-own-adopted: a code write is the own flag — it survives an
     // ancestor disable/enable round trip.
@@ -364,8 +372,9 @@ const ASPECT_FIXTURE: &str = "View ahost {\n Rectangle fixed_drive color=#4488CC
 #[test]
 fn fit_words_reach_the_draw_list_with_contain_as_default() {
     let c = ok(ASPECT_FIXTURE);
-    let (res, rects) = lay(&c.page, &Runtime::new(&c.page), 400.0, 300.0);
-    let list = draw(&c.page, &res, &rects);
+    let f = lay(&c.page, &Runtime::new(&c.page), 400.0, 300.0);
+    let rects = f.rects();
+    let list = draw(&c.page, f.frame());
     let fit_at = |name: &str| {
         let r = rect_of(&c.page, &rects, name);
         list.iter()
@@ -389,7 +398,8 @@ fn fit_words_reach_the_draw_list_with_contain_as_default() {
 #[test]
 fn aspect_derives_the_unspelled_axis_on_any_node() {
     let c = ok(ASPECT_FIXTURE);
-    let (_, rects) = lay(&c.page, &Runtime::new(&c.page), 400.0, 300.0);
+    let f = lay(&c.page, &Runtime::new(&c.page), 400.0, 300.0);
+    let (_, rects) = (f.look(), f.rects());
     assert_eq!(size_of(&c.page, &rects, "fixed_drive"), (200.0, 100.0), "{rects:?}");
     assert_eq!(size_of(&c.page, &rects, "fill_drive"), (360.0, 90.0), "{rects:?}");
 }
@@ -403,9 +413,11 @@ fn aspect_derives_the_unspelled_axis_on_any_node() {
 fn both_fill_aspect_is_the_largest_fitting_box_centered_and_live() {
     let c = ok(ASPECT_FIXTURE);
     let rt = Runtime::new(&c.page);
-    let (_, rects) = lay(&c.page, &rt, 400.0, 300.0);
+    let f = lay(&c.page, &rt, 400.0, 300.0);
+    let (_, rects) = (f.look(), f.rects());
     assert_eq!(rect_of(&c.page, &rects, "fitbox"), Rect::new(50.0, 0.0, 300.0, 300.0), "{rects:?}");
-    let (_, rects) = lay(&c.page, &rt, 240.0, 300.0);
+    let f = lay(&c.page, &rt, 240.0, 300.0);
+    let (_, rects) = (f.look(), f.rects());
     assert_eq!(size_of(&c.page, &rects, "fitbox"), (240.0, 240.0), "{rects:?}");
     assert_eq!(size_of(&c.page, &rects, "fill_drive"), (200.0, 50.0), "{rects:?}");
 }
@@ -450,7 +462,8 @@ fn natural_aspect_sizes_the_hug_parent_from_the_bitmap() {
 #[test]
 fn capped_hug_component_root_follows_the_frame_not_the_sliver() {
     let c = ok("Panel capHost background=#000000FF, padding=12, valign=top, width=hug, max_width=fill, halign=center, margin_left=12, margin_right=12 {\n Label capText text=\"a component label long enough to overflow the frame and wrap twice over\", font_size=16, wrap=true\n}\n");
-    let (_, rects) = lay(&c.page, &Runtime::new(&c.page), 360.0, 600.0);
+    let f = lay(&c.page, &Runtime::new(&c.page), 360.0, 600.0);
+    let (_, rects) = (f.look(), f.rects());
     let host = rect_of(&c.page, &rects, "capHost");
     assert!(host.w <= 336.0 + 0.01 && host.w > 200.0, "{host:?}");
     assert!(host.x >= 12.0 - 0.01 && host.right() <= 348.0 + 0.01, "{host:?}");

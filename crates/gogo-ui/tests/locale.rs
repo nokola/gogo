@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::sync::Arc;
 
 use gogo::draw::{Draw, draw};
+use gogo::KeptFrame;
 use gogo::layout::{FixedAdvance, Rect, layout};
 use gogo::locale::{KeyName, Keys, Locale, display};
 use gogo::runtime::{Runtime, resolve};
@@ -58,8 +59,8 @@ fn a_keyed_label_is_measured_at_its_translated_width() {
     assert_eq!(shown(&page, &rt, "a"), "Bestätigen");
     // The draw command still carries the ids; the renderer resolves them
     // through the same `display`, so what is measured is what is drawn.
-    let res = resolve(&page, &rt);
-    let list = draw(&page, &res, &rects(&page, &rt));
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let list = draw(&page, f.frame());
     let text = list.iter().find_map(|d| match d {
         Draw::Text { text, key, .. } => Some(display(&page, rt.locale.as_deref(), *text, *key)),
         _ => None,

@@ -23,8 +23,9 @@
 //!   spelled `opacity` — `modulate.a` is a Godot engine word and G0075 in
 //!   Rust; the anim writes the same opacity a declaration or `when` writes.
 use gogo::anim::{Easing, Finish, Mode, Motion};
+use gogo::KeptFrame;
 use gogo::draw::{Draw, draw};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{Action, AnimTrack, NO_STR, PropKey, Color_Straight_Srgb_4xU8_RGBA, StrId, Value};
 use gogo::runtime::{DISABLED, HELD, Runtime, resolve, resolve_animated};
 use gogo::{Compiled, Page, compile};
@@ -756,9 +757,9 @@ fn rounded_style_reaches_the_drawn_quad() {
     let page = c.page;
     let eb = page.find("eb").unwrap();
     let rt = Runtime::new(&page);
-    let r = resolve(&page, &rt);
-    let rects = layout(&page, &r, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
-    let list = draw(&page, &r, &rects);
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let rects = f.rects();
+    let list = draw(&page, f.frame());
     let quad = list.iter().find_map(|d| match d {
         Draw::Quad { rect, color, corner, .. } if *rect == rects[eb.index()] => Some((*color, *corner)),
         _ => None,

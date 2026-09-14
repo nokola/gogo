@@ -37,10 +37,11 @@
 //! (the `slot.` anim lane is GP32-owed and fails G0063; no check in this
 //! batch reads it).
 use gogo::draw::{Draw, SLIDER_FILL, SLIDER_TRACK, TOGGLE_OFF, draw};
+use gogo::KeptFrame;
 use gogo::input::{Event, EventKind, Input, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect, TOGGLE_PILL, layout};
+use gogo::layout::{FixedAdvance, Rect, TOGGLE_PILL};
 use gogo::page::{Action, Kind, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{DISABLED, HELD, Resolved, Runtime, SELECTED, resolve};
+use gogo::runtime::{DISABLED, HELD, Runtime, SELECTED, resolve};
 use gogo::{Compiled, Diagnostic, Page, compile};
 
 /// The Godot suite's `FADER_SRC` (run_tests.gd:3385) in the Rust dialect,
@@ -92,25 +93,24 @@ impl Fx {
         let rt = Runtime::new(&c.page);
         Fx { page: c.page, rt, input: Input::new() }
     }
-    fn lay(&self) -> (Resolved, Vec<Rect>) {
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        (res, rects)
+    fn lay(&self) -> KeptFrame {
+        KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance)
     }
     fn draws(&self) -> Vec<Draw> {
-        let (res, rects) = self.lay();
-        draw(&self.page, &res, &rects)
+        let f = self.lay();
+        draw(&self.page, f.frame())
     }
     fn rect(&self, name: &str) -> Rect {
-        let (_, rects) = self.lay();
+        let f = self.lay();
+        let (_, rects) = (f.look(), f.rects());
         rects[(self.node(name)).index()]
     }
     fn node(&self, name: &str) -> gogo::NodeId {
         self.page.find(name).unwrap_or_else(|| panic!("no node {name:?}"))
     }
     fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) -> Vec<Event> {
-        let (res, rects) = self.lay();
-        self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase, x, y, t, id: 1 })
+        let f = self.lay();
+        self.input.touch(&self.page, &mut self.rt, f.frame(), &FixedAdvance, Touch { phase, x, y, t, id: 1 })
     }
     fn tap(&mut self, x: f32, y: f32, t: f64) -> Vec<Event> {
         let mut ev = self.touch(Phase::Down, x, y, t);
@@ -119,7 +119,8 @@ impl Fx {
     }
     /// The Slider's shown value (quantized, clamped).
     fn value(&self, name: &str) -> f32 {
-        let (res, _) = self.lay();
+        let f = self.lay();
+        let (res, _) = (f.look(), f.rects());
         res.slider_value(&self.page, self.node(name))
     }
 }
@@ -608,7 +609,8 @@ fn toggle_code_writes_derive_selected_and_value() {
     fx.rt.set_prop(mute, PropKey::Value, Value::VNum(1.0));
     assert!(fx.rt.has(mute, SELECTED), "selected derives from value=1");
     fx.rt.set_state(mute, SELECTED, false);
-    let (res, _) = fx.lay();
+    let f = fx.lay();
+    let (res, _) = (f.look(), f.rects());
     assert_eq!(res.num(&fx.page, mute, PropKey::Value), Some(0.0), "the bool write writes the value");
 }
 
@@ -625,7 +627,7 @@ fn toggle_tap_and_drag_settle_by_side() {
     let ev = fx.tap(22.0, 11.0, 0.0);
     assert!(fx.rt.has(mute, SELECTED));
     assert_eq!(trace(&ev).iter().filter(|w| w.starts_with("change:")).count(), 1, "one flip per tap: {ev:?}");
-    assert_eq!(fx.lay().0.num(&fx.page, mute, PropKey::Value), Some(1.0));
+    assert_eq!(fx.lay().look().num(&fx.page, mute, PropKey::Value), Some(1.0));
     let ev = fx.tap(22.0, 11.0, 1.0);
     assert!(!fx.rt.has(mute, SELECTED));
     assert_eq!(trace(&ev), vec!["change:false", "activate"], "{ev:?}");
@@ -634,13 +636,13 @@ fn toggle_tap_and_drag_settle_by_side() {
     fx.touch(Phase::Move, 40.0, 11.0, 2.1);
     assert!(fx.rt.has(mute, SELECTED), "flips live mid-drag");
     let ev = fx.touch(Phase::Up, 40.0, 11.0, 2.2);
-    assert_eq!(fx.lay().0.num(&fx.page, mute, PropKey::Value), Some(1.0));
+    assert_eq!(fx.lay().look().num(&fx.page, mute, PropKey::Value), Some(1.0));
     assert_eq!(trace(&ev).iter().filter(|w| w.starts_with("change:")).count(), 1, "{ev:?}");
     // Drag left but lift right of the midpoint: stays on, no report.
     fx.touch(Phase::Down, 40.0, 11.0, 3.0);
     fx.touch(Phase::Move, 30.0, 11.0, 3.1);
     let ev = fx.touch(Phase::Up, 30.0, 11.0, 3.2);
-    assert_eq!(fx.lay().0.num(&fx.page, mute, PropKey::Value), Some(1.0));
+    assert_eq!(fx.lay().look().num(&fx.page, mute, PropKey::Value), Some(1.0));
     assert!(fx.rt.has(mute, SELECTED));
     assert!(!ev.iter().any(|e| matches!(e.kind, EventKind::Change(_))), "no flip after a real drag that lands where it started: {ev:?}");
 }

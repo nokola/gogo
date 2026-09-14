@@ -3,7 +3,8 @@
 //! screen's walk — starting at full opacity (an ancestor's `opacity=` is
 //! the screen's, not the subtree's), and empty for a node with no rect.
 use gogo::draw::{Draw, draw, draw_subtree};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::KeptFrame;
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{PropKey, Value};
 use gogo::runtime::{Runtime, resolve_animated};
 use gogo::{Compiled, NodeId, compile};
@@ -36,19 +37,18 @@ fn a_subtree_is_the_screen_walks_run_for_that_node() {
     // Rotation is MOTION — a code write (the callout's `set_geometry` road)
     // or a `when` response — and only the animated resolve carries it.
     rt.set_prop(named(&c, "plate"), PropKey::Rotate, Value::VNum(30.0));
-    let res = resolve_animated(&c.page, &mut rt);
-    let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-    let full: Vec<Draw> = draw(&c.page, &res, &rects);
-    let whole: Vec<Draw> = draw_subtree(&c.page, &res, &rects, NodeId::new(0));
+    let f = KeptFrame::fresh(&c.page, resolve_animated(&c.page, &mut rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+    let full: Vec<Draw> = draw(&c.page, f.frame());
+    let whole: Vec<Draw> = draw_subtree(&c.page, f.frame(), NodeId::new(0));
     assert_eq!(whole, full, "the root's subtree IS the page's list");
 
-    let other: Vec<Draw> = draw_subtree(&c.page, &res, &rects, named(&c, "other"));
+    let other: Vec<Draw> = draw_subtree(&c.page, f.frame(), named(&c, "other"));
     assert_eq!(other.len(), 1);
     assert!(full.ends_with(&other), "a sibling at full opacity is the tail run of the page's list");
 
     // The rotated plate: its RotatePush leads, its pop closes — the run
     // the bake edits for the view's rotation.
-    let plate: Vec<Draw> = draw_subtree(&c.page, &res, &rects, named(&c, "plate"));
+    let plate: Vec<Draw> = draw_subtree(&c.page, f.frame(), named(&c, "plate"));
     assert!(matches!(plate.first(), Some(Draw::RotatePush { angle, .. }) if (*angle - 30.0).abs() < 1e-3), "{plate:?}");
     assert!(matches!(plate.last(), Some(Draw::RotatePop)), "{plate:?}");
     // Its plate quad: full red here, half red on screen (the dim ancestor).
@@ -59,5 +59,5 @@ fn a_subtree_is_the_screen_walks_run_for_that_node() {
     // The word under it draws in both lists.
     assert!(plate.iter().any(|d| matches!(d, Draw::Text { .. })));
 
-    assert!(draw_subtree(&c.page, &res, &[], NodeId::new(0)).is_empty(), "no rects, no draws");
+    assert!(draw_subtree(&c.page, KeptFrame::default().frame(), NodeId::new(0)).is_empty(), "no rects, no draws");
 }

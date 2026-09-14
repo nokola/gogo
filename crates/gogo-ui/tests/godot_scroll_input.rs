@@ -20,9 +20,10 @@
 //!   9689-9716: the engine focus StyleBox ring.
 //! - `input.twin-first` 9830-9859: engine touch-emulation dispatch order.
 use gogo::input::{Event, EventKind, FLING_BOOST, Input, Phase, SCROLL_DEADZONE, Touch};
-use gogo::layout::{FixedAdvance, Rect, SCROLL_BAR_EPX, layout, scroll_axes_of};
+use gogo::KeptFrame;
+use gogo::layout::{FixedAdvance, Rect, SCROLL_BAR_EPX, scroll_axes_of};
 use gogo::page::{Kind, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{FOCUSED, HELD, HOVERED, Resolved, Runtime, SELECTED, resolve, resolve_animated};
+use gogo::runtime::{FOCUSED, HELD, HOVERED, Runtime, SELECTED, resolve, resolve_animated};
 use gogo::{Compiled, Page, compile};
 
 const GREEN: [u8; 4] = [0, 255, 0, 255];
@@ -69,24 +70,22 @@ impl Fx {
         self.page.find(name).unwrap_or_else(|| panic!("no node named {name}"))
     }
 
-    fn lay(&self) -> (Resolved, Vec<Rect>) {
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, self.frame, &FixedAdvance);
-        (res, rects)
+    fn lay(&self) -> KeptFrame {
+        KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), self.frame, &FixedAdvance)
     }
 
     fn rect(&self, name: &str) -> Rect {
-        self.lay().1[(self.id(name)).index()]
+        self.lay().rects()[(self.id(name)).index()]
     }
 
     fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) -> Vec<Event> {
-        let (res, rects) = self.lay();
-        self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase, x, y, t, id: 1 })
+        let f = self.lay();
+        self.input.touch(&self.page, &mut self.rt, f.frame(), &FixedAdvance, Touch { phase, x, y, t, id: 1 })
     }
 
     fn tick(&mut self, dt: f32) -> bool {
-        let (res, rects) = self.lay();
-        self.input.tick(&self.page, &mut self.rt, &res, &rects, dt)
+        let f = self.lay();
+        self.input.tick(&self.page, &mut self.rt, f.frame(), dt)
     }
 
     fn scroll(&self, name: &str) -> [f32; 2] {
@@ -94,12 +93,14 @@ impl Fx {
     }
 
     fn axes(&self, name: &str) -> (bool, bool) {
-        let (res, _) = self.lay();
+        let f = self.lay();
+        let (res, _) = (f.look(), f.rects());
         scroll_axes_of(&self.page, &res, self.id(name))
     }
 
     fn background(&self, name: &str) -> Option<[u8; 4]> {
-        let (res, _) = self.lay();
+        let f = self.lay();
+        let (res, _) = (f.look(), f.rects());
         res.color(&self.page, self.id(name), PropKey::Background).map(|c: Color_Straight_Srgb_4xU8_RGBA| c.0)
     }
 
@@ -582,9 +583,9 @@ fn focused_state_drives_the_authored_response_and_clears_on_exit() {
     let mut fx = Fx::new("View v { Input field { when focused opacity=0.5 } }");
     let f = fx.id("field");
     fx.rt.set_state(f, FOCUSED, true);
-    assert_eq!(fx.lay().0.num(&fx.page, f, PropKey::Opacity), Some(0.5));
+    assert_eq!(fx.lay().look().num(&fx.page, f, PropKey::Opacity), Some(0.5));
     fx.rt.set_state(f, FOCUSED, false);
-    assert_ne!(fx.lay().0.num(&fx.page, f, PropKey::Opacity), Some(0.5));
+    assert_ne!(fx.lay().look().num(&fx.page, f, PropKey::Opacity), Some(0.5));
     ok("View v { Column c { Button r text=\"x\"; Button q text=\"y\", corner_radius=12 } }");
     ok(FOCUS_WITHIN);
 }

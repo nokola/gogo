@@ -6,8 +6,9 @@
 //! the next writer, the D63 one-writer guard (G4003) refuses the static
 //! conflict at build, and `modulate.a` is not a gogo word.
 use gogo::anim::{Channel, Finish};
+use gogo::KeptFrame;
 use gogo::draw::{Draw, draw};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{PropKey, Value};
 use gogo::runtime::{HELD, Runtime, resolve, resolve_animated};
 use gogo::{Compiled, Page, compile};
@@ -28,10 +29,10 @@ fn anim_id(page: &Page, name: &str) -> gogo::page::StrId {
 
 /// The alpha the draw list paints for `node`'s own plate (its Quad).
 fn plate_alpha(page: &Page, rt: &mut Runtime, node: &str) -> u8 {
-    let res = resolve_animated(page, rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let f = KeptFrame::fresh(page, resolve_animated(page, rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let rects = f.rects();
     let id = page.find(node).unwrap();
-    let list = draw(page, &res, &rects);
+    let list = draw(page, f.frame());
     list.iter()
         .find_map(|d| match d {
             Draw::Quad { rect, color, .. } if *rect == rects[id.index()] => Some(color.0[3]),
@@ -77,9 +78,9 @@ fn color_a_fades_the_fill_not_the_node() {
     rt.play_id(&page, anim_id(&page, "appear"), Finish::Nothing);
     let mut p = page.clone();
     rt.tick(&mut p, 0.05);
-    let res = resolve_animated(&page, &mut rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
-    let list = draw(&page, &res, &rects);
+    let f = KeptFrame::fresh(&page, resolve_animated(&page, &mut rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let (res, rects) = (f.look(), f.rects());
+    let list = draw(&page, f.frame());
     let scrim = page.find("scrim").unwrap();
     let plate = list.iter().find_map(|d| match d {
         Draw::Quad { rect, color, .. } if *rect == rects[scrim.index()] => Some(color.0[3]),

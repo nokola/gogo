@@ -8,7 +8,8 @@
 //! clockwise from the top — ONE masked arc draw per dash/gap pair, never a
 //! draw per dash; an Arc's `dash=` is the same mask along its sweep.
 use gogo::draw::{Draw, draw};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::KeptFrame;
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::runtime::{Runtime, resolve};
 use gogo::Color_Straight_Srgb_4xU8_RGBA;
 
@@ -17,9 +18,8 @@ fn draws(src: &str) -> Vec<Draw> {
     assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let res = resolve(&page, &rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 100.0, 100.0), &FixedAdvance);
-    draw(&page, &res, &rects)
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 100.0, 100.0), &FixedAdvance);
+    draw(&page, f.frame())
 }
 
 fn black() -> Color_Straight_Srgb_4xU8_RGBA {

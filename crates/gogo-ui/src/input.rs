@@ -23,6 +23,7 @@
 //! press holds the hovered look until release. Coordinates are epx.
 
 use crate::draw::hit;
+use crate::frame::Frame;
 use crate::layout::{DEFAULT_FONT_SIZE, Rect, SLIDER_KNOB_EPX, TOGGLE_PILL, TextMeasure};
 use crate::draw::TOGGLE_KNOB_EPX;
 use crate::page::*;
@@ -1187,7 +1188,8 @@ impl Input {
     /// Input, characters edit at the caret and stream `edit`, Enter
     /// commits `change` once per genuine change (the shipped
     /// changed-means-CHANGED law), Home/End move the caret.
-    pub fn key(&mut self, page: &mut Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], k: Key, mods: Mods) -> Vec<Event> {
+    pub fn key(&mut self, page: &mut Page, rt: &mut Runtime, f: Frame<'_>, k: Key, mods: Mods) -> Vec<Event> {
+        let (res, rects): (&Resolved, &[Rect]) = (f.look(), f.rects());
         let mut events = Vec::new();
         // D129 modality edge: ANY key press means keyboard driving — a
         // parked (ringless) owner gets its ring and its chain lights, in
@@ -1603,9 +1605,10 @@ impl Input {
     /// POINTER (Slider, Toggle) — which also takes focus, parked like
     /// any pointer grant. Panning a Scroll by wheel is the desktop
     /// conveniences round (GP42), not this.
-    pub fn wheel(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], x: f32, y: f32, up: bool) -> Vec<Event> {
+    pub fn wheel(&mut self, page: &Page, rt: &mut Runtime, f: Frame<'_>, x: f32, y: f32, up: bool) -> Vec<Event> {
+        let (res, rects): (&Resolved, &[Rect]) = (f.look(), f.rects());
         let mut events = Vec::new();
-        let mut n = hit(page, res, rects, x, y, false);
+        let mut n = hit(page, f, x, y, false);
         // GP52/GP53: a `behavior` instance is steppable anywhere on its
         // surface — found before the kind walk (its root wears a body
         // kind, not Slider). The behavior hears increment/decrement
@@ -1727,7 +1730,8 @@ impl Input {
     /// back (`ReleaseFocus`). The field's caret lands at its end and the
     /// host's IME arm reads the runtime's caret as it would after a tap.
     /// Returns the events the hand-over raises (the old owner's commit).
-    pub fn focus_on(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], node: Option<NodeId>) -> Vec<Event> {
+    pub fn focus_on(&mut self, page: &Page, rt: &mut Runtime, f: Frame<'_>, node: Option<NodeId>) -> Vec<Event> {
+        let (res, rects): (&Resolved, &[Rect]) = (f.look(), f.rects());
         let mut events: Vec<Event> = Vec::new();
         self.grant(page, rt, res, rects, node, false, &mut events);
         if node.is_none() {
@@ -1783,11 +1787,11 @@ impl Input {
     /// FROZEN — the capture bracket: slipping off a held button keeps
     /// its hovered look, and nothing new hovers until release. Motion
     /// never changes modality (D129).
-    pub fn hover(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], x: f32, y: f32) {
+    pub fn hover(&mut self, page: &Page, rt: &mut Runtime, f: Frame<'_>, x: f32, y: f32) {
         if self.press.is_some() {
             return;
         }
-        self.apply_hover(page, rt, hit(page, res, rects, x, y, false));
+        self.apply_hover(page, rt, hit(page, f, x, y, false));
     }
 
     /// The mouse left the window (or this page): nothing hovers here.
@@ -1865,7 +1869,8 @@ impl Input {
     }
 
     /// Feeds one touch sample; returns the events it completed.
-    pub fn touch(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], measure: &dyn TextMeasure, t: Touch) -> Vec<Event> {
+    pub fn touch(&mut self, page: &Page, rt: &mut Runtime, f: Frame<'_>, measure: &dyn TextMeasure, t: Touch) -> Vec<Event> {
+        let (res, rects): (&Resolved, &[Rect]) = (f.look(), f.rects());
         let mut events = Vec::new();
         match t.phase {
             Phase::Down => {
@@ -1916,7 +1921,7 @@ impl Input {
                     rt.edit_bar = None;
                     rt.dirty = true;
                 }
-                let hit_node = hit(page, res, rects, t.x, t.y, false);
+                let hit_node = hit(page, f, t.x, t.y, false);
                 let mut caught_accum: Option<(NodeId, [f32; 2])> = None;
                 let caught = match self.fling.take() {
                     Some(f) if hit_node.is_some_and(|n| within(page, res, n, f.scroll)) => {
@@ -2237,7 +2242,7 @@ impl Input {
                 // Gated on hover being SET at all: only mouse motion
                 // sets it, so a finger's release changes nothing (D75).
                 if self.hover.is_some() && self.press.map_or(false, |p| p.id == t.id) {
-                    self.apply_hover(page, rt, hit(page, res, rects, t.x, t.y, false));
+                    self.apply_hover(page, rt, hit(page, f, t.x, t.y, false));
                 }
                 let Some(mut p) = self.press else { return events };
                 if p.id != t.id {
@@ -2402,7 +2407,8 @@ impl Input {
     /// Advances a fling / edge spring by `dt` seconds; true while something
     /// still moves. A scroll offset code moved since the last write is
     /// adopted: the glide stands down rather than fight it.
-    pub fn tick(&mut self, page: &Page, rt: &mut Runtime, res: &Resolved, rects: &[Rect], dt: f32) -> bool {
+    pub fn tick(&mut self, page: &Page, rt: &mut Runtime, f: Frame<'_>, dt: f32) -> bool {
+        let (res, rects): (&Resolved, &[Rect]) = (f.look(), f.rects());
         // The long-press door — a FINGER only (the mouse has drag-select
         // and Ctrl): a field press held still for LONG_PRESS_S selects
         // the word it landed on and raises the edit bar.
@@ -2519,8 +2525,9 @@ impl Input {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::KeptFrame;
     use crate::compile::compile;
-    use crate::layout::{FixedAdvance, layout};
+    use crate::layout::{FixedAdvance};
     use crate::runtime::{DISABLED, resolve};
 
     struct Fx {
@@ -2536,21 +2543,19 @@ mod tests {
             let rt = Runtime::new(&c.page);
             Fx { page: c.page, rt, input: Input::new() }
         }
-        fn lay(&self) -> (Resolved, Vec<Rect>) {
-            let res = resolve(&self.page, &self.rt);
-            let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-            (res, rects)
+        fn lay(&self) -> KeptFrame {
+            KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance)
         }
         fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) -> Vec<Event> {
             self.touch_id(phase, x, y, t, 1)
         }
         fn touch_id(&mut self, phase: Phase, x: f32, y: f32, t: f64, id: u64) -> Vec<Event> {
-            let (res, rects) = self.lay();
-            self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase, x, y, t, id })
+            let f = self.lay();
+            self.input.touch(&self.page, &mut self.rt, f.frame(), &FixedAdvance, Touch { phase, x, y, t, id })
         }
         fn tick(&mut self, dt: f32) -> bool {
-            let (res, rects) = self.lay();
-            self.input.tick(&self.page, &mut self.rt, &res, &rects, dt)
+            let f = self.lay();
+            self.input.tick(&self.page, &mut self.rt, f.frame(), dt)
         }
     }
 
@@ -2562,8 +2567,9 @@ mod tests {
     fn tap_pulse_swings_about_the_left_edge_then_disarms() {
         let mut fx = Fx::new("View v { Button b tap_pulse=true, width=200, height=50 }");
         let b = fx.page.find("b").unwrap();
-        let (_, rects) = fx.lay();
-        fx.rt.glide(rects.clone());
+        let f = fx.lay();
+        let (_, rects) = (f.look(), f.rects());
+        fx.rt.glide(rects.to_vec());
         let r = rects[b];
         let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
         fx.touch(Phase::Down, x, y, 0.0);
@@ -2573,12 +2579,12 @@ mod tests {
         fx.rt.tick(&mut fx.page, crate::runtime::TAP_PULSE_OUT_SEC);
         let angle = fx.rt.tap_pulse_angle(b);
         assert!((angle - crate::runtime::TAP_PULSE_ANGLE_DEG).abs() < 0.01, "fully out at the end of the out phase: {angle}");
-        let res = resolve(&fx.page, &fx.rt);
-        let m = res.motion[b];
+        let f = fx.lay();
+        let m = f.look().motion[b];
         assert!((m.swing - angle).abs() < 1e-4, "the angle is the swing channel: {m:?}");
         assert_eq!((m.scale, m.translate), ([1.0, 1.0], [0.0, 0.0]), "a turnstile is a swing, not a squash");
         // The draw walk hinges the door on the left edge.
-        let draws = crate::draw::draw(&fx.page, &res, &rects);
+        let draws = crate::draw::draw(&fx.page, f.frame());
         let push = draws.iter().find_map(|d| if let crate::draw::Draw::SwingPush { angle: a, pivot_x, cx, cy, focal } = d { Some((*a, *pivot_x, *cx, *cy, *focal)) } else { None }).expect("a SwingPush");
         assert!((push.0 - angle).abs() < 1e-4 && push.1 == r.x && push.2 == r.x + r.w / 2.0 && push.3 == r.y + r.h / 2.0, "{push:?}");
         assert!((push.4 - crate::draw::swing_focal(r.h)).abs() < 1e-4, "the WP7 camera: {} vs {}", push.4, crate::draw::swing_focal(r.h));
@@ -2598,7 +2604,8 @@ mod tests {
         // A button without the word swings nothing.
         let mut plain = Fx::new("View v { Button b width=200, height=50 }");
         let b2 = plain.page.find("b").unwrap();
-        let (_, rects) = plain.lay();
+        let f = plain.lay();
+        let (_, rects) = (f.look(), f.rects());
         let r = rects[b2];
         plain.touch(Phase::Down, r.x + 1.0, r.y + 1.0, 0.0);
         plain.touch(Phase::Up, r.x + 1.0, r.y + 1.0, 0.1);
@@ -2617,13 +2624,14 @@ mod tests {
         let (a, b, c, d) = (fx.page.find("a").unwrap(), fx.page.find("b").unwrap(), fx.page.find("c").unwrap(), fx.page.find("d").unwrap());
         assert!(fx.page.descendants(a).any(|n| n > b), "the precondition: a's body sits past b in the arena (children-first)");
         assert!(!fx.page.is_under(b, a) && fx.page.is_under(a, a)); // declared on purpose: the arena precondition, no seats here
-        let (_, rects) = fx.lay();
+        let f = fx.lay();
+        let (_, rects) = (f.look(), f.rects());
         let rb = rects[b];
         let ev = fx.touch(Phase::Down, rb.x + 5.0, rb.y + 5.0, 0.0);
         assert!(ev.iter().all(|e| e.node == b && matches!(e.kind, EventKind::Pointer { .. })), "the raw surface's own pointer, not the slider's drag: {ev:?}");
         fx.touch(Phase::Up, rb.x + 5.0, rb.y + 5.0, 0.1);
         // A swing on c: d's drawn rect stands where the layout put it.
-        fx.rt.glide(rects.clone());
+        fx.rt.glide(rects.to_vec());
         let rc = rects[c];
         fx.touch(Phase::Down, rc.x + 5.0, rc.y + 5.0, 1.0);
         fx.touch(Phase::Up, rc.x + 5.0, rc.y + 5.0, 1.1);
@@ -2810,7 +2818,8 @@ mod tests {
         // Down the slider: the page scrolls, the slider goes back to where the finger found it.
         fx.touch(Phase::Down, 100.0, 30.0, 1.0);
         {
-            let (res, _) = fx.lay();
+            let f = fx.lay();
+            let (res, _) = (f.look(), f.rects());
             let v = value_of(&fx.rt, &res, &fx.page, s);
             assert!(v > 20.0 && v < 30.0, "the down jumped the value: {v}");
         }
@@ -2818,7 +2827,8 @@ mod tests {
         fx.touch(Phase::Move, 104.0, -50.0, 1.2);
         assert!(fx.rt.scroll[page][1] > 0.0, "the page took the drag");
         {
-            let (res, _) = fx.lay();
+            let f = fx.lay();
+            let (res, _) = (f.look(), f.rects());
             assert_eq!(value_of(&fx.rt, &res, &fx.page, s), changed, "the slider is back where the finger found it");
         }
         let ev = fx.touch(Phase::Up, 104.0, -50.0, 1.3);
@@ -2857,7 +2867,8 @@ mod tests {
     fn change_lands_before_activate() {
         let src = "View v { Column c { Check k text=\"k\", on:activate=a, on:change=c; Button tb text=\"tb\", toggle=true, on:activate=a, on:change=c; Toggle t text=\"t\", on:activate=a, on:change=c; choice pick on:change=c { Radio r1 text=\"1\", on:activate=a; Radio r2 text=\"2\", on:activate=a } } }";
         let mut fx = Fx::new(src);
-        let (_, rects) = fx.lay();
+        let f = fx.lay();
+        let (_, rects) = (f.look(), f.rects());
         for name in ["k", "tb", "t", "r2"] {
             let n = fx.page.find(name).unwrap();
             let r = rects[n];
@@ -2894,13 +2905,15 @@ mod tests {
         let mut fx = Fx::new("View v { Slider s width=200, height=32, halign=left, valign=top, min=0, max=100, step=5, value=33.3 }");
         let s = fx.page.find("s").unwrap();
         {
-            let (res, _) = fx.lay();
+            let f = fx.lay();
+            let (res, _) = (f.look(), f.rects());
             assert_eq!(value_of(&fx.rt, &res, &fx.page, s), 35.0, "the declared value sits on a step");
             assert_eq!(res.slider_value(&fx.page, s), 35.0, "and the knob draws there");
         }
         fx.rt.set_prop(s, PropKey::Value, Value::VNum(47.9));
         {
-            let (res, _) = fx.lay();
+            let f = fx.lay();
+            let (res, _) = (f.look(), f.rects());
             assert_eq!(value_of(&fx.rt, &res, &fx.page, s), 50.0, "a code write too");
             assert_eq!(res.slider_value(&fx.page, s), 50.0);
         }
@@ -2961,7 +2974,7 @@ mod tests {
         let ev = fx.touch(Phase::Down, 219.0, 16.0, 0.0);
         assert!(matches!(ev[0].kind, EventKind::Edit(Value::VNum(v)) if v == 100.0), "{ev:?}");
         fx.touch(Phase::Move, 100.0, 16.0, 0.1);
-        let v = value_of(&fx.rt, &fx.lay().0, &fx.page, s);
+        let v = value_of(&fx.rt, fx.lay().look(), &fx.page, s);
         assert_eq!(v % 10.0, 0.0, "quantized to step: {v}");
         fx.touch(Phase::Move, 10.0, 16.0, 0.15);
         let ev = fx.touch(Phase::Up, 10.0, 16.0, 0.2);
@@ -2976,7 +2989,7 @@ mod tests {
         fx.touch(Phase::Down, 8.0, 16.0, 2.0);
         fx.touch(Phase::Move, 150.0, 16.0, 2.1);
         assert!(fx.touch(Phase::Cancel, 150.0, 16.0, 2.2).is_empty());
-        assert_eq!(value_of(&fx.rt, &fx.lay().0, &fx.page, s), 0.0);
+        assert_eq!(value_of(&fx.rt, fx.lay().look(), &fx.page, s), 0.0);
     }
 
     /// A Toggle tap goes to the other side and reports; a drag that ends on
@@ -2985,7 +2998,8 @@ mod tests {
     fn toggle_tap_drag_and_wiggle() {
         let mut fx = Fx::new("View v { Toggle t text=\"x\", halign=left, valign=top }");
         let t = fx.page.find("t").unwrap();
-        let (res, rects) = fx.lay();
+        let f = fx.lay();
+        let (res, rects) = (f.look(), f.rects());
         let tr = rects[t];
         let pad = res.placement[t].padding[0];
         fx.touch(Phase::Down, tr.x + pad + 5.0, tr.y + 5.0, 1.0);
@@ -3033,7 +3047,8 @@ mod tests {
         let b = fx.page.find("b").unwrap();
         let d = fx.page.find("d").unwrap();
         assert!(fx.rt.has(a, SELECTED));
-        let (_, rects) = fx.lay();
+        let f = fx.lay();
+        let (_, rects) = (f.look(), f.rects());
         let rd = rects[d];
         fx.touch(Phase::Down, rd.x + 5.0, rd.y + 5.0, 0.0);
         let ev = fx.touch(Phase::Up, rd.x + 5.0, rd.y + 5.0, 0.1);
@@ -3064,7 +3079,8 @@ mod tests {
         fx.touch(Phase::Down, 10.0, 10.0, 1.0);
         assert!(fx.rt.has(b, HELD));
         fx.touch(Phase::Up, 10.0, 10.0, 1.1);
-        let (_, rects) = fx.lay();
+        let f = fx.lay();
+        let (_, rects) = (f.look(), f.rects());
         let sr = rects[s];
         fx.touch(Phase::Down, sr.x + 8.0, sr.y + 8.0, 2.0);
         fx.touch(Phase::Move, sr.x + 100.0, sr.y + 8.0, 2.1);
@@ -3072,7 +3088,7 @@ mod tests {
         fx.touch(Phase::Move, sr.x + 150.0, sr.y + 8.0, 2.2);
         assert!(!fx.input.is_pressed(), "disabling mid-drag ends the gesture");
         assert!(!fx.rt.has(s, HELD));
-        assert_eq!(value_of(&fx.rt, &fx.lay().0, &fx.page, s), 0.0, "the pre-drag value is back");
+        assert_eq!(value_of(&fx.rt, fx.lay().look(), &fx.page, s), 0.0, "the pre-drag value is back");
     }
 
     /// One finger owns the gesture: a second finger's down/up is swallowed.

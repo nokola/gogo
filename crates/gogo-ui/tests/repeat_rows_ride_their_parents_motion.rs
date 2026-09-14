@@ -8,6 +8,7 @@
 //! — rows, seated nodes, anything cloned after the build.
 
 use gogo::anim::Finish;
+use gogo::KeptFrame;
 use gogo::draw::{Draw, draw};
 use gogo::layout::{FixedAdvance, Rect, layout};
 use gogo::page::NodeId;
@@ -45,12 +46,12 @@ fn cloned_rows_move_with_the_sheet_they_hang_under() {
     let slide = page.intern_lookup("slideUp");
     rt.play_id(&page, slide, Finish::Nothing);
     rt.tick(&mut page, 0.5);
-    let res = resolve_animated(&page, &mut rt);
-    let ty: f32 = res.motion[sheet.index()].translate[1];
+    let mut f = KeptFrame::fresh(&page, resolve_animated(&page, &mut rt), view(), &FixedAdvance);
+    let ty: f32 = f.look().motion[sheet.index()].translate[1];
     assert!(ty > 1.0 && ty < 99.0, "mid-slide the sheet is part-way down: {ty}");
-    let rects: Vec<Rect> = rt.glide(layout(&page, &res, view(), &FixedAdvance));
+    f.glide(&mut rt);
     let text = page.intern_lookup("row");
-    let list: Vec<Draw> = draw(&page, &res, &rects);
+    let list: Vec<Draw> = draw(&page, f.frame());
     let drawn: Vec<Rect> = list.iter().filter_map(|d| match d { Draw::Text { rect, text: t, .. } if *t == text => Some(*rect), _ => None }).collect();
     assert_eq!(drawn.len(), 2, "both rows drew their text: {drawn:?}");
     let row1_drawn: Rect = drawn[1];

@@ -45,10 +45,11 @@
 //!   factory door. `_store_guard_tests` (all 3): asset-store packaging
 //!   files (LICENSE, plugin.cfg, host-name scan).
 use gogo::compile::CompileOptions;
+use gogo::KeptFrame;
 use gogo::draw::{Draw, draw};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{Align, Kind, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{Resolved, Runtime, resolve};
+use gogo::runtime::{Runtime, resolve};
 use gogo::{Compiled, NodeId, Page, compile, compile_with};
 
 fn ok(src: &str) -> Compiled {
@@ -61,10 +62,8 @@ fn codes(src: &str) -> Vec<String> {
     compile(src, &|_| None).diags.iter().map(|d| d.code.clone()).collect()
 }
 
-fn lay(page: &Page, rt: &Runtime, w: f32, h: f32) -> (Resolved, Vec<Rect>) {
-    let res = resolve(page, rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, w, h), &FixedAdvance);
-    (res, rects)
+fn lay(page: &Page, rt: &Runtime, w: f32, h: f32) -> KeptFrame {
+    KeptFrame::fresh(page, resolve(page, rt), Rect::new(0.0, 0.0, w, h), &FixedAdvance)
 }
 
 fn rect(page: &Page, rects: &[Rect], name: &str) -> Rect {
@@ -102,7 +101,8 @@ fn view_fixture_builds_with_its_include_and_a_broken_file_does_not() {
     assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (res, _) = lay(&page, &rt, 400.0, 800.0);
+    let f = lay(&page, &rt, 400.0, 800.0);
+    let (res, _) = (f.look(), f.rects());
     let swatch = id(&page, "swatch");
     assert_eq!(res.color(&page, swatch, PropKey::Color), Some(Color_Straight_Srgb_4xU8_RGBA([0xEB, 0x64, 0x28, 0xFF])), "the include's $swatchTest reaches the swatch");
     assert!(res.gone(&page, gogo::NodeId::new(0)), "the root's `visibility=gone` holds");
@@ -123,7 +123,8 @@ fn panel_root_component_is_the_styled_box() {
     let page = c.page;
     assert_eq!(page.find("box"), Some(gogo::NodeId::new(0)), "the root IS the box: no wrapper node");
     let rt = Runtime::new(&page);
-    let (res, rects) = lay(&page, &rt, 400.0, 300.0);
+    let f = lay(&page, &rt, 400.0, 300.0);
+    let (res, rects) = (f.look(), f.rects());
     assert_eq!(res.color(&page, gogo::NodeId::new(0), PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([0x11, 0x22, 0x33, 0xFF])));
     assert_eq!(res.placement[0].padding, [8.0, 8.0, 8.0, 8.0], "{:?}", res.placement[0]);
     assert_eq!((rects[0].w, rects[0].h), (120.0, 40.0), "{rects:?}");
@@ -138,8 +139,8 @@ fn bare_panel_root_paints_no_plate() {
     let c = ok(BARE_COMPONENT);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (res, rects) = lay(&page, &rt, 400.0, 300.0);
-    let list = draw(&page, &res, &rects);
+    let f = lay(&page, &rt, 400.0, 300.0);
+    let list = draw(&page, f.frame());
     assert!(!list.iter().any(|d| matches!(d, Draw::Quad { .. })), "no plate for a bare Panel root: {list:#?}");
     assert!(list.iter().any(|d| matches!(d, Draw::Text { .. })), "the label still draws: {list:#?}");
 }
@@ -180,22 +181,22 @@ fn hug_box_grows_and_shrinks_back_with_its_text() {
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
     let words = id(&page, "words");
-    let base = lay(&page, &rt, 400.0, 300.0).1[0];
+    let base = lay(&page, &rt, 400.0, 300.0).rects()[0];
     assert!(base.w > 5.0 && base.w < 200.0, "{base:?}");
     rt.set_text(&mut page, words, "a considerably longer line of words than before");
-    let grown = lay(&page, &rt, 400.0, 300.0).1[0];
+    let grown = lay(&page, &rt, 400.0, 300.0).rects()[0];
     assert!(grown.w > base.w + 20.0, "{base:?} -> {grown:?}");
     rt.set_text(&mut page, words, "short");
-    let back = lay(&page, &rt, 400.0, 300.0).1[0];
+    let back = lay(&page, &rt, 400.0, 300.0).rects()[0];
     assert!((back.w - base.w).abs() < 0.5, "{back:?} vs {base:?}");
     // Written while gone, measured on show.
     rt.set_visible(&mut page, gogo::NodeId::new(0), false);
     rt.set_text(&mut page, words, "a considerably longer line of words than before");
     rt.set_visible(&mut page, gogo::NodeId::new(0), true);
-    let shown = lay(&page, &rt, 400.0, 300.0).1[0];
+    let shown = lay(&page, &rt, 400.0, 300.0).rects()[0];
     assert!((shown.w - grown.w).abs() < 0.5, "{shown:?} vs {grown:?}");
     rt.set_text(&mut page, words, "short");
-    let again = lay(&page, &rt, 400.0, 300.0).1[0];
+    let again = lay(&page, &rt, 400.0, 300.0).rects()[0];
     assert!((again.w - base.w).abs() < 0.5, "{again:?} vs {base:?}");
 }
 
@@ -208,13 +209,13 @@ fn hug_chip_under_layers_follows_its_text_both_ways() {
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
     let w = id(&page, "w");
-    let base = rect(&page, &lay(&page, &rt, 400.0, 300.0).1, "chip");
+    let base = rect(&page, lay(&page, &rt, 400.0, 300.0).rects(), "chip");
     assert!(base.w > 5.0 && base.w < 200.0, "{base:?}");
     rt.set_text(&mut page, w, "a considerably longer line of words than before");
-    let grown = rect(&page, &lay(&page, &rt, 400.0, 300.0).1, "chip");
+    let grown = rect(&page, lay(&page, &rt, 400.0, 300.0).rects(), "chip");
     assert!(grown.w > base.w + 20.0, "{base:?} -> {grown:?}");
     rt.set_text(&mut page, w, "short");
-    let back = rect(&page, &lay(&page, &rt, 400.0, 300.0).1, "chip");
+    let back = rect(&page, lay(&page, &rt, 400.0, 300.0).rects(), "chip");
     assert!((back.w - base.w).abs() < 0.5, "{back:?} vs {base:?}");
 }
 
@@ -232,13 +233,13 @@ fn wrap_label_in_a_hug_toast_measures_at_the_width_it_gets() {
     let c = ok(WIDTH_FIRST_COMPONENT);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let narrow = lay(&page, &rt, 60.0, 400.0).1[0];
+    let narrow = lay(&page, &rt, 60.0, 400.0).rects()[0];
     assert!(narrow.h > 40.0, "{narrow:?}");
     assert!(narrow.w <= 60.0, "{narrow:?}");
-    let wide = lay(&page, &rt, 500.0, 400.0).1[0];
+    let wide = lay(&page, &rt, 500.0, 400.0).rects()[0];
     assert!(wide.h < narrow.h, "{narrow:?} -> {wide:?}");
     // No overshoot: the only height the box ever holds at 500 is the settled one.
-    let held: Vec<f32> = (0..3).map(|_| lay(&page, &rt, 500.0, 400.0).1[0].h).collect();
+    let held: Vec<f32> = (0..3).map(|_| lay(&page, &rt, 500.0, 400.0).rects()[0].h).collect();
     assert!(held.iter().all(|h| *h <= narrow.h + 0.5 && *h == wide.h), "held {held:?} while settling from {} to {}", narrow.h, wide.h);
 }
 
@@ -255,16 +256,16 @@ fn content_sized_button_follows_its_label_both_ways() {
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
     let t = id(&page, "t");
-    let base = rect(&page, &lay(&page, &rt, 400.0, 800.0).1, "b");
+    let base = rect(&page, lay(&page, &rt, 400.0, 800.0).rects(), "b");
     assert!(base.w > 5.0, "{base:?}");
     rt.set_text(&mut page, t, "a considerably longer caption than before");
-    let grown = rect(&page, &lay(&page, &rt, 400.0, 800.0).1, "b");
+    let grown = rect(&page, lay(&page, &rt, 400.0, 800.0).rects(), "b");
     assert!(grown.w > base.w + 20.0, "{base:?} -> {grown:?}");
     rt.set_text(&mut page, t, "short");
-    let back = rect(&page, &lay(&page, &rt, 400.0, 800.0).1, "b");
+    let back = rect(&page, lay(&page, &rt, 400.0, 800.0).rects(), "b");
     assert!((back.w - base.w).abs() < 0.5, "{back:?} vs {base:?}");
     rt.set_visible(&mut page, t, false);
-    let without = rect(&page, &lay(&page, &rt, 400.0, 800.0).1, "b");
+    let without = rect(&page, lay(&page, &rt, 400.0, 800.0).rects(), "b");
     assert!(without.w < base.w, "{without:?} vs base {base:?}");
 }
 
@@ -283,7 +284,7 @@ fn seated_hug_card_grows_past_the_window_with_its_text() {
     let mut rt = Runtime::new(&page);
     let words = id(&page, "words");
     rt.set_text(&mut page, words, &"word ".repeat(400));
-    let card = rect(&page, &lay(&page, &rt, 400.0, 800.0).1, "card");
+    let card = rect(&page, lay(&page, &rt, 400.0, 800.0).rects(), "card");
     assert!(card.w > 400.0, "{card:?}");
 }
 
@@ -299,7 +300,8 @@ fn stacks_and_flow_touch_unless_spacing_is_written() {
     let c = ok("View v {\nColumn host {\n    Row r0 {\n        Rectangle a0 10x10\n        Rectangle b0 10x10\n    }\n    Row r6 spacing=6 {\n        Rectangle a6 10x10\n        Rectangle b6 10x10\n    }\n    Column c0 {\n        Rectangle ca 10x10\n        Rectangle cb 10x10\n    }\n    Flow f0 width=100 {\n        Rectangle fa 10x10\n        Rectangle fb 10x10\n    }\n    Flow f6 width=100, spacing=6 {\n        Rectangle f6a 10x10\n        Rectangle f6b 10x10\n    }\n}\n}\n");
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, r) = lay(&page, &rt, 400.0, 800.0);
+    let f = lay(&page, &rt, 400.0, 800.0);
+    let (_, r) = (f.look(), f.rects());
     let x_in = |name: &str, parent: &str| rect(&page, &r, name).x - rect(&page, &r, parent).x;
     let y_in = |name: &str, parent: &str| rect(&page, &r, name).y - rect(&page, &r, parent).y;
     assert_eq!(x_in("b0", "r0"), 10.0, "{r:?}");
@@ -320,7 +322,8 @@ fn list_rows_touch() {
     rt.set_count(&mut page, t, 2);
     let items = rt.items(&page, t);
     assert_eq!(items.len(), 2);
-    let (_, r) = lay(&page, &rt, 400.0, 800.0);
+    let f = lay(&page, &rt, 400.0, 800.0);
+    let (_, r) = (f.look(), f.rects());
     let first = r[items[0].index()];
     let second = r[items[1].index()];
     assert!(first.h > 0.0, "{first:?}");
@@ -343,7 +346,7 @@ fn measured(body: &[&str]) -> (Page, Vec<Rect>) {
     let c = ok(&src);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let (_, r) = lay(&page, &rt, 600.0, 2000.0);
+    let r: Vec<Rect> = lay(&page, &rt, 600.0, 2000.0).rects().to_vec();
     (page, r)
 }
 
@@ -377,7 +380,8 @@ fn button_minimum_is_max_of_declared_and_content_per_axis() {
     // under Layers, where its right pin is placement in the parent.
     let c = ok("View v {\n  Layers z {\n    Button pinnedBtn halign=right, valign=top, margin_right=10 {\n        Rectangle innerE 120x30\n    }\n  }\n}\n");
     let page = c.page;
-    let (_, r) = lay(&page, &Runtime::new(&page), 600.0, 400.0);
+    let f = lay(&page, &Runtime::new(&page), 600.0, 400.0);
+    let (_, r) = (f.look(), f.rects());
     let pinned = rect(&page, &r, "pinnedBtn");
     assert_eq!((pinned.w, pinned.h), (120.0, 30.0), "{pinned:?}");
     assert_eq!(pinned.right(), 590.0, "the parent reserves the 10: {pinned:?}");
@@ -393,14 +397,14 @@ fn button_minimum_follows_a_live_child_and_skips_a_gone_one() {
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
     let block = id(&page, "block");
-    assert_eq!(size(&page, &lay(&page, &rt, 600.0, 400.0).1, "grows"), (120.0, 30.0));
+    assert_eq!(size(&page, lay(&page, &rt, 600.0, 400.0).rects(), "grows"), (120.0, 30.0));
     rt.set_prop(block, PropKey::Width, Value::VNum(150.0));
     rt.set_prop(block, PropKey::Height, Value::VNum(40.0));
-    assert_eq!(size(&page, &lay(&page, &rt, 600.0, 400.0).1, "grows"), (150.0, 40.0));
+    assert_eq!(size(&page, lay(&page, &rt, 600.0, 400.0).rects(), "grows"), (150.0, 40.0));
     rt.set_visible(&mut page, block, false);
-    assert_eq!(size(&page, &lay(&page, &rt, 600.0, 400.0).1, "grows"), (0.0, 0.0), "a gone child leaves no minimum behind");
+    assert_eq!(size(&page, lay(&page, &rt, 600.0, 400.0).rects(), "grows"), (0.0, 0.0), "a gone child leaves no minimum behind");
     rt.set_visible(&mut page, block, true);
-    assert_eq!(size(&page, &lay(&page, &rt, 600.0, 400.0).1, "grows"), (150.0, 40.0));
+    assert_eq!(size(&page, lay(&page, &rt, 600.0, 400.0).rects(), "grows"), (150.0, 40.0));
 }
 
 /// `_content_min_tests` 10872 (cmin.epx-ok): the epx fixture builds. Its
@@ -418,7 +422,8 @@ fn epx_fixture_builds() {
 fn widget_root_button_derives_from_instance_values() {
     let c = ok("widget IconRow $w=40 {\n    Button signals {\n        Row {\n            Rectangle box size=$w\n        }\n    }\n}\nView v {\n  Column c {\n    Flow {\n      IconRow row1 w=60x24, min_height=44\n    }\n  }\n}\n");
     let page = c.page;
-    let (_, r) = lay(&page, &Runtime::new(&page), 600.0, 400.0);
+    let f = lay(&page, &Runtime::new(&page), 600.0, 400.0);
+    let (_, r) = (f.look(), f.rects());
     assert_eq!(size(&page, &r, "row1"), (60.0, 44.0), "{r:?}");
 }
 
@@ -466,7 +471,8 @@ fn inner_panel_side_padding_counts_into_the_minimum() {
 fn nested_container_serves_the_same_themed_minimum() {
     let c = ok("theme {\n    font_size = 30\n}\nView {\n    Flow {\n        Button direct {\n            Label a text=\"hi again\"\n        }\n        Button viaColumn {\n            Column {\n                Label b text=\"hi again\"\n            }\n        }\n        Button viaLayers {\n            Layers {\n                Column {\n                    Label c text=\"hi again\"\n                }\n            }\n        }\n    }\n}\n");
     let page = c.page;
-    let (_, r) = lay(&page, &Runtime::new(&page), 600.0, 400.0);
+    let f = lay(&page, &Runtime::new(&page), 600.0, 400.0);
+    let (_, r) = (f.look(), f.rects());
     let want = rect(&page, &r, "a");
     assert!(want.h > 30.0, "the themed font reached the measure: {want:?}");
     let direct = rect(&page, &r, "direct");
@@ -510,7 +516,7 @@ fn view_root_minimum_answers_live_and_forgets_a_transient() {
     let page = c.page;
     let mut rt = Runtime::new(&page);
     let floor = |page: &Page, rt: &Runtime| {
-        let r = lay(page, rt, 0.0, 0.0).1[0];
+        let r = lay(page, rt, 0.0, 0.0).rects()[0];
         (r.w, r.h)
     };
     assert_eq!(floor(&page, &rt), (120.0, 80.0));
@@ -541,7 +547,8 @@ fn registered_code_control_builds_and_an_unknown_name_is_refused() {
     let demo = id(&page, "demo");
     assert_eq!(page.nodes[demo.index()].kind, Kind::Custom);
     assert_eq!(page.str(page.nodes[demo.index()].type_name), "TestCustomControl");
-    let (_, r) = lay(&page, &Runtime::new(&page), 400.0, 400.0);
+    let f = lay(&page, &Runtime::new(&page), 400.0, 400.0);
+    let (_, r) = (f.look(), f.rects());
     assert_eq!(r[demo.index()].w, 200.0, "{r:?}");
     let unknown = compile_with("View v {\n    NoSuchControl demo width=200\n}\n", &|_| None, options);
     assert!(unknown.diags.iter().any(|d| d.code == "G7011"), "{:#?}", unknown.diags);

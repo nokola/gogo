@@ -6,8 +6,9 @@
 //! touch agree by construction.
 
 use gogo::compile;
+use gogo::KeptFrame;
 use gogo::draw::{Draw, draw, hit};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{Color_Straight_Srgb_4xU8_RGBA, PropKey, Value};
 use gogo::runtime::{Runtime, resolve};
 
@@ -39,9 +40,8 @@ fn scale_holds_the_pivot_point_still() {
     let p = page.find("p").unwrap();
     let mut rt = Runtime::new(&page);
     rt.set_prop(p, PropKey::Scale, Value::VNum(2.0));
-    let res = resolve(&page, &rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    let draws = draw(&page, &res, &rects);
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let draws = draw(&page, f.frame());
     assert_eq!(quad_of(&draws, Color_Straight_Srgb_4xU8_RGBA([255, 0, 0, 255])), Rect::new(0.0, 0.0, 200.0, 100.0), "the top-left corner held");
     assert_eq!(quad_of(&draws, Color_Straight_Srgb_4xU8_RGBA([0, 255, 0, 255])), Rect::new(0.0, 0.0, 20.0, 20.0), "the corner child scales in place");
 
@@ -52,9 +52,8 @@ fn scale_holds_the_pivot_point_still() {
     let p = page.find("p").unwrap();
     let mut rt = Runtime::new(&page);
     rt.set_prop(p, PropKey::Scale, Value::VNum(2.0));
-    let res = resolve(&page, &rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    let draws = draw(&page, &res, &rects);
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let draws = draw(&page, f.frame());
     assert_eq!(quad_of(&draws, Color_Straight_Srgb_4xU8_RGBA([255, 0, 0, 255])), Rect::new(-50.0, -25.0, 200.0, 100.0), "no pivot = about the center");
 }
 
@@ -68,9 +67,8 @@ fn rotate_turns_about_the_pivot() {
     let p = page.find("p").unwrap();
     let mut rt = Runtime::new(&page);
     rt.set_prop(p, PropKey::Rotate, Value::VNum(30.0));
-    let res = resolve(&page, &rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    let draws = draw(&page, &res, &rects);
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let draws = draw(&page, f.frame());
     let (cx, cy) = draws
         .iter()
         .find_map(|d| match d {
@@ -92,9 +90,8 @@ fn hit_follows_the_pivot() {
     let b = page.find("b").unwrap();
     let mut rt = Runtime::new(&page);
     rt.set_prop(b, PropKey::Scale, Value::VNum(2.0));
-    let res = resolve(&page, &rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    assert_eq!(hit(&page, &res, &rects, 150.0, 75.0, false), Some(b), "the grown half takes the tap");
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    assert_eq!(hit(&page, f.frame(), 150.0, 75.0, false), Some(b), "the grown half takes the tap");
 }
 
 /// The finger lands on the ROTATED picture too: a button turned 90
@@ -111,12 +108,11 @@ fn hit_follows_rotation() {
     let b = page.find("b").unwrap();
     let mut rt = Runtime::new(&page);
     rt.set_prop(b, PropKey::Rotate, Value::VNum(90.0));
-    let res = resolve(&page, &rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
     // Turned 90 deg about the center (50, 25): the picture stands tall,
     // x in 25..75, y in -25..75.
-    assert_eq!(hit(&page, &res, &rects, 60.0, 65.0, false), Some(b), "inside the turned box, below the laid-out one");
-    assert_eq!(hit(&page, &res, &rects, 95.0, 45.0, false), None, "the laid-out corner the turned box left");
+    assert_eq!(hit(&page, f.frame(), 60.0, 65.0, false), Some(b), "inside the turned box, below the laid-out one");
+    assert_eq!(hit(&page, f.frame(), 95.0, 45.0, false), None, "the laid-out corner the turned box left");
 
     // A pivoted rotation: the hinge is the top-left, the box swings so
     // its former top edge runs DOWN the y axis.
@@ -126,10 +122,9 @@ fn hit_follows_rotation() {
     let b = page.find("b").unwrap();
     let mut rt = Runtime::new(&page);
     rt.set_prop(b, PropKey::Rotate, Value::VNum(90.0));
-    let res = resolve(&page, &rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    assert_eq!(hit(&page, &res, &rects, -25.0, 50.0, false), Some(b), "swung across the hinge");
-    assert_eq!(hit(&page, &res, &rects, 60.0, 25.0, false), None, "the old footprint is empty");
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    assert_eq!(hit(&page, f.frame(), -25.0, 50.0, false), Some(b), "swung across the hinge");
+    assert_eq!(hit(&page, f.frame(), 60.0, 25.0, false), None, "the old footprint is empty");
 }
 
 /// The fences: a full 0..1 pair or nothing — a bare number, a half pair

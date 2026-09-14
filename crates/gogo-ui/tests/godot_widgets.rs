@@ -31,11 +31,12 @@
 //!   line itself). Rust controls have no attached script — code-behind is
 //!   Rust code (gogo-design.md §7 "Names become code").
 use gogo::diag::Diagnostic;
+use gogo::KeptFrame;
 use gogo::draw::{Draw, draw, hit};
 use gogo::input::{Input, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{Auto, Kind, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{DISABLED, Resolved, Runtime, resolve, resolve_animated};
+use gogo::runtime::{DISABLED, Runtime, resolve, resolve_animated};
 use gogo::{Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
@@ -61,21 +62,19 @@ fn builds(src: &str) -> bool {
     !gogo::has_errors(&diags(src))
 }
 
-fn lay(page: &Page, rt: &Runtime) -> (Resolved, Vec<Rect>) {
-    let res = resolve(page, rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    (res, rects)
+fn lay(page: &Page, rt: &Runtime) -> KeptFrame {
+    KeptFrame::fresh(page, resolve(page, rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance)
 }
 
 fn rects_of(page: &Page) -> Vec<Rect> {
-    lay(page, &Runtime::new(page)).1
+    lay(page, &Runtime::new(page)).rects().to_vec()
 }
 
 /// The texts the draw list shows, in paint order.
 fn drawn_texts(page: &Page) -> Vec<String> {
     let rt = Runtime::new(page);
-    let (res, rects) = lay(page, &rt);
-    draw(page, &res, &rects).iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(page.str(*text).to_string()) } else { None }).collect()
+    let f = lay(page, &rt);
+    draw(page, f.frame()).iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(page.str(*text).to_string()) } else { None }).collect()
 }
 
 fn text_of(page: &Page, id: NodeId) -> String {
@@ -159,11 +158,12 @@ fn signals_node_change_auto_wires_under_the_instance_name() {
     let p = &c.page;
     let mut rt = Runtime::new(p);
     let mut input = Input::new();
-    let (res, rects) = lay(p, &rt);
+    let f = lay(p, &rt);
+    let rects = f.rects();
     let slider = kids(p, find(p, "sizeSlider"))[1];
     let s = rects[slider.index()];
-    input.touch(p, &mut rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x: s.x + s.w * 0.5, y: s.y + s.h * 0.5, t: 0.0, id: 1 });
-    let ev = input.touch(p, &mut rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x: s.x + s.w * 0.5, y: s.y + s.h * 0.5, t: 0.1, id: 1 });
+    input.touch(p, &mut rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Down, x: s.x + s.w * 0.5, y: s.y + s.h * 0.5, t: 0.0, id: 1 });
+    let ev = input.touch(p, &mut rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Up, x: s.x + s.w * 0.5, y: s.y + s.h * 0.5, t: 0.1, id: 1 });
     let change = ev.iter().find(|e| matches!(e.kind, gogo::EventKind::Change(_))).unwrap_or_else(|| panic!("{ev:?}"));
     let routable = change.action.is_some() || p.str(p.nodes[change.node.index()].name) == "sizeSlider";
     assert!(routable, "the change must reach a handler named after the instance: {change:?}, node name {:?}", p.str(p.nodes[change.node.index()].name));
@@ -289,10 +289,11 @@ fn named_slot_is_a_clipped_passive_region_holding_its_default() {
     // Passive + clipped: a touch over the region falls through; the draw
     // list clips to the region's rect.
     let rt = Runtime::new(p);
-    let (res, rects) = lay(p, &rt);
+    let f = lay(p, &rt);
+    let rects = f.rects();
     let h = rects[header.index()];
-    assert_eq!(hit(p, &res, &rects, h.x + 1.0, h.y + 1.0, false), None);
-    let list = draw(p, &res, &rects);
+    assert_eq!(hit(p, f.frame(), h.x + 1.0, h.y + 1.0, false), None);
+    let list = draw(p, f.frame());
     assert!(list.iter().any(|d| matches!(d, Draw::ClipPush(r) if *r == h)), "{list:#?}");
 }
 
@@ -488,15 +489,14 @@ fn value_write_moves_the_couplings_with_a_glide() {
     let thumb = find(&page, "gain/thumb");
     let mut rt = Runtime::new(&page);
     rt.set_value(&mut page, root, 75.0);
-    let res = resolve_animated(&page, &mut rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    let texts: Vec<String> = draw(&page, &res, &rects).iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(page.str(*text).to_string()) } else { None }).collect();
+    let f = KeptFrame::fresh(&page, resolve_animated(&page, &mut rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let texts: Vec<String> = draw(&page, f.frame()).iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(page.str(*text).to_string()) } else { None }).collect();
     assert!(texts.iter().any(|t| t.starts_with("75")), "the label follows at once: {texts:?}");
     assert!(rt.animating(), "the fraction glides (0.12 s default feel)");
     rt.tick(&mut page, 0.2);
     assert!(!rt.animating(), "past the 0.12 s rule the glide has landed");
-    let res = resolve_animated(&page, &mut rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let f = KeptFrame::fresh(&page, resolve_animated(&page, &mut rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let rects = f.rects();
     assert!((rects[progress.index()].w - 150.0).abs() < 1e-3, "{rects:?}");
     assert!((rects[thumb.index()].x - 141.0).abs() < 1e-3, "{rects:?}");
 }
@@ -565,9 +565,10 @@ fn presence_slot_is_gone_while_its_state_is_off() {
     let mark = find(p, "m/mark");
     assert_eq!(p.nodes[mark.index()].auto, Auto::Presence(false));
     let rt = Runtime::new(p);
-    let (res, rects) = lay(p, &rt);
+    let f = lay(p, &rt);
+    let res = f.look();
     assert!(res.gone(p, mark));
-    let list = draw(p, &res, &rects);
+    let list = draw(p, f.frame());
     assert!(!list.iter().any(|d| matches!(d, Draw::Circle { .. })), "{list:#?}");
 }
 
@@ -583,14 +584,16 @@ fn presence_follows_the_state() {
     let mut rt = Runtime::new(p);
     rt.set_custom(p, m, "marked", true).unwrap();
     assert!(rt.custom(p, m, "marked"), "the raised state reads back");
-    let (res, rects) = lay(p, &rt);
+    let f = lay(p, &rt);
+    let res = f.look();
     assert!(!res.gone(p, mark), "the mark exists while the state holds");
-    assert!(draw(p, &res, &rects).iter().any(|d| matches!(d, Draw::Circle { .. })), "the mark draws");
+    assert!(draw(p, f.frame()).iter().any(|d| matches!(d, Draw::Circle { .. })), "the mark draws");
     rt.set_custom(p, m, "marked", false).unwrap();
     assert!(!rt.custom(p, m, "marked"), "cleared reads back false");
-    let (res, rects) = lay(p, &rt);
+    let f = lay(p, &rt);
+    let res = f.look();
     assert!(res.gone(p, mark), "the mark is gone again");
-    assert!(!draw(p, &res, &rects).iter().any(|d| matches!(d, Draw::Circle { .. })), "{:#?}", draw(p, &res, &rects));
+    assert!(!draw(p, f.frame()).iter().any(|d| matches!(d, Draw::Circle { .. })), "{:#?}", draw(p, f.frame()));
 }
 
 /// `ctl.live-default-round` 3542, `ctl.live-round-step` 3548 (PORT: both

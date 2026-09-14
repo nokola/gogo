@@ -1994,13 +1994,16 @@ impl Runtime {
     /// One frame's look, layout and draw list in the one order that is
     /// right — resolve, the retained layout, glide, the anim motion, the
     /// retained draw list — into the caller's buffers, kept between frames
-    /// so nothing allocates once warm. Every host draws through here: the
-    /// order is the runtime's, never a host's to get wrong (B38 was a host
-    /// drawing from the resolve taken before the glide; three hosts spelled
-    /// the sequence by hand). `split`: the `above_children` road — the page
-    /// without that subtree into `draws`, the subtree into the second
-    /// buffer; no retained road there, the full walk each frame as before.
-    /// Call after `tick` and the input tick; clears `dirty`.
+    /// so nothing allocates once warm. Every host draws through here (or
+    /// through `KeptFrame::frame_retained`, which adds the look's copy a
+    /// host with an input machine needs): the order is the runtime's, never
+    /// a host's to get wrong (B38 was a host drawing from the resolve taken
+    /// before the glide; three hosts spelled the sequence by hand). A hit
+    /// or a draw off this road is unspellable: `draw` and `hit` take a
+    /// `Frame`, made only by the roads (D43). `split`: the `above_children`
+    /// road — the page without that subtree into `draws`, the subtree into
+    /// the second buffer; no retained road there, the full walk each frame
+    /// as before. Call after `tick` and the input tick; clears `dirty`.
     pub fn frame_retained(&mut self, page: &Page, viewport: Rect, text: &dyn TextMeasure, rects: &mut Vec<Rect>, draws: &mut Vec<Draw>, split: Option<(NodeId, &mut Vec<Draw>)>) {
         self.resolve_retained(page);
         rects.clear();
@@ -2009,8 +2012,9 @@ impl Runtime {
         self.compose_motion();
         match split {
             Some((top, above)) => {
-                crate::draw::draw_except_into(page, &self.resolved, rects, top, draws);
-                crate::draw::draw_subtree_into(page, &self.resolved, rects, top, above);
+                let f = crate::frame::Frame::new(&self.resolved, rects);
+                crate::draw::draw_except_into(page, f, top, draws);
+                crate::draw::draw_subtree_into(page, f, top, above);
             }
             None => self.retained_draw.run(page, &self.resolved, &self.resolve_changes, rects, draws),
         }

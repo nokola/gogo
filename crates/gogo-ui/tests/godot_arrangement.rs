@@ -24,6 +24,7 @@
 //! - `arr.reload-ok`, `arr.reload-keeps-pose`, `arr.reload-reseeds-style-when`
 //!   (6856-6865): hot reload re-tracks the scene tree; here the shell swaps pages.
 use gogo::input::{Input, Phase, Touch};
+use gogo::KeptFrame;
 use gogo::layout::{FixedAdvance, Rect, layout};
 use gogo::page::{Len, NO_NODE, NodeId, PropKey};
 use gogo::runtime::{BASE, HELD, Resolved, Runtime, SELECTED, resolve, resolve_animated};
@@ -58,10 +59,8 @@ fn error_text(src: &str) -> String {
     diags(src).iter().filter(|d| d.severity == Severity::Error).map(|d| d.message.clone()).collect::<Vec<_>>().join("\n")
 }
 
-fn lay(page: &Page, rt: &Runtime) -> (Resolved, Vec<Rect>) {
-    let res = resolve(page, rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, W, H), &FixedAdvance);
-    (res, rects)
+fn lay(page: &Page, rt: &Runtime) -> KeptFrame {
+    KeptFrame::fresh(page, resolve(page, rt), Rect::new(0.0, 0.0, W, H), &FixedAdvance)
 }
 
 /// The shown opacity of a node: the `when`/tween override, else 1.
@@ -75,22 +74,22 @@ fn near(a: f32, b: f32) -> bool {
 
 /// One frame the way the shell runs it: advance, resolve with tweens,
 /// lay out, glide. Returns the SHOWN rects.
-fn frame(page: &mut Page, rt: &mut Runtime, dt: f32) -> (Resolved, Vec<Rect>) {
+fn frame(page: &mut Page, rt: &mut Runtime, dt: f32) -> KeptFrame {
     rt.tick(page, dt);
-    let res = resolve_animated(page, rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, W, H), &FixedAdvance);
-    let shown = rt.glide(rects);
-    (res, shown)
+    let mut f = KeptFrame::fresh(page, resolve_animated(page, rt), Rect::new(0.0, 0.0, W, H), &FixedAdvance);
+    f.glide(rt);
+    f
 }
 
 /// A tap (down + up at the node's center) through the real input path.
 fn tap(page: &Page, rt: &mut Runtime, input: &mut Input, node: NodeId, t: f64) {
-    let (res, rects) = lay(page, rt);
+    let f = lay(page, rt);
+    let rects = f.rects();
     let r = rects[node.index()];
     let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-    input.touch(page, rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x, y, t, id: 1 });
-    let (res, rects) = lay(page, rt);
-    input.touch(page, rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x, y, t: t + 0.1, id: 1 });
+    input.touch(page, rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Down, x, y, t, id: 1 });
+    let f = lay(page, rt);
+    input.touch(page, rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Up, x, y, t: t + 0.1, id: 1 });
 }
 
 fn set_class(page: &Page, rt: &mut Runtime, class: ScreenClass) {
@@ -427,7 +426,8 @@ fn arrangement_flip_poses_tweens_and_comes_home() {
     let dot = page.find("dot").unwrap();
     let collapsed = gogo::ArrangementId::from_index(page.arrangements.iter().position(|a| page.str(*a) == "collapsed").unwrap());
     let mut rt = Runtime::new(&page);
-    let (_, rects) = frame(&mut page, &mut rt, 0.0);
+    let f = frame(&mut page, &mut rt, 0.0);
+    let (_, rects) = (f.look(), f.rects());
     let b = rects[bar.index()];
     assert!(near(b.bottom(), H) && near(b.y, H - 60.0), "base pose: {b:?}");
     assert_eq!(rt.arrangement, BASE);
@@ -435,10 +435,12 @@ fn arrangement_flip_poses_tweens_and_comes_home() {
     rt.go_id(collapsed);
     assert_eq!(rt.arrangement, collapsed);
     frame(&mut page, &mut rt, 0.0);
-    let (_, rects) = frame(&mut page, &mut rt, 0.05);
+    let f = frame(&mut page, &mut rt, 0.05);
+    let (_, rects) = (f.look(), f.rects());
     let b = rects[bar.index()];
     assert!(b.bottom() > H && b.bottom() < H + 40.0, "midway through the 0.2 s rule: {b:?}");
-    let (res, rects) = frame(&mut page, &mut rt, 0.3);
+    let f = frame(&mut page, &mut rt, 0.3);
+    let (res, rects) = (f.look(), f.rects());
     let b = rects[bar.index()];
     assert!(near(b.bottom(), H + 40.0) && near(b.y, H - 50.0) && near(opacity(&page, &res, scrim), 0.5), "pose applied: {b:?} scrim={}", opacity(&page, &res, scrim));
     assert!(near(opacity(&page, &res, dot), 0.25), "the style-scoped when follows the view: {}", opacity(&page, &res, dot));
@@ -451,7 +453,8 @@ fn arrangement_flip_poses_tweens_and_comes_home() {
 
     rt.go_id(BASE);
     frame(&mut page, &mut rt, 0.0);
-    let (res, rects) = frame(&mut page, &mut rt, 0.3);
+    let f = frame(&mut page, &mut rt, 0.3);
+    let (res, rects) = (f.look(), f.rects());
     let b = rects[bar.index()];
     assert!(near(b.bottom(), H) && near(opacity(&page, &res, scrim), 1.0) && near(opacity(&page, &res, dot), 1.0), "back to base: {b:?} scrim={} dot={}", opacity(&page, &res, scrim), opacity(&page, &res, dot));
 }
@@ -469,7 +472,8 @@ fn go_instant_flips_without_the_motion() {
     let mut rt = Runtime::new(&page);
     frame(&mut page, &mut rt, 0.0);
     rt.go_instant_id(collapsed);
-    let (_, rects) = frame(&mut page, &mut rt, 0.0);
+    let f = frame(&mut page, &mut rt, 0.0);
+    let (_, rects) = (f.look(), f.rects());
     assert!(!rt.animating(), "an instant flip arms nothing");
     let b = rects[bar.index()];
     assert!(near(b.bottom(), H + 40.0) && near(b.y, H - 50.0), "the pose is already applied: {b:?}");
@@ -536,7 +540,8 @@ fn unknown_arrangement_flip_keeps_the_pose() {
     let mut rt = Runtime::new(&page);
     rt.go_id(gogo::ArrangementId::new(0));
     rt.go_id(gogo::ArrangementId::new(99));
-    let (_, rects) = lay(&page, &rt);
+    let f = lay(&page, &rt);
+    let (_, rects) = (f.look(), f.rects());
     assert_eq!(rt.arrangement, gogo::ArrangementId::new(0), "the pose is kept");
     assert!(near(rects[bar.index()].h, 90.0), "{:?}", rects[bar.index()]);
 }
@@ -647,25 +652,32 @@ fn view_rule_times_the_flip_and_retargets_mid_flight() {
     frame(&mut page, &mut rt, 0.0);
     rt.go_id(gogo::ArrangementId::new(0));
     frame(&mut page, &mut rt, 0.0);
-    let (_, r) = frame(&mut page, &mut rt, 0.25);
+    let f = frame(&mut page, &mut rt, 0.25);
+    let (_, r) = (f.look(), f.rects());
     assert!((r[slab].y - 87.5).abs() < 0.01, "view timing: {:?}", r[slab]);
-    let (_, r) = frame(&mut page, &mut rt, 0.3);
+    let f = frame(&mut page, &mut rt, 0.3);
+    let (_, r) = (f.look(), f.rects());
     assert!(near(r[slab].y, 100.0), "view landed: {:?}", r[slab]);
-    let (_, r) = frame(&mut page, &mut rt, 0.5);
+    let f = frame(&mut page, &mut rt, 0.5);
+    let (_, r) = (f.look(), f.rects());
     assert!(near(r[plate].y, 100.0), "node lands: {:?}", r[plate]);
 
     rt.go_id(BASE);
     frame(&mut page, &mut rt, 0.0);
-    let (_, r) = frame(&mut page, &mut rt, 10.0);
+    let f = frame(&mut page, &mut rt, 10.0);
+    let (_, r) = (f.look(), f.rects());
     assert!(near(r[slab].y, 0.0) && near(r[plate].y, 0.0) && near(r[tag].y, 0.0), "home: {:?}/{:?}/{:?}", r[slab], r[plate], r[tag]);
     rt.go_id(gogo::ArrangementId::new(0));
     frame(&mut page, &mut rt, 0.0);
-    let (_, r) = frame(&mut page, &mut rt, 0.25);
+    let f = frame(&mut page, &mut rt, 0.25);
+    let (_, r) = (f.look(), f.rects());
     let mid = r[slab].y;
     rt.go_id(BASE);
-    let (_, r) = frame(&mut page, &mut rt, 0.0);
+    let f = frame(&mut page, &mut rt, 0.0);
+    let (_, r) = (f.look(), f.rects());
     assert!((r[slab].y - mid).abs() < 0.01, "retarget: no snap at the flip: {} vs {mid}", r[slab].y);
-    let (_, r) = frame(&mut page, &mut rt, 0.05);
+    let f = frame(&mut page, &mut rt, 0.05);
+    let (_, r) = (f.look(), f.rects());
     assert!((r[slab].y - 63.7875).abs() < 0.01, "retarget from the current value: {}", r[slab].y);
 }
 
@@ -685,12 +697,15 @@ fn node_pose_pair_rules_time_their_own_share() {
     let mut rt = Runtime::new(&page);
     frame(&mut page, &mut rt, 0.0);
     rt.go_id(gogo::ArrangementId::new(0));
-    let (_, r) = frame(&mut page, &mut rt, 0.0);
+    let f = frame(&mut page, &mut rt, 0.0);
+    let (_, r) = (f.look(), f.rects());
     assert!(near(r[tag].y, 100.0), "duration=0 snaps at flip time: {:?}", r[tag]);
-    let (_, r) = frame(&mut page, &mut rt, 0.25);
+    let f = frame(&mut page, &mut rt, 0.25);
+    let (_, r) = (f.look(), f.rects());
     assert!((r[slab].y - 87.5).abs() < 0.01, "{:?}", r[slab]);
     assert!((r[plate].y - 57.8125).abs() < 0.01, "node slower: {:?}", r[plate]);
-    let (_, r) = frame(&mut page, &mut rt, 0.3);
+    let f = frame(&mut page, &mut rt, 0.3);
+    let (_, r) = (f.look(), f.rects());
     assert!(r[plate].y < 99.0, "node still going at 0.55 s: {:?}", r[plate]);
 }
 
@@ -765,13 +780,16 @@ fn alignment_pose_under_a_timed_arrangement_builds_and_glides() {
     let mut page = c.page;
     let bar = (page.find("bar").unwrap()).index();
     let mut rt = Runtime::new(&page);
-    let (_, r) = frame(&mut page, &mut rt, 0.0);
+    let f = frame(&mut page, &mut rt, 0.0);
+    let (_, r) = (f.look(), f.rects());
     assert_eq!(r[bar].w, 80.0, "base spans the margins: {:?}", r[bar]);
     rt.go_id(gogo::ArrangementId::new(0));
     frame(&mut page, &mut rt, 0.0);
-    let (_, r) = frame(&mut page, &mut rt, 0.1);
+    let f = frame(&mut page, &mut rt, 0.1);
+    let (_, r) = (f.look(), f.rects());
     assert!(r[bar].w < 80.0 && r[bar].w > 0.0, "gliding toward the left-docked hug: {:?}", r[bar]);
-    let (_, r) = frame(&mut page, &mut rt, 0.2);
+    let f = frame(&mut page, &mut rt, 0.2);
+    let (_, r) = (f.look(), f.rects());
     assert!(r[bar].w < 80.0, "landed on the re-declared axis: {:?}", r[bar]);
     assert!(!rt.animating());
 }
@@ -814,7 +832,8 @@ fn screen_class_poses_compose_with_arrangements() {
     let chip = page.find("chip").unwrap();
     let open = gogo::ArrangementId::new(0);
     let mut rt = Runtime::new(&page);
-    let (res, r) = lay(&page, &rt);
+    let f = lay(&page, &rt);
+    let (res, r) = (f.look(), f.rects());
     let b = r[bar.index()];
     assert!(near(b.bottom(), H) && near(b.y, H - 60.0) && near(opacity(&page, &res, tag), 1.0), "base pose: {b:?}");
     let p = r[pane.index()];
@@ -823,25 +842,29 @@ fn screen_class_poses_compose_with_arrangements() {
 
     set_class(&page, &mut rt, ScreenClass::LandscapeSmall);
     assert!(rt.screen.contains(&page.intern_lookup("landscapeSmall")), "{:?}", rt.screen);
-    let (res, r) = lay(&page, &rt);
+    let f = lay(&page, &rt);
+    let (res, r) = (f.look(), f.rects());
     let b = r[bar.index()];
     assert!(near(b.bottom(), H + 10.0) && near(b.y, H - 70.0) && near(opacity(&page, &res, tag), 0.25), "class pose: {b:?} tag={}", opacity(&page, &res, tag));
 
     rt.go_id(open);
     frame(&mut page, &mut rt, 0.0);
-    let (res, r) = frame(&mut page, &mut rt, 0.3);
+    let f = frame(&mut page, &mut rt, 0.3);
+    let (res, r) = (f.look(), f.rects());
     let b = r[bar.index()];
     assert!(near(b.bottom(), H + 40.0) && near(b.y, H - 40.0) && near(opacity(&page, &res, scrim), 0.5) && near(opacity(&page, &res, tag), 0.25), "composed: {b:?} scrim={} tag={}", opacity(&page, &res, scrim), opacity(&page, &res, tag));
 
     set_class(&page, &mut rt, ScreenClass::PortraitSmall);
-    let (res, r) = frame(&mut page, &mut rt, 0.3);
+    let f = frame(&mut page, &mut rt, 0.3);
+    let (res, r) = (f.look(), f.rects());
     let p = r[pane.index()];
     assert!(near(p.x, 10.0) && near(p.right(), W - 10.0) && near(opacity(&page, &res, chip), 1.0), "pair lets go with the class: {p:?} chip={}", opacity(&page, &res, chip));
 
     set_class(&page, &mut rt, ScreenClass::LandscapeSmall);
     rt.go_id(BASE);
     frame(&mut page, &mut rt, 0.0);
-    let (_, r) = frame(&mut page, &mut rt, 0.3);
+    let f = frame(&mut page, &mut rt, 0.3);
+    let (_, r) = (f.look(), f.rects());
     let b = r[bar.index()];
     assert!(near(b.bottom(), H + 10.0) && near(b.y, H - 70.0), "leaving the arrangement lands on the screen pose: {b:?}");
     let res = resolve(&page, &rt);
@@ -866,23 +889,27 @@ fn pane_axis_redeclare_and_pair_margin() {
     let chip = page.find("chip").unwrap();
     let mut rt = Runtime::new(&page);
     set_class(&page, &mut rt, ScreenClass::LandscapeSmall);
-    let (_, r) = lay(&page, &rt);
+    let f = lay(&page, &rt);
+    let (_, r) = (f.look(), f.rects());
     let p = r[pane.index()];
     assert!(near(p.x, 20.0) && near(p.right(), 100.0), "axis re-declare: {p:?}");
     rt.go_id(gogo::ArrangementId::new(0));
     frame(&mut page, &mut rt, 0.0);
-    let (res, r) = frame(&mut page, &mut rt, 0.3);
+    let f = frame(&mut page, &mut rt, 0.3);
+    let (res, r) = (f.look(), f.rects());
     let p = r[pane.index()];
     assert!(near(p.x, 40.0) && near(p.right(), 120.0) && near(opacity(&page, &res, chip), 0.5), "pair applied: {p:?} chip={}", opacity(&page, &res, chip));
     set_class(&page, &mut rt, ScreenClass::PortraitSmall);
     frame(&mut page, &mut rt, 0.3);
     set_class(&page, &mut rt, ScreenClass::LandscapeSmall);
-    let (res, r) = frame(&mut page, &mut rt, 0.3);
+    let f = frame(&mut page, &mut rt, 0.3);
+    let (res, r) = (f.look(), f.rects());
     let p = r[pane.index()];
     assert!(near(p.x, 40.0) && near(opacity(&page, &res, chip), 0.5), "pair re-applies: {p:?} chip={}", opacity(&page, &res, chip));
     rt.go_id(BASE);
     frame(&mut page, &mut rt, 0.0);
-    let (res, r) = frame(&mut page, &mut rt, 0.3);
+    let f = frame(&mut page, &mut rt, 0.3);
+    let (res, r) = (f.look(), f.rects());
     let p = r[pane.index()];
     assert!(near(p.x, 20.0) && near(p.right(), 100.0) && near(opacity(&page, &res, chip), 1.0), "pair off with the arrangement: {p:?} chip={}", opacity(&page, &res, chip));
 }
@@ -898,7 +925,8 @@ fn a_runtime_told_the_class_before_its_first_frame_starts_posed() {
     let tag = page.find("tag").unwrap();
     let mut rt = Runtime::new(&page);
     set_class(&page, &mut rt, ScreenClass::LandscapeSmall);
-    let (res, r) = lay(&page, &rt);
+    let f = lay(&page, &rt);
+    let (res, r) = (f.look(), f.rects());
     assert!(near(r[bar.index()].bottom(), H + 10.0) && near(opacity(&page, &res, tag), 0.25), "{:?} tag={}", r[bar.index()], opacity(&page, &res, tag));
 }
 
@@ -918,7 +946,8 @@ fn a_class_the_file_never_poses_is_base() {
     let mut rt = Runtime::new(&page);
     set_class(&page, &mut rt, ScreenClass::LandscapeSmall);
     set_class(&page, &mut rt, ScreenClass::PortraitMedium);
-    let (res, r) = lay(&page, &rt);
+    let f = lay(&page, &rt);
+    let (res, r) = (f.look(), f.rects());
     let b = r[bar.index()];
     assert!(near(b.bottom(), H) && near(opacity(&page, &res, tag), 1.0), "base: {b:?} tag={}", opacity(&page, &res, tag));
     let p = r[pane.index()];
@@ -1027,7 +1056,9 @@ fn orientation_axis_poses_pairs_and_the_seat_move() {
     let mut rt = Runtime::new(&page);
     let inside = |inner: Rect, outer: Rect| inner.x >= outer.x && inner.y >= outer.y && inner.right() <= outer.right() && inner.bottom() <= outer.bottom();
 
-    let (res, r) = lay(&page, &rt);
+    let f = lay(&page, &rt);
+
+    let (res, r) = (f.look(), f.rects());
     assert!(near(r[bar.index()].h, 20.0) && near(opacity(&page, &res, tag), 1.0), "base: {:?}", r[bar.index()]);
     assert_eq!(res.seat[mover.index()], NO_NODE, "the mover is home");
     assert!(inside(r[mover.index()], r[mover_home.index()]), "mover {:?} in home {:?}", r[mover.index()], r[mover_home.index()]);
@@ -1035,28 +1066,33 @@ fn orientation_axis_poses_pairs_and_the_seat_move() {
 
     rt.set_screen(&page, Orientation::Landscape, ScreenClass::LandscapeSmall);
     assert!(rt.screen.contains(&page.intern_lookup("landscape")));
-    let (res, r) = lay(&page, &rt);
+    let f = lay(&page, &rt);
+    let (res, r) = (f.look(), f.rects());
     assert!(near(r[bar.index()].h, 30.0) && near(opacity(&page, &res, tag), 0.25), "orientation pose: {:?} tag={}", r[bar.index()], opacity(&page, &res, tag));
     assert_eq!(res.seat[mover.index()], side_seat, "seat moved");
     assert!(inside(r[mover.index()], r[strip.index()]), "mover {:?} in strip {:?}", r[mover.index()], r[strip.index()]);
 
     rt.set_screen(&page, Orientation::Landscape, ScreenClass::LotsOfSpace);
-    let (res, r) = lay(&page, &rt);
+    let f = lay(&page, &rt);
+    let (res, r) = (f.look(), f.rects());
     assert!(near(r[bar.index()].h, 44.0) && near(opacity(&page, &res, chip), 0.5), "pair over the single: {:?} chip={}", r[bar.index()], opacity(&page, &res, chip));
 
     rt.go_id(gogo::ArrangementId::new(0));
     frame(&mut page, &mut rt, 0.3);
     rt.go_id(BASE);
     frame(&mut page, &mut rt, 0.0);
-    let (_, r) = frame(&mut page, &mut rt, 0.3);
+    let f = frame(&mut page, &mut rt, 0.3);
+    let (_, r) = (f.look(), f.rects());
     assert!(near(r[bar.index()].h, 44.0), "arrangement off keeps the pair: {:?}", r[bar.index()]);
 
     rt.set_screen(&page, Orientation::Landscape, ScreenClass::LandscapeSmall);
-    let (res, r) = lay(&page, &rt);
+    let f = lay(&page, &rt);
+    let (res, r) = (f.look(), f.rects());
     assert!(near(r[bar.index()].h, 30.0) && near(opacity(&page, &res, chip), 1.0), "class off, single back: {:?} chip={}", r[bar.index()], opacity(&page, &res, chip));
 
     rt.set_screen(&page, Orientation::Portrait, ScreenClass::PortraitSmall);
-    let (res, r) = lay(&page, &rt);
+    let f = lay(&page, &rt);
+    let (res, r) = (f.look(), f.rects());
     assert!(near(r[bar.index()].h, 20.0) && near(opacity(&page, &res, tag), 1.0), "portrait restores: {:?}", r[bar.index()]);
     assert_eq!(res.seat[mover.index()], NO_NODE);
     assert!(inside(r[mover.index()], r[mover_home.index()]), "mover {:?} back in home {:?}", r[mover.index()], r[mover_home.index()]);
@@ -1083,7 +1119,8 @@ fn equal_count_pairs_tie_to_the_later_line() {
         let mut rt = Runtime::new(&page);
         rt.set_screen(&page, Orientation::Landscape, ScreenClass::LotsOfSpace);
         rt.go_id(gogo::ArrangementId::new(0));
-        let (res, _) = lay(&page, &rt);
+        let f = lay(&page, &rt);
+        let (res, _) = (f.look(), f.rects());
         assert_eq!(res.placement[bar.index()].height, Len::Exact(want), "{:?}", res.placement[bar.index()]);
     }
 }
@@ -1132,12 +1169,14 @@ View v {
         let mut rt = Runtime::new(&page);
         rt.set_screen(&page, Orientation::Landscape, ScreenClass::LotsOfSpace);
         rt.go_id(gogo::ArrangementId::new(0));
-        let (res, _) = lay(&page, &rt);
+        let f = lay(&page, &rt);
+        let (res, _) = (f.look(), f.rects());
         assert_eq!(res.placement[bar.index()].height, Len::Exact(want_h), "{:?}", res.placement[bar.index()]);
         assert!(near(opacity(&page, &res, tag), want_a), "opacity {}", opacity(&page, &res, tag));
         // Only one of the two holds → that one poses, order irrelevant.
         rt.go_id(BASE);
-        let (res, _) = lay(&page, &rt);
+        let f = lay(&page, &rt);
+        let (res, _) = (f.look(), f.rects());
         assert_eq!(res.placement[bar.index()].height, Len::Exact(30.0));
     }
 }
@@ -1154,7 +1193,8 @@ fn portrait_with_an_unposed_class_is_base() {
     let mut rt = Runtime::new(&page);
     rt.set_screen(&page, Orientation::Landscape, ScreenClass::LotsOfSpace);
     rt.set_screen(&page, Orientation::Portrait, ScreenClass::PortraitMedium);
-    let (_, r) = lay(&page, &rt);
+    let f = lay(&page, &rt);
+    let (_, r) = (f.look(), f.rects());
     assert!(near(r[bar.index()].h, 20.0), "{:?}", r[bar.index()]);
 }
 

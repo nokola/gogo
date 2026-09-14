@@ -13,10 +13,11 @@
 //!   tick to clamp once the node is idle; `reset_view_state` forgets the
 //!   engine-held view state on a page reuse.
 use gogo::draw::hit;
+use gogo::KeptFrame;
 use gogo::input::{Input, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::NodeId;
-use gogo::runtime::{Resolved, Runtime, resolve};
+use gogo::runtime::{Runtime, resolve};
 use gogo::{ArrangementId, Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
@@ -45,30 +46,28 @@ impl Fx {
         self.page.find(name).unwrap_or_else(|| panic!("no node named {name}"))
     }
 
-    fn lay(&self) -> (Resolved, Vec<Rect>) {
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, self.frame, &FixedAdvance);
-        (res, rects)
+    fn lay(&self) -> KeptFrame {
+        KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), self.frame, &FixedAdvance)
     }
 
     fn rect(&self, name: &str) -> Rect {
-        self.lay().1[(self.id(name)).index()]
+        self.lay().rects()[(self.id(name)).index()]
     }
 
     /// The node a finger at (x, y) lands on, through the real hit road.
     fn hit_at(&self, x: f32, y: f32) -> Option<NodeId> {
-        let (res, rects) = self.lay();
-        hit(&self.page, &res, &rects, x, y, false)
+        let f = self.lay();
+        hit(&self.page, f.frame(), x, y, false)
     }
 
     fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) {
-        let (res, rects) = self.lay();
-        self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase, x, y, t, id: 1 });
+        let f = self.lay();
+        self.input.touch(&self.page, &mut self.rt, f.frame(), &FixedAdvance, Touch { phase, x, y, t, id: 1 });
     }
 
     fn tick(&mut self, dt: f32) -> bool {
-        let (res, rects) = self.lay();
-        self.input.tick(&self.page, &mut self.rt, &res, &rects, dt)
+        let f = self.lay();
+        self.input.tick(&self.page, &mut self.rt, f.frame(), dt)
     }
 }
 
@@ -112,7 +111,8 @@ fn a_seated_button_takes_taps_when_its_declared_parent_is_gone() {
     let mut fx = Fx::new(DOCKED_HOME_GONE);
     let b = fx.id("b");
     fx.rt.go_id(ArrangementId::new(0));
-    let (res, _) = fx.lay();
+    let f = fx.lay();
+    let (res, _) = (f.look(), f.rects());
     assert!(res.gone(&fx.page, fx.id("home")), "the precondition: home is gone");
     let dock = fx.rect("dock");
     let rb = fx.rect("b");
@@ -132,7 +132,8 @@ fn a_button_seated_under_a_hidden_host_takes_no_taps() {
     let mut fx = Fx::new(DOCKED_HOST_HIDDEN);
     let b = fx.id("b");
     fx.rt.go_id(ArrangementId::new(0));
-    let (res, _) = fx.lay();
+    let f = fx.lay();
+    let (res, _) = (f.look(), f.rects());
     assert!(res.hidden(&fx.page, fx.id("dock")), "the precondition: the dock is space_only");
     assert!(!res.gone(&fx.page, fx.id("home")), "the precondition: the declared parent shows");
     let rb = fx.rect("b");
@@ -151,10 +152,12 @@ const DOCKED_FONT: &str = "arrangement docked\nView v {\n Column home halign=lef
 fn a_seated_label_inherits_its_seat_hosts_font_size() {
     let mut fx = Fx::new(DOCKED_FONT);
     let lbl = fx.id("lbl");
-    let (res, _) = fx.lay();
+    let f = fx.lay();
+    let (res, _) = (f.look(), f.rects());
     assert_eq!(res.font_size(&fx.page, lbl), Some(12.0), "at home: the declared block's size");
     fx.rt.go_id(ArrangementId::new(0));
-    let (res, _) = fx.lay();
+    let f = fx.lay();
+    let (res, _) = (f.look(), f.rects());
     assert_eq!(res.placed_parent(&fx.page, lbl), fx.id("s"), "the precondition: seated");
     assert_eq!(res.font_size(&fx.page, lbl), Some(30.0), "seated: the host block's size");
 }
@@ -176,7 +179,8 @@ fn a_code_set_offset_past_the_range_is_clamped_on_the_next_tick() {
     assert!(fx.rt.dirty, "the write dirties the page");
     assert_eq!(fx.rt.scroll_of(sv), [10_000.0, 0.0], "stored as written until a tick can measure the range");
     fx.tick(0.016);
-    let (_, rects) = fx.lay();
+    let f = fx.lay();
+    let (_, rects) = (f.look(), f.rects());
     let max_x = rects[fx.id("wide").index()].w - rects[sv.index()].w;
     assert!(max_x > 0.0, "the precondition: the content overflows: {max_x}");
     let got = fx.rt.scroll_of(sv);
@@ -200,7 +204,8 @@ fn the_clamp_waits_while_a_finger_pans_the_scroll() {
     assert_eq!(fx.rt.scroll_of(sv), [10_000.0, 0.0], "not clamped under the finger");
     fx.touch(Phase::Up, 10.0, 50.0, 3.0);
     fx.tick(0.016);
-    let (_, rects) = fx.lay();
+    let f = fx.lay();
+    let (_, rects) = (f.look(), f.rects());
     let max_x = rects[fx.id("wide").index()].w - rects[sv.index()].w;
     let got = fx.rt.scroll_of(sv);
     assert!(got[0] <= max_x + 0.5 && got[0] >= 0.0, "in range once the finger lifted: {got:?} vs max {max_x}");
@@ -217,8 +222,8 @@ fn reset_view_state_forgets_scroll_focus_and_caret() {
     fx.rt.set_scroll(sv, [50.0, 0.0]);
     fx.tick(0.016);
     assert_eq!(fx.rt.scroll_of(sv), [50.0, 0.0], "the precondition: the strip is scrolled");
-    let (res, rects) = fx.lay();
-    fx.input.focus_on(&fx.page, &mut fx.rt, &res, &rects, Some(b));
+    let f = fx.lay();
+    fx.input.focus_on(&fx.page, &mut fx.rt, f.frame(), Some(b));
     assert_eq!(fx.input.focused(), Some(b), "the precondition: the button holds focus");
     fx.rt.caret = Some((b, 1));
     fx.rt.selection = Some((b, 0, 1));

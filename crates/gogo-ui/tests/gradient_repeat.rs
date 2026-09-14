@@ -5,7 +5,8 @@
 //! the box as before (`repeat=mirror` folds once, `repeat=none` clamps).
 //! Since D21 a gradient is ONE entry followed by its stop records.
 use gogo::draw::{Draw, draw};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::KeptFrame;
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::runtime::{Runtime, resolve};
 
 /// Each gradient's (stop positions, period, angle).
@@ -14,9 +15,8 @@ fn gradients(src: &str) -> Vec<(Vec<f32>, (f32, f32), f32)> {
     assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let res = resolve(&page, &rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 340.0, 14.0), &FixedAdvance);
-    let draws = draw(&page, &res, &rects);
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 340.0, 14.0), &FixedAdvance);
+    let draws = draw(&page, f.frame());
     let mut out: Vec<(Vec<f32>, (f32, f32), f32)> = Vec::new();
     let mut i: usize = 0;
     while i < draws.len() {

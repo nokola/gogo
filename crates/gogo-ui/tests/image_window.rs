@@ -5,6 +5,7 @@
 //! `translate.x from=-100%` lane starts one node-width to the left,
 //! measured from the last glide.
 use gogo::anim::Finish;
+use gogo::KeptFrame;
 use gogo::draw::{Draw, Fit, Sampling, draw};
 use gogo::layout::{FixedAdvance, Rect, layout};
 use gogo::runtime::{Runtime, resolve, resolve_animated};
@@ -23,9 +24,8 @@ fn codes(src: &str) -> Vec<String> {
 fn image_draw(src: &str) -> (Option<[f32; 4]>, Sampling, Fit) {
     let c = ok(src);
     let rt = Runtime::new(&c.page);
-    let res = resolve(&c.page, &rt);
-    let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-    let draws = draw(&c.page, &res, &rects);
+    let f = KeptFrame::fresh(&c.page, resolve(&c.page, &rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+    let draws = draw(&c.page, f.frame());
     draws.iter().find_map(|d| if let Draw::Image { window, sampling, fit, .. } = d { Some((*window, *sampling, *fit)) } else { None }).expect("an Image draw")
 }
 
@@ -59,10 +59,10 @@ fn a_percent_endpoint_is_a_fraction_of_the_nodes_own_box() {
     let mut page = c.page;
     let sheet = page.find("sheet").unwrap();
     let mut rt = Runtime::new(&page);
-    let res = resolve(&page, &rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 200.0, 400.0), &FixedAdvance);
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 200.0, 400.0), &FixedAdvance);
+    let rects = f.rects();
     assert_eq!(rects[sheet.index()], Rect::new(0.0, 350.0, 200.0, 50.0));
-    rt.glide(rects);
+    rt.glide(rects.to_vec());
 
     // 100% of the sheet's height: it starts one sheet-height below its seat.
     let id = page.intern_lookup("slideUp");

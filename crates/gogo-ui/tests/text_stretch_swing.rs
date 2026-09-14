@@ -5,7 +5,8 @@
 //! `SwingPush` with the WP7 camera (`swing_focal`); an anim can drive the
 //! same lane by name.
 use gogo::draw::{Draw, draw, swing_focal};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::KeptFrame;
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::NO_STR;
 use gogo::runtime::{Runtime, resolve, TAP_PULSE_ANGLE_DEG, TAP_PULSE_BACK_SEC, TAP_PULSE_OUT_SEC};
 use gogo::{Finish, Page, compile, has_errors};
@@ -21,9 +22,9 @@ fn messages(src: &str) -> String {
 }
 
 fn draws(page: &Page, rt: &Runtime) -> (Vec<Draw>, Vec<Rect>) {
-    let res = resolve(page, rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 300.0), &FixedAdvance);
-    (draw(page, &res, &rects), rects)
+    let f = KeptFrame::fresh(page, resolve(page, rt), Rect::new(0.0, 0.0, 400.0, 300.0), &FixedAdvance);
+    let rects = f.rects();
+    (draw(page, f.frame()), rects.to_vec())
 }
 
 /// A stretched Label draws ONE `TextStretch` over its rect, the flip

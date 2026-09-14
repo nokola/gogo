@@ -22,11 +22,12 @@
 //! Dialect: Godot's bare-root snippets (`Check c …`) sit under a `View`
 //! here (the Rust root rule, G7003); `res://` and `on:` words unchanged.
 use gogo::compile;
+use gogo::KeptFrame;
 use gogo::draw::{Draw, draw};
 use gogo::input::{Event, EventKind, Input, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{Action, Kind, NO_CHOICE, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{HELD, Resolved, Runtime, SELECTED, resolve};
+use gogo::runtime::{HELD, Runtime, SELECTED, resolve};
 use gogo::{Compiled, Page};
 
 fn ok(src: &str) -> Compiled {
@@ -57,10 +58,8 @@ impl Fx {
         let rt = Runtime::new(&c.page);
         Fx { page: c.page, rt, input: Input::new() }
     }
-    fn lay(&self) -> (Resolved, Vec<Rect>) {
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        (res, rects)
+    fn lay(&self) -> KeptFrame {
+        KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance)
     }
     fn id(&self, name: &str) -> gogo::NodeId {
         self.page.find(name).unwrap_or_else(|| panic!("no node {name:?}"))
@@ -74,23 +73,26 @@ impl Fx {
     /// A finger down and up at the node's center (Godot's `_conf_press` pair).
     fn tap(&mut self, name: &str, t: f64) -> Vec<Event> {
         let n = self.id(name);
-        let (res, rects) = self.lay();
+        let f = self.lay();
+        let rects = f.rects();
         let r = rects[n.index()];
         let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-        self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x, y, t, id: 1 });
-        self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x, y, t: t + 0.1, id: 1 })
+        self.input.touch(&self.page, &mut self.rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Down, x, y, t, id: 1 });
+        self.input.touch(&self.page, &mut self.rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Up, x, y, t: t + 0.1, id: 1 })
     }
     fn draws(&self) -> Vec<Draw> {
-        let (res, rects) = self.lay();
-        draw(&self.page, &res, &rects)
+        let f = self.lay();
+        draw(&self.page, f.frame())
     }
     /// The node's resolved fill alpha; an unset color is 0.
     fn fill_alpha(&self, name: &str) -> u8 {
-        let (res, _) = self.lay();
+        let f = self.lay();
+        let (res, _) = (f.look(), f.rects());
         res.color(&self.page, self.id(name), PropKey::Color).map_or(0, |c| c.0[3])
     }
     fn opacity(&self, name: &str) -> f32 {
-        let (res, _) = self.lay();
+        let f = self.lay();
+        let (res, _) = (f.look(), f.rects());
         res.num(&self.page, self.id(name), PropKey::Opacity).unwrap_or(1.0)
     }
 }
@@ -313,7 +315,8 @@ fn text_on_a_bodied_radio_is_refused() {
 fn background_recolors_the_bodied_radio_slate() {
     let fx = Fx::new("View v {\n Column {\n  choice t {\n   Radio a 20x20, background=#FF0000FF { Circle tRing 10x10 }\n   Radio b 20x20 { Circle uRing 10x10 }\n  }\n }\n}\n");
     let list = fx.draws();
-    let (_, rects) = fx.lay();
+    let f = fx.lay();
+    let (_, rects) = (f.look(), f.rects());
     let ra = rects[(fx.id("a")).index()];
     assert!(list.iter().any(|d| matches!(d, Draw::Quad { rect, color, .. } if *rect == ra && *color == Color_Straight_Srgb_4xU8_RGBA([255, 0, 0, 255]))), "{list:#?}");
     assert_eq!(count(&list, |d| matches!(d, Draw::Quad { .. })), 1, "the untinted Radio stays blank: {list:#?}");
@@ -398,7 +401,8 @@ fn host_with_its_own_when_builds() {
     let src = format!("{HOST_LOOK_HEAD}View v {{\n Column menu spacing=0 {{\n  choice pick value=a {{\n   Radio a 20x20, touch_target=off {{\n    HostLook lookA\n    when selected background=#00FF00FF\n   }}\n   Radio b 20x20, touch_target=off {{ HostLook lookB }}\n  }}\n }}\n}}\n");
     let fx = Fx::new(&src);
     assert!(fx.page.find("lookA/dot").is_some());
-    let (res, _) = fx.lay();
+    let f = fx.lay();
+    let (res, _) = (f.look(), f.rects());
     assert_eq!(res.color(&fx.page, fx.id("a"), PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([0, 255, 0, 255])), "the host's own response applies");
 }
 

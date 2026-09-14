@@ -43,6 +43,7 @@ use std::sync::Arc;
 
 use crate::locale::Locale;
 use crate::page::*;
+use crate::frame::Frame;
 use crate::runtime::{ResolveChanges, Resolved};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -2467,7 +2468,8 @@ fn list_is_row(page: &Page, id: NodeId) -> bool {
 /// viewport's minimum is its fixed content only). The fix is the
 /// author's: `height=` (a sized box) or `height=hug` (the content
 /// shape) — hug lists are content-sized on purpose and never starve.
-pub fn starved(page: &Page, res: &Resolved, rt: &crate::runtime::Runtime, rects: &[Rect]) -> Vec<NodeId> {
+pub fn starved(page: &Page, f: Frame<'_>, rt: &crate::runtime::Runtime) -> Vec<NodeId> {
+    let (res, rects): (&Resolved, &[Rect]) = (f.look(), f.rects());
     let mut out = Vec::new();
     for i in 0..page.nodes.len() {
         let id = NodeId::from_index(i);
@@ -2499,10 +2501,11 @@ pub fn starved(page: &Page, res: &Resolved, rt: &crate::runtime::Runtime, rects:
     out
 }
 
-pub fn offscreen(page: &Page, res: &Resolved, rects: &[Rect], viewport: Rect) -> Vec<NodeId> {
+/// The nodes laid out fully outside `viewport` on frame `f` (a debug walk).
+pub fn offscreen(page: &Page, f: Frame<'_>, viewport: Rect) -> Vec<NodeId> {
     let mut out: Vec<NodeId> = Vec::new();
     if !page.nodes.is_empty() {
-        offscreen_walk(page, res, rects, viewport, NodeId::new(0), &mut out);
+        offscreen_walk(page, f.look(), f.rects(), viewport, NodeId::new(0), &mut out);
     }
     out
 }

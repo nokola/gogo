@@ -26,9 +26,10 @@
 //! - `fpad.button-bg-still-themed`, `fpad.button-slot-parity`
 //!   (1996-2001): theme stylebox ownership, `hover_pressed` slot.
 use gogo::draw::{Draw, draw, hit};
-use gogo::layout::{DEFAULT_FONT_SIZE, FixedAdvance, Rect, layout};
+use gogo::KeptFrame;
+use gogo::layout::{DEFAULT_FONT_SIZE, FixedAdvance, Rect};
 use gogo::page::{Align, Kind, Len, Color_Straight_Srgb_4xU8_RGBA};
-use gogo::runtime::{HELD, Resolved, Runtime, resolve};
+use gogo::runtime::{HELD, Runtime, resolve};
 use gogo::{Compiled, NodeId, Page, compile};
 
 fn ok(src: &str) -> Compiled {
@@ -53,8 +54,7 @@ fn messages(src: &str) -> String {
 struct Built {
     page: Page,
     rt: Runtime,
-    res: Resolved,
-    rects: Vec<Rect>,
+    kept: KeptFrame,
     w: f32,
     h: f32,
 }
@@ -63,9 +63,8 @@ fn build(src: &str, w: f32, h: f32) -> Built {
     let c = ok(src);
     let page = c.page;
     let rt = Runtime::new(&page);
-    let res = resolve(&page, &rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, w, h), &FixedAdvance);
-    Built { page, rt, res, rects, w, h }
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, w, h), &FixedAdvance);
+    Built { page, rt, kept: f, w, h }
 }
 
 impl Built {
@@ -73,18 +72,17 @@ impl Built {
         self.page.find(name).unwrap_or_else(|| panic!("no node {name:?}"))
     }
     fn rect(&self, name: &str) -> Rect {
-        self.rects[(self.id(name)).index()]
+        self.kept.rects()[(self.id(name)).index()]
     }
     fn placement(&self, name: &str) -> gogo::page::Placement {
-        self.res.placement[(self.id(name)).index()]
+        self.kept.look().placement[(self.id(name)).index()]
     }
     /// Lays the page out again after a runtime change (a state, a pose).
     fn relayout(&mut self) {
-        self.res = resolve(&self.page, &self.rt);
-        self.rects = layout(&self.page, &self.res, Rect::new(0.0, 0.0, self.w, self.h), &FixedAdvance);
+        self.kept = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, self.w, self.h), &FixedAdvance);
     }
     fn draws(&self) -> Vec<Draw> {
-        draw(&self.page, &self.res, &self.rects)
+        draw(&self.page, self.kept.frame())
     }
     /// The rect a node's text is drawn into (`None` = no text drawn).
     fn text_rect(&self, word: &str) -> Option<Rect> {
@@ -362,7 +360,7 @@ fn layers_minimum_and_input_claim() {
         400.0,
     );
     assert_eq!(b.rect("row"), Rect::new(0.0, 0.0, 100.0, 40.0));
-    let under = |x: f32, y: f32| hit(&b.page, &b.res, &b.rects, x, y, false);
+    let under = |x: f32, y: f32| hit(&b.page, b.kept.frame(), x, y, false);
     assert_eq!(under(50.0, 20.0), Some(b.id("big")), "the Layers never stands between a finger and its child");
     assert_eq!(under(50.0, 60.0), Some(b.id("blocker")), "interactive=true claims");
     assert_eq!(under(50.0, 110.0), None, "a plain Layers is transparent: {:?}", b.rect("plain"));

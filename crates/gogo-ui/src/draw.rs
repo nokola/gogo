@@ -4,6 +4,7 @@
 //! `gogo` never sees a device pixel; rects are epx.
 
 use crate::anim::Motion;
+use crate::frame::Frame;
 use crate::layout::{CHECK_BOX_EPX, DEFAULT_FONT_SIZE, LookCopy, MARK_TEXT_GAP, Rect, SCROLL_BAR_EPX, TOGGLE_PILL};
 use crate::page::*;
 use crate::runtime::{DISABLED, ResolveChanges, Resolved, SELECTED};
@@ -200,12 +201,15 @@ pub use crate::page::DISABLED_OPACITY;
 /// The auto scroll bar's grabber (Godot's default theme, measured #737373).
 pub const SCROLL_GRABBER: Color_Straight_Srgb_4xU8_RGBA = Color_Straight_Srgb_4xU8_RGBA([0x73, 0x73, 0x73, 0xFF]);
 
-pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
+/// The page's draw list for one frame (`f`: the look and its rects, see
+/// `Frame`). Every command's rect is a shown rect: moved by the anim
+/// motion, clipped by its ancestors.
+pub fn draw(page: &Page, f: Frame<'_>) -> Vec<Draw> {
     let mut out = Vec::new();
     if page.nodes.is_empty() {
         return out;
     }
-    walk(page, res, rects, NodeId::new(0), 1.0, None, &mut out, None, Xform::IDENTITY);
+    walk(page, f.look(), f.rects(), NodeId::new(0), 1.0, None, &mut out, None, Xform::IDENTITY);
     out
 }
 
@@ -220,18 +224,18 @@ pub fn draw(page: &Page, res: &Resolved, rects: &[Rect]) -> Vec<Draw> {
 /// the list, only the subtree's own. Rects stay page epx; the renderer
 /// shifts and scales them (`UiRenderer::render_to_texture`). Empty for a
 /// node the layout has no rect for.
-pub fn draw_subtree(page: &Page, res: &Resolved, rects: &[Rect], root: NodeId) -> Vec<Draw> {
+pub fn draw_subtree(page: &Page, f: Frame<'_>, root: NodeId) -> Vec<Draw> {
     let mut out = Vec::new();
-    draw_subtree_into(page, res, rects, root, &mut out);
+    draw_subtree_into(page, f, root, &mut out);
     out
 }
 
 /// `draw_subtree` into a kept buffer (cleared first) — the frame road's
 /// `above_children` split, allocation-free once warm.
-pub fn draw_subtree_into(page: &Page, res: &Resolved, rects: &[Rect], root: NodeId, out: &mut Vec<Draw>) {
+pub fn draw_subtree_into(page: &Page, f: Frame<'_>, root: NodeId, out: &mut Vec<Draw>) {
     out.clear();
-    if rects.len() > root.index() {
-        walk(page, res, rects, root, 1.0, None, out, None, Xform::IDENTITY);
+    if f.rects().len() > root.index() {
+        walk(page, f.look(), f.rects(), root, 1.0, None, out, None, Xform::IDENTITY);
     }
 }
 
@@ -244,20 +248,20 @@ pub fn draw_subtree_into(page: &Page, res: &Resolved, rects: &[Rect], root: Node
 /// some parent chrome above the children — the clone page's back chevron
 /// over its intro screen (CopyPastePage.xaml:163-167). That chrome leaves
 /// this list and joins the draws after the children.
-pub fn draw_except(page: &Page, res: &Resolved, rects: &[Rect], skip: NodeId) -> Vec<Draw> {
+pub fn draw_except(page: &Page, f: Frame<'_>, skip: NodeId) -> Vec<Draw> {
     let mut out = Vec::new();
-    draw_except_into(page, res, rects, skip, &mut out);
+    draw_except_into(page, f, skip, &mut out);
     out
 }
 
 /// `draw_except` into a kept buffer (cleared first) — the frame road's
 /// `above_children` split, allocation-free once warm.
-pub fn draw_except_into(page: &Page, res: &Resolved, rects: &[Rect], skip: NodeId, out: &mut Vec<Draw>) {
+pub fn draw_except_into(page: &Page, f: Frame<'_>, skip: NodeId, out: &mut Vec<Draw>) {
     out.clear();
     if page.nodes.is_empty() {
         return;
     }
-    walk(page, res, rects, NodeId::new(0), 1.0, Some(skip), out, None, Xform::IDENTITY);
+    walk(page, f.look(), f.rects(), NodeId::new(0), 1.0, Some(skip), out, None, Xform::IDENTITY);
 }
 
 /// The dashed border (`border_dash=`): one pass around the plate's
@@ -1194,7 +1198,10 @@ pub(crate) fn wedge_contains(dx: f32, dy: f32, from_deg: f32, span_deg: f32) -> 
     (dy.atan2(dx).to_degrees() - from_deg).rem_euclid(360.0) <= span_deg
 }
 
-pub fn hit(page: &Page, res: &Resolved, rects: &[Rect], x: f32, y: f32, any: bool) -> Option<NodeId> {
+/// The node under (`x`, `y`) on the DRAWN frame `f`; `any` = count the
+/// boxes that take no input too.
+pub fn hit(page: &Page, f: Frame<'_>, x: f32, y: f32, any: bool) -> Option<NodeId> {
+    let (res, rects): (&Resolved, &[Rect]) = (f.look(), f.rects());
     // The finger lands on the DRAWN picture: while an anim moves a box,
     // the un-moved layout rects would take taps where controls WILL be,
     // not where they are (GPAR50) — so hit reads the moved rects.
@@ -1677,8 +1684,9 @@ impl DrawCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::KeptFrame;
     use crate::compile::compile;
-    use crate::layout::{FixedAdvance, layout};
+    use crate::layout::{FixedAdvance};
     use crate::runtime::{HELD, Runtime, resolve};
 
     #[test]
@@ -1687,18 +1695,17 @@ mod tests {
         let c = compile(src, &|_| None);
         assert!(!crate::diag::has_errors(&c.diags), "{:#?}", c.diags);
         let mut rt = Runtime::new(&c.page);
-        let res = resolve(&c.page, &rt);
-        let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        let list = draw(&c.page, &res, &rects);
+        let f = KeptFrame::fresh(&c.page, resolve(&c.page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        let list = draw(&c.page, f.frame());
         // bg, bar plate, button plate, button text, label text.
         assert_eq!(list.len(), 5, "{list:#?}");
         assert!(matches!(list[2], Draw::Quad { color, .. } if color == DEFAULT_BUTTON_BACKGROUND));
         let clear = c.page.find("clear").unwrap();
-        assert_eq!(hit(&c.page, &res, &rects, 20.0, 20.0, false), Some(clear));
-        assert_eq!(hit(&c.page, &res, &rects, 200.0, 400.0, false), None);
+        assert_eq!(hit(&c.page, f.frame(), 20.0, 20.0, false), Some(clear));
+        assert_eq!(hit(&c.page, f.frame(), 200.0, 400.0, false), None);
         rt.set_state(clear, HELD, true);
-        let res = resolve(&c.page, &rt);
-        let list = draw(&c.page, &res, &rects);
+        let f = KeptFrame::fresh(&c.page, resolve(&c.page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        let list = draw(&c.page, f.frame());
         assert!(matches!(list[2], Draw::Quad { color, .. } if color == Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 128])), "{:?}", list[2]);
     }
 
@@ -1717,9 +1724,8 @@ mod tests {
         assert!(!rt.has(small, crate::runtime::SELECTED));
         assert!(rt.has(c.page.find("mute").unwrap(), crate::runtime::SELECTED));
         assert!(rt.has(c.page.find("undo").unwrap(), crate::runtime::DISABLED));
-        let res = resolve(&c.page, &rt);
-        let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        let list = draw(&c.page, &res, &rects);
+        let f = KeptFrame::fresh(&c.page, resolve(&c.page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        let list = draw(&c.page, f.frame());
         let accent = palette_color("accent").unwrap();
         // small: ring + text; medium: ring + dot + text; mute: pill + knob + text; save: box + text; undo: plate + text.
         let circles = list.iter().filter(|d| matches!(d, Draw::Circle { .. })).count();
@@ -1741,9 +1747,8 @@ mod tests {
         assert!(!crate::has_errors(&c.diags), "{:#?}", c.diags);
         let page = c.page;
         let rt = crate::runtime::Runtime::new(&page);
-        let res = crate::runtime::resolve(&page, &rt);
-        let rects = crate::layout::layout(&page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &crate::layout::FixedAdvance);
-        let list = draw(&page, &res, &rects);
+        let f = KeptFrame::fresh(&page, crate::runtime::resolve(&page, &rt), Rect::new(0.0, 0.0, 200.0, 200.0), &crate::layout::FixedAdvance);
+        let list = draw(&page, f.frame());
         let corners: Vec<f32> = list.iter().filter_map(|d| if let Draw::Gradient { corner, .. } = d { Some(*corner) } else { None }).collect();
         assert_eq!(corners, vec![50.0, 0.0], "{list:?}");
     }
@@ -1758,11 +1763,11 @@ mod tests {
         let c = compile(src, &|_| None);
         assert!(!crate::diag::has_errors(&c.diags), "{:#?}", c.diags);
         let rt = Runtime::new(&c.page);
-        let res = resolve(&c.page, &rt);
-        let rects = layout(&c.page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+        let f = KeptFrame::fresh(&c.page, resolve(&c.page, &rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+        let rects = f.rects();
         let own = rects[c.page.find("c").unwrap().index()];
         assert_eq!((own.w, own.h), (100.0, 40.0), "{own:?}");
-        let list = draw(&c.page, &res, &rects);
+        let list = draw(&c.page, f.frame());
         let disc = list.iter().find_map(|d| if let Draw::Circle { rect, .. } = d { Some(*rect) } else { None }).unwrap();
         assert_eq!((disc.w, disc.h), (own.h, own.h), "{list:#?}");
         assert_eq!(disc.x, own.x + (own.w - own.h) / 2.0);

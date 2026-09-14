@@ -4,8 +4,9 @@
 //! changed-means-CHANGED law), arrows move the caret. The soft-keyboard
 //! raising is the device half and stays open (the tracker row).
 use gogo::draw::{Draw, draw};
+use gogo::KeptFrame;
 use gogo::input::{Event, EventKind, Input, Key, MOUSE_ID, Mods, Phase, SEL_HANDLE_EPX, Touch, sel_handle_rect};
-use gogo::layout::{DEFAULT_FONT_SIZE, FixedAdvance, Rect, layout};
+use gogo::layout::{DEFAULT_FONT_SIZE, FixedAdvance, Rect};
 use gogo::page::{NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
 use gogo::runtime::{FOCUSED, Runtime, resolve};
 use gogo::{Page, compile};
@@ -30,31 +31,28 @@ impl Fx {
     }
     fn tap(&mut self, node: &str, t0: f64) -> Vec<Event> {
         let id = self.page.find(node).unwrap();
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        let f = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        let rects = f.rects();
         let r = rects[id.index()];
         let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-        let mut ev = self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x, y, t: t0, id: 1 });
-        ev.extend(self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x, y, t: t0 + 0.1, id: 1 }));
+        let mut ev = self.input.touch(&self.page, &mut self.rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Down, x, y, t: t0, id: 1 });
+        ev.extend(self.input.touch(&self.page, &mut self.rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Up, x, y, t: t0 + 0.1, id: 1 }));
         ev
     }
     /// One raw pointer sample — `id` picks the pointer (`MOUSE_ID` = the
     /// mouse; anything else is a finger).
     fn point(&mut self, phase: Phase, x: f32, y: f32, t: f64, id: u64) -> Vec<Event> {
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase, x, y, t, id })
+        let f = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        self.input.touch(&self.page, &mut self.rt, f.frame(), &FixedAdvance, Touch { phase, x, y, t, id })
     }
     /// Advances the input clock (the long-press door matures here).
     fn tick(&mut self, dt: f32) {
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        self.input.tick(&self.page, &mut self.rt, &res, &rects, dt);
+        let f = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        self.input.tick(&self.page, &mut self.rt, f.frame(), dt);
     }
     fn key(&mut self, k: Key) -> Vec<Event> {
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        self.input.key(&mut self.page, &mut self.rt, &res, &rects, k, self.mods)
+        let f = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        self.input.key(&mut self.page, &mut self.rt, f.frame(), k, self.mods)
     }
     fn text(&self, node: NodeId) -> String {
         let res = resolve(&self.page, &self.rt);
@@ -104,9 +102,8 @@ fn the_caret_moves_and_rides_the_draw_list() {
     fx.key(Key::Backspace);
     assert_eq!(fx.text(field), "Xb");
     assert_eq!(fx.rt.caret, Some((field, 2)));
-    let res = resolve(&fx.page, &fx.rt);
-    let rects = layout(&fx.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    let list = draw(&fx.page, &res, &rects);
+    let f = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let list = draw(&fx.page, f.frame());
     assert!(list.iter().any(|d| matches!(d, Draw::Caret { index: 2, .. })), "the caret rides the draw list: {list:#?}");
 }
 
@@ -122,23 +119,21 @@ fn placeholder_shows_while_empty_and_max_length_caps_typing() {
     let mut input = Input::new();
     let field = page.find("field").unwrap();
     let shows_placeholder = |page: &Page, rt: &Runtime| {
-        let res = resolve(page, rt);
-        let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        draw(page, &res, &rects).iter().any(|d| matches!(d, Draw::Text { text, .. } if page.str(*text) == "Search"))
+        let f = KeptFrame::fresh(page, resolve(page, rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        draw(page, f.frame()).iter().any(|d| matches!(d, Draw::Text { text, .. } if page.str(*text) == "Search"))
     };
     assert!(shows_placeholder(&page, &rt), "empty field shows the placeholder");
     {
-        let res = resolve(&page, &rt);
-        let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        let rects = f.rects();
         let r = rects[field.index()];
         let (x, y) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
-        input.touch(&page, &mut rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x, y, t: 0.0, id: 1 });
-        input.touch(&page, &mut rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x, y, t: 0.1, id: 1 });
+        input.touch(&page, &mut rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Down, x, y, t: 0.0, id: 1 });
+        input.touch(&page, &mut rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Up, x, y, t: 0.1, id: 1 });
     }
     for ch in ['a', 'b', 'c', 'd'] {
-        let res = resolve(&page, &rt);
-        let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        input.key(&mut page, &mut rt, &res, &rects, Key::Char(ch), Mods::NONE);
+        let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        input.key(&mut page, &mut rt, f.frame(), Key::Char(ch), Mods::NONE);
     }
     let res = resolve(&page, &rt);
     let text = match res.prop(&page, field, PropKey::Text) {
@@ -274,9 +269,8 @@ fn a_press_places_the_caret_and_a_mouse_drag_selects() {
     fx.point(Phase::Up, at_char(8), 18.0, 10.2, MOUSE_ID);
     assert_eq!(fx.input.selected_text(&fx.page, &fx.rt).as_deref(), Some("lo wo"));
     // The highlight draws under the glyphs.
-    let res = resolve(&fx.page, &fx.rt);
-    let rects = layout(&fx.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    let draws = draw(&fx.page, &res, &rects);
+    let f = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let draws = draw(&fx.page, f.frame());
     assert!(draws.iter().any(|d| matches!(d, Draw::Selection { lo: 3, hi: 8, .. })), "{draws:?}");
 }
 
@@ -350,11 +344,11 @@ fn paste_replaces_the_selection_and_max_length_caps_the_result() {
     let mut rt = Runtime::new(&page);
     let mut input = Input::new();
     let field = page.find("f").unwrap();
-    let res = resolve(&page, &rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let rects = f.rects();
     let r = rects[field.index()];
-    input.touch(&page, &mut rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Down, x: r.x + 5.0, y: r.y + 5.0, t: 0.0, id: 1 });
-    input.touch(&page, &mut rt, &res, &rects, &FixedAdvance, Touch { phase: Phase::Up, x: r.x + 5.0, y: r.y + 5.0, t: 0.1, id: 1 });
+    input.touch(&page, &mut rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Down, x: r.x + 5.0, y: r.y + 5.0, t: 0.0, id: 1 });
+    input.touch(&page, &mut rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Up, x: r.x + 5.0, y: r.y + 5.0, t: 0.1, id: 1 });
     let ev = input.paste(&mut page, &mut rt, "hello world");
     assert_eq!(ev.iter().filter(|e| matches!(e.kind, EventKind::Edit(_))).count(), 1, "{ev:?}");
     let text = |page: &Page, rt: &Runtime| match resolve(page, rt).prop(page, field, gogo::page::PropKey::Text) {
@@ -364,10 +358,10 @@ fn paste_replaces_the_selection_and_max_length_caps_the_result() {
     assert_eq!(text(&page, &rt), "hello", "max_length trims the paste to fit");
     // Select "hel" (Home, three shifted Rights) and paste "xy": the
     // selection is replaced and the cap holds against the RESULT.
-    input.key(&mut page, &mut rt, &res, &rects, Key::Home, Mods::NONE);
-    input.key(&mut page, &mut rt, &res, &rects, Key::Right, Mods::SHIFT);
-    input.key(&mut page, &mut rt, &res, &rects, Key::Right, Mods::SHIFT);
-    input.key(&mut page, &mut rt, &res, &rects, Key::Right, Mods::SHIFT);
+    input.key(&mut page, &mut rt, f.frame(), Key::Home, Mods::NONE);
+    input.key(&mut page, &mut rt, f.frame(), Key::Right, Mods::SHIFT);
+    input.key(&mut page, &mut rt, f.frame(), Key::Right, Mods::SHIFT);
+    input.key(&mut page, &mut rt, f.frame(), Key::Right, Mods::SHIFT);
     let ev = input.paste(&mut page, &mut rt, "xy");
     assert_eq!(ev.len(), 1, "{ev:?}");
     assert_eq!(text(&page, &rt), "xylo", "the selection is replaced, the tail stays");
@@ -412,9 +406,8 @@ fn a_long_press_selects_the_word_and_raises_the_bar() {
     assert_eq!(fx.rt.edit_bar, Some(field));
     fx.point(Phase::Up, at_char(8), 18.0, 40.7, 7);
     assert!(fx.rt.sel_handles, "a touch selection shows drag handles");
-    let res = resolve(&fx.page, &fx.rt);
-    let rects = layout(&fx.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    let draws = draw(&fx.page, &res, &rects);
+    let f = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let draws = draw(&fx.page, f.frame());
     assert!(draws.iter().any(|d| matches!(d, Draw::SelHandles { lo: 6, hi: 11, .. })), "{draws:?}");
 }
 
@@ -467,8 +460,8 @@ fn a_handle_drag_moves_its_end() {
     fx.tick(0.6);
     fx.point(Phase::Up, at_char(2), 18.0, 40.7, 7);
     assert_eq!(fx.rt.selection, Some((field, 0, 5)), "hello selected");
-    let res = resolve(&fx.page, &fx.rt);
-    let rects = layout(&fx.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let f = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let rects = f.rects();
     let fr = rects[field.index()];
     let hr = sel_handle_rect(fr.y + fr.h, 8.0 + adv() * 5.0, SEL_HANDLE_EPX);
     let (hx, hy) = (hr.x + hr.w / 2.0, hr.y + hr.h / 2.0);
@@ -557,9 +550,8 @@ fn selection_color_paints_the_highlight_and_handles() {
     fx.point(Phase::Down, at_char(1), 18.0, 40.0, 7);
     fx.tick(0.6);
     fx.point(Phase::Up, at_char(1), 18.0, 40.7, 7);
-    let res = resolve(&fx.page, &fx.rt);
-    let rects = layout(&fx.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-    let draws = draw(&fx.page, &res, &rects);
+    let f = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    let draws = draw(&fx.page, f.frame());
     assert!(draws.iter().any(|d| matches!(d, Draw::Selection { color, .. } if color.0 == [255, 0, 0, 128])), "{draws:?}");
     assert!(draws.iter().any(|d| matches!(d, Draw::SelHandles { color, .. } if color.0 == [255, 0, 0, 255])), "{draws:?}");
     let c = compile("View v { Label l text=\"x\", selection_color=#FF000000 }", &|_| None);

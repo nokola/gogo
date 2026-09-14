@@ -22,6 +22,7 @@
 //! road, asserted). The effect page's Button flip must lay out nothing
 //! and re-emit under a hundred commands.
 use gogo::draw::DrawStats;
+use gogo::KeptFrame;
 use gogo::layout::LayoutStats;
 use gogo::page::State;
 use gogo::runtime::{DISABLED, FOCUSED, FOCUS_WITHIN, HELD, HOVERED, Item, ItemValue, Resolved, Runtime, SELECTED, resolve_animated};
@@ -284,24 +285,24 @@ impl Roads {
         let rects_off: Vec<Rect> = layout(&self.page_off, off, vp, &FixedAdvance);
         let _shown_off: Vec<Rect> = self.rt_off.glide(rects_off);
         // Retained-off road: the caches switched off must equal the plain functions.
-        let rects_full: Vec<Rect> = layout(&self.page_full, full, vp, &FixedAdvance);
+        let mut fresh_full: KeptFrame = KeptFrame::fresh(&self.page_full, full.clone(), vp, &FixedAdvance);
         let rects_full_cache: Vec<Rect> = self.rt_full.layout_retained(&self.page_full, vp, &FixedAdvance).to_vec();
-        self.same_rects(what, "the switched-off retained layout", &rects_full_cache, "`layout`", &rects_full);
+        self.same_rects(what, "the switched-off retained layout", &rects_full_cache, "`layout`", fresh_full.rects());
         assert!(self.rt_full.debug_layout_stats().full, "{}: after step {} `{what}` the switched-off retained layout did not take the full road", self.name, self.steps);
-        let shown_full: Vec<Rect> = self.rt_full.glide(rects_full);
-        let draws_full: Vec<Draw> = draw(&self.page_full, full, &shown_full);
-        self.rt_full.draw_retained(&self.page_full, &shown_full, &mut self.draws_off);
+        fresh_full.glide(&mut self.rt_full);
+        let draws_full: Vec<Draw> = draw(&self.page_full, fresh_full.frame());
+        self.rt_full.draw_retained(&self.page_full, fresh_full.rects(), &mut self.draws_off);
         let draws_off: Vec<Draw> = std::mem::take(&mut self.draws_off);
         self.same_draws(what, "the switched-off retained draw", &draws_off, "`draw`", &draws_full);
         self.draws_off = draws_off;
         assert!(self.rt_full.debug_draw_stats().full, "{}: after step {} `{what}` the switched-off retained draw did not walk everything", self.name, self.steps);
         // Retained road: the caches on.
-        let rects_ref: Vec<Rect> = layout(&self.page_ret, ret, vp, &FixedAdvance);
+        let mut fresh_ret: KeptFrame = KeptFrame::fresh(&self.page_ret, ret.clone(), vp, &FixedAdvance);
         let rects_ret: Vec<Rect> = self.rt_ret.layout_retained(&self.page_ret, vp, &FixedAdvance).to_vec();
-        self.same_rects(what, "the retained layout", &rects_ret, "`layout`", &rects_ref);
-        let shown_ret: Vec<Rect> = self.rt_ret.glide(rects_ret);
-        let draws_ref: Vec<Draw> = draw(&self.page_ret, ret, &shown_ret);
-        self.rt_ret.draw_retained(&self.page_ret, &shown_ret, &mut self.draws_ret);
+        self.same_rects(what, "the retained layout", &rects_ret, "`layout`", fresh_ret.rects());
+        fresh_ret.glide(&mut self.rt_ret);
+        let draws_ref: Vec<Draw> = draw(&self.page_ret, fresh_ret.frame());
+        self.rt_ret.draw_retained(&self.page_ret, fresh_ret.rects(), &mut self.draws_ret);
         let draws_ret: Vec<Draw> = std::mem::take(&mut self.draws_ret);
         self.same_draws(what, "the retained draw", &draws_ret, "`draw`", &draws_ref);
         self.draws_ret = draws_ret;

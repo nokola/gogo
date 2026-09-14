@@ -5,8 +5,9 @@
 //! player whose channels a newer one took keeps its clock and hands over
 //! the true base.
 use gogo::anim::Finish;
+use gogo::KeptFrame;
 use gogo::draw::{Draw, draw, hit};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::DISABLED_OPACITY;
 use gogo::runtime::{HELD, Runtime, resolve, resolve_animated};
 use gogo::{Compiled, Page, compile};
@@ -18,9 +19,8 @@ fn ok(src: &str) -> Compiled {
 }
 
 fn draws(page: &Page, rt: &Runtime) -> Vec<Draw> {
-    let res = resolve(page, rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
-    draw(page, &res, &rects)
+    let f = KeptFrame::fresh(page, resolve(page, rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    draw(page, f.frame())
 }
 
 fn text_alpha(page: &Page, list: &[Draw], word: &str) -> u8 {
@@ -151,9 +151,9 @@ fn a_written_ceiling_clips_what_pokes_past_it() {
     let c = ok("View v {\n Layers z halign=left, valign=top {\n  Panel plate max_width=100, halign=left, valign=top { Label l text=\"a very long label that does not wrap at all\", font_size=10 }\n  Panel loose halign=left, valign=top, margin_top=100 { Rectangle r 300x10 }\n  Label cap text=\"also long text here\", font_size=10, max_width=40, halign=left, valign=top, margin_top=200\n }\n}\n");
     let page = &c.page;
     let rt = Runtime::new(page);
-    let res = resolve(page, &rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
-    let list = draw(page, &res, &rects);
+    let f = KeptFrame::fresh(page, resolve(page, &rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let rects = f.rects();
+    let list = draw(page, f.frame());
     let plate = rects[(page.find("plate").unwrap()).index()];
     let l = rects[(page.find("l").unwrap()).index()];
     assert_eq!(plate.w, 100.0, "the cap holds: {plate:?}");
@@ -174,9 +174,9 @@ fn an_exact_size_clips_but_a_written_overhang_stays() {
     let c = ok("View v {\n Layers z halign=left, valign=top {\n  Panel box width=100, height=40, halign=left, valign=top { Rectangle r 300x10 }\n  Panel hang width=100, height=40, halign=left, valign=top, margin_top=100 { Rectangle badge 20x20, halign=right, valign=top, margin_right=-10 }\n  Panel ov width=100, height=40, halign=left, valign=top, margin_top=200 { Rectangle o 300x10, overlay=true }\n  Panel grows halign=left, valign=top, margin_top=300 { Rectangle g 300x10 }\n }\n}\n");
     let page = &c.page;
     let rt = Runtime::new(page);
-    let res = resolve(page, &rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
-    let list = draw(page, &res, &rects);
+    let f = KeptFrame::fresh(page, resolve(page, &rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let rects = f.rects();
+    let list = draw(page, f.frame());
     let clips: Vec<Rect> = list.iter().filter_map(|d| if let Draw::ClipPush(r) = d { Some(*r) } else { None }).collect();
     let rect = |n: &str| rects[(page.find(n).unwrap()).index()];
     assert_eq!(rect("box").w, 100.0);
@@ -200,8 +200,8 @@ fn a_filler_inside_a_written_box_takes_the_box() {
     let c = ok("View v {\n Layers box width=200, height=80, halign=left, valign=top { Layers filler { Layers deeper { Rectangle big width=100, height=150, halign=left, valign=top } } }\n Panel hug width=200, height=hug, halign=left, valign=top, margin_top=300 { Layers hfill { Rectangle big3 width=100, height=150, halign=left, valign=top } }\n Layers box2 width=200, height=80, halign=left, valign=top, margin_top=500 { Layers floored min_height=100 { Rectangle big4 width=100, height=150 } }\n}\n");
     let page = &c.page;
     let rt = Runtime::new(page);
-    let res = resolve(page, &rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 60.0), &FixedAdvance);
+    let f = KeptFrame::fresh(page, resolve(page, &rt), Rect::new(0.0, 0.0, 400.0, 60.0), &FixedAdvance);
+    let rects = f.rects();
     let rect = |n: &str| rects[(page.find(n).unwrap()).index()];
     assert_eq!(rect("box").h, 80.0);
     assert_eq!(rect("filler").h, 80.0, "the filler takes the written 80: {:?}", rect("filler"));
@@ -212,8 +212,8 @@ fn a_filler_inside_a_written_box_takes_the_box() {
     let c = ok("View v {\n Layers free { Rectangle big2 width=100, height=150, halign=left, valign=top }\n}\n");
     let page = &c.page;
     let rt = Runtime::new(page);
-    let res = resolve(page, &rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 60.0), &FixedAdvance);
+    let f = KeptFrame::fresh(page, resolve(page, &rt), Rect::new(0.0, 0.0, 400.0, 60.0), &FixedAdvance);
+    let rects = f.rects();
     let free = rects[(page.find("free").unwrap()).index()];
     assert_eq!(free.h, 150.0, "a filler of the viewport still floors at its content: {free:?}");
     assert_eq!(rect("hfill").h, 150.0, "a hug box is sized by content, so is its filler: {:?}", rect("hfill"));
@@ -232,8 +232,8 @@ fn a_negative_margin_hangs_out_and_is_not_claimed() {
     let c = ok("View v {\n Panel plate width=hug, height=hug, halign=left, valign=top { Rectangle r width=100, height=40, halign=left, valign=top, margin_right=-30 }\n Panel plate2 width=hug, height=hug, halign=left, valign=top, margin_top=100 { Rectangle r2 width=100, height=40, halign=left, valign=top, margin_right=30 }\n Panel plate3 width=hug, height=hug, halign=left, valign=top, margin_top=200 { Rectangle r3 width=100, height=40, halign=left, valign=top, margin_right=-300 }\n Layers zone margin_top=300 { Rectangle bg width=fill, height=150, valign=bottom, margin_bottom=-70 }\n}\n");
     let page = &c.page;
     let rt = Runtime::new(page);
-    let res = resolve(page, &rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 380.0), &FixedAdvance);
+    let f = KeptFrame::fresh(page, resolve(page, &rt), Rect::new(0.0, 0.0, 400.0, 380.0), &FixedAdvance);
+    let rects = f.rects();
     let rect = |n: &str| rects[(page.find(n).unwrap()).index()];
     assert_eq!(rect("plate").w, 70.0, "the hanging 30 is not claimed: {:?}", rect("plate"));
     assert_eq!(rect("r").w, 100.0, "the child is still 100 wide and hangs out: {:?}", rect("r"));
@@ -252,9 +252,9 @@ fn offscreen_names_shoved_nodes_not_parked_ones() {
     let c = ok("View v {\n Rectangle low width=50, height=50, halign=left, valign=top, margin_top=900\n Button tile 60x60, halign=right, valign=bottom, margin_right=-80 { Rectangle inner 10x10 }\n Rectangle gone width=50, height=50, halign=left, valign=top, margin_top=950, visibility=gone\n Scroll list width=100, height=100, halign=left, valign=top { Column { Rectangle a width=100, height=300; Rectangle b width=100, height=300 } }\n Layers box width=200, height=80, halign=left, valign=top, margin_top=200 { Rectangle bottomed width=100, height=40, valign=bottom, margin_bottom=-500 }\n}\n");
     let page = &c.page;
     let rt = Runtime::new(page);
-    let res = resolve(page, &rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
-    let names: Vec<&str> = gogo::layout::offscreen(page, &res, &rects, Rect::new(0.0, 0.0, 400.0, 400.0)).iter().map(|id| page.str(page.nodes[id.index()].name)).collect();
+    let f = KeptFrame::fresh(page, resolve(page, &rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let rects = f.rects();
+    let names: Vec<&str> = gogo::layout::offscreen(page, f.frame(), Rect::new(0.0, 0.0, 400.0, 400.0)).iter().map(|id| page.str(page.nodes[id.index()].name)).collect();
     assert_eq!(names, vec!["low"], "{rects:?}");
 }
 
@@ -269,8 +269,8 @@ fn margins_never_stretch_a_hug_box() {
     let c = ok("View v {\n Panel card width=hug, height=hug, margin=8, valign=top { Rectangle r 50x20 }\n Panel span margin=8, margin_top=100, height=40 { }\n}\n");
     let page = &c.page;
     let rt = Runtime::new(page);
-    let res = resolve(page, &rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let f = KeptFrame::fresh(page, resolve(page, &rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let rects = f.rects();
     let rect = |n: &str| rects[(page.find(n).unwrap()).index()];
     let card = rect("card");
     assert_eq!(card.w, 50.0, "hug keeps its content width: {card:?}");
@@ -321,14 +321,14 @@ fn clipped_overflow_is_not_hit_testable() {
     let c = ok("View v {\n Layers z halign=left, valign=top {\n  Layers cap width=100, height=40, halign=left, valign=top { Button b text=\"wide\", width=300, height=40 }\n  Layers free halign=left, valign=top, margin_top=100 { Button b2 text=\"wide\", width=300, height=40 }\n }\n}\n");
     let page = &c.page;
     let rt = Runtime::new(page);
-    let res = resolve(page, &rt);
-    let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let f = KeptFrame::fresh(page, resolve(page, &rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    let rects = f.rects();
     let b = page.find("b").unwrap();
     let b2 = page.find("b2").unwrap();
     assert_eq!(rects[b.index()].w, 300.0, "the Button keeps its written width");
-    assert_eq!(hit(page, &res, &rects, 50.0, 20.0, false), Some(b), "the visible half taps");
-    assert_eq!(hit(page, &res, &rects, 250.0, 20.0, false), None, "the clipped half takes no taps");
-    assert_eq!(hit(page, &res, &rects, 250.0, 120.0, false), Some(b2), "under a hug parent the same spot still taps");
+    assert_eq!(hit(page, f.frame(), 50.0, 20.0, false), Some(b), "the visible half taps");
+    assert_eq!(hit(page, f.frame(), 250.0, 20.0, false), None, "the clipped half takes no taps");
+    assert_eq!(hit(page, f.frame(), 250.0, 120.0, false), Some(b2), "under a hug parent the same spot still taps");
 }
 
 /// GPAR50: the finger lands on the DRAWN picture — while an anim
@@ -344,8 +344,7 @@ fn hit_follows_the_drawn_rect_during_motion() {
     let slide = page.intern("slide");
     rt.play_id(&page, slide, Finish::Nothing);
     rt.tick(&mut page, 0.5);
-    let res = resolve_animated(&page, &mut rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
-    assert_eq!(hit(&page, &res, &rects, 90.0, 20.0, false), Some(b), "the tap lands where the button is drawn");
-    assert_ne!(hit(&page, &res, &rects, 20.0, 20.0, false), Some(b), "the slot it left takes no taps");
+    let f = KeptFrame::fresh(&page, resolve_animated(&page, &mut rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+    assert_eq!(hit(&page, f.frame(), 90.0, 20.0, false), Some(b), "the tap lands where the button is drawn");
+    assert_ne!(hit(&page, f.frame(), 20.0, 20.0, false), Some(b), "the slot it left takes no taps");
 }

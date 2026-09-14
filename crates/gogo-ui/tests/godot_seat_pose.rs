@@ -23,9 +23,10 @@
 //! as the box the user sees (the stamp IS the rendered size there), and
 //! the stamp-timing trio as the glide the stamp exists to allow.
 use gogo::input::{Input, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::KeptFrame;
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{NodeId, PropKey};
-use gogo::runtime::{Resolved, Runtime, resolve, resolve_animated};
+use gogo::runtime::{Runtime, resolve, resolve_animated};
 use gogo::{Compiled, EventKind, Orientation, Page, ScreenClass, compile};
 
 fn build(src: &str) -> Compiled {
@@ -66,20 +67,19 @@ impl Fx {
         self.page.find(name).unwrap_or_else(|| panic!("no node {name:?}"))
     }
 
-    fn lay(&self) -> (Resolved, Vec<Rect>) {
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        (res, rects)
+    fn lay(&self) -> KeptFrame {
+        KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance)
     }
 
     fn rect(&self, name: &str) -> Rect {
-        self.lay().1[(self.id(name)).index()]
+        self.lay().rects()[(self.id(name)).index()]
     }
 
     /// The names of the nodes laid out under `parent`, in layout order
     /// (Godot: `get_parent()` + `get_index()`).
     fn children_of(&self, parent: &str) -> Vec<String> {
-        let (res, _) = self.lay();
+        let f = self.lay();
+        let (res, _) = (f.look(), f.rects());
         res.children(&self.page, self.id(parent)).map(|c| self.page.str(self.page.nodes[c.index()].name).to_string()).collect()
     }
 
@@ -182,7 +182,7 @@ fn untimed_arrangement_may_move_a_seat() {
     let mut fx = Fx::new("arrangement o\nwhen o { m.seat = s }\nView v { Row r halign=left, valign=top, height=20 { Column h { Rectangle m 10x10 }; seat s } }");
     assert_eq!(fx.children_of("h"), vec!["m"]);
     fx.rt.go_id(gogo::ArrangementId::new(0));
-    assert_eq!(fx.children_of("s"), vec!["m"], "{:?}", fx.lay().1);
+    assert_eq!(fx.children_of("s"), vec!["m"], "{:?}", fx.lay().rects().to_vec());
 }
 
 /// `_seat_tests` 7307-7317 `seat.err-arrangement-timed`,
@@ -198,7 +198,7 @@ fn timed_arrangement_seat_move_builds_and_applies() {
     for rule in ["transition base -> o duration=0.1", "transition duration=0.1", "transition any -> base duration=0.1"] {
         let mut fx = Fx::new(&format!("arrangement o\n{rule}\n{tail}"));
         fx.rt.go_id(gogo::ArrangementId::new(0));
-        assert_eq!(fx.children_of("s"), vec!["m"], "rule `{rule}`: {:?}", fx.lay().1);
+        assert_eq!(fx.children_of("s"), vec!["m"], "rule `{rule}`: {:?}", fx.lay().rects().to_vec());
     }
 }
 
@@ -316,7 +316,7 @@ fn seat_move_and_restore_lifecycle() {
 fn late_build_starts_seated() {
     let mut fx = Fx::new(SEAT_VIEW);
     fx.class(Some(ScreenClass::LandscapeSmall));
-    assert_eq!(fx.children_of("sideSeat"), vec!["mover"], "{:?}", fx.lay().1);
+    assert_eq!(fx.children_of("sideSeat"), vec!["mover"], "{:?}", fx.lay().rects().to_vec());
 }
 
 // ---------------------------------------------- _arrangement_anchor_tests
@@ -534,9 +534,9 @@ fn timed_grow_glides_the_box_both_ways() {
     let mut rt = Runtime::new(&page);
     let frame = |rt: &mut Runtime, page: &mut Page, dt: f32| -> Rect {
         rt.tick(page, dt);
-        let res = resolve_animated(page, rt);
-        let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        rt.glide(rects)[g]
+        let mut f = KeptFrame::fresh(page, resolve_animated(page, rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        f.glide(rt);
+        f.rects()[g]
     };
     assert_eq!(frame(&mut rt, &mut page, 0.0).w, 80.0);
     rt.go_id(gogo::ArrangementId::new(2));
@@ -612,7 +612,8 @@ fn reveal_load_rules() {
 #[test]
 fn reveal_under_a_free_parent_shrinks_the_own_box() {
     let fx = Fx::new("View v { Layers l width=100, height=20 { Rectangle back width=fill, height=fill, color=black; Rectangle fill width=fill, height=fill, color=white, reveal_x=0.3 } }");
-    let (_, rects) = fx.lay();
+    let f = fx.lay();
+    let (_, rects) = (f.look(), f.rects());
     let l = rects[fx.id("l")];
     let fill = rects[fx.id("fill")];
     let back = rects[fx.id("back")];
@@ -635,34 +636,39 @@ fn reveal_pose_tweens_the_layout_space() {
     let hello = page.find("hello").unwrap();
     let more = page.find("more").unwrap();
     let mut rt = Runtime::new(&page);
-    let frame = |rt: &mut Runtime, page: &mut Page, dt: f32| -> (Resolved, Vec<Rect>) {
+    let frame = |rt: &mut Runtime, page: &mut Page, dt: f32| -> KeptFrame {
         rt.tick(page, dt);
-        let res = resolve_animated(page, rt);
-        let rects = layout(page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
-        let shown = rt.glide(rects);
-        (res, shown)
+        let mut f = KeptFrame::fresh(page, resolve_animated(page, rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        f.glide(rt);
+        f
     };
-    let (_, r) = frame(&mut rt, &mut page, 0.0);
+    let f = frame(&mut rt, &mut page, 0.0);
+    let (_, r) = (f.look(), f.rects());
     assert!(r[hello.index()].h == 0.0 && r[hello.index()].w > 0.0, "reveal.concealed-min: {:?}", r[hello.index()]);
     rt.go_id(gogo::ArrangementId::new(0));
-    let (_, r) = frame(&mut rt, &mut page, 0.05);
+    let f = frame(&mut rt, &mut page, 0.05);
+    let (_, r) = (f.look(), f.rects());
     assert!(r[hello.index()].h > 0.0 && r[hello.index()].h < nat, "reveal.tween-midway: {:?}", r[hello.index()]);
-    let (res, r) = frame(&mut rt, &mut page, 0.3);
+    let f = frame(&mut rt, &mut page, 0.3);
+    let (res, r) = (f.look(), f.rects());
     assert!(near(r[hello.index()].h, nat, 0.01) && res.num(&page, hello, PropKey::Opacity) == Some(1.0), "reveal.open/open-min: {:?} opacity {:?}", r[hello.index()], res.num(&page, hello, PropKey::Opacity));
     rt.go_id(gogo::BASE);
-    let (_, r) = frame(&mut rt, &mut page, 0.3);
+    let f = frame(&mut rt, &mut page, 0.3);
+    let (_, r) = (f.look(), f.rects());
     assert_eq!(r[hello.index()].h, 0.0, "reveal.home");
     // The disclosure button composes with toggle(): a tap opens.
-    let (res, r) = frame(&mut rt, &mut page, 0.0);
+    let f = frame(&mut rt, &mut page, 0.0);
+    let r = f.rects();
     let b = r[more.index()];
     let mut input = Input::new();
-    input.touch(&page, &mut rt, &res, &r, &FixedAdvance, Touch { phase: Phase::Down, x: b.x + 5.0, y: b.y + 5.0, t: 1.0, id: 1 });
-    let ev = input.touch(&page, &mut rt, &res, &r, &FixedAdvance, Touch { phase: Phase::Up, x: b.x + 5.0, y: b.y + 5.0, t: 1.1, id: 1 });
+    input.touch(&page, &mut rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Down, x: b.x + 5.0, y: b.y + 5.0, t: 1.0, id: 1 });
+    let ev = input.touch(&page, &mut rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Up, x: b.x + 5.0, y: b.y + 5.0, t: 1.1, id: 1 });
     assert!(ev.iter().any(|e| e.kind == EventKind::Activate), "{ev:?}");
     assert_eq!(rt.arrangement, gogo::ArrangementId::new(0), "reveal.toggle-opens");
     // A gone child earns nothing.
     rt.set_visible(&mut page, hello, false);
-    let (res, _) = frame(&mut rt, &mut page, 0.0);
+    let f = frame(&mut rt, &mut page, 0.0);
+    let (res, _) = (f.look(), f.rects());
     assert!(res.gone(&page, hello), "reveal.hidden-zero");
 }
 

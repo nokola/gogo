@@ -19,9 +19,10 @@
 //! - `ioverlay.added/active/banner-gated/removed` (8767-8774): input overlay child node (GP43 CUT dev overlays).
 //! - `ioverlay.empty-banner/-top/-inside` (8791-8796): overlay banner plate rect (GP43 CUT dev overlays).
 use gogo::draw::hit;
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::KeptFrame;
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{Page, PropKey};
-use gogo::runtime::{Resolved, Runtime, resolve};
+use gogo::runtime::{Runtime, resolve};
 use gogo::{Compiled, Input, Phase, Severity, Touch, compile};
 
 fn build(src: &str) -> Compiled {
@@ -55,10 +56,8 @@ impl Fx {
         Fx { page: c.page, rt, input: Input::new(), frame: Rect::new(0.0, 0.0, w, h) }
     }
 
-    fn lay(&self) -> (Resolved, Vec<Rect>) {
-        let res = resolve(&self.page, &self.rt);
-        let rects = layout(&self.page, &res, self.frame, &FixedAdvance);
-        (res, rects)
+    fn lay(&self) -> KeptFrame {
+        KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), self.frame, &FixedAdvance)
     }
 
     fn id(&self, name: &str) -> gogo::NodeId {
@@ -66,7 +65,7 @@ impl Fx {
     }
 
     fn rect(&self, name: &str) -> Rect {
-        self.lay().1[self.id(name)]
+        self.lay().rects()[self.id(name)]
     }
 
     fn name_of(&self, id: gogo::NodeId) -> String {
@@ -76,8 +75,8 @@ impl Fx {
     /// The name of the node a touch at (x, y) lands on (`any` = the
     /// top-most painted node of any kind, input-taking or not).
     fn hit_at(&self, x: f32, y: f32, any: bool) -> Option<String> {
-        let (res, rects) = self.lay();
-        hit(&self.page, &res, &rects, x, y, any).map(|n| self.name_of(n))
+        let f = self.lay();
+        hit(&self.page, f.frame(), x, y, any).map(|n| self.name_of(n))
     }
 
     /// A touch at the named node's center.
@@ -88,13 +87,14 @@ impl Fx {
     }
 
     fn interactive(&self, name: &str) -> Option<bool> {
-        let (res, _) = self.lay();
+        let f = self.lay();
+        let (res, _) = (f.look(), f.rects());
         res.bool(&self.page, self.id(name), PropKey::Interactive)
     }
 
     fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) {
-        let (res, rects) = self.lay();
-        self.input.touch(&self.page, &mut self.rt, &res, &rects, &FixedAdvance, Touch { phase, x, y, t, id: 1 });
+        let f = self.lay();
+        self.input.touch(&self.page, &mut self.rt, f.frame(), &FixedAdvance, Touch { phase, x, y, t, id: 1 });
     }
 
     /// Every distinct node a touch lands on across a 10-epx grid over the

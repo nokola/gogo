@@ -19,12 +19,13 @@
 //!   fixture script `knob_behavior.gd` drives the gesture (script-backed
 //!   control input, `_gui_input` / viewport `push_input`).
 use gogo::draw::{Draw, draw};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::KeptFrame;
+use gogo::layout::{FixedAdvance, Rect};
 use std::sync::Arc;
 
 use gogo::locale::{Keys, Locale, display};
 use gogo::page::{NO_KEY, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{Resolved, Runtime, deref, resolve};
+use gogo::runtime::{Runtime, deref, resolve};
 use gogo::{Compiled, Diagnostic, Page, Severity, compile};
 
 fn build(src: &str) -> Compiled {
@@ -66,8 +67,7 @@ struct Fx {
     /// This compile's own key table (`keys.names[key]` spells a key).
     keys: Keys,
     rt: Runtime,
-    res: Resolved,
-    rects: Vec<Rect>,
+    kept: KeptFrame,
     draws: Vec<Draw>,
 }
 
@@ -92,18 +92,16 @@ impl Fx {
             rt.variant = page.intern_lookup(variant);
         }
         rt.set_locale(locale);
-        let res = resolve(&page, &rt);
-        let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
-        let draws = draw(&page, &res, &rects);
-        Fx { page, keys: c.keys, rt, res, rects, draws }
+        let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+        let draws = draw(&page, f.frame());
+        Fx { page, keys: c.keys, rt, kept: f, draws }
     }
 
     /// Switches the language on the SAME runtime and lays out again.
     fn set_locale(&mut self, locale: Option<Locale>) {
         self.rt.set_locale(locale.map(Arc::new));
-        self.res = resolve(&self.page, &self.rt);
-        self.rects = layout(&self.page, &self.res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
-        self.draws = draw(&self.page, &self.res, &self.rects);
+        self.kept = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
+        self.draws = draw(&self.page, self.kept.frame());
     }
 
     fn id(&self, name: &str) -> NodeId {
@@ -112,21 +110,21 @@ impl Fx {
 
     fn color(&self, name: &str, key: PropKey) -> Color_Straight_Srgb_4xU8_RGBA {
         let id = self.id(name);
-        self.res.color(&self.page, id, key).unwrap_or_else(|| panic!("{name} has no {key:?}: {:?}", self.page.node_props(id)))
+        self.kept.look().color(&self.page, id, key).unwrap_or_else(|| panic!("{name} has no {key:?}: {:?}", self.page.node_props(id)))
     }
 
     fn rect(&self, name: &str) -> Rect {
-        self.rects[(self.id(name)).index()]
+        self.kept.rects()[(self.id(name)).index()]
     }
 
     fn font(&self, name: &str) -> String {
         let id = self.id(name);
-        self.res.font(&self.page, id).map(|s| self.page.str(s).to_string()).unwrap_or_default()
+        self.kept.look().font(&self.page, id).map(|s| self.page.str(s).to_string()).unwrap_or_default()
     }
 
     fn text(&self, name: &str) -> String {
         let id = self.id(name);
-        match self.res.prop(&self.page, id, PropKey::Text) {
+        match self.kept.look().prop(&self.page, id, PropKey::Text) {
             Some(Value::VText { text, .. }) => self.page.str(text).to_string(),
             other => panic!("{name} has no text: {other:?}"),
         }
@@ -150,7 +148,7 @@ impl Fx {
 
     fn theme(&self, name: &str) -> Value {
         let id = self.page.intern_lookup(name);
-        deref(&self.page, self.res.variant, Value::VRef { name: id, opacity: None })
+        deref(&self.page, self.kept.look().variant, Value::VRef { name: id, opacity: None })
     }
 }
 
@@ -189,13 +187,13 @@ fn set_theme_variant_is_the_host_seam() {
     let vsrc = "$accent = #E51400FF\ntheme dark {\n    $accent = #00FF00FF\n}\nView v { Rectangle swatch color=$accent }\n";
     let mut fx = Fx::new(vsrc);
     fx.rt.set_theme_variant(&fx.page, "dark");
-    fx.res = resolve(&fx.page, &fx.rt);
+    fx.kept = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
     assert_eq!(fx.color("swatch", PropKey::Color), rgb(0x00FF00), "the flip reads dark");
     fx.rt.set_theme_variant(&fx.page, "");
-    fx.res = resolve(&fx.page, &fx.rt);
+    fx.kept = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
     assert_eq!(fx.color("swatch", PropKey::Color), rgb(0xE51400), "empty = defaults only");
     fx.rt.set_theme_variant(&fx.page, "sepia");
-    fx.res = resolve(&fx.page, &fx.rt);
+    fx.kept = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
     assert_eq!(fx.color("swatch", PropKey::Color), rgb(0xE51400), "an undefined variant keeps the defaults");
 }
 
@@ -219,7 +217,7 @@ fn theme_entry_shape_errors() {
 fn numeric_theme_value_feeds_font_size_through_a_chain() {
     let fx = Fx::new("$rowFont = 14\n$rowFont2 = $rowFont\nView v { Label t text=\"x\", font_size=$rowFont2 }\n");
     let t = fx.id("t");
-    assert_eq!(fx.res.num(&fx.page, t, PropKey::FontSize), Some(14.0));
+    assert_eq!(fx.kept.look().num(&fx.page, t, PropKey::FontSize), Some(14.0));
 }
 
 /// `_theme_and_styles` 2500-2512 (`theme.number-length`,
@@ -232,7 +230,7 @@ fn numeric_theme_value_feeds_font_size_through_a_chain() {
 fn numeric_theme_value_feeds_length_props() {
     let src = "$rowFont = 14\n$rowFont2 = $rowFont\nView v { Label t text=\"x\", font_size=$rowFont2, min_width=$rowFont, halign=left, valign=top }\n";
     let fx = Fx::new(src);
-    assert_eq!(fx.res.placement[(fx.id("t")).index()].min_width, 14.0);
+    assert_eq!(fx.kept.look().placement[(fx.id("t")).index()].min_width, 14.0);
     assert_eq!(fx.rect("t").w, 14.0, "{:?}", fx.rect("t"));
 }
 
@@ -259,7 +257,7 @@ fn node_body_theme_takes_any_key() {
     let c = ok("View v { Button b text=\"x\" {\n    theme font_size=12\n} }\n");
     assert!(c.diags.is_empty(), "{:#?}", c.diags);
     let fx = Fx::new("View v { Button b text=\"x\" {\n    theme font_size=12\n} }\n");
-    assert_eq!(fx.res.num(&fx.page, fx.id("b"), PropKey::FontSize), Some(12.0));
+    assert_eq!(fx.kept.look().num(&fx.page, fx.id("b"), PropKey::FontSize), Some(12.0));
 }
 
 /// `_theme_and_styles` 2546-2547 (`theme-override.missing-font`): a font
@@ -364,7 +362,7 @@ fn theme_block_refuses_layout_props_and_stray_entries() {
 #[test]
 fn style_props_apply_and_local_props_win() {
     let fx = Fx::new("style Tool min_height=36, text=\"styled\"\nView v { Column c {\n    Button a .Tool\n    Button b .Tool text=\"local wins\"\n} }\n");
-    assert_eq!(fx.res.placement[(fx.id("a")).index()].min_height, 36.0);
+    assert_eq!(fx.kept.look().placement[(fx.id("a")).index()].min_height, 36.0);
     assert_eq!(fx.text("a"), "styled");
     assert_eq!(fx.text("b"), "local wins");
 }
@@ -932,7 +930,7 @@ fn wedge_formula_serves_draw_and_hit() {
 fn knob_at_zero_reveals_nothing() {
     let fx = Fx::new(&with_knob("Knob z 48x48, value=0, halign=left, valign=top"));
     let progress = fx.id("z/progress");
-    assert_ne!(gogo::draw::hit(&fx.page, &fx.res, &fx.rects, 24.0, 4.0, true), Some(progress), "the empty wedge hits nothing");
+    assert_ne!(gogo::draw::hit(&fx.page, fx.kept.frame(), 24.0, 4.0, true), Some(progress), "the empty wedge hits nothing");
 }
 
 /// `_radial_tests` 4017-4056 (`radial.knob-ok`, `radial.aperture`,
@@ -966,8 +964,8 @@ fn knob_instance_line_builds() {
 #[test]
 fn instance_line_size_arg_sizes_the_instance() {
     let fx = Fx::new("widget W {\n    Layers body { Rectangle r 10x10 }\n}\nView v { W k 96x96, halign=left, valign=top }\n");
-    let root = fx.res.children(&fx.page, NodeId::new(0)).next().unwrap();
-    let r = fx.rects[root.index()];
+    let root = fx.kept.look().children(&fx.page, NodeId::new(0)).next().unwrap();
+    let r = fx.kept.rects()[root.index()];
     assert_eq!((r.w, r.h), (96.0, 96.0), "{r:?}");
 }
 

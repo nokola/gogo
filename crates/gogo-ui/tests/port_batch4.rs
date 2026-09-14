@@ -4,6 +4,7 @@
 //! by count and that lay out as their parent's children, and `on:pointer=`
 //! hands the raw finger to the host in the node's own space.
 use gogo::anim::Finish;
+use gogo::KeptFrame;
 use gogo::input::{EventKind, Input, Phase, Touch};
 use gogo::layout::{FixedAdvance, Rect, layout};
 use gogo::page::{Action, PropKey, Value};
@@ -90,9 +91,8 @@ fn pointer_reports_every_phase_in_node_space() {
     let pad = page.find("pad").unwrap();
     let mut rt = Runtime::new(&page);
     let mut input = Input::new();
-    let res = resolve(&page, &rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-    let mut touch = |phase: Phase, x: f32, y: f32, t: f64, rt: &mut Runtime| input.touch(&page, rt, &res, &rects, &FixedAdvance, Touch { phase, x, y, t, id: 1 });
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+    let mut touch = |phase: Phase, x: f32, y: f32, t: f64, rt: &mut Runtime| input.touch(&page, rt, f.frame(), &FixedAdvance, Touch { phase, x, y, t, id: 1 });
     let ev = touch(Phase::Down, 25.0, 15.0, 0.0, &mut rt);
     assert_eq!(ev.len(), 1);
     assert_eq!(ev[0].node, pad);
@@ -126,9 +126,8 @@ fn raise_reorders_paint_and_hit() {
     let b = page.find("b").unwrap();
     let mut rt = Runtime::new(&page);
     let order = |page: &gogo::Page, rt: &Runtime| -> Vec<gogo::page::NodeId> {
-        let res = resolve(page, rt);
-        let rects = layout(page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-        gogo::draw(page, &res, &rects)
+        let f = KeptFrame::fresh(page, resolve(page, rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+        gogo::draw(page, f.frame())
             .iter()
             .filter_map(|d| if let gogo::Draw::Quad { rect, .. } = d { Some(rect.x as i32) } else { None })
             .collect::<Vec<i32>>()
@@ -137,9 +136,8 @@ fn raise_reorders_paint_and_hit() {
             .collect()
     };
     let hit_at = |page: &gogo::Page, rt: &Runtime, x: f32| {
-        let res = resolve(page, rt);
-        let rects = layout(page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-        gogo::draw::hit(page, &res, &rects, x, 10.0, false)
+        let f = KeptFrame::fresh(page, resolve(page, rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+        gogo::draw::hit(page, f.frame(), x, 10.0, false)
     };
     assert_eq!(order(&page, &rt), vec![a, b], "file order: b paints over a");
     assert_eq!(hit_at(&page, &rt, 30.0), Some(b), "the overlap belongs to b");

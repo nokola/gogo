@@ -5,8 +5,9 @@
 //! `rotate` in the draw list, `stop` and `take_finished`, entrances
 //! under a gone ancestor.
 use gogo::anim::Finish;
+use gogo::KeptFrame;
 use gogo::draw::{Draw, draw};
-use gogo::layout::{FixedAdvance, Rect, layout};
+use gogo::layout::{FixedAdvance, Rect};
 use gogo::page::{NO_NODE, PropKey, State, Value};
 use gogo::runtime::{Runtime, resolve, resolve_animated};
 use gogo::{Compiled, compile};
@@ -71,17 +72,15 @@ fn gradient_draws_every_stop_with_the_compass_angle() {
     let c = ok("View v {\n Gradient g width=100, height=20, angle=0, stops=[#FFFFFF6B@0, #FFFFFF6B@0.94, #FFFFFF00@1]\n}\n");
     let page = c.page;
     let rt = Runtime::new(&page);
-    let res = resolve(&page, &rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-    let draws = draw(&page, &res, &rects);
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+    let draws = draw(&page, f.frame());
     assert_eq!(gradient_stops(&draws), vec![(0.0, vec![0.0, 0.94, 1.0])]);
     // Evenly spread when no position is written; a lone stop is one flat band.
     let c = ok("View v {\n Gradient g width=100, height=20, stops=[#FF0000FF, #00FF00FF, #0000FFFF]\n}\n");
     let page = c.page;
     let rt = Runtime::new(&page);
-    let res = resolve(&page, &rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-    assert_eq!(gradient_stops(&draw(&page, &res, &rects)), vec![(90.0, vec![0.0, 0.5, 1.0])]);
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
+    assert_eq!(gradient_stops(&draw(&page, f.frame())), vec![(90.0, vec![0.0, 0.5, 1.0])]);
 }
 
 /// GP6 + GP7: a `repeat=forever` anim is still moving past its length and
@@ -153,9 +152,8 @@ fn rotate_reaches_the_draw_list() {
     let page = c.page;
     let mut rt = Runtime::new(&page);
     rt.go_id(gogo::ArrangementId::new(0));
-    let res = resolve(&page, &rt);
-    let rects = layout(&page, &res, Rect::new(0.0, 0.0, 100.0, 100.0), &FixedAdvance);
-    let draws = draw(&page, &res, &rects);
+    let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 100.0, 100.0), &FixedAdvance);
+    let draws = draw(&page, f.frame());
     let push = draws.iter().find_map(|d| if let Draw::RotatePush { angle, cx, cy } = d { Some((*angle, *cx, *cy)) } else { None });
     assert_eq!(push, Some((180.0, 10.0, 5.0)));
     assert!(draws.iter().any(|d| *d == Draw::RotatePop));
