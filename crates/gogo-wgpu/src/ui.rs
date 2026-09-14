@@ -435,6 +435,36 @@ impl UiRenderer {
     /// was measured (`None` = the literals).
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_pages(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, pages: &[(&[Draw], &Page)], epx: f32, screen: (u32, u32), text: &mut TextEngine, locale: Option<&Locale>) {
+        // A glyph that grows the atlas during the pass leaves every run
+        // shaped before it this frame — the cache's included — with uvs into
+        // the atlas that was: the pass runs again against the grown one. A
+        // grow doubles the atlas, a few times in an app's life; the usual
+        // frame pays nothing. User-seen: a button with no letters ("cancel")
+        // until the next redraw (S24, 2026-09-14).
+        let generation: u32 = text.generation;
+        self.prepare_pass(device, pages, epx, screen, text, locale);
+        if text.generation != generation {
+            self.prepare_pass(device, pages, epx, screen, text, locale);
+        }
+        self.sync_atlas(device, queue, text);
+        self.gradients.flush(queue);
+
+        if self.quads.len() > self.quad_capacity {
+            self.quad_capacity = self.quads.len().next_power_of_two();
+            self.quad_buffer = Self::make_quad_buffer(device, self.quad_capacity);
+        }
+        if !self.quads.is_empty() {
+            queue.write_buffer(&self.quad_buffer, 0, bytemuck::cast_slice(&self.quads));
+        }
+        if self.screen_written != Some(screen) {
+            queue.write_buffer(&self.screen_buffer, 0, bytemuck::bytes_of(&Screen { size: [screen.0 as f32, screen.1 as f32], _pad: [0.0; 2] }));
+            self.screen_written = Some(screen);
+        }
+    }
+
+    /// One pass over the draw lists into `quads` and `batches` — shapes
+    /// the text, claims the gradient rows; `prepare_pages` uploads after.
+    fn prepare_pass(&mut self, device: &wgpu::Device, pages: &[(&[Draw], &Page)], epx: f32, screen: (u32, u32), text: &mut TextEngine, locale: Option<&Locale>) {
         self.quads.clear();
         self.batches.clear();
         self.skipped = 0;
@@ -690,20 +720,6 @@ impl UiRenderer {
         }
         }
         self.close_batch(&mut batch_first, current, current_tex, current_pixel);
-        self.sync_atlas(device, queue, text);
-        self.gradients.flush(queue);
-
-        if self.quads.len() > self.quad_capacity {
-            self.quad_capacity = self.quads.len().next_power_of_two();
-            self.quad_buffer = Self::make_quad_buffer(device, self.quad_capacity);
-        }
-        if !self.quads.is_empty() {
-            queue.write_buffer(&self.quad_buffer, 0, bytemuck::cast_slice(&self.quads));
-        }
-        if self.screen_written != Some(screen) {
-            queue.write_buffer(&self.screen_buffer, 0, bytemuck::bytes_of(&Screen { size: [screen.0 as f32, screen.1 as f32], _pad: [0.0; 2] }));
-            self.screen_written = Some(screen);
-        }
     }
 
     fn close_batch(&mut self, first: &mut u32, scissor: Option<[u32; 4]>, tex: TexId, pixel: bool) {

@@ -444,12 +444,32 @@ impl TextEngine {
         quads.into_iter().map(|q| GlyphQuad { x: q.x + dx, y: q.y + dy, ..q }).collect()
     }
 
-    /// Quads with the pen at the origin.
+    /// Quads with the pen at the origin. A glyph packed past the atlas's
+    /// edge grows it (`pack` → `grow`), and every uv handed out before —
+    /// this run's earlier glyphs included — is into the atlas that was, so
+    /// the run is shaped again against the grown one, in the same buffer.
+    /// Nothing extra when the atlas held (the usual run). User-seen: the
+    /// first letters of a label missing — "t effect changes?" for "Keep
+    /// Sculpt effect changes?" (S24, 2026-09-14) — and staying missing,
+    /// because the run had gone into the cache with the stale uvs.
     fn shape_uncached(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>, box_w: f32, halign: u8) -> Vec<GlyphQuad> {
+        let mut out: Vec<GlyphQuad> = Vec::new();
+        loop {
+            let generation: u32 = self.generation;
+            out.clear();
+            self.shape_pass(text, font_size, max_width, font, box_w, halign, &mut out);
+            if self.generation == generation {
+                return out;
+            }
+        }
+    }
+
+    /// One shaping pass into `out`; its uvs are good only if the atlas did
+    /// not grow during it (`shape_uncached` checks and runs it again).
+    fn shape_pass(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>, box_w: f32, halign: u8, out: &mut Vec<GlyphQuad>) {
         let (x, y) = (0.0f32, 0.0f32);
         let (bold, _) = Self::style(font);
         let buffer = self.buffer(text, font_size, max_width, font);
-        let mut out = Vec::new();
         let runs: Vec<(f32, f32, Vec<cosmic_text::PhysicalGlyph>)> = buffer.layout_runs().map(|run| (run.line_w, run.line_y, run.glyphs.iter().map(|g| g.physical((0.0, 0.0), 1.0)).collect())).collect();
         for (line_w, line_y, glyphs) in runs {
             let shift = match halign {
@@ -474,7 +494,6 @@ impl TextEngine {
                 });
             }
         }
-        out
     }
 
     fn slot(&mut self, key: CacheKey, bold: bool) -> Option<Slot> {
@@ -640,6 +659,28 @@ impl TextMeasure for EpxMeasure<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run whose glyph grows the atlas mid-way comes out whole against
+    /// the grown atlas: its uvs equal a re-shape's. Red before the fix: the
+    /// glyphs shaped before the grow kept uvs into the atlas that was, and
+    /// the run sat in the cache that way — the user saw "t effect
+    /// changes?" for "Keep Sculpt effect changes?" (S24, 2026-09-14).
+    #[test]
+    fn a_run_that_grows_the_atlas_is_shaped_whole_against_the_grown_one() {
+        let mut e = engine();
+        let before: u32 = e.generation;
+        // 400-px glyphs: nine fill the 1024 atlas, so the alphabet grows it
+        // inside this one run.
+        let text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        let shaped: Vec<GlyphQuad> = e.shape(text, 400.0, None, None, 0.0, 0.0, 100_000.0, 0);
+        assert!(e.generation > before, "the precondition: the run grew the atlas");
+        e.shape_cache.clear();
+        let again: Vec<GlyphQuad> = e.shape(text, 400.0, None, None, 0.0, 0.0, 100_000.0, 0);
+        assert_eq!(shaped.len(), again.len());
+        for (a, b) in shaped.iter().zip(&again) {
+            assert_eq!(a.uv, b.uv, "a glyph of the run that grew the atlas, shaped whole: {a:?} vs {b:?}");
+        }
+    }
 
     fn engine() -> TextEngine {
         let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/Fonts/Roboto Regular.ttf")).expect("font");
