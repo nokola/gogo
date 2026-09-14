@@ -250,6 +250,11 @@ pub struct Runtime {
     pub scroll: Vec<[f32; 2]>,
     /// Set by anything that changes what layout/draw would produce.
     pub dirty: bool,
+    /// The glide just resolved a `%` anim endpoint into the anim layer
+    /// (a node that had no box at play laid out): the resolve this frame
+    /// was taken before it, so a host that draws from that resolve shows
+    /// the node at rest for one frame. `take_motion_stale` hands it out.
+    motion_stale: bool,
     /// Scroll nodes whose offset code just set (`set_scroll`): the input
     /// tick clamps each to its content range once the node is idle and
     /// drops it from here. Not clamped at the write — the range needs a
@@ -467,6 +472,7 @@ impl Runtime {
             instant_flips: Vec::new(),
             pending_settle: None,
             dirty: true,
+            motion_stale: false,
             locale: None,
             safe: [0.0; 4],
             writes: Vec::new(),
@@ -592,6 +598,7 @@ impl Runtime {
         for p in &mut self.players {
             if p.resolve_pending_percent(&self.last_rects, &mut self.motion) {
                 self.dirty = true;
+                self.motion_stale = true;
             }
         }
         shown
@@ -1328,6 +1335,15 @@ impl Runtime {
     /// OS event froze it mid-flight (the effect page's switch settle, a
     /// code-opened band). The Godot addon polled its `gogo_anims` group
     /// the same way: every pump keeps its membership current.
+    /// Did the last `glide` move the anim layer under this frame's resolve
+    /// (a `%` endpoint resolved late)? Cleared by the read. A host that
+    /// answers `true` resolves again before it draws, so a sheet hidden at
+    /// play first shows one height below its seat, never at rest for a
+    /// frame (B38: the slide looked like it ran twice).
+    pub fn take_motion_stale(&mut self) -> bool {
+        std::mem::take(&mut self.motion_stale)
+    }
+
     pub fn is_moving(&self) -> bool {
         !self.rect_tweens.is_empty() || !self.auto_glides.is_empty() || !self.tweens.is_empty() || !self.players.is_empty() || !self.pulses.is_empty() || !self.changes.is_empty()
     }
