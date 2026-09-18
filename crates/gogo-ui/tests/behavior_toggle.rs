@@ -38,17 +38,17 @@ impl Fx {
     }
 
     fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) -> Vec<Event> {
-        self.kept = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        self.kept = KeptFrame::fresh(&self.page, self.res(), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
         self.input.touch(&self.page, &mut self.rt, self.kept.frame(), &FixedAdvance, Touch { phase, x, y, t, id: 1 })
     }
 
     fn key(&mut self, k: Key) -> Vec<Event> {
-        self.kept = KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        self.kept = KeptFrame::fresh(&self.page, self.res(), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
         self.input.key(&mut self.page, &mut self.rt, self.kept.frame(), k, Mods::NONE)
     }
 
     fn value(&self, node: NodeId) -> f32 {
-        let res = resolve(&self.page, &self.rt);
+        let res = self.res();
         res.num(&self.page, node, PropKey::Value).unwrap_or(f32::NAN)
     }
 
@@ -172,7 +172,7 @@ fn keys_and_wheel_pick_sides() {
     assert_eq!(fx.value(s), 1.0);
     fx.key(Key::Home);
     assert_eq!(fx.value(s), 0.0);
-    fx.kept = KeptFrame::fresh(&fx.page, resolve(&fx.page, &fx.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    fx.kept = KeptFrame::fresh(&fx.page, fx.res(), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
     let ev = fx.input.wheel(&fx.page, &mut fx.rt, fx.kept.frame(), 60.0, 30.0, true);
     assert_eq!(changes(&ev), vec![true], "{ev:?}");
     assert!(signals(&fx.page, &ev).is_empty(), "the edges belong to the finger");
