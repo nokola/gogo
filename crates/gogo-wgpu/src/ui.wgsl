@@ -1,5 +1,6 @@
-// UI quads: one instanced draw per (clip, texture) batch for the whole gogo
-// draw list. Kinds: 0 rounded rect (+border), 1 circle, 2 linear gradient,
+// UI quads: one instanced draw per (clip, texture, plain or not) batch for
+// the whole gogo draw list; fs_main draws every kind, fs_plain (below) the
+// three cheap ones. Kinds: 0 rounded rect (+border), 1 circle, 2 linear gradient,
 // 3 radial gradient, 4 glyph (atlas coverage × color), 5 image (texture ×
 // tint), 6 conic gradient (sweep about the center), 7 arc stroke
 // (params: thickness, from radians, kind, sweep radians), 8 rect with
@@ -124,6 +125,35 @@ fn srgb_pm_from_oklab_pm(lab_pm: vec4<f32>) -> vec4<f32> {
         -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s), vec3<f32>(0.0), vec3<f32>(1.0));
     let enc = select(1.055 * pow(lin, vec3<f32>(1.0 / 2.4)) - 0.055, lin * 12.92, lin <= vec3<f32>(0.0031308));
     return vec4<f32>(enc * alpha, alpha);
+}
+
+// The fragment stage of a pipeline pair's `plain` pipeline (`PipelinePair`,
+// ui.rs): an image, a glyph, or a rect without a border, drawn with the
+// SAME math as fs_main's arms for those kinds — ui.rs `quad_is_plain` sends
+// nothing else here, and tests/ui_plain_pipeline.rs pins the two to the
+// same pixels.
+//
+// Needed because a phone GPU of 2014 runs ALL of fs_main for every pixel,
+// the kinds a pixel does not use included: the canvas image and the flat
+// panels, 97 % and more of a screen's pixels, cost about five times less
+// here (OnePlus A0001: the screen pass 31-49 ms through fs_main alone,
+// 6-10 ms through the pair; DECISIONS.md D57).
+//
+// No branch on purpose: one texture read, the three results, a pick. A
+// rect reads the batch's texture at uv 0 and drops the result.
+@fragment
+fn fs_plain(in: VsOut) -> @location(0) vec4<f32> {
+    let t = textureSample(tex, samp, in.uv);
+    let image = t * in.color;
+    let image_pm = vec4<f32>(image.rgb * image.a, image.a);
+    let glyph_a = in.color.a * t.r;
+    let glyph_pm = vec4<f32>(in.color.rgb * glyph_a, glyph_a);
+    let half = in.size * 0.5;
+    let corner = min(in.params.x, min(half.x, half.y));
+    let d = rounded_rect_sdf(in.local - half, half, corner);
+    let rect_pm = vec4<f32>(in.color.rgb * in.color.a, in.color.a) * clamp(0.5 - d, 0.0, 1.0);
+    let kind = in.params.z;
+    return select(select(rect_pm, glyph_pm, kind == 4.0), image_pm, kind == 5.0);
 }
 
 @fragment

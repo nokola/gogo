@@ -71,7 +71,46 @@ struct Batch {
     tex: TexId,
     /// Sampled by texel (`sampling=pixel`) instead of smoothed.
     pixel: bool,
+    /// Every quad of it is one `fs_plain` draws (`UiRenderer::quad_is_plain`),
+    /// so it takes a `PipelinePair`'s `plain` pipeline.
+    plain: bool,
 }
+
+/// The two pipelines ONE target format is drawn through: `full` runs
+/// `fs_main`, which draws every kind of quad; `plain` runs `fs_plain`,
+/// which draws an image, a glyph or a rect without a border, with the
+/// same math.
+///
+/// Needed because a phone GPU of 2014 pays for ALL of `fs_main` on every
+/// pixel, the ones that use none of it included: through `full` alone the
+/// screen pass is one 31-49 ms GPU job on the OnePlus A0001 and every
+/// screen tops out near 20 frames a second; through the pair it is 6-10 ms
+/// and a frame lands every screen refresh (DECISIONS.md D57,
+/// docs/todo-perf-smudge.md/PS22). Images, glyphs and borderless rects are
+/// 97 % and more of the pixels of every main screen.
+struct PipelinePair {
+    full: wgpu::RenderPipeline,
+    plain: wgpu::RenderPipeline,
+}
+
+/// A measuring build (`scripts\build.ps1 -UiClassLog`) that logs, once per
+/// screen, the quads and the share of the screen per quad class
+/// (`UiRenderer::log_quad_classes`). `scripts\dist.ps1` clears it.
+const UI_CLASS_LOG_BUILD: bool = option_env!("FANRUST_UI_CLASS_LOG").is_some();
+
+/// The quad classes a `UI_CLASS_LOG_BUILD` counts per frame, in this order.
+const QUAD_CLASSES: [&str; 8] = ["image", "glyph", "plain rect", "rounded rect no border", "bordered rect", "circle", "gradient", "arc"];
+
+/// A measuring build (`scripts\build.ps1 -NoUi`) that draws NO UI: only
+/// the images of externally-owned textures (the canvas, a brush preview)
+/// reach the screen. Taps and swipes still land — only the drawing is
+/// skipped.
+///
+/// Needed to read what a stroke costs with no UI on screen
+/// (docs/todo-perf-smudge.md/PS8): this build against one with the UI, by
+/// `scripts/perf_stroke_video.py` and `scripts/perf_stroke_atrace.py`.
+/// `scripts\dist.ps1` clears it.
+const NO_UI_BUILD: bool = option_env!("FANRUST_NO_UI").is_some();
 
 struct Texture {
     bind_group: wgpu::BindGroup,
@@ -100,13 +139,17 @@ struct External {
 pub struct ExternalImage(u32);
 
 pub struct UiRenderer {
-    pipeline: wgpu::RenderPipeline,
+    /// The screen's pipelines.
+    pipelines: PipelinePair,
+    /// The quad count per class (`QUAD_CLASSES`) last logged, so a
+    /// `UI_CLASS_LOG_BUILD` logs a screen once, not every frame.
+    classes_logged: [u32; 8],
     /// What every pipeline of this renderer shares — the screen's
-    /// (`pipeline`) and the offscreen tile's, made on the first
+    /// (`pipelines`) and the offscreen tile's, made on the first
     /// `render_to_texture` (a pipeline is bound to ONE target format).
     module: wgpu::ShaderModule,
     pipeline_layout: wgpu::PipelineLayout,
-    tile_pipeline: Option<wgpu::RenderPipeline>,
+    tile_pipelines: Option<PipelinePair>,
     screen_buffer: wgpu::Buffer,
     screen_bind: wgpu::BindGroup,
     /// The size the screen uniform holds on the GPU: written only when
@@ -184,14 +227,18 @@ impl UiRenderer {
         let sampler_pixel = device.create_sampler(&wgpu::SamplerDescriptor { label: Some("ui pixel"), mag_filter: wgpu::FilterMode::Nearest, min_filter: wgpu::FilterMode::Nearest, ..Default::default() });
         let gradients = GradientTable::new(device, GRAD_ROWS_INITIAL);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("ui"), bind_group_layouts: &[Some(&screen_layout), Some(&tex_layout), Some(&gradients.layout)], immediate_size: 0 });
-        let pipeline = Self::make_pipeline(device, &module, &pipeline_layout, target_format);
+        let pipelines = Self::make_pipelines(device, &module, &pipeline_layout, target_format);
+        if NO_UI_BUILD {
+            log::info!("FANRUST_UI no-UI build: only externally-owned images (the canvas, a brush preview) are drawn");
+        }
         let quad_capacity = 1024;
         let quad_buffer = Self::make_quad_buffer(device, quad_capacity);
         let mut r = UiRenderer {
-            pipeline,
+            pipelines,
+            classes_logged: [0; 8],
             module,
             pipeline_layout,
-            tile_pipeline: None,
+            tile_pipelines: None,
             screen_buffer,
             screen_bind,
             screen_written: None,
@@ -219,9 +266,15 @@ impl UiRenderer {
         r
     }
 
-    /// One UI pipeline for one target format — the screen's swapchain
+    /// The pipeline pair for one target format — the screen's swapchain
     /// format, or a tile's.
-    fn make_pipeline(device: &wgpu::Device, module: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
+    fn make_pipelines(device: &wgpu::Device, module: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, format: wgpu::TextureFormat) -> PipelinePair {
+        PipelinePair { full: Self::make_pipeline(device, module, layout, format, "fs_main"), plain: Self::make_pipeline(device, module, layout, format, "fs_plain") }
+    }
+
+    /// One UI pipeline for one target format, with `fragment_entry` of
+    /// ui.wgsl as its fragment stage.
+    fn make_pipeline(device: &wgpu::Device, module: &wgpu::ShaderModule, layout: &wgpu::PipelineLayout, format: wgpu::TextureFormat, fragment_entry: &str) -> wgpu::RenderPipeline {
         device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("ui"),
             layout: Some(layout),
@@ -240,7 +293,7 @@ impl UiRenderer {
             multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module,
-                entry_point: Some("fs_main"),
+                entry_point: Some(fragment_entry),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
             }),
@@ -448,6 +501,9 @@ impl UiRenderer {
         }
         self.sync_atlas(device, queue, text);
         self.gradients.flush(queue);
+        if UI_CLASS_LOG_BUILD {
+            self.log_quad_classes();
+        }
 
         if self.quads.len() > self.quad_capacity {
             self.quad_capacity = self.quads.len().next_power_of_two();
@@ -493,6 +549,9 @@ impl UiRenderer {
         while i < draws.len() {
             let d = &draws[i];
             i += 1;
+            if NO_UI_BUILD && !self.drawn_without_ui(d) {
+                continue;
+            }
             match d {
                 Draw::Quad { rect, color, corner, border, border_color } => {
                     self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [corner * epx, border * epx, KIND_RECT, 0.0], uv: NO_UV, rot, wedge, swing, eye });
@@ -725,25 +784,121 @@ impl UiRenderer {
     fn close_batch(&mut self, first: &mut u32, scissor: Option<[u32; 4]>, tex: TexId, pixel: bool) {
         let end = self.quads.len() as u32;
         if end > *first {
-            self.batches.push(Batch { first: *first, count: end - *first, scissor, tex, pixel });
+            self.push_batch_split_by_plain(*first, end, scissor, tex, pixel);
         }
         *first = end;
     }
 
+    /// Whether a `NO_UI_BUILD` keeps `d`: an image of an externally-owned
+    /// texture, or a clip / rotate / wedge / swing push or pop — the state
+    /// such an image is drawn under. A skipped Gradient's stops fall to the
+    /// stray-stop arm, which draws nothing.
+    fn drawn_without_ui(&self, d: &Draw) -> bool {
+        match d {
+            Draw::Image { image, .. } => self.externals.iter().any(|e| e.key == *image),
+            Draw::ClipPush(_) | Draw::ClipPop | Draw::RotatePush { .. } | Draw::RotatePop | Draw::WedgePush { .. } | Draw::WedgePop | Draw::SwingPush { .. } | Draw::SwingPop => true,
+            _ => false,
+        }
+    }
+
+    /// Whether `fs_plain` draws `q` exactly as `fs_main` does: an image, a
+    /// glyph, or a rect without a border (square or rounded corners),
+    /// outside any wedge mask.
+    ///
+    /// Needed because `fs_plain` has no code for a border, a circle, a
+    /// gradient, an arc, per-corner radii or a wedge mask: such a quad sent
+    /// to it would draw as a flat rect. The pin
+    /// `tests/ui_plain_pipeline.rs` holds the two shaders to the same
+    /// pixels for the quads this admits.
+    fn quad_is_plain(q: &Quad) -> bool {
+        let kind: f32 = q.params[2];
+        let borderless_rect: bool = kind == KIND_RECT && q.params[1] == 0.0;
+        q.wedge[3] < 0.0 && (kind == KIND_IMAGE || kind == KIND_GLYPH || borderless_rect)
+    }
+
+    /// Logs, per quad class, the quads of this frame and the share of the
+    /// screen their rects cover (overlaps count twice; clips are ignored) —
+    /// once per screen: only when a class's quad count changed.
+    ///
+    /// Needed to see WHERE a screen's pixels are before moving a kind of
+    /// quad between `fs_main` and `fs_plain` (DECISIONS.md D57).
+    fn log_quad_classes(&mut self) {
+        let mut counts: [u32; 8] = [0; 8];
+        let mut areas: [f32; 8] = [0.0; 8];
+        let (sw, sh) = (self.screen.0 as f32, self.screen.1 as f32);
+        for q in &self.quads {
+            let kind: f32 = q.params[2];
+            let class: usize = if kind == KIND_IMAGE {
+                0
+            } else if kind == KIND_GLYPH {
+                1
+            } else if kind == KIND_RECT && q.params[1] == 0.0 {
+                if q.params[0] == 0.0 { 2 } else { 3 }
+            } else if kind == KIND_RECT || kind == KIND_RECT4 {
+                4
+            } else if kind == KIND_CIRCLE {
+                5
+            } else if kind == KIND_ARC {
+                7
+            } else {
+                6
+            };
+            let w: f32 = (q.rect[0] + q.rect[2]).min(sw) - q.rect[0].max(0.0);
+            let h: f32 = (q.rect[1] + q.rect[3]).min(sh) - q.rect[1].max(0.0);
+            counts[class] += 1;
+            areas[class] += w.max(0.0) * h.max(0.0);
+        }
+        if counts == self.classes_logged {
+            return;
+        }
+        self.classes_logged = counts;
+        let line: Vec<String> = (0..8).filter(|&c| counts[c] > 0).map(|c| format!("{} {} quads {:.1} %", QUAD_CLASSES[c], counts[c], 100.0 * areas[c] / (sw * sh))).collect();
+        log::info!("FANRUST_UI classes (quads, share of the screen): {}", line.join("; "));
+    }
+
+    /// One batch per run of plain / not plain quads in `first..end`, in
+    /// draw order, so each run takes its own pipeline of a `PipelinePair`.
+    fn push_batch_split_by_plain(&mut self, first: u32, end: u32, scissor: Option<[u32; 4]>, tex: TexId, pixel: bool) {
+        let mut run_first: u32 = first;
+        let mut run_plain: bool = Self::quad_is_plain(&self.quads[first as usize]);
+        for i in first + 1..=end {
+            let plain: bool = i < end && Self::quad_is_plain(&self.quads[i as usize]);
+            if i == end || plain != run_plain {
+                self.batches.push(Batch { first: run_first, count: i - run_first, scissor, tex, pixel, plain: run_plain });
+                run_first = i;
+                run_plain = plain;
+            }
+        }
+    }
+
     /// Records the quads into `pass` (the caller owns the pass).
     pub fn render(&mut self, pass: &mut wgpu::RenderPass<'_>) {
-        let calls: u32 = self.record(pass, &self.pipeline);
+        let calls: u32 = self.record(pass, &self.pipelines, false);
         self.draw_calls = calls;
     }
 
-    /// The prepared batches through `pipeline` (the screen's or the tile's);
-    /// returns the draw calls made.
-    fn record(&self, pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline) -> u32 {
+    /// Pin probe: `render` with EVERY batch through `fs_main` — what the
+    /// split's pin (`tests/ui_plain_pipeline.rs`) compares a `render` to.
+    pub fn debug_render_through_fs_main(&mut self, pass: &mut wgpu::RenderPass<'_>) {
+        let calls: u32 = self.record(pass, &self.pipelines, true);
+        self.draw_calls = calls;
+    }
+
+    /// Pin probe: (plain batches, all batches) of the last `prepare`.
+    pub fn debug_plain_batches(&self) -> (usize, usize) {
+        (self.batches.iter().filter(|b| b.plain).count(), self.batches.len())
+    }
+
+    /// The prepared batches through `pipelines` (the screen's or a tile's):
+    /// a plain batch through `plain`, the rest through `full` — or all of
+    /// them through `full` when `full_only`. Returns the draw calls made.
+    fn record(&self, pass: &mut wgpu::RenderPass<'_>, pipelines: &PipelinePair, full_only: bool) -> u32 {
         if self.batches.is_empty() {
             return 0;
         }
         let mut draw_calls: u32 = 0;
-        pass.set_pipeline(pipeline);
+        let mut plain_set: bool = false;
+        pass.set_pipeline(&pipelines.full);
         pass.set_bind_group(0, &self.screen_bind, &[]);
         pass.set_bind_group(2, &self.gradients.bind_group, &[]);
         pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
@@ -752,6 +907,11 @@ impl UiRenderer {
                 Some([x, y, w, h]) if w > 0 && h > 0 => pass.set_scissor_rect(x, y, w, h),
                 Some(_) => continue,
                 None => pass.set_scissor_rect(0, 0, self.screen.0, self.screen.1),
+            }
+            let plain: bool = b.plain && !full_only;
+            if plain != plain_set {
+                pass.set_pipeline(if plain { &pipelines.plain } else { &pipelines.full });
+                plain_set = plain;
             }
             let t = &self.textures[b.tex as usize];
             pass.set_bind_group(1, if b.pixel { &t.bind_group_pixel } else { &t.bind_group }, &[]);
@@ -790,8 +950,8 @@ impl UiRenderer {
         let shifted: Vec<Draw> = draws.iter().map(|d| d.posed(-origin_epx.0, -origin_epx.1, 1.0)).collect();
         let size: (u32, u32) = (size_px.0.max(1), size_px.1.max(1));
         self.prepare_pages(device, queue, &[(&shifted, page)], epx, size, text, locale);
-        if self.tile_pipeline.is_none() {
-            self.tile_pipeline = Some(Self::make_pipeline(device, &self.module, &self.pipeline_layout, Self::TILE_FORMAT));
+        if self.tile_pipelines.is_none() {
+            self.tile_pipelines = Some(Self::make_pipelines(device, &self.module, &self.pipeline_layout, Self::TILE_FORMAT));
         }
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("ui tile"),
@@ -814,7 +974,7 @@ impl UiRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.record(&mut pass, self.tile_pipeline.as_ref().expect("made above"))
+            self.record(&mut pass, self.tile_pipelines.as_ref().expect("made above"), false)
         };
         self.draw_calls = calls;
         queue.submit([encoder.finish()]);
