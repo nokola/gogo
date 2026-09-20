@@ -27,7 +27,9 @@ fn anim_id(page: &Page, name: &str) -> gogo::page::StrId {
     page.anim_heads.iter().map(|h| h.anim).find(|a| page.str(*a) == name).unwrap_or_else(|| panic!("no anim {name}"))
 }
 
-/// The alpha the draw list paints for `node`'s own plate (its Quad).
+/// The alpha the draw list paints for `node`'s own plate (its Quad); 0 when
+/// the list has no plate for it — a plate faded all the way out draws
+/// nothing and is left out (tests/draws_nothing.rs).
 fn plate_alpha(page: &Page, rt: &mut Runtime, node: &str) -> u8 {
     let f = KeptFrame::fresh(page, resolve_animated(page, rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
     let rects = f.rects();
@@ -38,7 +40,7 @@ fn plate_alpha(page: &Page, rt: &mut Runtime, node: &str) -> u8 {
             Draw::Quad { rect, color, .. } if *rect == rects[id.index()] => Some(color.0[3]),
             _ => None,
         })
-        .unwrap_or_else(|| panic!("no plate for {node}: {list:#?}"))
+        .unwrap_or(0)
 }
 
 fn about(alpha: u8, fraction: f32) -> bool {

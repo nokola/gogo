@@ -160,6 +160,27 @@ impl Draw {
             Draw::SwingPop => Draw::SwingPop,
         }
     }
+
+    /// Whether this command changes no pixel: a plate, circle, arc, image
+    /// or text whose every color is fully transparent.
+    ///
+    /// Needed because such a command still costs its whole rect on the
+    /// GPU - it is blended like any other - and pages write one often: a
+    /// Button paints a default plate, so `background=#00000000` is how a
+    /// file removes it. The effect list's tiles alone were two such layers
+    /// each, and the list scrolled at 45 frames a second instead of 60 on
+    /// an Adreno 330 (docs/todo-perf-smudge.md/PS25).
+    ///
+    /// A plate with a transparent fill and a border that shows DOES draw.
+    pub fn draws_nothing(&self) -> bool {
+        let clear = |c: &Color_Straight_Srgb_4xU8_RGBA| c.0[3] == 0;
+        match self {
+            Draw::Quad { color, border, border_color, .. } | Draw::QuadCorners { color, border, border_color, .. } | Draw::Circle { color, border, border_color, .. } => clear(color) && (*border <= 0.0 || clear(border_color)),
+            Draw::Arc { color, .. } | Draw::Text { color, .. } | Draw::TextStretch { color, .. } => clear(color),
+            Draw::Image { tint, .. } => clear(tint),
+            _ => false,
+        }
+    }
 }
 
 /// The WP7 camera: Silverlight's PlaneProjection sees an element under a
@@ -295,7 +316,7 @@ fn dashed_arcs(out: &mut Vec<Draw>, rect: Rect, color: Color_Straight_Srgb_4xU8_
     let mut offset: f32 = 0.0;
     for pair in lengths.chunks(2) {
         let dash: f32 = pair[0] * degrees_per_epx;
-        out.push(Draw::Arc { rect, color, from, sweep, thickness, dash: (offset, dash, period) });
+        push_shown(out, Draw::Arc { rect, color, from, sweep, thickness, dash: (offset, dash, period) });
         offset += (pair[0] + pair[1]) * degrees_per_epx;
     }
 }
@@ -333,7 +354,7 @@ fn dash_quads(out: &mut Vec<Draw>, rect: Rect, border: f32, color: Color_Straigh
                     let leftx: f32 = if dir.1 > 0.0 { x0 - border } else { x0 };
                     Rect::new(leftx, y0.min(y1), border, (y1 - y0).abs())
                 };
-                out.push(Draw::Quad { rect: quad, color, corner: 0.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+                push_shown(out, Draw::Quad { rect: quad, color, corner: 0.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
             }
             t += run;
             left -= run;
@@ -343,6 +364,18 @@ fn dash_quads(out: &mut Vec<Draw>, rect: Rect, border: f32, color: Color_Straigh
                 on = !on;
             }
         }
+    }
+}
+
+/// Adds `d` to a draw list unless it changes no pixel
+/// (`Draw::draws_nothing`). Every plate, circle, arc, image and text of
+/// `walk` goes through here.
+///
+/// Needed so the rule is spelled once: a new kind of box that pushed its
+/// own quad straight onto the list would bring the wasted layers back.
+fn push_shown(out: &mut Vec<Draw>, d: Draw) {
+    if !d.draws_nothing() {
+        out.push(d);
     }
 }
 
@@ -539,15 +572,15 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
     let plate_quad = |out: &mut Vec<Draw>, rect: Rect, color: Color_Straight_Srgb_4xU8_RGBA, border: f32, border_color: Color_Straight_Srgb_4xU8_RGBA| {
         if !dash.is_empty() && border > 0.0 {
             if uniform {
-                out.push(Draw::Quad { rect, color, corner: corners[0], border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+                push_shown(out, Draw::Quad { rect, color, corner: corners[0], border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
             } else {
-                out.push(Draw::QuadCorners { rect, color, corners, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+                push_shown(out, Draw::QuadCorners { rect, color, corners, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
             }
             dash_quads(out, rect, border, border_color, &dash);
         } else if uniform {
-            out.push(Draw::Quad { rect, color, corner: corners[0], border, border_color });
+            push_shown(out, Draw::Quad { rect, color, corner: corners[0], border, border_color });
         } else {
-            out.push(Draw::QuadCorners { rect, color, corners, border, border_color });
+            push_shown(out, Draw::QuadCorners { rect, color, corners, border, border_color });
         }
     };
     let border = res.num(page, id, PropKey::BorderThickness).unwrap_or(0.0);
@@ -640,35 +673,35 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
                 let mark = Rect::new(text_rect.x, text_rect.y + (text_rect.h - mh) / 2.0, mw, mh);
                 match node.kind {
                     Kind::Check => {
-                        out.push(Draw::Quad { rect: mark, color: if selected { accent } else { Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT }, corner: 2.0, border: MARK_BORDER_EPX, border_color: white });
+                        push_shown(out, Draw::Quad { rect: mark, color: if selected { accent } else { Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT }, corner: 2.0, border: MARK_BORDER_EPX, border_color: white });
                         if selected {
                             let inset = (CHECK_BOX_EPX - CHECK_DOT_EPX) / 2.0;
-                            out.push(Draw::Quad { rect: mark.inset(inset, inset, inset, inset), color: white, corner: 1.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+                            push_shown(out, Draw::Quad { rect: mark.inset(inset, inset, inset, inset), color: white, corner: 1.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
                         }
                     }
                     Kind::Radio => {
-                        out.push(Draw::Circle { rect: mark, color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT, border: MARK_BORDER_EPX, border_color: white });
+                        push_shown(out, Draw::Circle { rect: mark, color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT, border: MARK_BORDER_EPX, border_color: white });
                         if selected {
                             let inset = (CHECK_BOX_EPX - RADIO_DOT_EPX) / 2.0;
-                            out.push(Draw::Circle { rect: mark.inset(inset, inset, inset, inset), color: accent, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+                            push_shown(out, Draw::Circle { rect: mark.inset(inset, inset, inset, inset), color: accent, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
                         }
                     }
                     _ => {
                         let pill = if selected { accent } else { mul_alpha(TOGGLE_OFF, opacity) };
-                        out.push(Draw::Quad { rect: mark, color: pill, corner: mh / 2.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+                        push_shown(out, Draw::Quad { rect: mark, color: pill, corner: mh / 2.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
                         let inset = (mh - TOGGLE_KNOB_EPX) / 2.0;
                         // The knob sits where the finger left it (`value=` 0..1,
                         // written by a drag); with no value, at the selected end.
                         let fraction = res.num(page, id, PropKey::Value).map(|v| v.clamp(0.0, 1.0)).unwrap_or(if selected { 1.0 } else { 0.0 });
                         let x = mark.x + inset + (mark.right() - inset - TOGGLE_KNOB_EPX - (mark.x + inset)) * fraction;
-                        out.push(Draw::Circle { rect: Rect::new(x, mark.y + inset, TOGGLE_KNOB_EPX, TOGGLE_KNOB_EPX), color: white, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+                        push_shown(out, Draw::Circle { rect: Rect::new(x, mark.y + inset, TOGGLE_KNOB_EPX, TOGGLE_KNOB_EPX), color: white, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
                     }
                 }
                 text_rect = text_rect.inset(mw + MARK_TEXT_GAP, 0.0, 0.0, 0.0);
                 halign_default = TextAlign::Start;
             }
             if let Some(Value::VText { text, key }) = res.prop(page, id, PropKey::Text) {
-                out.push(Draw::Text {
+                push_shown(out, Draw::Text {
                     rect: text_rect,
                     text,
                     key,
@@ -701,10 +734,10 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
                 // A dashed ring: the disc's fill with no ring, then the
                 // dashes as arcs (a circle's stroke is antialiased anyway —
                 // D257 is about straight dashes feathering into their gaps).
-                out.push(Draw::Circle { rect: disc, color: c, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+                push_shown(out, Draw::Circle { rect: disc, color: c, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
                 dashed_arcs(out, disc, border_color, 0.0, 360.0, border, &dash);
             } else {
-                out.push(Draw::Circle { rect: disc, color: c, border, border_color });
+                push_shown(out, Draw::Circle { rect: disc, color: c, border, border_color });
             }
         }
         Kind::Arc => {
@@ -714,7 +747,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
             let thickness = res.num(page, id, PropKey::Thickness).unwrap_or(1.0);
             let arc_dash: Vec<f32> = res.prop(page, id, PropKey::Dash).map(|v| page.list(v).iter().filter_map(|x| if let Value::VNum(n) = x { Some(*n) } else { None }).collect()).unwrap_or_default();
             if arc_dash.is_empty() {
-                out.push(Draw::Arc { rect, color: c, from, sweep, thickness, dash: SOLID });
+                push_shown(out, Draw::Arc { rect, color: c, from, sweep, thickness, dash: SOLID });
             } else {
                 dashed_arcs(out, rect, c, from, sweep, thickness, &arc_dash);
             }
@@ -859,7 +892,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
                     (nums.len() == 4).then(|| [nums[0], nums[1], nums[2], nums[3]])
                 });
                 let sampling = if res.ident(page, id, PropKey::Sampling) == Some("pixel") { Sampling::Pixel } else { Sampling::Smooth };
-                out.push(Draw::Image { rect, image: src, tint, fit, window, sampling });
+                push_shown(out, Draw::Image { rect, image: src, tint, fit, window, sampling });
             }
         }
         Kind::Label => {
@@ -871,9 +904,9 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
                         Some("both") => (true, true),
                         _ => (false, false),
                     };
-                    out.push(Draw::TextStretch { rect: text_rect, text, key, color: text_color(), font: res.font(page, id).unwrap_or(NO_STR), flip });
+                    push_shown(out, Draw::TextStretch { rect: text_rect, text, key, color: text_color(), font: res.font(page, id).unwrap_or(NO_STR), flip });
                 } else {
-                    out.push(Draw::Text {
+                    push_shown(out, Draw::Text {
                         rect: text_rect,
                         text,
                         key,
@@ -899,15 +932,15 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
             // `slot.track.corner_radius=` (a for= style) lands on the
             // node's corner word; unset keeps the stadium end.
             let track_corner = if corner > 0.0 { corner } else { SLIDER_TRACK_EPX / 2.0 };
-            out.push(Draw::Quad { rect: track, color: track_color, corner: track_corner, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
-            out.push(Draw::Quad { rect: Rect::new(track.x, track.y, track.w * t, track.h), color: fill, corner: track_corner, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+            push_shown(out, Draw::Quad { rect: track, color: track_color, corner: track_corner, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+            push_shown(out, Draw::Quad { rect: Rect::new(track.x, track.y, track.w * t, track.h), color: fill, corner: track_corner, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
             let knob = SLIDER_KNOB_EPX;
-            out.push(Draw::Circle { rect: Rect::new(rect.x + (rect.w - knob) * t, rect.y + (rect.h - knob) / 2.0, knob, knob), color: mul_alpha(DEFAULT_TEXT_COLOR, opacity), border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+            push_shown(out, Draw::Circle { rect: Rect::new(rect.x + (rect.w - knob) * t, rect.y + (rect.h - knob) / 2.0, knob, knob), color: mul_alpha(DEFAULT_TEXT_COLOR, opacity), border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
         }
         Kind::Input => {
             // Godot's default LineEdit plate: (0.1, 0.1, 0.1) at 0.6, no border.
             let bg = color(PropKey::Background).unwrap_or(mul_alpha(Color_Straight_Srgb_4xU8_RGBA([0x1A, 0x1A, 0x1A, 0x99]), opacity));
-            out.push(Draw::Quad { rect, color: bg, corner, border, border_color });
+            push_shown(out, Draw::Quad { rect, color: bg, corner, border, border_color });
             // The selection highlight, under the glyphs
             // (`selection_color=`; unset = white at 25% over the dark
             // chrome).
@@ -932,7 +965,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
             let mut field_is_empty = true;
             if let Some(Value::VText { text, key }) = res.prop(page, id, PropKey::Text) {
                 field_is_empty = page.str(text).is_empty() && key == NO_KEY;
-                out.push(Draw::Text { rect: text_rect.inset(8.0, 0.0, 8.0, 0.0), text, key, font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE), color: text_color(), halign: TextAlign::Start, valign: TextAlign::Center, wrap: false, font: res.font(page, id).unwrap_or(NO_STR) });
+                push_shown(out, Draw::Text { rect: text_rect.inset(8.0, 0.0, 8.0, 0.0), text, key, font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE), color: text_color(), halign: TextAlign::Start, valign: TextAlign::Center, wrap: false, font: res.font(page, id).unwrap_or(NO_STR) });
             }
             // `placeholder_text=` shows while the field is empty, at half
             // the ink's alpha (Godot's LineEdit look; GPAR112).
@@ -940,7 +973,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
                 if let Some(Value::VText { text, key }) = res.prop(page, id, PropKey::PlaceholderText) {
                     let mut dim = text_color();
                     dim.0[3] = (dim.0[3] as f32 * 0.5) as u8;
-                    out.push(Draw::Text { rect: text_rect.inset(8.0, 0.0, 8.0, 0.0), text, key, font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE), color: dim, halign: TextAlign::Start, valign: TextAlign::Center, wrap: false, font: res.font(page, id).unwrap_or(NO_STR) });
+                    push_shown(out, Draw::Text { rect: text_rect.inset(8.0, 0.0, 8.0, 0.0), text, key, font_size: res.font_size(page, id).unwrap_or(DEFAULT_FONT_SIZE), color: dim, halign: TextAlign::Start, valign: TextAlign::Center, wrap: false, font: res.font(page, id).unwrap_or(NO_STR) });
                 }
             }
             // The caret, focused fields only (GPAR112); an empty field
@@ -999,12 +1032,12 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
         if content_h > rect.h {
             let len = (rect.h * rect.h / content_h).max(8.0);
             let y = rect.y + (rect.h - len) * (offset[1] / (content_h - rect.h)).clamp(0.0, 1.0);
-            out.push(Draw::Quad { rect: Rect::new(rect.right() - SCROLL_BAR_EPX, y + 1.0, SCROLL_BAR_EPX, len - 1.0), color: grabber, corner: 0.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+            push_shown(out, Draw::Quad { rect: Rect::new(rect.right() - SCROLL_BAR_EPX, y + 1.0, SCROLL_BAR_EPX, len - 1.0), color: grabber, corner: 0.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
         }
         if content_w > rect.w {
             let len = (rect.w * rect.w / content_w).max(8.0);
             let x = rect.x + (rect.w - len) * (offset[0] / (content_w - rect.w)).clamp(0.0, 1.0);
-            out.push(Draw::Quad { rect: Rect::new(x + 1.0, rect.bottom() - SCROLL_BAR_EPX, len - 1.0, SCROLL_BAR_EPX), color: grabber, corner: 0.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
+            push_shown(out, Draw::Quad { rect: Rect::new(x + 1.0, rect.bottom() - SCROLL_BAR_EPX, len - 1.0, SCROLL_BAR_EPX), color: grabber, corner: 0.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
         }
     }
     if swung {

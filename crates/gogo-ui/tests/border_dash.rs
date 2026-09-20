@@ -28,9 +28,10 @@ fn black() -> Color_Straight_Srgb_4xU8_RGBA {
 
 #[test]
 fn a_dashed_rectangle_walks_its_perimeter_in_four_to_one_dashes() {
-    let d = draws("View v { Rectangle r 24x24, halign=left, valign=top, color=#00000000, border_thickness=1, border_color=#000000FF, border_dash=[4, 1] }");
+    let d = draws("View v { Rectangle r 24x24, halign=left, valign=top, color=#FFFFFFFF, border_thickness=1, border_color=#000000FF, border_dash=[4, 1] }");
     let quads: Vec<(Rect, Color_Straight_Srgb_4xU8_RGBA, f32)> = d.iter().filter_map(|x| if let Draw::Quad { rect, color, border, .. } = x { Some((*rect, *color, *border)) } else { None }).collect();
-    // The fill quad: transparent, no solid border.
+    // The fill quad: no solid border. (A transparent fill adds no quad at
+    // all, tests/draws_nothing.rs - so this plate is white.)
     let fill = quads.iter().find(|(r, _, _)| r.w == 24.0 && r.h == 24.0).expect("the plate");
     assert_eq!(fill.2, 0.0, "a dashed plate has no solid border");
     let dashes: Vec<Rect> = quads.iter().filter(|(_, c, _)| *c == black()).map(|(r, _, _)| *r).collect();
@@ -78,7 +79,7 @@ fn bad_spellings_are_refused() {
 
 #[test]
 fn a_dashed_circle_is_arcs_along_its_ring() {
-    let d = draws("View v { Circle c 24x24, halign=left, valign=top, color=#00000000, border_thickness=1, border_color=#000000FF, border_dash=[4, 1] }");
+    let d = draws("View v { Circle c 24x24, halign=left, valign=top, color=#FFFFFFFF, border_thickness=1, border_color=#000000FF, border_dash=[4, 1] }");
     // The disc keeps its fill and loses the solid ring.
     let discs: Vec<f32> = d.iter().filter_map(|x| if let Draw::Circle { border, .. } = x { Some(*border) } else { None }).collect();
     assert_eq!(discs, vec![0.0], "{d:?}");

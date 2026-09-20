@@ -115,13 +115,12 @@ fn quads(list: &[Draw]) -> Vec<(Rect, Color_Straight_Srgb_4xU8_RGBA, f32)> {
     list.iter().filter_map(|d| if let Draw::Quad { rect, color, corner, .. } = d { Some((*rect, *color, *corner)) } else { None }).collect()
 }
 
-fn text_alpha(page: &Page, list: &[Draw], word: &str) -> u8 {
-    list.iter()
-        .find_map(|d| match d {
-            Draw::Text { text, color, .. } if page.str(*text) == word => Some(color.0[3]),
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("no text {word:?} in {list:#?}"))
+/// The alpha `word` is drawn at; `None` = the list has no such text.
+fn text_alpha(page: &Page, list: &[Draw], word: &str) -> Option<u8> {
+    list.iter().find_map(|d| match d {
+        Draw::Text { text, color, .. } if page.str(*text) == word => Some(color.0[3]),
+        _ => None,
+    })
 }
 
 // ------------------------------------------------------------ _parser_tests
@@ -627,15 +626,18 @@ fn cookbook_fill_in_a_row() {
 /// `_cookbook_tests` 2430-2439 (cookbook.hidden-ok, hidden-holds-space,
 /// hidden-sibling-live): "How do I hide something without collapsing the
 /// layout?" — WPF Hidden = `opacity=0, interactive=false`: the ghost still
-/// holds its slot and its text is drawn at alpha 0, a tap on it lands on
-/// nothing, and the sibling stays live.
+/// holds its slot and nothing of it is drawn (Godot draws its text at alpha
+/// 0; here a command that draws nothing is left out of the list,
+/// tests/draws_nothing.rs), a tap on it lands on nothing, and the sibling
+/// stays live.
 #[test]
 fn cookbook_hidden_holds_space() {
     let l = lay("View v {\n Column c spacing=8 {\n  Button ghostButton text=\"soon\", opacity=0, interactive=false\n  Button saveButton  text=\"save\"\n }\n}\n");
     let ghost = l.rect("ghostButton");
     let save = l.rect("saveButton");
     assert!(ghost.h > 0.0 && near(save.y, ghost.bottom() + 8.0), "ghost={ghost:?} save={save:?}");
-    assert_eq!(text_alpha(&l.page, &l.draws(), "soon"), 0);
+    assert_eq!(text_alpha(&l.page, &l.draws(), "soon"), None, "the ghost's text is not drawn");
+    assert_eq!(text_alpha(&l.page, &l.draws(), "save"), Some(255), "its sibling's is");
     assert_eq!(l.hit(ghost.x + 5.0, ghost.y + 5.0), None, "the ghost is hit-invisible");
     assert_eq!(l.hit(save.x + 5.0, save.y + 5.0), Some(l.id("saveButton")));
 }
