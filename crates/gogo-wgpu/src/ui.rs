@@ -181,6 +181,12 @@ pub struct UiRenderer {
     gradients: GradientTable,
     /// Commands with no texture to draw them (a missing image).
     pub skipped: u32,
+    /// Off only in a pin that compares a culled frame with the whole one
+    /// (`debug_set_culling`).
+    cull: bool,
+    /// Quads and images of this frame left out because they lie outside
+    /// their clip (`quad_is_outside`).
+    culled: u32,
     pub draw_calls: u32,
 }
 
@@ -257,6 +263,8 @@ impl UiRenderer {
             externals: Vec::new(),
             gradients,
             skipped: 0,
+            cull: true,
+            culled: 0,
             draw_calls: 0,
         };
         // Slot 0: a 1×1 white atlas until the text engine uploads one.
@@ -524,6 +532,7 @@ impl UiRenderer {
         self.quads.clear();
         self.batches.clear();
         self.skipped = 0;
+        self.culled = 0;
         self.screen = screen;
         // Each rect's origin snaps to a whole device pixel here, at draw time,
         // so a fractional size upstream (`Image height=205.7`) never blurs
@@ -554,19 +563,19 @@ impl UiRenderer {
             }
             match d {
                 Draw::Quad { rect, color, corner, border, border_color } => {
-                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [corner * epx, border * epx, KIND_RECT, 0.0], uv: NO_UV, rot, wedge, swing, eye });
+                    self.push_quad(current, Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [corner * epx, border * epx, KIND_RECT, 0.0], uv: NO_UV, rot, wedge, swing, eye });
                 }
                 Draw::QuadCorners { rect, color, corners, border, border_color } => {
-                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [0.0, border * epx, KIND_RECT4, 0.0], uv: [corners[0] * epx, corners[1] * epx, corners[2] * epx, corners[3] * epx], rot, wedge, swing, eye });
+                    self.push_quad(current, Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [0.0, border * epx, KIND_RECT4, 0.0], uv: [corners[0] * epx, corners[1] * epx, corners[2] * epx, corners[3] * epx], rot, wedge, swing, eye });
                 }
                 Draw::Arc { rect, color, from, sweep, thickness, dash } => {
                     // uv: the dash mask (offset, dash, period) in radians —
                     // period 0 = solid. One quad per dash/gap pair.
                     let (offset, dash_len, period) = dash;
-                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: [0.0; 4], params: [thickness * epx, from.to_radians(), KIND_ARC, sweep.to_radians()], uv: [offset.to_radians(), dash_len.to_radians(), period.to_radians(), 0.0], rot, wedge, swing, eye });
+                    self.push_quad(current, Quad { rect: px(rect), color: color.to_f32(), border_color: [0.0; 4], params: [thickness * epx, from.to_radians(), KIND_ARC, sweep.to_radians()], uv: [offset.to_radians(), dash_len.to_radians(), period.to_radians(), 0.0], rot, wedge, swing, eye });
                 }
                 Draw::Circle { rect, color, border, border_color } => {
-                    self.quads.push(Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [0.0, border * epx, KIND_CIRCLE, 0.0], uv: NO_UV, rot, wedge, swing, eye });
+                    self.push_quad(current, Quad { rect: px(rect), color: color.to_f32(), border_color: border_color.to_f32(), params: [0.0, border * epx, KIND_CIRCLE, 0.0], uv: NO_UV, rot, wedge, swing, eye });
                 }
                 Draw::Gradient { rect, kind, angle, corner, period, stops } => {
                     let count: usize = *stops as usize;
@@ -587,19 +596,18 @@ impl UiRenderer {
                     // count, then the tiling period (start, length in run
                     // units; 0 length = no tiling).
                     let r = px(rect);
+                    if self.cull && Self::quad_is_outside(&r, &rot, &swing, current, screen) {
+                        self.culled += 1;
+                        continue;
+                    }
                     let n_slots: u32 = GradientTable::slots_for(r[2].max(r[3]), *period);
                     let row: u32 = self.gradients.row_for(device, list, n_slots, *kind, *period);
-                    self.quads.push(Quad { rect: r, color: [0.0; 4], border_color: [0.0; 4], params: [corner * epx, 0.0, k, (angle - 90.0).to_radians()], uv: [row as f32, n_slots as f32, period.0, period.1], rot, wedge, swing, eye });
+                    self.push_quad(current, Quad { rect: r, color: [0.0; 4], border_color: [0.0; 4], params: [corner * epx, 0.0, k, (angle - 90.0).to_radians()], uv: [row as f32, n_slots as f32, period.0, period.1], rot, wedge, swing, eye });
                 }
                 // A stop without its Gradient ahead of it (never emitted
                 // by the draw pass; skipped, not drawn).
                 Draw::GradientStop { .. } => {}
                 Draw::Text { rect, text: text_id, key, font_size, color, halign, valign, wrap, font } => {
-                    if current_tex != ATLAS || current_pixel {
-                        self.close_batch(&mut batch_first, current, current_tex, current_pixel);
-                        current_tex = ATLAS;
-                        current_pixel = false;
-                    }
                     let s = gogo::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let r = px(rect);
@@ -618,11 +626,31 @@ impl UiRenderer {
                         (false, _) => (r[0], r[2], *halign as u8),
                     };
                     let color = color.to_f32();
+                    // Each glyph is judged on its own ink box: text may hang
+                    // out of its rect (no wrap, a tall line), so the rect
+                    // says nothing about what shows. The batch turns to the
+                    // atlas at the first glyph that shows - text that is all
+                    // outside must not split the batch around it.
                     for g in text.shape(s, size_px, max_w, font_key, x, y, box_w, h) {
-                        self.quads.push(Quad { rect: [g.x, g.y, g.w, g.h], color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_GLYPH, 0.0], uv: g.uv, rot, wedge, swing, eye });
+                        let glyph_rect: [f32; 4] = [g.x, g.y, g.w, g.h];
+                        if self.cull && Self::quad_is_outside(&glyph_rect, &rot, &swing, current, screen) {
+                            self.culled += 1;
+                            continue;
+                        }
+                        if current_tex != ATLAS || current_pixel {
+                            self.close_batch(&mut batch_first, current, current_tex, current_pixel);
+                            current_tex = ATLAS;
+                            current_pixel = false;
+                        }
+                        self.quads.push(Quad { rect: glyph_rect, color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_GLYPH, 0.0], uv: g.uv, rot, wedge, swing, eye });
                     }
                 }
                 Draw::TextStretch { rect, text: text_id, key, color, font, flip } => {
+                    let r = px(rect);
+                    if self.cull && Self::quad_is_outside(&r, &rot, &swing, current, screen) {
+                        self.culled += 1;
+                        continue;
+                    }
                     if current_tex != ATLAS || current_pixel {
                         self.close_batch(&mut batch_first, current, current_tex, current_pixel);
                         current_tex = ATLAS;
@@ -630,13 +658,12 @@ impl UiRenderer {
                     }
                     let s = gogo::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
-                    let r = px(rect);
                     let size_px = r[2].max(r[3]).clamp(8.0, STRETCH_RASTER_MAX_PX);
                     if let Some(g) = text.glyph(s, size_px, font_key) {
                         // The ink box IS the quad; a flip swaps the uv ends.
                         let (u0, u1) = if flip.0 { (g.uv[2], g.uv[0]) } else { (g.uv[0], g.uv[2]) };
                         let (v0, v1) = if flip.1 { (g.uv[3], g.uv[1]) } else { (g.uv[1], g.uv[3]) };
-                        self.quads.push(Quad { rect: r, color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_GLYPH, 0.0], uv: [u0, v0, u1, v1], rot, wedge, swing, eye });
+                        self.push_quad(current, Quad { rect: r, color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_GLYPH, 0.0], uv: [u0, v0, u1, v1], rot, wedge, swing, eye });
                     }
                 }
                 Draw::Selection { rect, text: text_id, key, font_size, font, lo, hi, color } => {
@@ -651,7 +678,7 @@ impl UiRenderer {
                     let (xhi, _) = text.measure(&s[..byte(*hi)], size_px, None, font_key);
                     let h = size_px * 1.2;
                     let y = r[1] + (r[3] - h) / 2.0;
-                    self.quads.push(Quad { rect: [r[0] + xlo, y, (xhi - xlo).max(0.0), h], color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_RECT, 0.0], uv: NO_UV, rot, wedge, swing, eye });
+                    self.push_quad(current, Quad { rect: [r[0] + xlo, y, (xhi - xlo).max(0.0), h], color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_RECT, 0.0], uv: NO_UV, rot, wedge, swing, eye });
                 }
                 Draw::SelHandles { rect, text: text_id, key, font_size, font, lo, hi, color } => {
                     // The grab circles below the selection's ends —
@@ -668,7 +695,7 @@ impl UiRenderer {
                     let color = color.to_f32();
                     for x in [r[0] + xlo, r[0] + xhi] {
                         let h = gogo::input::sel_handle_rect(r[1] + r[3], x, gogo::input::SEL_HANDLE_EPX * epx);
-                        self.quads.push(Quad { rect: [h.x, h.y, h.w, h.h], color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_CIRCLE, 0.0], uv: NO_UV, rot, wedge, swing, eye });
+                        self.push_quad(current, Quad { rect: [h.x, h.y, h.w, h.h], color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_CIRCLE, 0.0], uv: NO_UV, rot, wedge, swing, eye });
                     }
                 }
                 Draw::Caret { rect, text: text_id, key, font_size, font, index, color } => {
@@ -683,13 +710,22 @@ impl UiRenderer {
                     let h = size_px * 1.2;
                     let x = r[0] + pw;
                     let y = r[1] + (r[3] - h) / 2.0;
-                    self.quads.push(Quad { rect: [x, y, (1.5 * epx).max(1.0), h], color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_RECT, 0.0], uv: NO_UV, rot, wedge, swing, eye });
+                    self.push_quad(current, Quad { rect: [x, y, (1.5 * epx).max(1.0), h], color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_RECT, 0.0], uv: NO_UV, rot, wedge, swing, eye });
                 }
                 Draw::Image { rect, image, tint, fit, window, sampling } => {
                     let Some(tex) = self.slot(*image) else {
                         self.skipped += 1;
                         continue;
                     };
+                    // Judged on the Image's rect BEFORE the batch turns to
+                    // its texture (every fit draws inside the rect): on a
+                    // long list of pictures each texture is a draw call of
+                    // its own, and the ones scrolled out were a third of a
+                    // frame's CPU on an old phone (docs/todo-perf-smudge.md/PS29).
+                    if self.cull && Self::quad_is_outside(&px(rect), &rot, &swing, current, screen) {
+                        self.culled += 1;
+                        continue;
+                    }
                     let pixel: bool = *sampling == Sampling::Pixel;
                     if current_tex != tex || current_pixel != pixel {
                         self.close_batch(&mut batch_first, current, current_tex, current_pixel);
@@ -719,7 +755,7 @@ impl UiRenderer {
                         Fit::Distort => (r, [0.0, 0.0, 1.0, 1.0]),
                     };
                     let uv = [(wx + uv[0] * ww) / tw, (wy + uv[1] * wh) / th, (wx + uv[2] * ww) / tw, (wy + uv[3] * wh) / th];
-                    self.quads.push(Quad { rect: fitted, color: tint.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_IMAGE, 0.0], uv, rot, wedge, swing, eye });
+                    self.push_quad(current, Quad { rect: fitted, color: tint.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_IMAGE, 0.0], uv, rot, wedge, swing, eye });
                 }
                 Draw::ClipPush(rect) => {
                     self.close_batch(&mut batch_first, current, current_tex, current_pixel);
@@ -779,6 +815,49 @@ impl UiRenderer {
         }
         }
         self.close_batch(&mut batch_first, current, current_tex, current_pixel);
+    }
+
+    /// Adds `q` to this frame's quads unless it lies outside `clip`
+    /// (`quad_is_outside`). Every plain quad of `prepare_pass` comes
+    /// through here; text, images and gradients ask the same rule
+    /// themselves, before the work a quad that shows needs.
+    ///
+    /// Needed so the rule is spelled once: a new kind of command that
+    /// pushed its quad straight onto the list would be drawn off screen
+    /// again.
+    fn push_quad(&mut self, clip: Option<[u32; 4]>, q: Quad) {
+        if self.cull && Self::quad_is_outside(&q.rect, &q.rot, &q.swing, clip, self.screen) {
+            self.culled += 1;
+            return;
+        }
+        self.quads.push(q);
+    }
+
+    /// Whether a quad at `rect` (device px) can show no pixel: it shares
+    /// no area with `clip` - the scissor it would be drawn under, the
+    /// whole screen when there is none. A clip of no area hides every
+    /// quad under it.
+    ///
+    /// Needed because the GPU throws such a quad away only AFTER the CPU
+    /// paid for it: its bytes in the quad upload and, for a picture with a
+    /// texture of its own, a draw call. A list many screens long sends
+    /// all of itself every frame - on the OnePlus A0001 the effect list's
+    /// scrolled-out pictures were a third of the frame's CPU
+    /// (docs/todo-perf-smudge.md/PS29).
+    ///
+    /// A TURNED or SWUNG quad is never outside: its rect is where it was
+    /// laid out, not where the vertex stage puts it. A rect with a NaN in
+    /// it is never outside either (every comparison with it is false).
+    fn quad_is_outside(rect: &[f32; 4], rot: &[f32; 4], swing: &[f32; 4], clip: Option<[u32; 4]>, screen: (u32, u32)) -> bool {
+        if *rot != NO_ROT || swing[3] > 0.0 {
+            return false;
+        }
+        let [x, y, w, h] = match clip {
+            Some(c) => [c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32],
+            None => [0.0, 0.0, screen.0 as f32, screen.1 as f32],
+        };
+        let (right, bottom) = ((x + w).min(screen.0 as f32), (y + h).min(screen.1 as f32));
+        rect[0] >= right || rect[0] + rect[2] <= x || rect[1] >= bottom || rect[1] + rect[3] <= y
     }
 
     fn close_batch(&mut self, first: &mut u32, scissor: Option<[u32; 4]>, tex: TexId, pixel: bool) {
@@ -984,6 +1063,19 @@ impl UiRenderer {
     /// Pin probe: gradient table rows in use after the last frame.
     pub fn debug_gradient_rows(&self) -> usize {
         self.gradients.debug_rows_in_use()
+    }
+
+    /// Culling off or on (`quad_is_outside`), for the pin that holds a
+    /// culled frame to the pixels of the whole one
+    /// (`tests/ui_cull.rs`).
+    pub fn debug_set_culling(&mut self, on: bool) {
+        self.cull = on;
+    }
+
+    /// The quads and images the last `prepare` left out as outside their
+    /// clip.
+    pub fn debug_culled(&self) -> u32 {
+        self.culled
     }
 
     pub fn quad_count(&self) -> usize {
