@@ -5081,7 +5081,7 @@ impl<'a> Compiler<'a> {
 
     fn gap(&mut self, node: &mut Node, n: &AstNode, parent_kind: Option<Kind>) {
         if !parent_kind.map(Kind::is_stack).unwrap_or(false) {
-            self.error("G0047", n.line, "`gap` lives in a Column/Row (Flow → spacing=, Grid → tracks, Layers → margins)");
+            self.error("G0047", n.line, "`gap` lives in a Column/Row (Flow and Grid → spacing=, Layers → margins)");
         }
         match n.args.first() {
             Some(AstValue::Num { value, .. }) => node.gap = *value,

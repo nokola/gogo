@@ -841,14 +841,15 @@ fn vocab_gap_axis_and_fill_forms() {
 /// `_vocab_tests` 12437-12441 (vocab.gap-top-level, gap-in-flow, gap-in-
 /// layers, gap-in-grid, gap-in-panel): a gap outside a Column/Row is
 /// refused and the message names the mechanism that owns spacing there
-/// (Flow → `spacing=`, Grid → tracks, Layers → margins).
+/// (Flow and Grid → `spacing=`, Layers → margins — a Grid takes
+/// `spacing=` since 2026-08-30 — todo-gogo-parity.md, GPAR21).
 #[test]
 fn vocab_gap_wrong_homes() {
     let m = message("gap 8", "G0047");
     assert!(m.contains("Column/Row"), "{m}");
     assert!(message("View v { Flow f { gap 8 } }", "G0047").contains("spacing="));
     assert!(message("View v { Layers l { gap 8 } }", "G0047").contains("margins"));
-    assert!(message("View v { Grid g cols=[hug] { row { gap 4 } } }", "G0047").contains("tracks"));
+    assert!(message("View v { Grid g cols=[hug] { row { gap 4 } } }", "G0047").contains("spacing="));
     assert!(has("View v { Panel p { gap 8 } }", "G0047"));
 }
 
