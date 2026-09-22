@@ -1151,10 +1151,14 @@ impl Input {
         }
     }
 
-    /// Forgets the gesture in flight and any glide: for the host to call
-    /// when the page leaves the screen, so a list closed mid-fling is
-    /// where the user left it on return and no `held` ghost survives a
-    /// page swap. Nothing is reported (the finger is not on this page).
+    /// Forgets the gesture in flight and any glide. A door, not a duty:
+    /// a host calls it when a page leaves the screen if it wants a list
+    /// closed mid-glide to be still on return; a host may just as well
+    /// keep the state so the page picks up where it was (the paint app
+    /// chose that, 2026-09-22 — it feels nice). A `held` ghost needs no
+    /// reset either way: a host that routes a finger's later phases to
+    /// the page that took its Down delivers the Up to the swapped-out
+    /// page. Nothing is reported (the finger is not on this page).
     pub fn reset(&mut self, page: &Page, rt: &mut Runtime) {
         if let Some(p) = self.press.take() {
             rt.set_state(p.node, HELD, false);
