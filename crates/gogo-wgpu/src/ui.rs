@@ -20,6 +20,36 @@ use gogo::page::{NO_STR, Page};
 use gogo::ImageKey;
 use text::TextEngine;
 
+/// The frame's draw lists, in draw order, each with the page that owns
+/// its strings — handed to `UiRenderer::prepare_pages` as a walk so the
+/// host builds no vector of them per frame (DECISIONS.md D76). A slice or
+/// an array of `(draws, page)` pairs is one (the pins, a one-page bake).
+/// The page outlives the walk (it lives in the host); a list may be a
+/// copy made for the call (a page mid-slide).
+pub trait DrawLists {
+    fn for_each_list<'a>(&'a self, f: &mut dyn FnMut(&[Draw], &'a Page));
+}
+
+impl DrawLists for [(&[Draw], &Page)] {
+    fn for_each_list<'a>(&'a self, f: &mut dyn FnMut(&[Draw], &'a Page)) {
+        for (draws, page) in self {
+            f(draws, page);
+        }
+    }
+}
+
+impl<const N: usize> DrawLists for [(&[Draw], &Page); N] {
+    fn for_each_list<'a>(&'a self, f: &mut dyn FnMut(&[Draw], &'a Page)) {
+        self.as_slice().for_each_list(f);
+    }
+}
+
+impl DrawLists for Vec<(&[Draw], &Page)> {
+    fn for_each_list<'a>(&'a self, f: &mut dyn FnMut(&[Draw], &'a Page)) {
+        self.as_slice().for_each_list(f);
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Quad {
@@ -164,6 +194,21 @@ pub struct UiRenderer {
     quad_capacity: usize,
     quads: Vec<Quad>,
     batches: Vec<Batch>,
+    /// The quads the GPU buffer holds: `prepare_pages` writes the buffer
+    /// only when this frame's quads differ (a buffer write is an EGL
+    /// context switch on the GLES road, D33) — an idle frame writes
+    /// nothing. Emptied when the buffer is remade.
+    quads_written: Vec<Quad>,
+    /// How many times the quad buffer was written (the pins).
+    quad_writes: u32,
+    // The prepare pass's scratch, kept between frames so a frame
+    // allocates nothing once warm (DECISIONS.md D76): the clip, rotation,
+    // wedge and swing stacks, and one label's shaped glyphs.
+    clips: Vec<[u32; 4]>,
+    rots: Vec<[f32; 4]>,
+    wedges: Vec<[f32; 4]>,
+    swings: Vec<([f32; 4], [f32; 4])>,
+    glyphs: Vec<text::GlyphQuad>,
     screen: (u32, u32),
     /// Slot 0 is the atlas (rebuilt when the engine's atlas changes size).
     textures: Vec<Texture>,
@@ -255,6 +300,13 @@ impl UiRenderer {
             quad_capacity,
             quads: Vec::new(),
             batches: Vec::new(),
+            quads_written: Vec::new(),
+            quad_writes: 0,
+            clips: Vec::new(),
+            rots: Vec::new(),
+            wedges: Vec::new(),
+            swings: Vec::new(),
+            glyphs: Vec::new(),
             screen: (1, 1),
             textures: Vec::new(),
             atlas_texture: None,
@@ -495,7 +547,7 @@ impl UiRenderer {
     /// table the pages laid out with, so a label is shaped at the width it
     /// was measured (`None` = the literals).
     #[allow(clippy::too_many_arguments)]
-    pub fn prepare_pages(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, pages: &[(&[Draw], &Page)], epx: f32, screen: (u32, u32), text: &mut TextEngine, locale: Option<&Locale>) {
+    pub fn prepare_pages<L: DrawLists + ?Sized>(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, pages: &L, epx: f32, screen: (u32, u32), text: &mut TextEngine, locale: Option<&Locale>) {
         // A glyph that grows the atlas during the pass leaves every run
         // shaped before it this frame — the cache's included — with uvs into
         // the atlas that was: the pass runs again against the grown one. A
@@ -516,9 +568,13 @@ impl UiRenderer {
         if self.quads.len() > self.quad_capacity {
             self.quad_capacity = self.quads.len().next_power_of_two();
             self.quad_buffer = Self::make_quad_buffer(device, self.quad_capacity);
+            self.quads_written.clear(); // a fresh buffer holds nothing yet
         }
-        if !self.quads.is_empty() {
+        let unchanged: bool = bytemuck::cast_slice::<Quad, u8>(&self.quads) == bytemuck::cast_slice::<Quad, u8>(&self.quads_written);
+        if !self.quads.is_empty() && !unchanged {
             queue.write_buffer(&self.quad_buffer, 0, bytemuck::cast_slice(&self.quads));
+            self.quads_written.clone_from(&self.quads); // keeps its capacity: no allocation once warm
+            self.quad_writes += 1;
         }
         if self.screen_written != Some(screen) {
             queue.write_buffer(&self.screen_buffer, 0, bytemuck::bytes_of(&Screen { size: [screen.0 as f32, screen.1 as f32], _pad: [0.0; 2] }));
@@ -528,7 +584,7 @@ impl UiRenderer {
 
     /// One pass over the draw lists into `quads` and `batches` — shapes
     /// the text, claims the gradient rows; `prepare_pages` uploads after.
-    fn prepare_pass(&mut self, device: &wgpu::Device, pages: &[(&[Draw], &Page)], epx: f32, screen: (u32, u32), text: &mut TextEngine, locale: Option<&Locale>) {
+    fn prepare_pass<L: DrawLists + ?Sized>(&mut self, device: &wgpu::Device, pages: &L, epx: f32, screen: (u32, u32), text: &mut TextEngine, locale: Option<&Locale>) {
         self.quads.clear();
         self.batches.clear();
         self.skipped = 0;
@@ -540,19 +596,26 @@ impl UiRenderer {
         // (Godot snaps per node, compounding — this rounds each node once
         // from its true position).
         let px = |r: &Rect| [(r.x * epx).round(), (r.y * epx).round(), r.w * epx, r.h * epx];
-        let mut clips: Vec<[u32; 4]> = Vec::new();
-        let mut rots: Vec<[f32; 4]> = Vec::new();
+        // The scratch stacks step out of self for the pass (push_quad and
+        // close_batch borrow self) and go back at its end.
+        let mut clips: Vec<[u32; 4]> = std::mem::take(&mut self.clips);
+        let mut rots: Vec<[f32; 4]> = std::mem::take(&mut self.rots);
+        let mut wedges: Vec<[f32; 4]> = std::mem::take(&mut self.wedges);
+        let mut swings: Vec<([f32; 4], [f32; 4])> = std::mem::take(&mut self.swings);
+        let mut glyphs: Vec<text::GlyphQuad> = std::mem::take(&mut self.glyphs);
+        clips.clear();
+        rots.clear();
+        wedges.clear();
+        swings.clear();
         let mut rot: [f32; 4] = NO_ROT;
-        let mut wedges: Vec<[f32; 4]> = Vec::new();
         let mut wedge: [f32; 4] = NO_WEDGE;
-        let mut swings: Vec<([f32; 4], [f32; 4])> = Vec::new();
         let mut swing: [f32; 4] = NO_SWING;
         let mut eye: [f32; 4] = NO_EYE;
         let mut batch_first = 0u32;
         let mut current: Option<[u32; 4]> = None;
         let mut current_tex: TexId = ATLAS;
         let mut current_pixel: bool = false;
-        for (draws, page) in pages {
+        pages.for_each_list(&mut |draws: &[Draw], page: &Page| {
         // Indexed: a Gradient entry owns the stop records after it.
         let mut i: usize = 0;
         while i < draws.len() {
@@ -631,7 +694,9 @@ impl UiRenderer {
                     // says nothing about what shows. The batch turns to the
                     // atlas at the first glyph that shows - text that is all
                     // outside must not split the batch around it.
-                    for g in text.shape(s, size_px, max_w, font_key, x, y, box_w, h) {
+                    glyphs.clear();
+                    text.shape_into(s, size_px, max_w, font_key, x, y, box_w, h, &mut glyphs);
+                    for g in &glyphs {
                         let glyph_rect: [f32; 4] = [g.x, g.y, g.w, g.h];
                         if self.cull && Self::quad_is_outside(&glyph_rect, &rot, &swing, current, screen) {
                             self.culled += 1;
@@ -813,8 +878,13 @@ impl UiRenderer {
                 }
             }
         }
-        }
+        });
         self.close_batch(&mut batch_first, current, current_tex, current_pixel);
+        self.clips = clips;
+        self.rots = rots;
+        self.wedges = wedges;
+        self.swings = swings;
+        self.glyphs = glyphs;
     }
 
     /// Adds `q` to this frame's quads unless it lies outside `clip`
@@ -1028,7 +1098,7 @@ impl UiRenderer {
     pub fn render_to_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, draws: &[Draw], page: &Page, text: &mut TextEngine, locale: Option<&Locale>, epx: f32, origin_epx: (f32, f32), size_px: (u32, u32)) -> Tex_Bake_Premul_Srgb_4xU8_RGBA {
         let shifted: Vec<Draw> = draws.iter().map(|d| d.posed(-origin_epx.0, -origin_epx.1, 1.0)).collect();
         let size: (u32, u32) = (size_px.0.max(1), size_px.1.max(1));
-        self.prepare_pages(device, queue, &[(&shifted, page)], epx, size, text, locale);
+        self.prepare_pages(device, queue, &[(shifted.as_slice(), page)], epx, size, text, locale);
         if self.tile_pipelines.is_none() {
             self.tile_pipelines = Some(Self::make_pipelines(device, &self.module, &self.pipeline_layout, Self::TILE_FORMAT));
         }
@@ -1080,6 +1150,12 @@ impl UiRenderer {
 
     pub fn quad_count(&self) -> usize {
         self.quads.len()
+    }
+
+    /// How many frames wrote the quad buffer so far (the pin: an unchanged
+    /// frame writes nothing).
+    pub fn debug_quad_writes(&self) -> u32 {
+        self.quad_writes
     }
 
     pub fn has_image(&self, key: ImageKey) -> bool {

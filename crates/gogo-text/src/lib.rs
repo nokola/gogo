@@ -428,20 +428,31 @@ impl TextEngine {
     /// of the text box; rasterizes new glyphs into the atlas. `halign`:
     /// 0 start, 1 center, 2 end within `box_w` (when wrapping).
     pub fn shape(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>, x: f32, y: f32, box_w: f32, halign: u8) -> Vec<GlyphQuad> {
+        let mut out: Vec<GlyphQuad> = Vec::new();
+        self.shape_into(text, font_size, max_width, font, x, y, box_w, halign, &mut out);
+        out
+    }
+
+    /// `shape` appending to `out` instead of returning a vector: a run
+    /// the cache holds costs no allocation — the UI renderer shapes every
+    /// label of every frame through here (its zero-allocation frame,
+    /// DECISIONS.md D76).
+    #[allow(clippy::too_many_arguments)]
+    pub fn shape_into(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>, x: f32, y: f32, box_w: f32, halign: u8, out: &mut Vec<GlyphQuad>) {
+        let (dx, dy) = (x.round(), y.round());
         let key = cache_key(text, font_size, max_width, font, box_w, halign);
         if let Some((generation, quads)) = self.shape_cache.get(&key) {
             if *generation == self.generation {
-                let (dx, dy) = (x.round(), y.round());
-                return quads.iter().map(|q| GlyphQuad { x: q.x + dx, y: q.y + dy, ..*q }).collect();
+                out.extend(quads.iter().map(|q| GlyphQuad { x: q.x + dx, y: q.y + dy, ..*q }));
+                return;
             }
         }
         let quads = self.shape_uncached(text, font_size, max_width, font, box_w, halign);
         if self.shape_cache.len() >= CACHE_CAP {
             self.shape_cache.clear();
         }
-        self.shape_cache.insert(key, (self.generation, quads.clone()));
-        let (dx, dy) = (x.round(), y.round());
-        quads.into_iter().map(|q| GlyphQuad { x: q.x + dx, y: q.y + dy, ..q }).collect()
+        out.extend(quads.iter().map(|q| GlyphQuad { x: q.x + dx, y: q.y + dy, ..*q }));
+        self.shape_cache.insert(key, (self.generation, quads));
     }
 
     /// Quads with the pen at the origin. A glyph packed past the atlas's
