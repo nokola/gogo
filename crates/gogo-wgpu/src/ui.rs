@@ -475,6 +475,12 @@ impl UiRenderer {
         self.externals[image.0 as usize].texture = None;
     }
 
+    /// Test-only: how many opened images hold a texture right now — a
+    /// page's close pins that its pictures left the GPU.
+    pub fn debug_held_external_count(&self) -> usize {
+        self.externals.iter().filter(|e| e.texture.is_some()).count()
+    }
+
     fn write(queue: &wgpu::Queue, tex: &wgpu::Texture, data: &[u8], width: u32, height: u32, bytes_per_pixel: u32) {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
