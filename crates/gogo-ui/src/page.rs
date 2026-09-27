@@ -1648,7 +1648,7 @@ pub fn palette_color(word: &str) -> Option<Color_Straight_Srgb_4xU8_RGBA> {
 /// fails on any key that is neither read by layout/draw/runtime/input/anim
 /// nor listed here.
 pub const UNREAD_BY_DESIGN: &[(PropKey, &str)] = &[
-    (PropKey::Loading, "host-read: `loading=lazy` asks the host to defer that image's decode to its first draw"),
+    (PropKey::Loading, "host-read: `loading=lazy` asks the host to decode that image off the frame, starting at its first draw; it draws empty until the pixels land"),
     (PropKey::TouchTarget, "accepted: `touch_target=off` silences the 44-epx finger-target lint; the lint is not built here yet (GP41), and hit testing always uses the node's own rect"),
     (PropKey::AccessibilityName, "host-read: no screen-reader bridge here yet"),
     (PropKey::KeyboardTarget, "host-read: no keyboard focus routing here yet"),
