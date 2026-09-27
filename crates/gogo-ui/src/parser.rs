@@ -242,7 +242,11 @@ impl<'a> Parser<'a> {
                     // `then group drop …` / `and play appear`: the word after the
                     // connective's step word is that step's own name.
                     let step_name = matches!(node.type_word.as_str(), "and" | "then") && matches!(node.name.as_deref(), Some("group") | Some("each") | Some("play")) && node.args.is_empty() && node.props.is_empty() && !next_is_eq;
-                    if need_comma && !step_name && !when_condition {
+                    // `transition commandBar.opacity duration=0.4`: the
+                    // first `key=` ends the target list, as `-> edit`
+                    // ends a pose rule's endpoints.
+                    let transition_payload = node.type_word == "transition" && next_is_eq && node.props.is_empty();
+                    if need_comma && !step_name && !when_condition && !transition_payload {
                         self.error("G0017", format!("missing `,` before `{word}`"));
                     }
                     self.pos += 1;

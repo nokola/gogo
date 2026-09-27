@@ -83,6 +83,14 @@ pub trait ArrangementName: Copy {
     fn id(self) -> ArrangementId;
 }
 
+/// A page build's typed theme-value handle (`enum Theme` in the generated
+/// module, one variant per `$name = value` the page sees) — code reads
+/// the file's colors through `Runtime::theme_color`, so a renamed theme
+/// value is a rustc error instead of a node's color read on the side.
+pub trait ThemeName: Copy {
+    fn id(self) -> StrId;
+}
+
 /// A page build's typed anim handle (`enum Anim` in the generated module,
 /// one variant per `anim` the file declares) — `Runtime::play` / `stop` /
 /// `is_playing` take one, so a misspelled anim is a rustc error and no
@@ -288,6 +296,13 @@ pub struct Runtime {
     /// tweens this far in (set beside `glide_start`).
     glide_late: f32,
     pub tweens: Vec<Tween>,
+    /// Per property rule (`Page::prop_transitions`, same index): the
+    /// standing value the last resolve saw — a change from it starts the
+    /// rule's slide. `None` = not seen yet (the first value never slides).
+    prop_standing: Vec<Option<Value>>,
+    /// `set_prop_instant` writes since the last resolve: the value their
+    /// property rule's slide starts from instead of the shown one.
+    instant_props: Vec<(NodeId, PropKey, Value)>,
     pub players: Vec<Player>,
     /// The ANIM LAYER: per node, what players wrote. Only the channels a
     /// player owns (or `held` keeps) reach the picture — `resolve`
@@ -474,6 +489,8 @@ impl Runtime {
             pending_change_dt: 0.0,
             glide_late: 0.0,
             tweens: Vec::new(),
+            prop_standing: Vec::new(),
+            instant_props: Vec::new(),
             held: Vec::new(),
             prop_anim: Vec::new(),
             held_props: Vec::new(),
@@ -1508,6 +1525,37 @@ impl Runtime {
         // the node re-runs its ladder (its static/dynamic standing may
         // have changed) and its shown values are re-read.
         self.retained.write_flips.push(node);
+        self.dirty = true;
+    }
+
+    /// A theme color as the page shows it now — the active variant's value
+    /// (`theme dark { $accent = … }`), else the default, `$refs` followed
+    /// the way `color=$accent` in the file follows them. Needed so code
+    /// that paints with the file's colors (an outline drawn on the GPU)
+    /// follows theme switches.
+    ///
+    /// Returns `None` when the value isn't a color.
+    pub fn theme_color<T: ThemeName>(&self, page: &Page, name: T) -> Option<Color_Straight_Srgb_4xU8_RGBA> {
+        match deref(page, self.variant, Value::VRef { name: name.id(), opacity: None }) {
+            Value::VColor(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// A code write that lands at once, even where a property rule
+    /// (`transition commandBar.opacity duration=0.4`) would slide it — the
+    /// `go_instant` of property writes. A `set_prop` of the same property
+    /// before the next frame slides from this value: a bar shown faded out
+    /// and then faded in is `set_prop_instant(opacity, 0)` +
+    /// `set_prop(opacity, 1)`. Without a rule it is `set_prop`.
+    pub fn set_prop_instant(&mut self, node: NodeId, key: PropKey, value: Value) {
+        match self.instant_props.iter_mut().find(|(n, k, _)| *n == node && *k == key) {
+            Some(e) => e.2 = value,
+            None => self.instant_props.push((node, key, value)),
+        }
+        self.set_prop(node, key, value);
+        // A same-value write changes no write, but a slide toward it must
+        // still stop.
         self.dirty = true;
     }
 
@@ -3196,6 +3244,18 @@ pub fn animatable(key: PropKey) -> bool {
     matches!(key, PropKey::StopColor(_) | PropKey::StopOffset(_)) || ANIMATABLE.contains(&key)
 }
 
+/// What a property rule compares: `node`'s `key` as the ladder and the
+/// code writes leave it, before any slide. An unset margin or padding is
+/// 0, so the first write to one slides from where the node sits.
+fn standing_value(page: &Page, r: &Resolved, node: NodeId, key: PropKey) -> Option<Value> {
+    if key.is_placement() {
+        let edge: bool = matches!(key, PropKey::MarginLeft | PropKey::MarginTop | PropKey::MarginRight | PropKey::MarginBottom | PropKey::PaddingLeft | PropKey::PaddingTop | PropKey::PaddingRight | PropKey::PaddingBottom);
+        placement_value(&r.placement[node.index()], key).or_else(|| edge.then_some(Value::VNum(0.0)))
+    } else {
+        r.prop(page, node, key).or_else(|| motion_default(key)).or_else(|| kind_visual_default(page, node, key))
+    }
+}
+
 /// A placement field as a prop value (`None` where the file did not speak).
 fn placement_value(p: &Placement, key: PropKey) -> Option<Value> {
     let len = |l: Len| match l {
@@ -3292,6 +3352,14 @@ fn when_writes_key(page: &Page, node: NodeId, key: PropKey, who: NodeId) -> bool
         let flipped = if who == NO_NODE { !node_state } else { node_state && owner == who };
         flipped && page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize].iter().any(|p| p.key == key)
     })
+}
+
+/// Does a `when` on `node` for either end of a view flip (`from` or
+/// `to`) set `key`? Tells a `go_instant` flip's own responses from other
+/// changes in the same frame.
+fn when_sets_key(page: &Page, node: NodeId, key: PropKey, from: Option<State>, to: Option<State>) -> bool {
+    let n = &page.nodes[node];
+    page.whens[n.whens.0 as usize..(n.whens.0 + n.whens.1) as usize].iter().any(|w| (Some(w.state) == from || Some(w.state) == to) && page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize].iter().any(|p| p.key == key))
 }
 
 /// Does a `when` on `node` that the flip on `who` (`NO_NODE` = the view:
@@ -3673,6 +3741,11 @@ fn resolve_into(page: &Page, rt: &mut Runtime, r: &mut Resolved) {
             if b.owned & (1u64 << k) != 0 {
                 continue;
             }
+            // A property rule times this key's every change (below); the
+            // load check refuses a timed state rule over it.
+            if page.prop_transitions.iter().any(|t| t.node == id && t.key == *key) {
+                continue;
+            }
             let target = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key)) };
             let Some(target) = target else { continue };
             let current = b.current[k].or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key));
@@ -3712,6 +3785,40 @@ fn resolve_into(page: &Page, rt: &mut Runtime, r: &mut Resolved) {
             rt.tweens.push(Tween { node: id, key: *key, from: current, to: target, elapsed: late.min(rule.duration), duration: rule.duration, easing });
         }
     }
+    // Property rules (`transition commandBar.opacity duration=0.4`): a
+    // standing value (the ladder with the code writes on it) that moved
+    // since the last resolve slides there from what shows — an in-flight
+    // slide turns around from where it is. Snaps instead: the first value
+    // seen, a node that doesn't show (nothing to watch), a lane an anim
+    // owns (anim beats transition), a `set_prop_instant` value, and a
+    // `go_instant` flip's own `when` responses (it times nothing).
+    rt.prop_standing.resize(page.prop_transitions.len(), None);
+    for (k, pt) in page.prop_transitions.iter().enumerate() {
+        let id: NodeId = pt.node;
+        let Some(target) = standing_value(page, r, id, pt.key) else { continue };
+        if let Some((_, _, v)) = rt.instant_props.iter().find(|(n, key, _)| *n == id && *key == pt.key) {
+            rt.prop_standing[k] = Some(*v);
+            rt.tweens.retain(|t| !(t.node == id && t.key == pt.key));
+        }
+        let Some(standing) = rt.prop_standing[k] else {
+            rt.prop_standing[k] = Some(target);
+            continue;
+        };
+        if standing == target {
+            continue;
+        }
+        rt.prop_standing[k] = Some(target);
+        let from: Value = rt.tweens.iter().find(|t| t.node == id && t.key == pt.key).map(|t| t.value()).unwrap_or(standing);
+        rt.tweens.retain(|t| !(t.node == id && t.key == pt.key));
+        let shows: bool = rt.vis_seen.get(id.index()).copied().unwrap_or(false);
+        let by_instant_flip: bool = changes.iter().any(|(who, from, to)| instant_view(*who, to) && when_sets_key(page, id, pt.key, *from, *to));
+        if !shows || by_instant_flip || rt.anim_owns_prop_now(id, pt.key) {
+            continue;
+        }
+        let easing = if pt.easing == NO_STR { Easing::LINEAR } else { Easing::parse(page.str(pt.easing)).unwrap_or(Easing::LINEAR) };
+        rt.tweens.push(Tween { node: id, key: pt.key, from, to: target, elapsed: 0.0, duration: pt.duration, easing });
+    }
+    rt.instant_props.clear();
     // GP33: a driver target that moved re-arms the fraction glide by the
     // control's default feel (the endpoint-less `transition` on the
     // instance root); no rule or duration 0 snaps. A glide already

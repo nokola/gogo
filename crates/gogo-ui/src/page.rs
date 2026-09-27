@@ -1375,6 +1375,21 @@ pub struct Transition {
     pub line: u32,
 }
 
+/// `transition commandBar.opacity duration=0.4, easing=expo_in_out` — a
+/// property rule: any change of `node`'s standing `key` value (a code
+/// write, a `when` response, a pose) slides there from the shown value.
+/// One entry per property (`commandBar.{margin, opacity}` = five).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PropTransition {
+    pub node: NodeId,
+    pub key: PropKey,
+    pub duration: f32,
+    /// `NO_STR` = linear.
+    pub easing: StrId,
+    /// The file line, for the one-timing-per-property message.
+    pub line: u32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ThemeEntry {
     pub name: StrId,
@@ -1671,6 +1686,7 @@ pub struct StaticPage {
     pub kind_defaults: &'static [KindDefault],
     pub arrangements: &'static [StrId],
     pub transitions: &'static [Transition],
+    pub prop_transitions: &'static [PropTransition],
     pub anims: &'static [AnimTrack],
     pub anim_heads: &'static [AnimHead],
     pub choices: &'static [ChoiceGroup],
@@ -1702,6 +1718,7 @@ pub struct Page {
     pub kind_defaults: Vec<KindDefault>,
     pub arrangements: Vec<StrId>,
     pub transitions: Vec<Transition>,
+    pub prop_transitions: Vec<PropTransition>,
     pub anims: Vec<AnimTrack>,
     pub anim_heads: Vec<AnimHead>,
     pub choices: Vec<ChoiceGroup>,
@@ -1805,6 +1822,7 @@ impl Page {
             kind_defaults: s.kind_defaults.to_vec(),
             arrangements: s.arrangements.to_vec(),
             transitions: s.transitions.to_vec(),
+            prop_transitions: s.prop_transitions.to_vec(),
             anims: s.anims.to_vec(),
             anim_heads: s.anim_heads.to_vec(),
             choices: s.choices.to_vec(),
@@ -1878,6 +1896,8 @@ impl Page {
         self.live_texts.extend(lives);
         let feels: Vec<Transition> = self.transitions.iter().filter(|t| t.node != NO_NODE && t.node >= src && t.node < end).map(|t| Transition { node: shift(t.node), ..*t }).collect();
         self.transitions.extend(feels);
+        let slides: Vec<PropTransition> = self.prop_transitions.iter().filter(|t| t.node >= src && t.node < end).map(|t| PropTransition { node: shift(t.node), ..*t }).collect();
+        self.prop_transitions.extend(slides);
         Cloned { root: base, end: NodeId(base.0 + (end.0 - src.0)) }
     }
 

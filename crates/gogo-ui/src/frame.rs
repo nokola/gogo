@@ -85,6 +85,18 @@ impl KeptFrame {
         Frame::new(&self.look, &self.rects)
     }
 
+    /// The draw list of ONE node's subtree from this kept frame, into
+    /// `out` (cleared first) — what a host draws into a texture
+    /// (`draw_subtree`'s rules: paint order as on screen, rects in page
+    /// epx, the root at full opacity).
+    ///
+    /// Needed so a bake reads the frame the road laid out last, with its
+    /// glide and motion; a hand-made look could draw a box where the
+    /// screen never showed it (B38).
+    pub fn subtree_draws(&self, page: &Page, root: NodeId, out: &mut Vec<Draw>) {
+        crate::draw::draw_subtree_into(page, self.frame(), root, out);
+    }
+
     pub fn look(&self) -> &Resolved {
         &self.look
     }

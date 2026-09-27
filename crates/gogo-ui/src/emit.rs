@@ -115,6 +115,29 @@ fn slice<T: std::fmt::Debug>(items: &[T]) -> String {
     s
 }
 
+/// The page's theme values as code: `enum Theme` (one variant per `$name`
+/// the page sees — its own and its `uses` files'; the discriminant is the
+/// name's string id) — `Runtime::theme_color(page, Theme::Accent)` cannot
+/// name a value the page lacks.
+fn emit_theme(page: &Page, out: &mut String) {
+    let mut names: Vec<StrId> = Vec::new();
+    for t in &page.theme {
+        if !names.contains(&t.name) {
+            names.push(t.name);
+        }
+    }
+    if names.is_empty() {
+        return;
+    }
+    out.push_str("    /// The page's theme values (`$name = value`), for `Runtime::theme_color`.\n");
+    out.push_str("    #[allow(clippy::enum_variant_names, non_camel_case_types, dead_code)]\n    #[derive(Clone, Copy, Debug, PartialEq, Eq)]\n    #[repr(u32)]\n    pub enum Theme {\n");
+    for n in &names {
+        out.push_str(&format!("        {} = {},\n", key_variant(page.str(*n)), n.index()));
+    }
+    out.push_str("    }\n\n");
+    out.push_str("    impl gogo::ThemeName for Theme {\n        fn id(self) -> gogo::StrId {\n            gogo::StrId::from_index(self as usize)\n        }\n    }\n\n");
+}
+
 /// The page's arrangements as code: `enum Arrangement` (one variant per
 /// declared name, `#[repr(u32)]` = the index `when <name>` poses match),
 /// plus `Base` (the rest pose) — `Runtime::go(Arrangement::Wide)` cannot
@@ -335,6 +358,7 @@ pub fn emit_rust(page: &Page, module: &str) -> Result<String, String> {
     out.push_str(&format!("#[allow(unused_imports, clippy::all)]\npub mod {module} {{\n"));
     out.push_str("    use gogo::page::*;\n    use gogo::page::{Kind::*, Len::*, Align::*, PropKey::*, Value::*, State::*, Action::*, Auto::*, Payload::*};\n\n");
     emit_arrangements(page, &mut out);
+    emit_theme(page, &mut out);
     emit_anims(page, &mut out).map_err(|e| format!("{module}: {e}"))?;
     out.push_str("    pub static PAGE: StaticPage = StaticPage {\n");
     out.push_str(&format!("        nodes: {},\n", slice(&page.nodes)));
@@ -350,6 +374,7 @@ pub fn emit_rust(page: &Page, module: &str) -> Result<String, String> {
     out.push_str(&format!("        key_claims: {},\n", slice(&page.key_claims)));
     out.push_str(&format!("        behaviors: {},\n", slice(&page.behaviors)));
     out.push_str(&format!("        transitions: {},\n", slice(&page.transitions)));
+    out.push_str(&format!("        prop_transitions: {},\n", slice(&page.prop_transitions)));
     out.push_str(&format!("        anims: {},\n", slice(&page.anims)));
     out.push_str(&format!("        anim_heads: {},\n", slice(&page.anim_heads)));
     out.push_str(&format!("        choices: {},\n", slice(&page.choices)));

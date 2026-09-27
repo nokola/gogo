@@ -329,6 +329,13 @@ fn has_signals_node(n: &AstNode) -> bool {
 
 /// `face.background` → (`face`, `background`); a motion key like
 /// `translate.x` stays whole, and `dot.translate.x` splits once.
+/// A property rule (`transition commandBar.opacity duration=0.4`), told
+/// from a state-change rule (`transition base -> edit …`) by its targets:
+/// no arrow, and a `node.prop` word (`screen.*` words are states).
+fn is_property_transition(n: &AstNode) -> bool {
+    n.arrows.is_empty() && n.args.iter().any(|a| a.as_ident().is_some_and(|w| w.contains('.') && !w.starts_with("screen.")))
+}
+
 fn split_target(key: &str) -> Option<(&str, &str)> {
     if PropKey::from_word(key).is_some() {
         return None;
@@ -551,6 +558,9 @@ pub struct Compiler<'a> {
     /// `when screen.*` pose (D14): it ranks as line 0 and never clashes, so
     /// a page's pose on the same instance wins.
     deferred_whens: Vec<(State, Vec<AstItem>, u32, bool)>,
+    /// Top-level property rules (`transition commandBar.opacity
+    /// duration=0.4`), compiled at finish — they name nodes.
+    deferred_prop_transitions: Vec<AstNode>,
     /// `anim` declarations, compiled after the tree exists (they name
     /// nodes): (the widget-instance scope they were declared in — `""` at
     /// the top of the file — and the declaration).
@@ -719,6 +729,7 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         local_keys: Keys::default(),
         local_images: Images::default(),
         deferred_whens: Vec::new(),
+        deferred_prop_transitions: Vec::new(),
         anim_decls: Vec::new(),
         style_wearers: HashMap::new(),
         self_lanes: Vec::new(),
@@ -859,6 +870,7 @@ impl<'a> Compiler<'a> {
                     "widget" | "control" => self.widget(n),
                     "anim" => self.anim(n),
                     "arrangement" => {}
+                    "transition" if is_property_transition(n) => self.deferred_prop_transitions.push(n.clone()),
                     "transition" => {
                         let t = self.transition(n, NO_NODE);
                         self.page.transitions.push(t);
@@ -2904,6 +2916,10 @@ impl<'a> Compiler<'a> {
 
     fn transition(&mut self, n: &AstNode, node: NodeId) -> Transition {
         let mut t = Transition { node, from: None, to: None, duration: 0.0, easing: NO_STR, anim: NO_STR, line: n.line };
+        if is_property_transition(n) {
+            self.error("G3007", n.line, "a property transition sits at the file's top level, naming its node — `transition commandBar.opacity duration=0.4` (inside a block, `transition` times state changes)");
+            return t;
+        }
         // One arrow, one endpoint each side. A lone endpoint used to read
         // as `s -> any` and `-> held` as `any -> held`, silently (GPAR23).
         let ends: Vec<&str> = n.args.iter().filter_map(|a| a.as_ident()).collect();
@@ -5661,6 +5677,10 @@ impl<'a> Compiler<'a> {
                     self.error("G0054", line, "a top-level `when` block holds `node.prop = value` lines");
                     continue;
                 };
+                if key.contains(".{") {
+                    self.error("G0059", *l, format!("`{key}` — a `when` line sets one property (`node.prop = value`); the `node.{{a, b}}` group names properties for a `transition`"));
+                    continue;
+                }
                 let Some((node_name, prop_name)) = split_target(key) else {
                     self.error("G0059", *l, format!("`{key}` — write `node.prop = value`"));
                     continue;
@@ -6266,6 +6286,7 @@ impl<'a> Compiler<'a> {
             }
             self.page.behaviors.push(Behavior { root: rid, name: pb.name, slots, payload: pb.spec.payload, selected: pb.selected, min: pb.min, max: pb.max, step: pb.step, key_unit: pb.key_unit, rest: pb.rest, drag_started: pb.drag_started, drag_ended: pb.drag_ended });
         }
+        self.prop_transitions();
         self.transition_scope_guard();
         self.one_writer_guard();
         self.reveal_channel_guard();
@@ -6355,6 +6376,127 @@ impl<'a> Compiler<'a> {
     /// arrangement change only as an exact pair; control states stack, so
     /// a node rule times one side at a time; and two rules covering one
     /// pair in one scope would pick silently — refused.
+    /// The top-level property rules (`transition commandBar.{margin,
+    /// opacity} duration=0.4, easing=expo_in_out`): one `PropTransition`
+    /// per named property. Needed at finish because the rules name nodes.
+    ///
+    /// Refused: a target that isn't `node.prop`, a property that can't
+    /// slide (`visibility` snaps — fade `opacity` instead), a missing
+    /// `duration=`, and a second timing for one property: another
+    /// property rule, or a timed state-change rule over a `when` that
+    /// sets it (which one times the change would be a silent pick).
+    fn prop_transitions(&mut self) {
+        let rules = std::mem::take(&mut self.deferred_prop_transitions);
+        for n in &rules {
+            let mut duration: Option<f32> = None;
+            let mut easing: StrId = NO_STR;
+            for p in &n.props {
+                match p.key.as_str() {
+                    "duration" => duration = p.value.as_num(),
+                    "easing" => easing = self.easing_spec(&n.props, p.line).unwrap_or(NO_STR),
+                    other if EASING_PARAM_KEYS.contains(&other) => {}
+                    "anim" => self.error("G3007", p.line, "a property transition times the change itself — `anim=` plays with a state change (`transition base -> edit anim=…`)"),
+                    other => self.error("G3007", p.line, format!("a property transition takes duration= and easing= (+ its parameters) — not `{other}`")),
+                }
+            }
+            let duration: f32 = match duration {
+                Some(d) if d > 0.0 => d,
+                _ => {
+                    self.error("G3007", n.line, "a property transition needs `duration=` above 0 (seconds) — without one the change snaps anyway");
+                    continue;
+                }
+            };
+            for arg in &n.args {
+                let Some(word) = arg.as_ident() else {
+                    self.error("G3007", n.line, "a property transition names `node.prop` targets — `transition commandBar.opacity duration=0.4`");
+                    continue;
+                };
+                let (node_name, props): (&str, Vec<&str>) = match word.split_once(".{") {
+                    Some((node, group)) => (node, group.trim_end_matches('}').split(',').filter(|w| !w.is_empty()).collect()),
+                    None => match word.split_once('.') {
+                        Some((node, prop)) => (node, vec![prop]),
+                        None => {
+                            self.error("G3007", n.line, format!("`{word}` — a property transition names `node.prop` (`{word}.opacity`), and a state change is `transition A -> B`"));
+                            continue;
+                        }
+                    },
+                };
+                let Some(id) = self.page.find(node_name).or_else(|| self.root_aliases.get(node_name).and_then(|t| self.page.find(t))) else {
+                    self.error("G0060", n.line, format!("`{word}`: no node named `{node_name}`"));
+                    continue;
+                };
+                let kind = self.page.nodes[id].kind;
+                for prop in props {
+                    let keys: Vec<PropKey> = match prop {
+                        "margin" => vec![PropKey::MarginLeft, PropKey::MarginTop, PropKey::MarginRight, PropKey::MarginBottom],
+                        "padding" => vec![PropKey::PaddingLeft, PropKey::PaddingTop, PropKey::PaddingRight, PropKey::PaddingBottom],
+                        _ => match PropKey::from_word(prop) {
+                            Some(PropKey::Visibility) => {
+                                self.error("G3007", n.line, format!("`{node_name}.visibility` snaps — showing and hiding never slide; fade with `{node_name}.opacity`, or give the node `on:show`/`on:hide` anims"));
+                                continue;
+                            }
+                            Some(PropKey::Other(_)) | None => {
+                                self.error("G2001", n.line, unknown_property(prop, kind));
+                                continue;
+                            }
+                            Some(key) if crate::runtime::animatable(key) => {
+                                if !self.check_prop_kind(prop, key, kind, n.line) {
+                                    continue;
+                                }
+                                vec![key]
+                            }
+                            _ => {
+                                self.error("G3007", n.line, format!("`{node_name}.{prop}` doesn't slide — a transition moves colors, opacity, sizes, margins, paddings, corner_radius, border_thickness, font_size and the motion words"));
+                                continue;
+                            }
+                        },
+                    };
+                    for key in keys {
+                        if let Some(first) = self.page.prop_transitions.iter().find(|t| t.node == id && t.key == key) {
+                            let first_line: u32 = first.line;
+                            self.error("G3008", n.line, format!("`{node_name}.{}` is already timed by the transition on line {first_line} — one rule per property", key.word()));
+                            continue;
+                        }
+                        self.page.prop_transitions.push(PropTransition { node: id, key, duration, easing, line: n.line });
+                    }
+                }
+            }
+        }
+        // A state-change rule times every property its flip's `when`
+        // responses move; a property rule on one of them is a second
+        // timing for the same change.
+        let mut errs: Vec<(u32, String)> = Vec::new();
+        for pt in &self.page.prop_transitions {
+            let node = &self.page.nodes[pt.node];
+            let (w0, wc) = node.whens;
+            for w in &self.page.whens[w0 as usize..(w0 + wc) as usize] {
+                if !self.page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize].iter().any(|p| p.key == pt.key) {
+                    continue;
+                }
+                let view_state = matches!(w.state, State::Arrangement(_) | State::ScreenOrientation(_) | State::ScreenClass(_));
+                let owner = if w.of == NO_NODE { pt.node } else { w.of };
+                let timer = self.page.transitions.iter().find(|t| {
+                    t.duration > 0.0
+                        && if view_state {
+                            t.node == NO_NODE || (t.node == pt.node && t.from.is_some() && t.to.is_some())
+                        } else {
+                            t.node == owner || t.node == pt.node
+                        }
+                });
+                if let Some(t) = timer {
+                    let name = self.page.str(node.name).to_string();
+                    let ends = |e: Option<State>| e.map(|x| state_word(&self.page, x)).unwrap_or_else(|| "any".to_string());
+                    let rule = if t.from.is_none() && t.to.is_none() { "transition".to_string() } else { format!("transition {} -> {}", ends(t.from), ends(t.to)) };
+                    errs.push((pt.line, format!("`{name}.{}` gets two timings: this transition, and `{rule}` (line {}) over `when {}` (line {}), which sets it — keep one: drop the property here, or move its value out of the `when`", pt.key.word(), t.line, state_word(&self.page, w.state), w.line)));
+                    break;
+                }
+            }
+        }
+        for (line, msg) in errs {
+            self.error("G3008", line, msg);
+        }
+    }
+
     fn transition_scope_guard(&mut self) {
         let is_state = |st: &State| matches!(st, State::Held | State::Hovered | State::Focused | State::FocusWithin | State::Selected | State::StateDisabled | State::Custom(_));
         // `base` (Arrangement(u32::MAX)) is exempt from the one-sided

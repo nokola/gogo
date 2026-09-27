@@ -156,6 +156,8 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G3002", "an automatic (value-driven) slot property assigned — the control drives it"),
     ("G3005", "one target posed from both screen vocabularies — a class and an orientation can hold at once; compose or pick one"),
     ("G3006", "style targeting / theme-entry shape — `for=`/`extends=` misuse, `theme` in a node, a named/wired/placed/duplicate entry"),
+    ("G3007", "a property transition's shape — top level, `node.prop` targets, a property that slides, `duration=` above 0"),
+    ("G3008", "one timing per property — a second property rule, or a timed state-change rule over a `when` that sets it"),
     ("G4003", "two writers on one property"),
     ("G4004", "unknown anim"),
     ("G5001", "widget naming / `for=` host contract"),

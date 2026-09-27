@@ -51,6 +51,10 @@ fn a_subtree_is_the_screen_walks_run_for_that_node() {
     let plate: Vec<Draw> = draw_subtree(&c.page, f.frame(), named(&c, "plate"));
     assert!(matches!(plate.first(), Some(Draw::RotatePush { angle, .. }) if (*angle - 30.0).abs() < 1e-3), "{plate:?}");
     assert!(matches!(plate.last(), Some(Draw::RotatePop)), "{plate:?}");
+    // The kept frame's door (a host's texture bake) is the same run.
+    let mut kept_run: Vec<Draw> = vec![Draw::RotatePop];
+    f.subtree_draws(&c.page, named(&c, "plate"), &mut kept_run);
+    assert_eq!(kept_run, plate, "cleared first, then the plate's run");
     // Its plate quad: full red here, half red on screen (the dim ancestor).
     let sub_quad = plate.iter().find_map(|d| if let Draw::Quad { color, .. } = d { Some(color.0) } else { None }).expect("the plate quad");
     assert_eq!(sub_quad, [0xFF, 0, 0, 0xFF]);

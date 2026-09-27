@@ -180,7 +180,9 @@ impl<'a> Lexer<'a> {
     }
 
     /// A word with attached `.path` segments and `:` (prop keys like
-    /// `on:activate`).
+    /// `on:activate`), and a closing `.{a, b}` group — the property list
+    /// of a `transition` target (`commandBar.{margin, opacity}`), kept in
+    /// the word as `commandBar.{margin,opacity}` for the compiler to split.
     fn dotted_word(&mut self) -> String {
         let mut word = self.word();
         loop {
@@ -189,11 +191,51 @@ impl<'a> Lexer<'a> {
                 self.pos += 1;
                 word.push(c);
                 word.push_str(&self.word());
+            } else if c == '.' && self.peek_at(1) == '{' {
+                self.pos += 2;
+                word.push_str(".{");
+                self.property_group(&mut word);
+                break;
             } else {
                 break;
             }
         }
         word
+    }
+
+    /// The inside of a `.{a, b}` group, up to and including its `}`: the
+    /// names comma-joined without spaces. The group stays on one line —
+    /// a `{` that never closes there would swallow the next line's block.
+    fn property_group(&mut self, word: &mut String) {
+        let mut names: usize = 0;
+        loop {
+            while self.peek() == ' ' || self.peek() == '\t' {
+                self.pos += 1;
+            }
+            let c = self.peek();
+            if is_ident_start(c) {
+                if names > 0 && !word.ends_with(',') {
+                    self.error("G0001", "missing `,` between the names in `.{…}`".to_string());
+                    word.push(',');
+                }
+                word.push_str(&self.word());
+                names += 1;
+            } else if c == ',' {
+                self.pos += 1;
+                word.push(',');
+            } else if c == '}' {
+                self.pos += 1;
+                if names == 0 {
+                    self.error("G0001", "`.{}` names no property — write `node.{opacity, margin}`".to_string());
+                }
+                word.push('}');
+                return;
+            } else {
+                self.error("G0001", "a `.{…}` property group closes with `}` on its own line — `node.{margin, opacity}`".to_string());
+                word.push('}');
+                return;
+            }
+        }
     }
 
     /// The number at the cursor: digits with at most one `.`, a digit
