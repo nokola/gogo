@@ -819,6 +819,41 @@ fn a_target_hidden_mid_anim_ends_at_identity_with_no_held_pose() {
     assert!(!rt.held.iter().any(|h| h.0 == bx), "nothing held for a hidden box: {:?}", rt.held);
 }
 
+/// GPAR85's rule for a DESCENDANT of the hidden node, in both orders: the
+/// anim ends and then its target's parent is hidden, or the parent is
+/// hidden while the anim still plays. Either way nothing stays held on the
+/// child, so a pooled item shown again starts at rest. Needed because the
+/// rule once looked at the hidden node alone: a gradient mark reused after
+/// its delete anim came back with the anim's squashed rope (TODO.md,
+/// 2026-09-26).
+#[test]
+fn a_child_of_a_hidden_parent_keeps_no_held_pose_in_either_order() {
+    let src = "anim squash {\n rope.scale.y to=0.5, duration=0.2\n}\nView v { Panel item { Rectangle rope } }\n";
+    for hide_before_the_end in [false, true] {
+        let c = ok(src);
+        let mut page = c.page;
+        let item = page.find("item").unwrap();
+        let rope = page.find("rope").unwrap();
+        let squash = anim_id(&page, "squash");
+        let mut rt = Runtime::new(&page);
+        rt.play_id(&page, squash, Finish::Nothing);
+        rt.tick(&mut page, 0.1);
+        if hide_before_the_end {
+            rt.set_visible(&mut page, item, false);
+            rt.tick(&mut page, 0.2);
+        } else {
+            rt.tick(&mut page, 0.2);
+            assert!(rt.held.iter().any(|h| h.0 == rope), "a shown target holds its end pose");
+            rt.set_visible(&mut page, item, false);
+        }
+        assert!(!rt.is_playing_id(squash));
+        assert!(!rt.held.iter().any(|h| h.0 == rope), "hide before the end {hide_before_the_end}: nothing held under a hidden parent: {:?}", rt.held);
+        rt.set_visible(&mut page, item, true);
+        let res = gogo::runtime::resolve(&page, &rt);
+        assert!(near(res.motion[rope.index()].scale[1], 1.0, 0.001), "hide before the end {hide_before_the_end}: the re-shown child is at rest: {:?}", res.motion[rope.index()]);
+    }
+}
+
 /// GPAR110: a hide anim that moves a DESCENDANT restores it to identity on
 /// hide-finish (gogo_visibility_fx.gd 107-119) — the re-show must not find
 /// the child displaced.

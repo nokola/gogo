@@ -721,6 +721,22 @@ impl Runtime {
     /// else the file's word. Needed so `show` can tell a real flip from a
     /// repeat call; `when`-driven visibility is not consulted — `show` is
     /// the code-side door and gates only its own writes.
+    /// `visible_now` for the node AND every PLACED ancestor (the tree it
+    /// draws under): a node under a hidden parent is off screen whatever
+    /// its own visibility says. Needed by an anim's finish, which holds its
+    /// end pose only for a target on screen (GPAR85) — a child of a hidden
+    /// pooled item held its pose otherwise.
+    fn shown_with_ancestors(&self, page: &Page, node: NodeId) -> bool {
+        let mut n: NodeId = node;
+        while n != NO_NODE && n.index() < page.nodes.len() {
+            if !self.visible_now(page, n) {
+                return false;
+            }
+            n = self.placed_parent(page, n);
+        }
+        true
+    }
+
     fn visible_now(&self, page: &Page, node: NodeId) -> bool {
         let word = self.writes.iter().rev().find(|(n, p)| *n == node && p.key == PropKey::Visibility).map(|(_, p)| p.value).or_else(|| page.prop(node, PropKey::Visibility));
         match word {
@@ -1428,7 +1444,7 @@ impl Runtime {
                 // displaced box on the next show (GPAR85).
                 for (node, channel) in owns {
                     self.held.retain(|h| !(h.0 == node && h.1 == channel));
-                    if self.visible_now(page, node) {
+                    if self.shown_with_ancestors(page, node) {
                         self.held.push((node, channel, self.motion[node].get(channel)));
                     } else {
                         self.motion[node].set(channel, Motion::IDENTITY.get(channel));
@@ -1439,7 +1455,7 @@ impl Runtime {
                     let v = get_pval(&self.prop_anim, node, key);
                     self.prop_anim.retain(|e| !(e.0 == node && e.1 == key));
                     if let Some(v) = v {
-                        if self.visible_now(page, node) {
+                        if self.shown_with_ancestors(page, node) {
                             self.held_props.push((node, key, v));
                         }
                     }
@@ -1589,8 +1605,12 @@ impl Runtime {
     pub fn set_visible(&mut self, page: &mut Page, node: NodeId, visible: bool) {
         if !visible {
             // A hidden node's standing anim values mean nothing: on the
-            // next show the ladder shows.
-            self.held.retain(|h| h.0 != node);
+            // next show the ladder shows. Its DESCENDANTS' too — a pooled
+            // item hidden after its delete anim came back with the anim's
+            // squashed child still held (a gradient mark's short rope).
+            let seat: &[NodeId] = &self.last_seat;
+            self.held.retain(|h| !placed_under_in(seat, page, h.0, node));
+            self.held_props.retain(|h| !placed_under_in(seat, page, h.0, node));
         }
         let word = page.intern(if visible { "visible" } else { "gone" });
         self.set_prop(node, PropKey::Visibility, Value::VIdent(word));
@@ -2420,6 +2440,19 @@ fn placed_parent_in(seat: &[NodeId], page: &Page, n: NodeId) -> NodeId {
         NO_NODE => page.declared_parent(n),
         host => host,
     }
+}
+
+/// Whether `node` is `root` or draws anywhere under it — the PLACED tree
+/// (`placed_parent_in`), read from a seat table.
+fn placed_under_in(seat: &[NodeId], page: &Page, node: NodeId, root: NodeId) -> bool {
+    let mut n: NodeId = node;
+    while n != NO_NODE && n.index() < page.nodes.len() {
+        if n == root {
+            return true;
+        }
+        n = placed_parent_in(seat, page, n);
+    }
+    false
 }
 
 /// The current values: base placement with active poses applied, and the
