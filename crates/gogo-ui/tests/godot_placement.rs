@@ -171,6 +171,22 @@ fn flow_fill_stretches_across_its_line() {
     assert!(c.y > a.y, "the 150-wide box wrapped to the next line: {c:?}");
 }
 
+/// A hugging Flow (`halign=center`, no width) packs its rows into the
+/// width it is offered and is as wide as its widest PACKED row — how a
+/// wrapping Label hugs — so it is a centred block of full rows whose last
+/// row starts at the block's left (decided 2026-09-28, the sticker sheet:
+/// the old answer, the widest single CELL, made it a one-cell column).
+/// Five 100-wide boxes in 350: rows of 3 and 2, the block 300 wide at 25.
+#[test]
+fn a_hugging_flow_is_as_wide_as_its_widest_packed_row() {
+    let b = build("View v {\n Column c width=fill, valign=top {\n  Flow f halign=center {\n   Rectangle a 100x10\n   Rectangle bb 100x10\n   Rectangle cc 100x10\n   Rectangle d 100x10\n   Rectangle e 100x10\n  }\n }\n}\n", 350.0, 100.0);
+    let f = b.rect("f");
+    assert!(close(f.w, 300.0) && close(f.x, 25.0), "the block: 3 cells wide, centred: {f:?}");
+    assert!(close(b.rect("cc").y, b.rect("a").y) && b.rect("d").y > b.rect("a").y, "rows of 3 then 2");
+    assert!(close(b.rect("d").x, 25.0), "the last row starts at the block's left: {:?}", b.rect("d"));
+    assert!(close(f.h, 20.0), "two rows tall: {f:?}");
+}
+
 /// The container-child margin fence (GP34, resolver
 /// _validate_layout_parents): margins under a parent that seats its
 /// children are provably dead — refused naming the fix (`spacing=` for

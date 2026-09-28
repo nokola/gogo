@@ -837,9 +837,10 @@ impl Runtime {
         self.owned_text.resize(n, NO_STR);
         // A cloned Radio joins its template's group and a cloned Toggle
         // derives like its template (GP37). Both tables must stay as long as
-        // the arena: a code pick walks every node to clear its group — a
-        // page with a grown repeat and a `choice` (the stickers page: 67
-        // tattoo cells past a capacity of 54) indexed past their end.
+        // the arena: a code pick walks every node to clear its group — on
+        // a page with a `choice` whose repeat had cloned any rows (a
+        // capacity reserves room, it builds none — the stickers page's
+        // sheet cells) the walk indexed past their end.
         let from = self.radio_choice.len();
         self.radio_choice.extend(page.nodes[from..].iter().map(|nd| if nd.kind == Kind::Radio { nd.choice } else { NO_CHOICE }));
         let from = self.toggle.len();

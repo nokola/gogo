@@ -913,10 +913,18 @@ impl<'a> Lay<'a> {
                 (widest, tallest)
             }
             Some(avail) => {
-                let mut rows = flow_rows(&sizes, avail.max(widest), spacing);
+                // Offered a width, a Flow packs its rows into it and is as
+                // wide as its widest PACKED row — how a wrapping Label hugs.
+                // So `Flow halign=center` is a centred block of full rows
+                // (the sticker sheet); reporting the widest single cell
+                // made a hugging Flow one cell wide: a column (user-seen
+                // on the S24, 2026-09-28). Placing it at that width breaks
+                // the rows at the same items: each row fits, and the item
+                // that broke a row still does not.
+                let rows = flow_rows(&sizes, avail.max(widest), spacing);
                 let total_h: f32 = rows.iter().map(|r| r.height).sum::<f32>() + spacing * (rows.len().saturating_sub(1)) as f32;
-                rows.clear();
-                (widest, total_h)
+                let packed_w: f32 = rows.iter().map(|r| sizes[r.first..r.end].iter().map(|s| s.0).sum::<f32>() + spacing * (r.end - r.first).saturating_sub(1) as f32).fold(widest, f32::max);
+                (packed_w, total_h)
             }
         }
     }
