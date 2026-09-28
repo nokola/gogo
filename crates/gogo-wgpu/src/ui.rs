@@ -104,6 +104,9 @@ struct Batch {
     /// Every quad of it is one `fs_plain` draws (`UiRenderer::quad_is_plain`),
     /// so it takes a `PipelinePair`'s `plain` pipeline.
     plain: bool,
+    /// A host layer's slot (`UiRenderer::host_layer`): no quads — the
+    /// host's recorded bundle plays here instead.
+    host: Option<u32>,
 }
 
 /// The two pipelines ONE target format is drawn through: `full` runs
@@ -168,6 +171,11 @@ struct External {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ExternalImage(u32);
 
+/// The handle `UiRenderer::host_layer` opens for one image key: where in
+/// the UI's own pass a host's drawing plays (`set_host_layer`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostLayer(u32);
+
 pub struct UiRenderer {
     /// The screen's pipelines.
     pipelines: PipelinePair,
@@ -212,6 +220,10 @@ pub struct UiRenderer {
     screen: (u32, u32),
     /// Slot 0 is the atlas (rebuilt when the engine's atlas changes size).
     textures: Vec<Texture>,
+    /// Slots `release_image` emptied (they hold a 1x1 blank), taken again
+    /// by the next picture so a page that comes and goes does not grow
+    /// the table.
+    free_slots: Vec<TexId>,
     atlas_texture: Option<wgpu::Texture>,
     atlas_size: u32,
     /// Texture slot by `ImageKey` (the `source=` id); `None` = no pixels
@@ -221,6 +233,13 @@ pub struct UiRenderer {
     /// the image key and the texture identity last registered, so a
     /// same-texture frame makes no bind group. Indexed by `ExternalImage`.
     externals: Vec<External>,
+    /// Host layers (`host_layer` / `set_host_layer`): the image key an
+    /// Image names to seat the layer, and the bundle it plays. Indexed by
+    /// `HostLayer`.
+    host_layers: Vec<(ImageKey, Option<wgpu::RenderBundle>)>,
+    /// The format of the screen's pass (the host's bundles are recorded
+    /// for it).
+    target_format: wgpu::TextureFormat,
     /// The gradient tables (D21): a row per gradient on screen, cached by
     /// content across frames.
     gradients: GradientTable,
@@ -309,10 +328,13 @@ impl UiRenderer {
             glyphs: Vec::new(),
             screen: (1, 1),
             textures: Vec::new(),
+            free_slots: Vec::new(),
             atlas_texture: None,
             atlas_size: 0,
             images: Vec::new(),
             externals: Vec::new(),
+            host_layers: Vec::new(),
+            target_format,
             gradients,
             skipped: 0,
             cull: true,
@@ -416,6 +438,42 @@ impl UiRenderer {
         ExternalImage((self.externals.len() - 1) as u32)
     }
 
+    /// The format of the screen's pass: a host layer's bundle must be
+    /// recorded for it.
+    pub fn target_format(&self) -> wgpu::TextureFormat {
+        self.target_format
+    }
+
+    /// Opens the image `key` as a HOST LAYER and hands back its handle: an
+    /// Image with `source=` this key draws no picture — the bundle the
+    /// host hands `set_host_layer` plays at that point of the UI's own
+    /// pass, under everything drawn after it. Needed so a page can put
+    /// the host's own drawing (the stickers over the photo) between the
+    /// layers of the UI without a pass of its own: on the OnePlus every
+    /// pass costs a whole-screen load and store, and a blend with what is
+    /// already on screen (burn-in, light) needs the SAME pass. Opening a
+    /// key twice returns the same handle.
+    pub fn host_layer(&mut self, key: ImageKey) -> HostLayer {
+        if let Some(i) = self.host_layers.iter().position(|(k, _)| *k == key) {
+            return HostLayer(i as u32);
+        }
+        self.host_layers.push((key, None));
+        HostLayer((self.host_layers.len() - 1) as u32)
+    }
+
+    /// What the layer plays from the next frame on (`None` = nothing). The
+    /// bundle is recorded for `target_format`; the pass state it leaves is
+    /// restored after it. A bundle may be kept and handed again — the
+    /// buffers it reads can change between frames.
+    pub fn set_host_layer(&mut self, layer: HostLayer, bundle: Option<wgpu::RenderBundle>) {
+        self.host_layers[layer.0 as usize].1 = bundle;
+    }
+
+    /// The host layer an Image of `key` seats, if any.
+    fn host_layer_of(&self, key: ImageKey) -> Option<u32> {
+        self.host_layers.iter().position(|(k, _)| *k == key).map(|i| i as u32)
+    }
+
     /// The texture slot `key` shows, if it has pixels.
     fn slot(&self, key: ImageKey) -> Option<TexId> {
         self.images.get(key.index()).copied().flatten()
@@ -447,8 +505,8 @@ impl UiRenderer {
         match self.slot(key) {
             Some(slot) if slot != ATLAS => self.textures[slot as usize] = entry,
             _ => {
-                self.textures.push(entry);
-                self.set_slot(key, (self.textures.len() - 1) as TexId);
+                let slot: TexId = self.take_slot(entry);
+                self.set_slot(key, slot);
             }
         }
         self.externals[image.0 as usize].texture = Some(raw.clone());
@@ -499,8 +557,41 @@ impl UiRenderer {
         let (tex, mut entry) = self.make_texture(device, width, height, wgpu::TextureFormat::Rgba8Unorm);
         Self::write(queue, &tex, rgba, width, height, 4);
         entry.texture = Some(tex);
-        self.textures.push(entry);
-        self.set_slot(key, (self.textures.len() - 1) as TexId);
+        let slot: TexId = self.take_slot(entry);
+        self.set_slot(key, slot);
+    }
+
+    /// Puts `entry` in a slot `release_image` emptied, else a new one.
+    fn take_slot(&mut self, entry: Texture) -> TexId {
+        match self.free_slots.pop() {
+            Some(slot) => {
+                self.textures[slot as usize] = entry;
+                slot
+            }
+            None => {
+                self.textures.push(entry);
+                (self.textures.len() - 1) as TexId
+            }
+        }
+    }
+
+    /// Frees an uploaded picture's texture: `key` shows nothing until its
+    /// pixels are uploaded again. Needed because built-in pictures would
+    /// otherwise stay on the GPU for the whole session once any page
+    /// showed them (the effects page's ~11 MB of tile photos, the sticker
+    /// sheets) — the host calls this for pictures no live page shows. An
+    /// opened external image is left alone (its owner releases it with
+    /// `release_external_image`). Returns whether a texture was freed.
+    pub fn release_image(&mut self, device: &wgpu::Device, key: ImageKey) -> bool {
+        let Some(slot) = self.slot(key) else { return false };
+        if slot == ATLAS || self.externals.iter().any(|e| e.key == key) {
+            return false;
+        }
+        let (_, blank) = self.make_texture(device, 1, 1, wgpu::TextureFormat::Rgba8Unorm);
+        self.textures[slot as usize] = blank;
+        self.images[key] = None;
+        self.free_slots.push(slot);
+        true
     }
 
     /// Writes an image's pixels — the TEXTURE ONLY. Page code never calls
@@ -784,6 +875,15 @@ impl UiRenderer {
                     self.push_quad(current, Quad { rect: [x, y, (1.5 * epx).max(1.0), h], color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_RECT, 0.0], uv: NO_UV, rot, wedge, swing, eye });
                 }
                 Draw::Image { rect, image, tint, fit, window, sampling } => {
+                    if let Some(layer) = self.host_layer_of(*image) {
+                        // The host's bundle plays here, between what was
+                        // drawn before and what comes after.
+                        self.close_batch(&mut batch_first, current, current_tex, current_pixel);
+                        if self.host_layers[layer as usize].1.is_some() {
+                            self.batches.push(Batch { first: batch_first, count: 0, scissor: current, tex: ATLAS, pixel: false, plain: false, host: Some(layer) });
+                        }
+                        continue;
+                    }
                     let Some(tex) = self.slot(*image) else {
                         self.skipped += 1;
                         continue;
@@ -945,12 +1045,12 @@ impl UiRenderer {
     }
 
     /// Whether a `NO_UI_BUILD` keeps `d`: an image of an externally-owned
-    /// texture, or a clip / rotate / wedge / swing push or pop — the state
+    /// texture or a host layer, or a clip / rotate / wedge / swing push or pop — the state
     /// such an image is drawn under. A skipped Gradient's stops fall to the
     /// stray-stop arm, which draws nothing.
     fn drawn_without_ui(&self, d: &Draw) -> bool {
         match d {
-            Draw::Image { image, .. } => self.externals.iter().any(|e| e.key == *image),
+            Draw::Image { image, .. } => self.externals.iter().any(|e| e.key == *image) || self.host_layer_of(*image).is_some(),
             Draw::ClipPush(_) | Draw::ClipPop | Draw::RotatePush { .. } | Draw::RotatePop | Draw::WedgePush { .. } | Draw::WedgePop | Draw::SwingPush { .. } | Draw::SwingPop => true,
             _ => false,
         }
@@ -1019,7 +1119,7 @@ impl UiRenderer {
         for i in first + 1..=end {
             let plain: bool = i < end && Self::quad_is_plain(&self.quads[i as usize]);
             if i == end || plain != run_plain {
-                self.batches.push(Batch { first: run_first, count: i - run_first, scissor, tex, pixel, plain: run_plain });
+                self.batches.push(Batch { first: run_first, count: i - run_first, scissor, tex, pixel, plain: run_plain, host: None });
                 run_first = i;
                 run_plain = plain;
             }
@@ -1028,14 +1128,14 @@ impl UiRenderer {
 
     /// Records the quads into `pass` (the caller owns the pass).
     pub fn render(&mut self, pass: &mut wgpu::RenderPass<'_>) {
-        let calls: u32 = self.record(pass, &self.pipelines, false);
+        let calls: u32 = self.record(pass, &self.pipelines, false, true);
         self.draw_calls = calls;
     }
 
     /// Pin probe: `render` with EVERY batch through `fs_main` — what the
     /// split's pin (`tests/ui_plain_pipeline.rs`) compares a `render` to.
     pub fn debug_render_through_fs_main(&mut self, pass: &mut wgpu::RenderPass<'_>) {
-        let calls: u32 = self.record(pass, &self.pipelines, true);
+        let calls: u32 = self.record(pass, &self.pipelines, true, true);
         self.draw_calls = calls;
     }
 
@@ -1046,18 +1146,34 @@ impl UiRenderer {
 
     /// The prepared batches through `pipelines` (the screen's or a tile's):
     /// a plain batch through `plain`, the rest through `full` — or all of
-    /// them through `full` when `full_only`. Returns the draw calls made.
-    fn record(&self, pass: &mut wgpu::RenderPass<'_>, pipelines: &PipelinePair, full_only: bool) -> u32 {
+    /// them through `full` when `full_only`. A host layer's bundle plays
+    /// only with `host_layers` (the screen: the bundles are recorded for
+    /// its format — a tile skips them). Returns the draw calls made.
+    fn record(&self, pass: &mut wgpu::RenderPass<'_>, pipelines: &PipelinePair, full_only: bool, host_layers: bool) -> u32 {
         if self.batches.is_empty() {
             return 0;
         }
         let mut draw_calls: u32 = 0;
         let mut plain_set: bool = false;
-        pass.set_pipeline(&pipelines.full);
-        pass.set_bind_group(0, &self.screen_bind, &[]);
-        pass.set_bind_group(2, &self.gradients.bind_group, &[]);
-        pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
+        let bind = |pass: &mut wgpu::RenderPass<'_>| {
+            pass.set_pipeline(&pipelines.full);
+            pass.set_bind_group(0, &self.screen_bind, &[]);
+            pass.set_bind_group(2, &self.gradients.bind_group, &[]);
+            pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
+        };
+        bind(pass);
         for b in &self.batches {
+            if let Some(layer) = b.host {
+                if let (true, Some(bundle)) = (host_layers, &self.host_layers[layer as usize].1) {
+                    pass.set_scissor_rect(0, 0, self.screen.0, self.screen.1);
+                    pass.execute_bundles(std::iter::once(bundle));
+                    draw_calls += 1;
+                    // A bundle leaves the pass state reset: bind again.
+                    bind(pass);
+                    plain_set = false;
+                }
+                continue;
+            }
             match b.scissor {
                 Some([x, y, w, h]) if w > 0 && h > 0 => pass.set_scissor_rect(x, y, w, h),
                 Some(_) => continue,
@@ -1129,7 +1245,7 @@ impl UiRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.record(&mut pass, self.tile_pipelines.as_ref().expect("made above"), false)
+            self.record(&mut pass, self.tile_pipelines.as_ref().expect("made above"), false, false)
         };
         self.draw_calls = calls;
         queue.submit([encoder.finish()]);
