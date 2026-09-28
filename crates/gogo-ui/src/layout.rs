@@ -40,6 +40,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::locale::Locale;
 use crate::page::*;
@@ -283,6 +284,7 @@ pub fn layout_into<'b>(page: &Page, res: &Resolved, viewport: Rect, text: &dyn T
         let placed = lay.rects[id];
         lay.rects[id] = lay.reveal(id, placed);
     }
+    count_run(true, n as u32, lay.measured.get());
     let (rects, written, memo) = lay.into_tables();
     *keep = LayoutBuffers { rects, written, memo };
     &keep.rects
@@ -953,6 +955,15 @@ impl<'a> Lay<'a> {
     /// extent is a number the author wrote (see `Lay::written`). The
     /// document root fills its viewport unless it says otherwise.
     fn place(&mut self, id: NodeId, frame: Rect, written: [bool; 2]) {
+        let rect: Rect = self.seat(id, frame, written);
+        self.place_children(id, rect);
+    }
+
+    /// `place` without the children: writes `id`'s own rect and `written`
+    /// flags and returns the rect. Split out so the retained road can
+    /// work out the page root's rect again and see whether it moved before
+    /// deciding how much under it to place again.
+    fn seat(&mut self, id: NodeId, frame: Rect, written: [bool; 2]) -> Rect {
         let mut p = *self.placement(id);
         // The general road serves container parents too (Panel, ListItem,
         // a Scroll's content, a Grid's cells): their Image default holds
@@ -1039,13 +1050,24 @@ impl<'a> Lay<'a> {
             matches!(p.width, Len::Exact(_)) || p.max_width.is_some() || p.max_width_fill || (fills(p.width, p.halign) && written[0]),
             matches!(p.height, Len::Exact(_)) || p.max_height.is_some() || p.max_height_fill || (fills(p.height, p.valign) && written[1]),
         ];
-        self.place_children(id, rect);
+        rect
+    }
+
+    /// The room `id` hands its children: its rect less padding and border.
+    fn inner_of(&self, id: NodeId, rect: Rect) -> Rect {
+        let inset = self.inner_inset(id);
+        rect.inset(inset[0], inset[1], inset[2], inset[3])
     }
 
     fn place_children(&mut self, id: NodeId, rect: Rect) {
-        let inset = self.inner_inset(id);
-        let inner = rect.inset(inset[0], inset[1], inset[2], inset[3]);
+        let inner = self.inner_of(id, rect);
         let kind = self.node(id).kind;
+        if places_each_child_alone(kind) {
+            for c in self.visible_children(id) {
+                self.place_alone(id, inner, c);
+            }
+            return;
+        }
         match kind {
             Kind::Column | Kind::Choice => self.place_stack(id, inner, Axis::Y),
             Kind::List => self.place_list(id, inner),
@@ -1054,20 +1076,22 @@ impl<'a> Lay<'a> {
             Kind::Tiles => self.place_tiles(id, inner),
             Kind::Grid => self.place_grid(id, inner),
             Kind::Scroll => self.place_scroll(id, inner),
+            _ => unreachable!("places_each_child_alone takes every other kind"),
+        }
+    }
+
+    /// One child of a box that places each child without looking at the
+    /// others (`places_each_child_alone`), into the box's `inner` room. The
+    /// retained road calls it for the one child a change sits under.
+    fn place_alone(&mut self, id: NodeId, inner: Rect, c: NodeId) {
+        if self.node(id).kind == Kind::Seat {
             // The occupant takes the socket's whole rect: its own alignment
             // and margins never bind here.
-            Kind::Seat => {
-                for c in self.visible_children(id) {
-                    self.rects[c] = inner;
-                    self.place_children(c, inner);
-                }
-            }
-            _ => {
-                let written = self.written[id];
-                for c in self.visible_children(id) {
-                    self.place(c, inner, written);
-                }
-            }
+            self.rects[c] = inner;
+            self.place_children(c, inner);
+        } else {
+            let written = self.written[id];
+            self.place(c, inner, written);
         }
     }
 
@@ -1789,6 +1813,17 @@ pub fn scroll_axes_of(page: &Page, res: &Resolved, id: NodeId) -> (bool, bool) {
 /// a Grid CELL: a cell past the track count is never placed at all
 /// (`place_grid` skips it), which only the Grid knows, so the walk goes
 /// on to the Grid and the Grid places its cells again.
+/// Whether a box of `kind` places each child without looking at its
+/// siblings: a Panel's children overlap, each placed in the whole room
+/// (`Panel { Image photo; Label caption, valign=bottom }` — the caption's
+/// seat never depends on the photo); a Seat holds its occupant. Stacks,
+/// wraps, grids, lists and scrolls hand each child a slot worked out from
+/// all of them. `place_children` branches on it, so the retained road
+/// can trust it: under such a box a change re-places its own child only.
+fn places_each_child_alone(kind: Kind) -> bool {
+    !matches!(kind, Kind::Column | Kind::Choice | Kind::List | Kind::Row | Kind::Flow | Kind::Tiles | Kind::Grid | Kind::Scroll)
+}
+
 fn content_free(page: &Page, res: &Resolved, id: NodeId) -> bool {
     let node = &page.nodes[id];
     if matches!(node.kind, Kind::Repeat | Kind::GridRow) {
@@ -1997,25 +2032,78 @@ pub struct LayoutStats {
     pub measured: u32,
     /// Boxes whose children were placed again.
     pub roots: u32,
+    /// Nodes given a rect again: every node on a full run, the re-placed
+    /// subtrees on a partial one.
+    pub placed: u32,
+}
+
+/// Every layout run in the process since it started, summed over every
+/// page — a full one (`LayoutCache` or a plain `layout`) or a partial one
+/// (`LayoutCache::patch` that re-placed something).
+///
+/// Needed because a host's perf line must say how much layout a frame
+/// did across all its pages (a dragged box re-laying a whole page shows
+/// as `full` per frame), and each page keeps its own `LayoutCache`.
+/// Plain counters, read by subtracting two `layout_totals` calls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LayoutTotals {
+    pub full_runs: u64,
+    pub partial_runs: u64,
+    pub placed: u64,
+    pub measured: u64,
+}
+
+static FULL_RUNS: AtomicU64 = AtomicU64::new(0);
+static PARTIAL_RUNS: AtomicU64 = AtomicU64::new(0);
+static PLACED: AtomicU64 = AtomicU64::new(0);
+static MEASURED: AtomicU64 = AtomicU64::new(0);
+
+pub fn layout_totals() -> LayoutTotals {
+    LayoutTotals {
+        full_runs: FULL_RUNS.load(Ordering::Relaxed),
+        partial_runs: PARTIAL_RUNS.load(Ordering::Relaxed),
+        placed: PLACED.load(Ordering::Relaxed),
+        measured: MEASURED.load(Ordering::Relaxed),
+    }
+}
+
+fn count_run(full: bool, placed: u32, measured: u32) {
+    if full {
+        FULL_RUNS.fetch_add(1, Ordering::Relaxed);
+    } else {
+        PARTIAL_RUNS.fetch_add(1, Ordering::Relaxed);
+    }
+    PLACED.fetch_add(u64::from(placed), Ordering::Relaxed);
+    MEASURED.fetch_add(u64::from(measured), Ordering::Relaxed);
 }
 
 /// The retained layout (B36-DES stage 3): the last answer kept between
 /// frames — the placed rects, the shown rects, the `written` table and
 /// every node's measures — and re-laid only where the look changed.
 ///
+/// Needed because one box moving by its margins (a dragged handle, a
+/// brush outline under the finger) must not lay the whole page out again
+/// every frame: on the stickers page that was 247 boxes and 291 measures
+/// a frame for one handle.
+///
 /// The rule: a node whose layout words changed (`LookCopy::diff` over
 /// the keys `layout_reads`, a visibility fold change, a driver fraction,
-/// a rewritten string) dirties itself; the walk up its PLACED ancestry
-/// stops at the first clean box that `content_free` — that box's rect
-/// and measure cannot have changed, so its children are placed again
-/// from the rect it kept (`place_children`), the subtree's measures
-/// forgotten first, and the shown rects derived for the subtree. A
-/// Scroll whose offset moved re-places its children from the same rect
-/// with every measure kept — an offset is read by placement only. If a
-/// walk reaches the root the whole page is laid out again, as it is on
-/// the first run, another viewport or measure (`TextMeasure::identity`),
-/// a node-count, seat, repeat-row, theme, locale or inset change, or a
-/// resolve the cache did not see (`ResolveChanges::serial`).
+/// a rewritten string) dirties itself. A measure reads only a node and
+/// its children, so only the changed nodes' subtrees and their ancestors
+/// forget their measures; every other box keeps its own. The walk up the
+/// PLACED ancestry stops at the first clean box that `content_free` —
+/// that box's rect cannot have changed — or at the page root, whose rect
+/// is worked out again (it fills the viewport but grows to its content).
+/// From there the children are placed again from the rect kept, and the
+/// shown rects derived for what was placed. When that box places each
+/// child alone (`places_each_child_alone`: a Panel's children overlap)
+/// and its own rect held, only the child the change sits under is placed
+/// again: its siblings' seats read nothing that changed. A Scroll whose
+/// offset moved re-places its children from the same rect. The whole
+/// page is laid out again on the first run, another viewport or measure
+/// (`TextMeasure::identity`), a node-count, seat, repeat-row, theme,
+/// locale or inset change, or a resolve the cache did not see
+/// (`ResolveChanges::serial`).
 pub struct LayoutCache {
     on: bool,
     valid: bool,
@@ -2041,9 +2129,18 @@ pub struct LayoutCache {
     // Scratch, kept so a steady frame allocates nothing.
     changed: Vec<NodeId>,
     dirty: Vec<bool>,
-    roots: Vec<(NodeId, bool)>,
+    restarts: Vec<Restart>,
     stack: Vec<NodeId>,
     stats: LayoutStats,
+}
+
+/// One place the retained road lays out from: `node`'s children are
+/// placed again from the rect it kept — all of them, or only `child`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Restart {
+    node: NodeId,
+    /// `NO_NODE` = every child.
+    child: NodeId,
 }
 
 impl Default for LayoutCache {
@@ -2070,7 +2167,7 @@ impl Default for LayoutCache {
             memo: Vec::new(),
             changed: Vec::new(),
             dirty: Vec::new(),
-            roots: Vec::new(),
+            restarts: Vec::new(),
             stack: Vec::new(),
             stats: LayoutStats::default(),
         }
@@ -2138,7 +2235,8 @@ impl LayoutCache {
         lay.place_root(viewport);
         self.rects.clear();
         self.rects.extend(page.node_ids().map(|id| lay.reveal(id, lay.rects[id])));
-        self.stats = LayoutStats { full: true, measured: lay.measured.get(), roots: 1 };
+        self.stats = LayoutStats { full: true, measured: lay.measured.get(), roots: 1, placed: n as u32 };
+        count_run(true, n as u32, lay.measured.get());
         self.placed = lay.rects;
         self.written = lay.written;
         self.memo = lay.memo.into_inner();
@@ -2179,8 +2277,8 @@ impl LayoutCache {
         // laid out by) re-places its own children; one that is a Grid
         // cell is re-placed by its Grid like any changed node
         // (`content_free` on cells).
-        let mut roots: Vec<(NodeId, bool)> = std::mem::take(&mut self.roots);
-        roots.clear();
+        let mut restarts: Vec<Restart> = std::mem::take(&mut self.restarts);
+        restarts.clear();
         for i in 0..n {
             if self.scroll[i] != res.scroll[i] {
                 let id = NodeId::from_index(i);
@@ -2188,105 +2286,153 @@ impl LayoutCache {
                 if parent != NO_NODE && parent.index() < n && page.nodes[parent].kind == Kind::GridRow {
                     changed.push(id);
                 } else {
-                    roots.push((id, false));
+                    restarts.push(Restart { node: id, child: NO_NODE });
                 }
             }
         }
         changed.retain(|c| c.index() < n);
         changed.sort();
         changed.dedup();
-        if changed.is_empty() && roots.is_empty() {
+        if changed.is_empty() && restarts.is_empty() {
             // Nothing layout reads moved: the tables equal the copies,
             // so there is nothing to copy either.
-            self.stats = LayoutStats { full: false, measured: 0, roots: 0 };
+            self.stats = LayoutStats { full: false, measured: 0, roots: 0, placed: 0 };
             self.seen_serial = changes.serial;
             self.changed = changed;
-            self.roots = roots;
+            self.restarts = restarts;
             return;
         }
-        // 2. Each changed node dirties itself; the walk up finds the box
-        // to re-place from. Reaching the root = the whole page.
+        // 2. Each changed node dirties itself and forgets its measures,
+        // with its whole subtree (a word it passes down, like a font size,
+        // is read by its descendants) and every ancestor (each one's
+        // measure holds it). Nobody else's measure read anything changed.
         let mut dirty: Vec<bool> = std::mem::take(&mut self.dirty);
         dirty.clear();
         dirty.resize(n, false);
+        self.memo.resize_with(n, Vec::new);
         for c in &changed {
             dirty[c.index()] = true;
-        }
-        for c in &changed {
+            self.stack.clear();
+            self.stack.push(*c);
+            while let Some(d) = self.stack.pop() {
+                self.memo[d.index()].clear();
+                self.stack.extend(res.tree.all_children(d));
+            }
             let mut a: NodeId = res.placed_parent(page, *c);
-            loop {
-                if a == NO_NODE || a.index() >= n {
-                    self.changed = changed;
-                    self.dirty = dirty;
-                    self.roots = roots;
-                    self.full(page, res, changes, viewport, text);
-                    return;
-                }
-                if !dirty[a.index()] && content_free(page, res, a) {
-                    roots.push((a, true));
-                    break;
-                }
+            while a != NO_NODE && a.index() < n {
+                self.memo[a.index()].clear();
                 a = res.placed_parent(page, a);
             }
         }
-        // 3. One root per box (a box named for a scroll move and for a
-        // change keeps the re-measure), none under another — the box
-        // above re-places it anyway.
-        roots.sort_by(|x, y| x.0.cmp(&y.0).then(y.1.cmp(&x.1)));
-        roots.dedup_by_key(|r| r.0);
+        // 3. The walk up finds the box to re-place from — the first clean
+        // `content_free` box, else the page root — and the child of it
+        // the change sits under, when that box places each child alone.
+        let root: NodeId = NodeId::new(0);
+        for c in &changed {
+            let mut below: NodeId = *c;
+            let mut a: NodeId = res.placed_parent(page, *c);
+            loop {
+                if a == NO_NODE && below == root {
+                    // The root changed itself: all of it again.
+                    restarts.push(Restart { node: root, child: NO_NODE });
+                    break;
+                }
+                if a == NO_NODE || a.index() >= n {
+                    // Not under the root: nothing to trust.
+                    self.changed = changed;
+                    self.dirty = dirty;
+                    self.restarts = restarts;
+                    self.full(page, res, changes, viewport, text);
+                    return;
+                }
+                let stop: bool = a == root || (!dirty[a.index()] && content_free(page, res, a));
+                if stop {
+                    let alone: bool = !dirty[a.index()] && places_each_child_alone(page.nodes[a].kind) && page.nodes[below].kind != Kind::Repeat;
+                    restarts.push(Restart { node: a, child: if alone { below } else { NO_NODE } });
+                    break;
+                }
+                below = a;
+                a = res.placed_parent(page, a);
+            }
+        }
+        let mut lay = Lay::new(page, res, text, std::mem::take(&mut self.placed), std::mem::take(&mut self.written), std::mem::take(&mut self.memo));
+        // 4. The root's own rect, worked out again: it fills the viewport
+        // but grows to its content, so a change under it can move it. If
+        // it moved, every child of it is placed again.
+        if restarts.iter().any(|r| r.node == root) {
+            let was: (Rect, [bool; 2]) = (lay.rects[root], lay.written[root]);
+            let rect: Rect = lay.seat(root, viewport, [false, false]);
+            if (rect, lay.written[root]) != was {
+                for r in restarts.iter_mut().filter(|r| r.node == root) {
+                    r.child = NO_NODE;
+                }
+            }
+            self.rects[root.index()] = lay.reveal(root, rect);
+        }
+        // 5. One restart per box and child — a box named for every child
+        // drops its single-child ones — and none inside another that
+        // places it anyway.
+        restarts.sort();
+        restarts.dedup();
         let mut i = 0;
-        while i < roots.len() {
-            let r: NodeId = roots[i].0;
-            let covered: bool = roots.iter().any(|(q, _)| *q != r && res.placed_is_under(page, r, *q));
+        while i < restarts.len() {
+            let r: Restart = restarts[i];
+            let covered: bool = restarts.iter().any(|q| {
+                if q.node == r.node {
+                    q.child == NO_NODE && r.child != NO_NODE
+                } else {
+                    res.placed_is_under(page, r.node, q.node) && (q.child == NO_NODE || res.placed_is_under(page, r.node, q.child))
+                }
+            });
             if covered {
-                roots.remove(i);
+                restarts.remove(i);
             } else {
                 i += 1;
             }
         }
-        // 4. Forget the re-measured subtrees: their measures and rects
-        // (a child gone now keeps the zero rect the full road gives it).
-        // Every placed child, the repeat slots not shown too
+        // 6. Place again from each restart's kept rect and derive the shown
+        // rects of what was placed. What is placed again starts from the
+        // zero rect (a child gone now keeps the zero rect the full road
+        // gives it) — every placed child, the repeat slots not shown too
         // (`PlacedTree::all_children`): a slot that left keeps no rect.
-        self.memo.resize_with(n, Vec::new);
-        for k in 0..roots.len() {
-            let (r, remeasure) = roots[k];
-            if !remeasure {
-                continue;
-            }
+        let mut placed: u32 = 0;
+        for k in 0..restarts.len() {
+            let Restart { node, child } = restarts[k];
             self.stack.clear();
-            self.stack.extend(res.tree.all_children(r));
-            while let Some(d) = self.stack.pop() {
-                self.memo[d.index()].clear();
-                self.placed[d.index()] = Rect::ZERO;
-                self.rects[d.index()] = Rect::ZERO;
+            if child == NO_NODE {
+                self.stack.extend(res.tree.all_children(node));
+            } else {
+                self.stack.push(child);
+            }
+            let mut j = 0;
+            while j < self.stack.len() {
+                let d: NodeId = self.stack[j];
+                lay.rects[d] = Rect::ZERO;
                 self.stack.extend(res.tree.all_children(d));
+                j += 1;
             }
+            if shown(page, res, node) {
+                let frame: Rect = lay.rects[node];
+                if child == NO_NODE {
+                    lay.place_children(node, frame);
+                } else if !lay.gone(child) {
+                    let inner: Rect = lay.inner_of(node, frame);
+                    lay.place_alone(node, inner, child);
+                }
+            }
+            for d in self.stack.iter() {
+                self.rects[d.index()] = lay.reveal(*d, lay.rects[*d]);
+            }
+            placed += self.stack.len() as u32;
         }
-        // 5. Place each root's children again from the rect it kept, and
-        // derive the subtree's shown rects.
-        let mut lay = Lay::new(page, res, text, std::mem::take(&mut self.placed), std::mem::take(&mut self.written), std::mem::take(&mut self.memo));
-        for k in 0..roots.len() {
-            let r: NodeId = roots[k].0;
-            if !shown(page, res, r) {
-                continue;
-            }
-            let frame: Rect = lay.rects[r];
-            lay.place_children(r, frame);
-            self.stack.clear();
-            self.stack.extend(res.tree.all_children(r));
-            while let Some(d) = self.stack.pop() {
-                self.rects[d.index()] = lay.reveal(d, lay.rects[d]);
-                self.stack.extend(res.tree.all_children(d));
-            }
-        }
-        self.stats = LayoutStats { full: false, measured: lay.measured.get(), roots: roots.len() as u32 };
+        self.stats = LayoutStats { full: false, measured: lay.measured.get(), roots: restarts.len() as u32, placed };
+        count_run(false, placed, lay.measured.get());
         self.placed = lay.rects;
         self.written = lay.written;
         self.memo = lay.memo.into_inner();
         self.changed = changed;
         self.dirty = dirty;
-        self.roots = roots;
+        self.restarts = restarts;
         self.remember(res, changes, viewport, text);
     }
 }
