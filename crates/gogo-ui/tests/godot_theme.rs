@@ -234,6 +234,16 @@ fn numeric_theme_value_feeds_length_props() {
     assert_eq!(fx.rect("t").w, 14.0, "{:?}", fx.rect("t"));
 }
 
+/// `width=` / `height=` read a numeric `$value` like `min_width=` does (an
+/// empty spacer written `height=$backBoxHeight`, not an empty box sized by
+/// its padding); a `$value` that is not a number is G0056.
+#[test]
+fn numeric_theme_value_feeds_width_and_height() {
+    let fx = Fx::new("$air = 60\n$air2 = $air\nView v { Panel p width=$air2, height=$air, halign=left, valign=top }\n");
+    assert_eq!((fx.rect("p").w, fx.rect("p").h), (60.0, 60.0), "{:?}", fx.rect("p"));
+    assert!(codes("$tint = #FF0000FF\nView v { Panel p height=$tint }\n").contains(&"G0056".to_string()));
+}
+
 /// `_theme_and_styles` 2514-2541 (`theme-override.ok`,
 /// `theme-override.resource`, `theme-override.propagates`,
 /// `theme-override.nearest-wins`): a node-body `theme font=` sets the font

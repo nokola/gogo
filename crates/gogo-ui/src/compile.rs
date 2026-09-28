@@ -5921,8 +5921,19 @@ impl<'a> Compiler<'a> {
                     }
                 }
             }
+            // A numeric theme `$value` (`height=$backBoxHeight`), resolved
+            // here like `num`'s: so a size reads the same values its
+            // min/max and padding already do. Only default entries — a
+            // variant block cannot flip a baked length.
+            Value::VRef { .. } => match crate::runtime::deref(&self.page, NO_STR, v) {
+                Value::VNum(n) => Len::Exact(n),
+                _ => {
+                    self.error("G0056", line, format!("`{key}=`: the `$value` it names is not a number"));
+                    Len::Unset
+                }
+            },
             _ => {
-                self.error("G0056", line, format!("`{key}=`: want a number, `fill` or `hug`"));
+                self.error("G0056", line, format!("`{key}=`: want a number, `$value`, `fill` or `hug`"));
                 Len::Unset
             }
         }
