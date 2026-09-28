@@ -11,7 +11,9 @@
 //! WP7 turnstile), and a `TextStretch` maps one glyph's ink box onto its
 //! rect.
 
+use crate::perf_stages::{Stage, Timer, note_ms};
 use crate::tex_types::{Tex_Bake_Premul_Srgb_4xU8_RGBA, Tex_Display_Srgb_4xU8_RGBA};
+use std::time::Instant;
 
 use gogo::draw::{Draw, Fit, GradientKind, Sampling, TextAlign};
 use gogo::layout::Rect;
@@ -652,15 +654,20 @@ impl UiRenderer {
         // frame pays nothing. User-seen: a button with no letters ("cancel")
         // until the next redraw (S24, 2026-09-14).
         let generation: u32 = text.generation;
+        let pass_stage = Timer::new(Stage::UiPass);
         self.prepare_pass(device, pages, epx, screen, text, locale);
         if text.generation != generation {
             self.prepare_pass(device, pages, epx, screen, text, locale);
         }
+        drop(pass_stage);
+        let atlas_stage = Timer::new(Stage::UiAtlas);
         self.sync_atlas(device, queue, text);
         self.gradients.flush(queue);
+        drop(atlas_stage);
         if UI_CLASS_LOG_BUILD {
             self.log_quad_classes();
         }
+        let _upload_stage = Timer::new(Stage::UiUpload);
 
         if self.quads.len() > self.quad_capacity {
             self.quad_capacity = self.quads.len().next_power_of_two();
@@ -712,6 +719,7 @@ impl UiRenderer {
         let mut current: Option<[u32; 4]> = None;
         let mut current_tex: TexId = ATLAS;
         let mut current_pixel: bool = false;
+        let mut text_secs: f32 = 0.0;
         pages.for_each_list(&mut |draws: &[Draw], page: &Page| {
         // Indexed: a Gradient entry owns the stop records after it.
         let mut i: usize = 0;
@@ -768,6 +776,7 @@ impl UiRenderer {
                 // by the draw pass; skipped, not drawn).
                 Draw::GradientStop { .. } => {}
                 Draw::Text { rect, text: text_id, key, font_size, color, halign, valign, wrap, font } => {
+                    let text_start: Instant = Instant::now();
                     let s = gogo::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let r = px(rect);
@@ -793,6 +802,7 @@ impl UiRenderer {
                     // outside must not split the batch around it.
                     glyphs.clear();
                     text.shape_into(s, size_px, max_w, font_key, x, y, box_w, h, &mut glyphs);
+                    text_secs += text_start.elapsed().as_secs_f32();
                     for g in &glyphs {
                         let glyph_rect: [f32; 4] = [g.x, g.y, g.w, g.h];
                         if self.cull && Self::quad_is_outside(&glyph_rect, &rot, &swing, current, screen) {
@@ -991,6 +1001,7 @@ impl UiRenderer {
         self.wedges = wedges;
         self.swings = swings;
         self.glyphs = glyphs;
+        note_ms(Stage::UiText, text_secs * 1000.0);
     }
 
     /// Adds `q` to this frame's quads unless it lies outside `clip`
