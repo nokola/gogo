@@ -835,6 +835,15 @@ impl Runtime {
         self.motion.resize(n, Motion::IDENTITY);
         self.shown.resize(n, Motion::IDENTITY);
         self.owned_text.resize(n, NO_STR);
+        // A cloned Radio joins its template's group and a cloned Toggle
+        // derives like its template (GP37). Both tables must stay as long as
+        // the arena: a code pick walks every node to clear its group — a
+        // page with a grown repeat and a `choice` (the stickers page: 67
+        // tattoo cells past a capacity of 54) indexed past their end.
+        let from = self.radio_choice.len();
+        self.radio_choice.extend(page.nodes[from..].iter().map(|nd| if nd.kind == Kind::Radio { nd.choice } else { NO_CHOICE }));
+        let from = self.toggle.len();
+        self.toggle.extend(page.nodes[from..].iter().map(|nd| nd.kind == Kind::Toggle));
         // The new rows take the static rule like the template did — the
         // clone copies the template's `when`s, shares its props and
         // handlers, and the slot's anims and drivers are already pushed
@@ -1538,6 +1547,17 @@ impl Runtime {
     pub fn theme_color<T: ThemeName>(&self, page: &Page, name: T) -> Option<Color_Straight_Srgb_4xU8_RGBA> {
         match deref(page, self.variant, Value::VRef { name: name.id(), opacity: None }) {
             Value::VColor(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// `theme_color`'s number twin: the active variant's number for the
+    /// value (else the default block's), `$refs` followed; `None` when it
+    /// is not a number. So code that sizes by the file's numbers
+    /// (`$backBoxHeight`) reads them by name instead of repeating them.
+    pub fn theme_number<T: ThemeName>(&self, page: &Page, name: T) -> Option<f32> {
+        match deref(page, self.variant, Value::VRef { name: name.id(), opacity: None }) {
+            Value::VNum(n) => Some(n),
             _ => None,
         }
     }

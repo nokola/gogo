@@ -763,7 +763,14 @@ fn app_pages_resolve_the_same_with_the_mask_on_and_off() {
     let mut paths: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "gogo")).collect();
     paths.sort();
     let is_page = |source: &str| source.lines().any(|l| l.starts_with("View ") || l.starts_with("View{") || l == "View" || l.starts_with("Panel ") || l.starts_with("Panel{") || l == "Panel");
-    let options = CompileOptions { code_controls: &["GradientEdit"], ..CompileOptions::default() };
+    // `res://` read from the FanRust root, as `build_pages` does: an
+    // `atlas … cell=` needs its picture's size (the stickers page).
+    let res_root: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read_res = |path: &str| -> Result<Vec<u8>, String> {
+        let rel: &str = path.strip_prefix("res://").ok_or_else(|| format!("not a res:// path: {path}"))?;
+        std::fs::read(res_root.join(rel)).map_err(|e| format!("{path}: {e}"))
+    };
+    let options = CompileOptions { code_controls: &["GradientEdit"], assets: Some(&read_res), ..CompileOptions::default() };
     let mut ran = 0;
     let mut big: Vec<(String, usize, usize)> = Vec::new();
     for path in &paths {
