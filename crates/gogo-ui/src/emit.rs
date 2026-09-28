@@ -382,6 +382,10 @@ pub fn emit_rust(page: &Page, module: &str) -> Result<String, String> {
     out.push_str(&format!("        bind_sites: {},\n", slice(&page.bind_sites)));
     out.push_str(&format!("        drivers: {},\n", slice(&page.drivers)));
     out.push_str(&format!("        live_texts: {},\n", slice(&page.live_texts)));
+    // The build's one slice table (`build_pages` emits it beside
+    // `IMAGES`): every page points at it, so a slice id code sets draws
+    // on any page and no page copies it.
+    out.push_str("        slices: &super::SLICES,\n");
     out.push_str("    };\n\n");
 
     // Handler enum.
@@ -509,6 +513,69 @@ pub fn emit_keys(keys: &Keys) -> Result<String, String> {
     }
     out.push_str("            _ => None,\n        }\n    }\n\n    pub const fn id(self) -> gogo::KeyId {\n        gogo::KeyId::new(self as u32)\n    }\n}\n\n");
     out.push_str("impl gogo::KeyName for Key {\n    fn id(self) -> gogo::KeyId {\n        gogo::KeyId::new(self as u32)\n    }\n}\n\n");
+    Ok(out)
+}
+
+/// `pub static SLICES`: every atlas slice of the build, by
+/// `ImageKey::slice_index`. Every page's `slices` points here, so the
+/// table exists once in the program and no page copies it.
+pub fn emit_slices(slices: &[ImageSlice]) -> String {
+    let mut out = format!("/// Every atlas slice (`atlas` lines), by `ImageKey::slice_index`: the picture it is cut from and where. Every page points here.\npub static SLICES: [gogo::page::ImageSlice; {}] = [\n", slices.len());
+    for s in slices {
+        out.push_str(&format!("    gogo::page::ImageSlice {{ picture: gogo::ImageKey::new({}), rect: {:?}, edge: {:?}, untrimmed: {:?} }},\n", s.picture.index(), s.rect, s.edge, s.untrimmed));
+    }
+    out.push_str("];\n\n");
+    out
+}
+
+/// `pub mod atlas`: the build's atlases as code, spelled the way the
+/// `.gogo` files spell them — a grid is an array (`ANIMALS[12]` is
+/// `animals[12]`), named slices a module (`toolbar::PLAY` is
+/// `toolbar.play`), a whole picture one id (`BUBBLE` is `bubble`). `Err`
+/// when two atlas names become the same Rust name.
+///
+/// Needed because code picks slices too (a sticker page fills its tiles
+/// from a table), and a typed constant is found by grep and checked by
+/// the compiler, where a string lookup would fail at run time.
+pub fn emit_atlases(atlases: &[AtlasDecl]) -> Result<String, String> {
+    let mut out = String::from("/// The build's atlases (`atlas` lines), named as the `.gogo` files name them.\n#[allow(dead_code, unused_imports)]\npub mod atlas {\n    use gogo::ImageKey;\n\n");
+    let mut taken: Vec<(String, &str)> = Vec::new();
+    let key = |k: &ImageKey| format!("ImageKey::new({})", k.index());
+    for a in atlases {
+        let from = if a.origin.is_empty() { String::new() } else { format!(" ({})", a.origin) };
+        let rust_name: String = match &a.shape {
+            AtlasShape::Named(_) => field_name(&a.name),
+            _ => snake_case(&a.name).to_ascii_uppercase(),
+        };
+        if let Some((_, other)) = taken.iter().find(|(n, _)| n.trim_start_matches("r#").eq_ignore_ascii_case(rust_name.trim_start_matches("r#"))) {
+            return Err(format!("atlases `{other}` and `{}` both become `atlas::{rust_name}` in code — rename one\n", a.name));
+        }
+        taken.push((rust_name.clone(), &a.name));
+        match &a.shape {
+            AtlasShape::Grid(keys) => {
+                out.push_str(&format!("    /// `atlas {}`{from}: {} cells, `{}[i]` in a `.gogo` file.\n", a.name, keys.len(), a.name));
+                out.push_str(&format!("    pub const {rust_name}: [ImageKey; {}] = [{}];\n\n", keys.len(), keys.iter().map(key).collect::<Vec<_>>().join(", ")));
+            }
+            AtlasShape::Whole(k) => {
+                out.push_str(&format!("    /// `atlas {}`{from}: the whole picture, `source={}` in a `.gogo` file.\n", a.name, a.name));
+                out.push_str(&format!("    pub const {rust_name}: ImageKey = {};\n\n", key(k)));
+            }
+            AtlasShape::Named(list) => {
+                out.push_str(&format!("    /// `atlas {}`{from}: `{}.<slice>` in a `.gogo` file.\n    pub mod {rust_name} {{\n        use gogo::ImageKey;\n", a.name, a.name));
+                let mut consts: Vec<String> = Vec::new();
+                for (sname, k) in list {
+                    let c = snake_case(sname).to_ascii_uppercase();
+                    if consts.contains(&c) {
+                        return Err(format!("atlas `{}`: two slices become `atlas::{rust_name}::{c}` in code — rename one\n", a.name));
+                    }
+                    out.push_str(&format!("        pub const {c}: ImageKey = {};\n", key(k)));
+                    consts.push(c);
+                }
+                out.push_str("    }\n\n");
+            }
+        }
+    }
+    out.push_str("}\n\n");
     Ok(out)
 }
 

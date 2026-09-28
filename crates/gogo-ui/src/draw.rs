@@ -379,6 +379,70 @@ fn push_shown(out: &mut Vec<Draw>, d: Draw) {
     }
 }
 
+/// An atlas slice as draws the renderer already knows — its whole
+/// picture through a window — so no host ever meets a slice id.
+///
+/// A 9-slice (`edge=`) is up to nine windows: the corners keep their own
+/// size (one picture pixel = one epx), the edges stretch one way, the
+/// middle both; when `rect` is smaller than two corners, all bands shrink
+/// together. A trimmed slice lays out as its untrimmed box (fitted like a
+/// whole picture) and draws only its own pixels inside it; `cover`'s
+/// overhang is cut off at `rect`.
+fn push_slice(out: &mut Vec<Draw>, rect: Rect, s: &ImageSlice, tint: Color_Straight_Srgb_4xU8_RGBA, fit: Fit, sampling: Sampling) {
+    let [sx, sy, sw, sh] = s.rect.map(f32::from);
+    if s.has_edge() {
+        let [l, t, r, b] = s.edge.map(f32::from);
+        let mut k: f32 = 1.0;
+        if l + r > 0.0 {
+            k = k.min(rect.w / (l + r));
+        }
+        if t + b > 0.0 {
+            k = k.min(rect.h / (t + b));
+        }
+        let k: f32 = k.max(0.0);
+        let xs: [f32; 4] = [rect.x, rect.x + l * k, rect.x + rect.w - r * k, rect.x + rect.w];
+        let ys: [f32; 4] = [rect.y, rect.y + t * k, rect.y + rect.h - b * k, rect.y + rect.h];
+        let us: [f32; 4] = [sx, sx + l, sx + sw - r, sx + sw];
+        let vs: [f32; 4] = [sy, sy + t, sy + sh - b, sy + sh];
+        for row in 0..3 {
+            for col in 0..3 {
+                let (w, h) = (xs[col + 1] - xs[col], ys[row + 1] - ys[row]);
+                let (ww, wh) = (us[col + 1] - us[col], vs[row + 1] - vs[row]);
+                if w <= 0.0 || h <= 0.0 || ww <= 0.0 || wh <= 0.0 {
+                    continue;
+                }
+                push_shown(out, Draw::Image { rect: Rect::new(xs[col], ys[row], w, h), image: s.picture, tint, fit: Fit::Distort, window: Some([us[col], vs[row], ww, wh]), sampling });
+            }
+        }
+        return;
+    }
+    if !s.is_trimmed() {
+        push_shown(out, Draw::Image { rect, image: s.picture, tint, fit, window: Some([sx, sy, sw, sh]), sampling });
+        return;
+    }
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+    // The untrimmed box placed in `rect` the way the renderer fits a
+    // whole picture: its corner (bx, by) and its scale per axis.
+    let [uw, uh, ox, oy] = s.untrimmed.map(f32::from);
+    let (bx, by, kx, ky) = match fit {
+        Fit::Distort => (rect.x, rect.y, rect.w / uw, rect.h / uh),
+        Fit::Contain | Fit::Cover => {
+            let k: f32 = if fit == Fit::Contain { (rect.w / uw).min(rect.h / uh) } else { (rect.w / uw).max(rect.h / uh) };
+            (rect.x + (rect.w - uw * k) / 2.0, rect.y + (rect.h - uh * k) / 2.0, k, k)
+        }
+    };
+    let (qx, qy) = (bx + ox * kx, by + oy * ky);
+    let (x0, y0) = (qx.max(rect.x), qy.max(rect.y));
+    let (x1, y1) = ((qx + sw * kx).min(rect.x + rect.w), (qy + sh * ky).min(rect.y + rect.h));
+    if x1 <= x0 || y1 <= y0 {
+        return;
+    }
+    let window: [f32; 4] = [sx + (x0 - qx) / kx, sy + (y0 - qy) / ky, (x1 - x0) / kx, (y1 - y0) / ky];
+    push_shown(out, Draw::Image { rect: Rect::new(x0, y0, x1 - x0, y1 - y0), image: s.picture, tint, fit: Fit::Distort, window: Some(window), sampling });
+}
+
 fn mul_alpha(c: Color_Straight_Srgb_4xU8_RGBA, opacity: f32) -> Color_Straight_Srgb_4xU8_RGBA {
     let mut c = c;
     c.0[3] = (c.0[3] as f32 * opacity).round().clamp(0.0, 255.0) as u8;
@@ -887,12 +951,32 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
                     Some("distort") => Fit::Distort,
                     _ => Fit::Contain,
                 };
-                let window: Option<[f32; 4]> = res.prop(page, id, PropKey::Window).and_then(|v| {
-                    let nums: Vec<f32> = page.list(v).iter().filter_map(|x| if let Value::VNum(n) = x { Some(*n) } else { None }).collect();
-                    (nums.len() == 4).then(|| [nums[0], nums[1], nums[2], nums[3]])
-                });
                 let sampling = if res.ident(page, id, PropKey::Sampling) == Some("pixel") { Sampling::Pixel } else { Sampling::Smooth };
-                push_shown(out, Draw::Image { rect, image: src, tint, fit, window, sampling });
+                match page.atlas_slice(src) {
+                    // An atlas slice: its picture through windows (a
+                    // slice is already a part of its picture, so the
+                    // node's own `window=` does not apply).
+                    Some(slice) => push_slice(out, rect, slice, tint, fit, sampling),
+                    None => {
+                        let window: Option<[f32; 4]> = res.prop(page, id, PropKey::Window).and_then(|v| {
+                            // Four numbers into a fixed array: this runs
+                            // for every shown Image every frame, so no
+                            // heap list.
+                            let mut nums: [f32; 4] = [0.0; 4];
+                            let mut count: usize = 0;
+                            for x in page.list(v) {
+                                if let Value::VNum(n) = x {
+                                    if count < 4 {
+                                        nums[count] = *n;
+                                    }
+                                    count += 1;
+                                }
+                            }
+                            (count == 4).then_some(nums)
+                        });
+                        push_shown(out, Draw::Image { rect, image: src, tint, fit, window, sampling });
+                    }
+                }
             }
         }
         Kind::Label => {

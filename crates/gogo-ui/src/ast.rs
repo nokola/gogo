@@ -18,6 +18,8 @@ pub enum AstValue {
     /// site's own business (GP40/GP33 track the features).
     Named { name: String, value: Box<AstValue> },
     Ident { word: String, opacity: Option<f32>, pos: Option<f32> },
+    /// `animals[12]` — one cell of a grid atlas.
+    Index { word: String, index: u32 },
     Size { w: Option<f32>, h: Option<f32> },
     Call { name: String, args: Vec<AstValue> },
     List(Vec<AstValue>),

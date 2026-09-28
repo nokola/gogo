@@ -166,6 +166,97 @@ pub const NO_KEY: KeyId = KeyId(u32::MAX);
 /// No image: an Image whose `source=""` — drawn as nothing.
 pub const NO_IMAGE: ImageKey = ImageKey(u32::MAX);
 
+/// The top bit of an `ImageKey` marks an atlas slice (`animals[12]`,
+/// `toolbar.play`): the rest is its index in the build's `SLICES` table.
+///
+/// Needed because a slice must travel wherever a picture id does (a
+/// `source=` value, a code write, a repeat item) without growing `Value`,
+/// and must never reach a host table: gogo's draw turns it into its
+/// picture's id plus a window, so hosts only ever see whole pictures.
+const SLICE_BIT: u32 = 1 << 31;
+
+impl ImageKey {
+    /// The id of slice `index` in the build's `SLICES` table.
+    pub const fn from_slice_index(index: usize) -> ImageKey {
+        ImageKey(SLICE_BIT | index as u32)
+    }
+
+    /// Whether this id names an atlas slice rather than a whole picture.
+    pub const fn is_slice(self) -> bool {
+        self.0 & SLICE_BIT != 0 && self.0 != NO_IMAGE.0
+    }
+
+    /// The slice's index in `SLICES`; only meaningful when `is_slice`.
+    pub const fn slice_index(self) -> usize {
+        (self.0 & !SLICE_BIT) as usize
+    }
+}
+
+/// One slice of an atlas picture: where it sits and how it stretches.
+///
+/// Needed because an `atlas` line cuts one picture into many shown
+/// pieces; every piece is this record, found by its `ImageKey`, so
+/// showing one costs a table read and never a string. Sizes are picture
+/// pixels (`u16`: no texture is wider than 65535).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ImageSlice {
+    /// The whole picture the slice is cut from.
+    pub picture: ImageKey,
+    /// The slice's rectangle in the picture: x, y, width, height.
+    pub rect: [u16; 4],
+    /// The outer bands that keep their size while the rest stretches (a
+    /// 9-slice): left, top, right, bottom. All 0 = the slice stretches
+    /// whole.
+    pub edge: [u16; 4],
+    /// A slice a packer trimmed: its width and height before trimming,
+    /// and where `rect` sat inside that box (x, y). All 0 = not trimmed.
+    pub untrimmed: [u16; 4],
+}
+
+impl ImageSlice {
+    /// Whether the slice has 9-slice bands.
+    pub fn has_edge(&self) -> bool {
+        self.edge != [0; 4]
+    }
+
+    /// Whether a packer trimmed the slice.
+    pub fn is_trimmed(&self) -> bool {
+        self.untrimmed != [0; 4]
+    }
+
+    /// The size the slice lays out at (`aspect=natural`): its untrimmed
+    /// box when a packer trimmed it, so trimming never moves a layout.
+    pub fn natural_size(&self) -> (f32, f32) {
+        if self.is_trimmed() {
+            (self.untrimmed[0] as f32, self.untrimmed[1] as f32)
+        } else {
+            (self.rect[2] as f32, self.rect[3] as f32)
+        }
+    }
+}
+
+/// What an `atlas` line declared, by name — build-time only (the
+/// compiler checks `source=` against it and the build emits the `atlas`
+/// code module from it).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AtlasDecl {
+    pub name: String,
+    pub shape: AtlasShape,
+    /// The file that declared it, for the "declared twice" error.
+    pub origin: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum AtlasShape {
+    /// `cell=WxH`: the slices in reading order (`name[i]`).
+    Grid(Vec<ImageKey>),
+    /// A `{ slice … }` block or a `from=` import: (name, slice), in the
+    /// order written (`name.slice`).
+    Named(Vec<(String, ImageKey)>),
+    /// No `cell=` and no block: the whole picture (`source=name`).
+    Whole(ImageKey),
+}
+
 /// The image paths a build (or one standalone compile) names, by
 /// `ImageKey`.
 ///
@@ -183,6 +274,13 @@ pub struct Images {
     /// no file system to fetch a late one from. A build-time table (the
     /// compiler's) is not sealed.
     sealed: bool,
+    /// Atlas slices by `ImageKey::slice_index` — the build emits them as
+    /// `SLICES`. Empty in a host's runtime table (pages carry the build's
+    /// table themselves, `Page::slices`).
+    pub slices: Vec<ImageSlice>,
+    /// Build-time only: every `atlas` line seen, by name (one namespace
+    /// for the whole build, like translation keys).
+    pub atlases: Vec<AtlasDecl>,
 }
 
 impl Images {
@@ -219,6 +317,18 @@ impl Images {
     /// The id `name` already has — a lookup, never a new id.
     pub fn get(&self, name: &str) -> Option<ImageKey> {
         self.index.get(name).copied()
+    }
+
+    /// A new slice's id.
+    pub fn push_slice(&mut self, slice: ImageSlice) -> ImageKey {
+        let key = ImageKey::from_slice_index(self.slices.len());
+        self.slices.push(slice);
+        key
+    }
+
+    /// The atlas line named `name`, if one was seen.
+    pub fn atlas(&self, name: &str) -> Option<&AtlasDecl> {
+        self.atlases.iter().find(|a| a.name == name)
     }
 
     /// The path behind `key`; `""` for `NO_IMAGE` or an id this table
@@ -1704,6 +1814,9 @@ pub struct StaticPage {
     /// See `Behavior` (GP52/GP53).
     pub behaviors: &'static [Behavior],
     pub live_texts: &'static [LiveText],
+    /// The build's atlas slices (`SLICES`, one table every page points
+    /// at), so a slice id set by code draws on any page.
+    pub slices: &'static [ImageSlice],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1732,6 +1845,9 @@ pub struct Page {
     /// See `Behavior` (GP52/GP53).
     pub behaviors: Vec<Behavior>,
     pub live_texts: Vec<LiveText>,
+    /// See `StaticPage::slices`. Borrowed from the build (no copy per
+    /// page); owned only by a standalone compile.
+    pub slices: std::borrow::Cow<'static, [ImageSlice]>,
 }
 
 /// The claimable key GROUPS of a `control`'s `keys` line (GP26) —
@@ -1833,7 +1949,19 @@ impl Page {
             drivers: s.drivers.to_vec(),
             behaviors: s.behaviors.to_vec(),
             live_texts: s.live_texts.to_vec(),
+            slices: std::borrow::Cow::Borrowed(s.slices),
         }
+    }
+
+    /// The atlas slice `key` names, if it names one this page knows.
+    pub fn atlas_slice(&self, key: ImageKey) -> Option<&ImageSlice> {
+        if key.is_slice() { self.slices.get(key.slice_index()) } else { None }
+    }
+
+    /// The whole picture behind `key`: a slice's picture, else `key`
+    /// itself. What a host decodes and uploads for an Image showing it.
+    pub fn picture_of(&self, key: ImageKey) -> ImageKey {
+        self.atlas_slice(key).map_or(key, |s| s.picture)
     }
 
     /// Appends a copy of `src`'s subtree at the arena's end — a repeat

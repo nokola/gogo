@@ -14,6 +14,7 @@
 
 pub mod anim;
 pub mod ast;
+pub mod atlas;
 pub mod color;
 pub mod compile;
 pub mod diag;
@@ -38,7 +39,7 @@ pub use input::{Behavior, Claim, Cx, Event, EventKind, Input, Key, KeyAction, MO
 pub use layout::{FixedAdvance, LayoutBuffers, Rect, TextMeasure, layout, layout_into};
 pub use locale::{KeyName, Keys, Locale};
 pub use runtime::{AnimName, ArrangementName, ThemeName};
-pub use page::{ArrangementId, BASE, BEHAVIOR_SLOTS, BUILTIN_BEHAVIORS, BehaviorSpec, ImageKey, Images, Kind, KeyId, KEYS_ARROWS, KEYS_ENTER, KEYS_HOME_END, KEYS_SPACE, NO_IMAGE, NO_KEY, NO_NODE, NO_STR, NodeId, Orientation, Page, Payload, PropKey, Color_Straight_Srgb_4xU8_RGBA, ScreenClass, StaticPage, StrId, Value};
+pub use page::{ArrangementId, BASE, BEHAVIOR_SLOTS, BUILTIN_BEHAVIORS, BehaviorSpec, ImageKey, ImageSlice, Images, Kind, KeyId, KEYS_ARROWS, KEYS_ENTER, KEYS_HOME_END, KEYS_SPACE, NO_IMAGE, NO_KEY, NO_NODE, NO_STR, NodeId, Orientation, Page, Payload, PropKey, Color_Straight_Srgb_4xU8_RGBA, ScreenClass, StaticPage, StrId, Value};
 pub use anim::{Easing, Finish, Motion};
 pub use runtime::{Resolved, Runtime, resolve, resolve_animated};
 
@@ -168,6 +169,20 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
     if options.compile.images.is_none() {
         options.compile.images = Some(&own_images);
     }
+    // What an `atlas` line reads (its picture's header, a packer's JSON):
+    // a `res://` file under the resource root, refused under an `.ignore`
+    // fence like every embedded asset.
+    let read_asset = |key: &str| -> Result<Vec<u8>, String> {
+        let rel = key.strip_prefix("res://").ok_or_else(|| format!("`{key}` is not a `res://` path"))?;
+        let file = res_root.join(rel);
+        if let Some(marker) = options.ignore_marker {
+            if let Some(ignore) = ignore_file_above(&file, res_root, marker) {
+                return Err(format!("it sits under {} — delete the marker to ship that folder", ignore.display()));
+            }
+        }
+        std::fs::read(&file).map_err(|e| format!("{}: {e}", file.display()))
+    };
+    let compile_options: CompileOptions<'_> = CompileOptions { assets: options.compile.assets.or(Some(&read_asset)), ..options.compile };
     let used: Vec<PathBuf> = used_files(dir);
     let mut entries: Vec<PathBuf> = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().map(|x| x == "gogo").unwrap_or(false)).collect();
     entries.sort();
@@ -189,7 +204,7 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
             }
             continue;
         }
-        let compiled = compile_file_with(path, options.compile)?;
+        let compiled = compile_file_with(path, compile_options)?;
         // Fonts: every `res://` string naming one (G0071 makes the scheme
         // mandatory, so a label whose TEXT ends in ".ttf" never reaches
         // the embed table). Images come from the shared `Images` table —
@@ -224,7 +239,7 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
     // its labels join the app's translation keys (`cut`, `copy`,
     // `paste`, `selectAll`) — an app page never has to author it.
     {
-        let compiled = compile_with(EDIT_BAR_GOGO, &|_: &str| None::<String>, CompileOptions { source_name: "edit_bar.gogo (built-in)", ..options.compile });
+        let compiled = compile_with(EDIT_BAR_GOGO, &|_: &str| None::<String>, CompileOptions { source_name: "edit_bar.gogo (built-in)", ..compile_options });
         for d in &compiled.diags {
             let line = format!("edit_bar.gogo (built-in):{}: {} {}: {}\n", d.line, if d.severity == Severity::Error { "error" } else { "warning" }, d.code, d.message);
             if d.severity == Severity::Error {
@@ -336,6 +351,12 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
             }
         }
         source.push_str("        other => panic!(\"gogo_image!({other:?}) is not in the build's image table — the build scans src/**/*.rs for the literal; a path built at runtime cannot be embedded\"),\n    }\n}\n\n");
+        // The slice table every page points at, and the atlases as code.
+        source.push_str(&emit::emit_slices(&images.slices));
+        match emit::emit_atlases(&images.atlases) {
+            Ok(code) => source.push_str(&code),
+            Err(e) => errors.push_str(&e),
+        }
     }
     if !errors.is_empty() {
         return Err(errors);

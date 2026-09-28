@@ -406,6 +406,7 @@ impl<'a> Parser<'a> {
                     AstValue::Ident { word, opacity, pos }
                 }
             }
+            Tok::Index { word, index } => AstValue::Index { word, index },
             Tok::Num { value, unit } => AstValue::Num { value, unit },
             Tok::Size { w, h } => AstValue::Size { w, h },
             Tok::Color { rgba, opacity, pos } => AstValue::Color { rgba, opacity, pos },
@@ -454,6 +455,7 @@ fn is_value_word(type_word: &str, word: &str) -> bool {
 fn describe(tok: &Tok) -> String {
     match tok {
         Tok::Ident { word, .. } => format!("`{word}`"),
+        Tok::Index { word, index } => format!("`{word}[{index}]`"),
         Tok::Style(s) => format!("`.{s}`"),
         Tok::Ref { name, .. } => format!("`${name}`"),
         Tok::Str { text, .. } => format!("\"{text}\""),

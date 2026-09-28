@@ -45,6 +45,12 @@ pub struct CompileOptions<'a> {
     /// names the file a key was first seen in). `compile_file_with` sets
     /// it; `""` = unknown.
     pub source_name: &'a str,
+    /// Reads a `res://` file's bytes (or says why it cannot). Needed by
+    /// `atlas` lines: a grid's cells and a slice's bounds come from the
+    /// picture's real size, and `from=` reads the packer's JSON.
+    /// `build_pages` passes one over its resource root; `None` (a
+    /// standalone compile) makes an atlas that needs a file an error.
+    pub assets: Option<&'a dyn Fn(&str) -> Result<Vec<u8>, String>>,
 }
 
 /// The gogo events; anything else on `on:` is a raw signal — gone (§7).
@@ -61,6 +67,15 @@ const EVENTS: &[&str] = &["activate", "press", "release", "change", "edit", "sho
 /// (G0071), so the two lists and the check stay one rule.
 pub(crate) const IMAGE_EXTS: &[&str] = &[".png", ".jpg", ".jpeg"];
 pub(crate) const FONT_EXTS: &[&str] = &[".ttf", ".otf"];
+
+/// Which of the three `atlas` forms a line is: a grid (`cell=`), named
+/// slices (a block or a `from=` import), or the whole picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AtlasForm {
+    Grid,
+    Named,
+    Whole,
+}
 
 #[derive(Clone, Default)]
 struct StyleDef {
@@ -681,6 +696,7 @@ fn spell(v: &AstValue) -> String {
         AstValue::Ref { name, opacity, pos } => format!("${name}{}", suffixes(opacity, pos)),
         AstValue::Named { name, value } => format!("{name}={}", spell(value)),
         AstValue::Ident { word, opacity, pos } => format!("{word}{}", suffixes(opacity, pos)),
+        AstValue::Index { word, index } => format!("{word}[{index}]"),
         AstValue::Size { w, h } => format!("{}x{}", w.map(|x| x.to_string()).unwrap_or_default(), h.map(|x| x.to_string()).unwrap_or_default()),
         AstValue::Call { name, args } => format!("{name}({})", args.iter().map(spell).collect::<Vec<_>>().join(", ")),
         AstValue::List(items) => format!("[{}]", items.iter().map(spell).collect::<Vec<_>>().join(", ")),
@@ -765,6 +781,13 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
     c.page.intern("dark");
     c.document(&doc, true);
     c.finish();
+    // The slices this compile knows, so a standalone page draws them; a
+    // built page points at the build's `SLICES` instead (`emit_rust`).
+    let slices: Vec<ImageSlice> = match c.options.images {
+        Some(shared) => shared.borrow().slices.clone(),
+        None => c.local_images.slices.clone(),
+    };
+    c.page.slices = std::borrow::Cow::Owned(slices);
     Compiled { page: c.page, diags: c.diags, keys: c.local_keys, images: c.local_images }
 }
 
@@ -825,6 +848,459 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    // ----- atlases ----------------------------------------------------------
+
+    /// Runs `f` on the image table this compile writes (the build's
+    /// shared one, else this page's own).
+    fn with_images<R>(&mut self, f: impl FnOnce(&mut Images) -> R) -> R {
+        match self.options.images {
+            Some(shared) => f(&mut shared.borrow_mut()),
+            None => f(&mut self.local_images),
+        }
+    }
+
+    /// The slice `key` names, if it names one.
+    fn slice_def(&mut self, key: ImageKey) -> Option<ImageSlice> {
+        if !key.is_slice() {
+            return None;
+        }
+        self.with_images(|im| im.slices.get(key.slice_index()).copied())
+    }
+
+    /// Does `v` name an atlas (`toolbar.play`, `animals[3]`, `bubble`)?
+    /// Needed where a word could be two things: a theme value's word is
+    /// a color unless an atlas owns it.
+    fn atlas_named_by(&mut self, v: &AstValue) -> bool {
+        let word = match v {
+            AstValue::Index { .. } => return true,
+            AstValue::Ident { word, opacity: None, pos: None } => word,
+            _ => return false,
+        };
+        let atlas_name: &str = word.split('.').next().unwrap_or(word);
+        self.with_images(|im| im.atlas(atlas_name).is_some())
+    }
+
+    /// The bytes of `res://` file `path`, read through the host's asset
+    /// reader; `why` names what needs them (for the G2012 message).
+    fn asset_bytes(&mut self, path: &str, line: u32, why: &str) -> Option<Vec<u8>> {
+        let Some(read) = self.options.assets else {
+            self.error("G2012", line, format!("{why} needs to read `{path}` — this compile has no asset reader (pages build through `build_pages`; a standalone compile passes `CompileOptions::assets`)"));
+            return None;
+        };
+        match read(path) {
+            Ok(bytes) => Some(bytes),
+            Err(e) => {
+                self.error("G2012", line, format!("{why} cannot read `{path}`: {e}"));
+                None
+            }
+        }
+    }
+
+    /// The picture's size from its file header (G2012 when unreadable or
+    /// wider than a slice can address).
+    fn picture_size_of(&mut self, path: &str, line: u32, why: &str) -> Option<(u32, u32)> {
+        let bytes = self.asset_bytes(path, line, why)?;
+        match crate::atlas::picture_size(&bytes) {
+            Some((w, h)) if w <= u16::MAX as u32 && h <= u16::MAX as u32 => Some((w, h)),
+            Some((w, h)) => {
+                self.error("G2012", line, format!("`{path}` is {w}x{h} — an atlas picture is at most 65535 pixels on a side"));
+                None
+            }
+            None => {
+                self.error("G2012", line, format!("{why}: `{path}` has no PNG or JPEG header gogo can read its size from"));
+                None
+            }
+        }
+    }
+
+    /// The 9-slice bands a line's `edge=` words spell (the padding rule:
+    /// `edge=` writes all four, a side word one, the later word wins),
+    /// checked against a `w` x `h` slice. `Some([0; 4])` for no words;
+    /// `None` after an error.
+    fn edge_bands(&mut self, props: &[&AstProp], w: u32, h: u32, what: &str) -> Option<[u16; 4]> {
+        let mut e: [u32; 4] = [0; 4];
+        for p in props {
+            let n: Option<u32> = match &p.value {
+                AstValue::Num { value, unit } if unit.is_empty() && *value >= 0.0 && value.fract() == 0.0 => Some(*value as u32),
+                _ => None,
+            };
+            let Some(n) = n else {
+                self.error("G2015", p.line, format!("`{}=` is a whole number of picture pixels — `edge=12`", p.key));
+                return None;
+            };
+            match p.key.as_str() {
+                "edge" => e = [n; 4],
+                "edge_left" => e[0] = n,
+                "edge_top" => e[1] = n,
+                "edge_right" => e[2] = n,
+                _ => e[3] = n,
+            }
+        }
+        if e == [0; 4] {
+            return Some([0; 4]);
+        }
+        if e[0] + e[2] >= w || e[1] + e[3] >= h {
+            let line = props.first().map_or(0, |p| p.line);
+            self.error("G2015", line, format!("the `edge=` bands leave no middle to stretch — {what} is {w}x{h}, left + right = {}, top + bottom = {}", e[0] + e[2], e[1] + e[3]));
+            return None;
+        }
+        Some([e[0] as u16, e[1] as u16, e[2] as u16, e[3] as u16])
+    }
+
+    /// `atlas <name> source="res://…"` with `cell=WxH` (a grid), a block
+    /// of `slice` lines (named slices), or neither (the whole picture,
+    /// usually with `edge=`); or `atlas <name> from="res://….json"` (a
+    /// packer's export, a block may add `edge=` to its slices). Every
+    /// slice becomes one `SLICES` row the build emits, and `source=` names
+    /// it as `name[3]`, `name.play` or `name`.
+    fn atlas(&mut self, n: &AstNode) {
+        let line = n.line;
+        let Some(name) = n.name.clone() else {
+            self.error("G2011", line, "`atlas` needs a name — `atlas icons source=\"res://icons.png\", cell=48x48`");
+            return;
+        };
+        if name.contains(['.', ':']) || !n.args.is_empty() || !n.styles.is_empty() {
+            self.error("G2011", line, format!("`atlas {name}`: an atlas line is `atlas <name> source=\"res://…\"` — one plain name, then its words"));
+            return;
+        }
+        let mut source: Option<String> = None;
+        let mut from: Option<String> = None;
+        let mut cell: Option<(u32, u32)> = None;
+        let mut edges: Vec<&AstProp> = Vec::new();
+        for p in &n.props {
+            match p.key.as_str() {
+                "source" | "from" => match &p.value {
+                    AstValue::Str { text, key: None, .. } if text.starts_with("res://") => {
+                        if p.key == "source" { source = Some(text.clone()) } else { from = Some(text.clone()) }
+                    }
+                    _ => self.error("G2011", p.line, format!("`{}=` takes a quoted `res://` path", p.key)),
+                },
+                "cell" => match &p.value {
+                    AstValue::Size { w: Some(w), h: Some(h) } if *w >= 1.0 && *h >= 1.0 && w.fract() == 0.0 && h.fract() == 0.0 => cell = Some((*w as u32, *h as u32)),
+                    _ => self.error("G2013", p.line, "`cell=` is one grid square's size in whole picture pixels — `cell=80x80`"),
+                },
+                "edge" | "edge_left" | "edge_top" | "edge_right" | "edge_bottom" => edges.push(p),
+                other => self.error("G2011", p.line, format!("`{other}=` is not an atlas word — an atlas line takes `source=` or `from=`, `cell=`, and `edge=` (`edge_left`, `edge_top`, `edge_right`, `edge_bottom`)")),
+            }
+        }
+        let mut block: Vec<&AstNode> = Vec::new();
+        for item in &n.children {
+            match item {
+                AstItem::Node(s) if s.type_word == "slice" => block.push(s),
+                AstItem::Node(s) => self.error("G2011", s.line, format!("an atlas block holds `slice` lines, not `{}`", s.type_word)),
+                AstItem::Assign { line, .. } => self.error("G2011", *line, "an atlas block holds `slice` lines"),
+            }
+        }
+        // (slice name or "" for a grid cell / the whole picture, slice)
+        let mut slices: Vec<(String, ImageSlice)> = Vec::new();
+        let form: AtlasForm;
+        match (source, from) {
+            (Some(_), Some(_)) => {
+                self.error("G2011", line, format!("`atlas {name}` has both `source=` and `from=` — `source=` is the picture, `from=` a packer's JSON that names its own picture; write one"));
+                return;
+            }
+            (None, None) => {
+                self.error("G2011", line, format!("`atlas {name}` needs its picture — `source=\"res://….png\"`, or `from=\"res://….json\"` for a packer's export"));
+                return;
+            }
+            (Some(src), None) => {
+                let lower = src.to_ascii_lowercase();
+                if !IMAGE_EXTS.iter().any(|e| lower.ends_with(e)) {
+                    self.error("G2011", line, format!("`source=\"{src}\"` — an atlas picture is a .png or .jpg"));
+                    return;
+                }
+                let picture = self.image_key(&src);
+                if let Some((cw, ch)) = cell {
+                    form = AtlasForm::Grid;
+                    if !block.is_empty() {
+                        self.error("G2011", line, format!("`atlas {name}` is a grid (`cell=`) — its slices are numbered (`{name}[0]`), so it has no block"));
+                        return;
+                    }
+                    let Some((w, h)) = self.picture_size_of(&src, line, "`cell=`") else { return };
+                    if w % cw != 0 || h % ch != 0 {
+                        self.error("G2013", line, format!("`{src}` is {w}x{h} — that does not divide into {cw}x{ch} squares"));
+                        return;
+                    }
+                    let Some(edge) = self.edge_bands(&edges, cw, ch, "a cell") else { return };
+                    for row in 0..h / ch {
+                        for col in 0..w / cw {
+                            let rect = [(col * cw) as u16, (row * ch) as u16, cw as u16, ch as u16];
+                            slices.push((String::new(), ImageSlice { picture, rect, edge, untrimmed: [0; 4] }));
+                        }
+                    }
+                } else if !block.is_empty() {
+                    form = AtlasForm::Named;
+                    if !edges.is_empty() {
+                        self.error("G2015", line, "`edge=` on a named atlas goes on each `slice` line that stretches");
+                        return;
+                    }
+                    // The picture's size bounds every slice — known when
+                    // the compile can read files (always, in a build).
+                    let size: Option<(u32, u32)> = match self.options.assets.is_some() {
+                        true => match self.picture_size_of(&src, line, "a named atlas") {
+                            Some(s) => Some(s),
+                            None => return,
+                        },
+                        false => None,
+                    };
+                    for s in &block {
+                        let Some(slice) = self.named_slice(s, picture, size, &src) else { return };
+                        if slices.iter().any(|(k, _)| *k == slice.0) {
+                            self.error("G2014", s.line, format!("`atlas {name}` has two slices named `{}`", slice.0));
+                            return;
+                        }
+                        slices.push(slice);
+                    }
+                } else if edges.is_empty() {
+                    // The whole picture under a name: no slice at all,
+                    // `source={name}` IS the picture.
+                    return self.register_atlas(&name, AtlasShape::Whole(picture), line);
+                } else {
+                    form = AtlasForm::Whole;
+                    let Some((w, h)) = self.picture_size_of(&src, line, "`edge=`") else { return };
+                    let Some(edge) = self.edge_bands(&edges, w, h, "the picture") else { return };
+                    slices.push((String::new(), ImageSlice { picture, rect: [0, 0, w as u16, h as u16], edge, untrimmed: [0; 4] }));
+                }
+            }
+            (None, Some(json)) => {
+                form = AtlasForm::Named;
+                if cell.is_some() {
+                    self.error("G2011", line, "`cell=` cuts a picture into squares — an import's slices come from its JSON");
+                    return;
+                }
+                if !edges.is_empty() {
+                    self.error("G2015", line, "`edge=` on an import goes on a `slice <name> edge=…` line in its block");
+                    return;
+                }
+                if !json.to_ascii_lowercase().ends_with(".json") {
+                    self.error("G2017", line, format!("`from=\"{json}\"` — `from=` reads a packer's .json export"));
+                    return;
+                }
+                let Some(bytes) = self.asset_bytes(&json, line, "`from=`") else { return };
+                let import = match std::str::from_utf8(&bytes).map_err(|_| "the file is not UTF-8 text".to_string()).and_then(crate::atlas::import_texture_packer) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        self.error("G2017", line, format!("`{json}`: {e}"));
+                        return;
+                    }
+                };
+                let src = format!("{}{}", crate::atlas::folder_of(&json), import.image);
+                let lower = src.to_ascii_lowercase();
+                if !IMAGE_EXTS.iter().any(|e| lower.ends_with(e)) {
+                    self.error("G2017", line, format!("`{json}` names `{}` — an atlas picture is a .png or .jpg", import.image));
+                    return;
+                }
+                let picture = self.image_key(&src);
+                let Some((w, h)) = self.picture_size_of(&src, line, "`from=`") else { return };
+                if let Some((mw, mh)) = import.size {
+                    if (mw, mh) != (w, h) {
+                        self.error("G2017", line, format!("`{json}` was made for a {mw}x{mh} picture, but `{src}` is {w}x{h} — export the atlas again"));
+                        return;
+                    }
+                }
+                for f in &import.frames {
+                    let slice_name = crate::atlas::slice_name(&f.file);
+                    if slice_name.is_empty() {
+                        self.error("G2017", line, format!("`{json}`: a frame has an empty name — name it in the packer"));
+                        return;
+                    }
+                    if let Some(other) = import.frames.iter().find(|o| o.file != f.file && crate::atlas::slice_name(&o.file) == slice_name) {
+                        self.error("G2017", line, format!("`{json}`: `{}` and `{}` both become the name `{slice_name}` — rename one in the packer", f.file, other.file));
+                        return;
+                    }
+                    let [x, y, fw, fh] = f.rect;
+                    if fw == 0 || fh == 0 || x + fw > w || y + fh > h {
+                        self.error("G2017", line, format!("`{json}`: `{}` ({x}, {y}, {fw}x{fh}) is not inside the {w}x{h} picture", f.file));
+                        return;
+                    }
+                    let untrimmed = f.untrimmed.map_or([0; 4], |[a, b, c, d]| [a as u16, b as u16, c as u16, d as u16]);
+                    slices.push((slice_name, ImageSlice { picture, rect: [x as u16, y as u16, fw as u16, fh as u16], edge: [0; 4], untrimmed }));
+                }
+                // The block adds stretch bands to imported slices.
+                for s in &block {
+                    let Some(sname) = s.name.clone() else {
+                        self.error("G2011", s.line, "a `slice` line needs the slice's name — `slice button edge=12`");
+                        return;
+                    };
+                    let Some(at) = slices.iter().position(|(k, _)| *k == sname) else {
+                        let names: Vec<&str> = slices.iter().take(12).map(|(k, _)| k.as_str()).collect();
+                        let more = if slices.len() > 12 { ", …" } else { "" };
+                        self.error("G2017", s.line, format!("`{json}` has no slice `{sname}` — it has {}{more}", names.join(", ")));
+                        return;
+                    };
+                    let mut edge_props: Vec<&AstProp> = Vec::new();
+                    for p in &s.props {
+                        match p.key.as_str() {
+                            "edge" | "edge_left" | "edge_top" | "edge_right" | "edge_bottom" => edge_props.push(p),
+                            "x" | "y" | "size" => {
+                                self.error("G2011", p.line, format!("`{}=` — an imported slice's place comes from `{json}`; its line takes only `edge=`", p.key));
+                                return;
+                            }
+                            other => {
+                                self.error("G2011", p.line, format!("`{other}=` is not a slice word here — an imported slice's line takes `edge=`"));
+                                return;
+                            }
+                        }
+                    }
+                    if slices[at].1.is_trimmed() {
+                        self.error("G2015", s.line, format!("`{sname}` is trimmed by the packer — a 9-slice needs its full box; turn trimming off for it"));
+                        return;
+                    }
+                    let [_, _, sw, sh] = slices[at].1.rect;
+                    let Some(edge) = self.edge_bands(&edge_props, sw as u32, sh as u32, "the slice") else { return };
+                    slices[at].1.edge = edge;
+                }
+            }
+        }
+        // Same declaration seen again (one `uses` file under two pages):
+        // keep the first ids. Different slices under one name: an error.
+        let existing: Option<AtlasDecl> = self.with_images(|im| im.atlas(&name).cloned());
+        if let Some(prev) = existing {
+            let (prev_form, prev_names, prev_keys): (AtlasForm, Vec<&str>, Vec<ImageKey>) = match &prev.shape {
+                AtlasShape::Grid(keys) => (AtlasForm::Grid, Vec::new(), keys.clone()),
+                AtlasShape::Named(list) => (AtlasForm::Named, list.iter().map(|(k, _)| k.as_str()).collect(), list.iter().map(|(_, k)| *k).collect()),
+                AtlasShape::Whole(k) => (AtlasForm::Whole, Vec::new(), vec![*k]),
+            };
+            let prev_slices: Vec<Option<ImageSlice>> = prev_keys.iter().map(|k| self.slice_def(*k)).collect();
+            let names: Vec<&str> = if form == AtlasForm::Named { slices.iter().map(|(k, _)| k.as_str()).collect() } else { Vec::new() };
+            let same = prev_form == form && prev_names == names && prev_slices.len() == slices.len() && prev_slices.iter().zip(&slices).all(|(a, (_, b))| *a == Some(*b));
+            if !same {
+                self.atlas_twice(&name, &prev, line);
+            }
+            return;
+        }
+        let keys: Vec<ImageKey> = self.with_images(|im| slices.iter().map(|(_, s)| im.push_slice(*s)).collect());
+        let shape: AtlasShape = match form {
+            AtlasForm::Grid => AtlasShape::Grid(keys),
+            AtlasForm::Whole => AtlasShape::Whole(keys[0]),
+            AtlasForm::Named => AtlasShape::Named(slices.into_iter().map(|(k, _)| k).zip(keys).collect()),
+        };
+        self.register_atlas(&name, shape, line);
+    }
+
+    /// G2019: `name` was declared before with other slices.
+    fn atlas_twice(&mut self, name: &str, prev: &AtlasDecl, line: u32) {
+        let first = if prev.origin.is_empty() { "earlier".to_string() } else { format!("first in {}", prev.origin) };
+        self.error("G2019", line, format!("atlas `{name}` is declared twice with different slices ({first}) — atlas names are one namespace for the whole build"));
+    }
+
+    /// Records atlas `name`. A whole picture with no `edge=` comes here
+    /// straight from `atlas` (it has no slice to compare), so a second
+    /// declaration is checked here too.
+    fn register_atlas(&mut self, name: &str, shape: AtlasShape, line: u32) {
+        let origin: String = self.options.source_name.to_string();
+        let existing: Option<AtlasDecl> = self.with_images(|im| im.atlas(name).cloned());
+        if let Some(prev) = existing {
+            if prev.shape != shape {
+                self.atlas_twice(name, &prev, line);
+            }
+            return;
+        }
+        self.with_images(|im| im.atlases.push(AtlasDecl { name: name.to_string(), shape, origin }));
+    }
+
+    /// One `slice <name> x=…, y=…, size=WxH[, edge=…]` line of a named
+    /// atlas, checked against the picture's size when known.
+    fn named_slice(&mut self, s: &AstNode, picture: ImageKey, size: Option<(u32, u32)>, src: &str) -> Option<(String, ImageSlice)> {
+        let Some(sname) = s.name.clone() else {
+            self.error("G2011", s.line, "a `slice` line needs a name — `slice play x=0, y=0, size=48x48`");
+            return None;
+        };
+        if sname.contains(['.', ':']) {
+            self.error("G2011", s.line, format!("`slice {sname}` — a slice name is one word"));
+            return None;
+        }
+        let whole = |v: &AstValue| -> Option<u32> {
+            match v {
+                AstValue::Num { value, unit } if unit.is_empty() && *value >= 0.0 && value.fract() == 0.0 && *value <= u16::MAX as f32 => Some(*value as u32),
+                _ => None,
+            }
+        };
+        let (mut x, mut y, mut wh): (Option<u32>, Option<u32>, Option<(u32, u32)>) = (None, None, None);
+        let mut edge_props: Vec<&AstProp> = Vec::new();
+        for p in &s.props {
+            match p.key.as_str() {
+                "x" | "y" => {
+                    let Some(v) = whole(&p.value) else {
+                        self.error("G2014", p.line, format!("`{}=` is a whole number of picture pixels", p.key));
+                        return None;
+                    };
+                    if p.key == "x" { x = Some(v) } else { y = Some(v) }
+                }
+                "size" => match &p.value {
+                    AstValue::Size { w: Some(w), h: Some(h) } if *w >= 1.0 && *h >= 1.0 && w.fract() == 0.0 && h.fract() == 0.0 && *w <= u16::MAX as f32 && *h <= u16::MAX as f32 => wh = Some((*w as u32, *h as u32)),
+                    _ => {
+                        self.error("G2014", p.line, "`size=` is the slice's width and height in whole picture pixels — `size=48x48`");
+                        return None;
+                    }
+                },
+                "edge" | "edge_left" | "edge_top" | "edge_right" | "edge_bottom" => edge_props.push(p),
+                other => {
+                    self.error("G2011", p.line, format!("`{other}=` is not a slice word — a slice line takes `x=`, `y=`, `size=` and `edge=`"));
+                    return None;
+                }
+            }
+        }
+        let (Some(x), Some(y), Some((w, h))) = (x, y, wh) else {
+            self.error("G2014", s.line, format!("`slice {sname}` needs `x=`, `y=` and `size=` — where it sits in the picture"));
+            return None;
+        };
+        if let Some((pw, ph)) = size {
+            if x + w > pw || y + h > ph {
+                self.error("G2014", s.line, format!("`slice {sname}` ({x}, {y}, {w}x{h}) reaches past the {pw}x{ph} picture `{src}`"));
+                return None;
+            }
+        }
+        let edge = self.edge_bands(&edge_props, w, h, "the slice")?;
+        Some((sname, ImageSlice { picture, rect: [x as u16, y as u16, w as u16, h as u16], edge, untrimmed: [0; 4] }))
+    }
+
+    /// The picture id `source=` means by an atlas word: `name[i]` (a grid
+    /// cell), `name.slice`, or `name` (a whole-picture atlas). `NO_IMAGE`
+    /// after an error (G2016).
+    fn atlas_slice(&mut self, word: &str, index: Option<u32>, line: u32) -> ImageKey {
+        let (atlas_name, slice_name) = match word.split_once('.') {
+            Some((a, s)) => (a, Some(s)),
+            None => (word, None),
+        };
+        let Some(decl) = self.with_images(|im| im.atlas(atlas_name).cloned()) else {
+            self.error("G2016", line, format!("no atlas named `{atlas_name}` — declare it with `atlas {atlas_name} source=\"res://…\"` in this file or a `uses` file (a quoted `\"res://…\"` path shows a whole picture)"));
+            return NO_IMAGE;
+        };
+        match (&decl.shape, index, slice_name) {
+            (AtlasShape::Grid(keys), Some(i), None) => match keys.get(i as usize) {
+                Some(k) => *k,
+                None => {
+                    self.error("G2016", line, format!("`{atlas_name}` has {} cells — `{atlas_name}[0]` to `{atlas_name}[{}]`", keys.len(), keys.len() - 1));
+                    NO_IMAGE
+                }
+            },
+            (AtlasShape::Grid(_), _, _) => {
+                self.error("G2016", line, format!("`{atlas_name}` is a grid atlas — pick a cell by number: `{atlas_name}[0]`"));
+                NO_IMAGE
+            }
+            (AtlasShape::Named(list), None, Some(s)) => match list.iter().find(|(k, _)| k == s) {
+                Some((_, k)) => *k,
+                None => {
+                    let names: Vec<&str> = list.iter().take(12).map(|(k, _)| k.as_str()).collect();
+                    let more = if list.len() > 12 { ", …" } else { "" };
+                    self.error("G2016", line, format!("`{atlas_name}` has no slice `{s}` — it has {}{more}", names.join(", ")));
+                    NO_IMAGE
+                }
+            },
+            (AtlasShape::Named(list), _, _) => {
+                let first = list.first().map_or("…", |(k, _)| k.as_str());
+                self.error("G2016", line, format!("`{atlas_name}` has named slices — pick one: `{atlas_name}.{first}`"));
+                NO_IMAGE
+            }
+            (AtlasShape::Whole(k), None, None) => *k,
+            (AtlasShape::Whole(_), _, _) => {
+                self.error("G2016", line, format!("`{atlas_name}` is one whole picture — write `source={atlas_name}`"));
+                NO_IMAGE
+            }
+        }
+    }
+
     // ----- directives -----------------------------------------------------
 
     /// `is_main`: the file whose root becomes the page (a `uses` file only
@@ -836,6 +1312,15 @@ impl<'a> Compiler<'a> {
             if let AstItem::Node(n) = item {
                 if n.type_word == "arrangement" {
                     self.arrangement(n);
+                }
+            }
+        }
+        // Atlases too, so a theme value may name a slice whatever the
+        // order of the lines (a `uses` file's atlases arrive at its line).
+        for item in &doc.items {
+            if let AstItem::Node(n) = item {
+                if n.type_word == "atlas" {
+                    self.atlas(n);
                 }
             }
         }
@@ -852,8 +1337,12 @@ impl<'a> Compiler<'a> {
                     // Color context (GPAR30, the shipped rule): `$dim =
                     // gray` must be the COLOR gray at its use site, and
                     // `$scrim = black/0.5` carries its alpha. Numbers and
-                    // strings pass through unchanged.
-                    let v = self.value(value, *line, Some(PropKey::Background));
+                    // strings pass through unchanged. An atlas slice
+                    // (`$icon = toolbar.play`) is a picture, never a color.
+                    let v = match self.atlas_named_by(value) {
+                        true => self.value(value, *line, Some(PropKey::Source)),
+                        false => self.value(value, *line, Some(PropKey::Background)),
+                    };
                     let name = self.intern(key);
                     if self.page.theme.iter().any(|t| t.name == name && t.variant == NO_STR) {
                         self.error("G6002", *line, format!("`${key}` is defined twice"));
@@ -869,7 +1358,7 @@ impl<'a> Compiler<'a> {
                     "style" => self.style(n),
                     "widget" | "control" => self.widget(n),
                     "anim" => self.anim(n),
-                    "arrangement" => {}
+                    "arrangement" | "atlas" => {}
                     "transition" if is_property_transition(n) => self.deferred_prop_transitions.push(n.clone()),
                     "transition" => {
                         let t = self.transition(n, NO_NODE);
@@ -901,7 +1390,7 @@ impl<'a> Compiler<'a> {
         // Pass 2: the root.
         for item in &doc.items {
             if let AstItem::Node(n) = item {
-                if matches!(n.type_word.as_str(), "uses" | "theme" | "style" | "widget" | "control" | "anim" | "arrangement" | "transition" | "when") {
+                if matches!(n.type_word.as_str(), "uses" | "theme" | "style" | "widget" | "control" | "anim" | "arrangement" | "atlas" | "transition" | "when") {
                     continue;
                 }
                 if self.root_seen {
@@ -3210,6 +3699,15 @@ impl<'a> Compiler<'a> {
                 let v = Value::VRef { name: id, opacity: *opacity };
                 self.ref_stop(v, *pos, name, line)
             }
+            AstValue::Index { word, index } => {
+                if key != Some(PropKey::Source) {
+                    self.error("G2016", line, format!("`{word}[{index}]` is an atlas cell — it goes on an Image's `source=`"));
+                }
+                Value::VImage(self.atlas_slice(word, Some(*index), line))
+            }
+            // `source=toolbar.play` / `source=bubble`: an atlas slice. A
+            // bare word names nothing else on `source=` (a path is quoted).
+            AstValue::Ident { word, .. } if key == Some(PropKey::Source) => Value::VImage(self.atlas_slice(word, None, line)),
             AstValue::Ident { word, opacity, pos } => {
                 let color_position = key.map(Self::is_color_key).unwrap_or(false);
                 if color_position {
@@ -3947,6 +4445,10 @@ impl<'a> Compiler<'a> {
                 self.warning("G7013", n.line, format!("`{}` is drawn by code — an empty box here", n.type_word));
                 Kind::Custom
             }
+            None if n.type_word == "atlas" || n.type_word == "slice" => {
+                self.error("G2011", n.line, format!("`{}` is not a node — an `atlas` line sits at the top of a file, its `slice` lines inside its block", n.type_word));
+                Kind::Custom
+            }
             None => {
                 let mut pool: Vec<String> = KIND_WORDS.iter().map(|(w, _)| w.to_string()).collect();
                 pool.extend(self.widgets.keys().cloned());
@@ -4396,6 +4898,22 @@ impl<'a> Compiler<'a> {
                 }
                 if (p.max_height.is_some() || p.max_height_fill) && !matches!(p.height, Len::Hug(_)) {
                     self.error("G1018", n.line, "a List's `max_height=` caps `height=hug` — write `height=hug` (the box grows with its rows to the cap, then scrolls)");
+                }
+            }
+        }
+        // An Image showing an atlas slice: the slice already IS a part of
+        // its picture, and a 9-slice always fills its rectangle.
+        if kind == Kind::Image {
+            let slice: Option<ImageSlice> = match tmp.props.iter().rev().find(|pr| pr.key == PropKey::Source).map(|pr| pr.value) {
+                Some(Value::VImage(k)) => self.slice_def(k),
+                _ => None,
+            };
+            if let Some(s) = slice {
+                if tmp.props.iter().any(|pr| pr.key == PropKey::Window) {
+                    self.error("G2018", n.line, "`window=` shows a part of a whole picture — this Image shows an atlas slice, which already is one; declare a smaller slice instead");
+                }
+                if s.has_edge() && tmp.props.iter().any(|pr| pr.key == PropKey::Fit) {
+                    self.error("G2018", n.line, "`fit=` does nothing on a 9-slice (a slice with `edge=`) — it always fills the Image's rectangle; drop `fit=`");
                 }
             }
         }

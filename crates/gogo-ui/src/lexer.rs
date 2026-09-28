@@ -10,6 +10,9 @@ pub enum Tok {
     /// (`on:activate`). `opacity`/`pos` are the `/`/`@` suffixes a palette
     /// name may carry.
     Ident { word: String, opacity: Option<f32>, pos: Option<f32> },
+    /// `animals[12]` — a word with a whole number in brackets attached
+    /// (no space): one cell of a grid atlas.
+    Index { word: String, index: u32 },
     /// `.Style` (a dot after whitespace).
     Style(String),
     /// `$name` with an optional attached path (`$task.id`) and `/opacity`.
@@ -179,6 +182,36 @@ impl<'a> Lexer<'a> {
         self.chars[start..self.pos].iter().collect()
     }
 
+    /// `[12]` right after `word`, up to and including the `]`.
+    fn index(&mut self, word: String) {
+        self.pos += 1;
+        let start = self.pos;
+        while self.peek().is_ascii_digit() {
+            self.pos += 1;
+        }
+        let digits: String = self.chars[start..self.pos].iter().collect();
+        if digits.is_empty() || self.peek() != ']' {
+            self.error("G2016", format!("`{word}[` — an atlas cell is a whole number in brackets right after the atlas name: `{word}[12]`"));
+            // Skip to the `]` on this line so the rest of the line still parses.
+            while !matches!(self.peek(), ']' | '\n' | '\0') {
+                self.pos += 1;
+            }
+            if self.peek() == ']' {
+                self.pos += 1;
+            }
+            self.push(Tok::Ident { word, opacity: None, pos: None });
+            return;
+        }
+        self.pos += 1;
+        match digits.parse::<u32>() {
+            Ok(index) => self.push(Tok::Index { word, index }),
+            Err(_) => {
+                self.error("G2016", format!("`{word}[{digits}]` — the cell number is too large"));
+                self.push(Tok::Ident { word, opacity: None, pos: None });
+            }
+        }
+    }
+
     /// A word with attached `.path` segments and `:` (prop keys like
     /// `on:activate`), and a closing `.{a, b}` group — the property list
     /// of a `transition` target (`commandBar.{margin, opacity}`), kept in
@@ -294,6 +327,12 @@ impl<'a> Lexer<'a> {
 
     fn ident(&mut self) {
         let word = self.dotted_word();
+        // `animals[12]`: the bracket touching the word makes it an index,
+        // never a list (a list always follows `=`, `,` or a space).
+        if self.peek() == '[' {
+            self.index(word);
+            return;
+        }
         let opacity = self.opacity_suffix();
         let pos = self.pos_suffix();
         self.push(Tok::Ident { word, opacity, pos });

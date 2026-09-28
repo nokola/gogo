@@ -798,7 +798,13 @@ impl<'a> Lay<'a> {
                     Some(Value::VImage(key)) if key != NO_IMAGE => Some(key),
                     _ => None,
                 };
-                key.and_then(|k| self.text.image_size(k)).filter(|(_, h)| *h > 0.0).map(|(w, h)| w / h)
+                // An atlas slice knows its own size from the build; only
+                // a whole picture asks the host.
+                let size = key.and_then(|k| match self.page.atlas_slice(k) {
+                    Some(slice) => Some(slice.natural_size()),
+                    None => self.text.image_size(k),
+                });
+                size.filter(|(_, h)| *h > 0.0).map(|(w, h)| w / h)
             }
             _ => None,
         }
