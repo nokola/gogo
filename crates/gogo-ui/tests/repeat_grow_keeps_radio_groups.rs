@@ -1,10 +1,11 @@
-//! A repeat grown past its capacity (`Runtime::set_count`) adds nodes past
+//! A repeat's rows are clones made by `Runtime::set_count` (a `capacity=`
+//! reserves room, it builds no rows), so the first count adds nodes past
 //! the end every per-node table had at build time; a Radio picked from
 //! code walks every node to clear its group. Found on the S24 2026-09-28:
-//! the stickers page (a paint-mode `choice` + the sheet's cell repeat, 67
-//! tattoo cells past a capacity of 54) panicked with "index out of bounds"
-//! the moment the first sticker's panel picked its mode — the radio-group
-//! table had stayed at the build-time length.
+//! the stickers page (a paint-mode `choice` + the sheet's cell repeat)
+//! panicked with "index out of bounds" the moment the first sticker's
+//! panel picked its mode — the radio-group table had stayed at the
+//! build-time length.
 
 use gogo::compile;
 use gogo::runtime::{Runtime, SELECTED};
