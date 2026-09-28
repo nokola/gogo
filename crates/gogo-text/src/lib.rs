@@ -20,7 +20,7 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 
 use cosmic_text::fontdb;
-use cosmic_text::{Attrs, Buffer, CacheKey, CacheKeyFlags, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Weight, Wrap};
+use cosmic_text::{Align, Attrs, Buffer, CacheKey, CacheKeyFlags, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Weight, Wrap};
 use gogo::layout::TextMeasure;
 use gogo::ImageKey;
 
@@ -398,6 +398,17 @@ impl TextEngine {
         buffer.set_size(max_width, None);
         let attrs = self.attrs(font);
         buffer.set_text(text, &attrs, Shaping::Advanced, None);
+        // Every line starts at the box's left edge; `halign` then shifts it
+        // (`shape_pass`). Needed because cosmic's default puts a
+        // right-to-left line (Arabic, Urdu, Hebrew) against the RIGHT edge
+        // of the wrap width: a full-width left-aligned label showed عربي at
+        // the far right of its row (USER SAW in the language picker, S24,
+        // 2026-09-28). The letters still run right to left inside the line;
+        // only where the line sits changes — WP's left-to-right pages did
+        // the same.
+        for line in buffer.lines.iter_mut() {
+            line.set_align(Some(Align::Left));
+        }
         buffer.shape_until_scroll(&mut self.fs, false);
         buffer
     }
@@ -691,6 +702,29 @@ mod tests {
         for (a, b) in shaped.iter().zip(&again) {
             assert_eq!(a.uv, b.uv, "a glyph of the run that grew the atlas, shaped whole: {a:?} vs {b:?}");
         }
+    }
+
+    /// A right-to-left line in a wide box starts at the box's left edge
+    /// like a Latin one, and `halign` still moves it: centre and end land
+    /// where they would for Latin text, not twice as far. Red before the
+    /// fix: cosmic put the Arabic word against the right edge of the wrap
+    /// width (the picker's عربي row, S24, 2026-09-28).
+    #[test]
+    fn a_right_to_left_line_starts_at_the_left_edge_and_halign_still_moves_it() {
+        let mut e = engine();
+        e.load_system_fonts(); // the desktop's Arabic face (Arial / Segoe UI)
+        assert!(e.has_glyph('ع'), "precondition: an Arabic face");
+        let span = |q: &[GlyphQuad]| -> (f32, f32) { (q.iter().map(|g| g.x).fold(f32::MAX, f32::min), q.iter().map(|g| g.x + g.w).fold(f32::MIN, f32::max)) };
+        let box_w: f32 = 600.0;
+        let (left, right) = span(&e.shape("عربي", 40.0, Some(box_w), None, 0.0, 0.0, box_w, 0));
+        assert!(left < 20.0, "start = the left edge: {left}..{right}");
+        let w: f32 = right - left;
+        let (c_left, _) = span(&e.shape("عربي", 40.0, Some(box_w), None, 0.0, 0.0, box_w, 1));
+        assert!((c_left - (box_w - w) / 2.0).abs() < 20.0, "centred once: {c_left} for width {w}");
+        let (_, e_right) = span(&e.shape("عربي", 40.0, Some(box_w), None, 0.0, 0.0, box_w, 2));
+        assert!((e_right - box_w).abs() < 20.0 && e_right <= box_w + 2.0, "end = the right edge: {e_right}");
+        let (l_left, _) = span(&e.shape("English", 40.0, Some(box_w), None, 0.0, 0.0, box_w, 0));
+        assert!(l_left < 20.0, "Latin unchanged: {l_left}");
     }
 
     fn engine() -> TextEngine {
