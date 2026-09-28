@@ -500,7 +500,7 @@ fn wrong_kind(key: PropKey, kind: Kind) -> String {
         PropKey::Cols | PropKey::RowHeight => format!("`{word}=` lays out a Grid or Tiles — a {name} has no tracks"),
         PropKey::Spacing => format!("`spacing=` separates a stack's children (Column, Row, Flow, Grid, Tiles, List) — a {name} stacks nothing"),
         PropKey::Text | PropKey::FontSize | PropKey::FontColor | PropKey::Wrap | PropKey::ClipText | PropKey::TextHalign | PropKey::TextValign => format!("`{word}=` belongs to a box that shows text (Label, Button, Check, Toggle, Radio, Input) — a {name} shows none"),
-        PropKey::Source | PropKey::Fit | PropKey::Loading => format!("`{word}=` is an Image word — a {name} shows no picture"),
+        PropKey::Source | PropKey::Fit | PropKey::Loading | PropKey::Release => format!("`{word}=` is an Image word — a {name} shows no picture"),
         PropKey::TextFit | PropKey::TextFlip => format!("`{word}=` stretches a Label's one glyph over its box — a {name} has no glyph to stretch"),
         PropKey::Stops | PropKey::GradientFill | PropKey::Angle | PropKey::GradientRepeat => format!("`{word}=` is a Gradient word — a {name}'s one color is `background=`"),
         PropKey::From | PropKey::Sweep if kind == Kind::Slot => format!("`{word}=` is a radial kind's config — it goes inside the kind: `automatic=arc(from=-225, sweep=270) by $value in $min..$max`, in a `control`"),
@@ -967,8 +967,13 @@ impl<'a> Compiler<'a> {
         let mut from: Option<String> = None;
         let mut cell: Option<(u32, u32)> = None;
         let mut edges: Vec<&AstProp> = Vec::new();
+        let mut release: bool = false;
         for p in &n.props {
             match p.key.as_str() {
+                "release" => match &p.value {
+                    AstValue::Ident { word, .. } if word == "unused" => release = true,
+                    _ => self.error("G2020", p.line, "`release=` takes one word — `release=unused` lets the app free this picture while no page shows it"),
+                },
                 "source" | "from" => match &p.value {
                     AstValue::Str { text, key: None, .. } if text.starts_with("res://") => {
                         if p.key == "source" { source = Some(text.clone()) } else { from = Some(text.clone()) }
@@ -980,7 +985,7 @@ impl<'a> Compiler<'a> {
                     _ => self.error("G2013", p.line, "`cell=` is one grid square's size in whole picture pixels — `cell=80x80`"),
                 },
                 "edge" | "edge_left" | "edge_top" | "edge_right" | "edge_bottom" => edges.push(p),
-                other => self.error("G2011", p.line, format!("`{other}=` is not an atlas word — an atlas line takes `source=` or `from=`, `cell=`, and `edge=` (`edge_left`, `edge_top`, `edge_right`, `edge_bottom`)")),
+                other => self.error("G2011", p.line, format!("`{other}=` is not an atlas word — an atlas line takes `source=` or `from=`, `cell=`, `edge=` (`edge_left`, `edge_top`, `edge_right`, `edge_bottom`) and `release=unused`")),
             }
         }
         let mut block: Vec<&AstNode> = Vec::new();
@@ -1010,6 +1015,7 @@ impl<'a> Compiler<'a> {
                     return;
                 }
                 let picture = self.image_key(&src);
+                self.with_images(|im| im.release_lines.push((picture, release)));
                 if let Some((cw, ch)) = cell {
                     form = AtlasForm::Grid;
                     if !block.is_empty() {
@@ -1091,6 +1097,7 @@ impl<'a> Compiler<'a> {
                     return;
                 }
                 let picture = self.image_key(&src);
+                self.with_images(|im| im.release_lines.push((picture, release)));
                 let Some((w, h)) = self.picture_size_of(&src, line, "`from=`") else { return };
                 if let Some((mw, mh)) = import.size {
                     if (mw, mh) != (w, h) {
@@ -3947,6 +3954,7 @@ impl<'a> Compiler<'a> {
             PropKey::GradientFill => Some(&["linear", "radial", "conic"]),
             PropKey::GradientRepeat => Some(&["none", "repeat", "mirror"]),
             PropKey::Loading => Some(&["lazy", "eager"]),
+            PropKey::Release => Some(&["unused"]),
             PropKey::Sampling => Some(&["smooth", "pixel"]),
             _ => None,
         };
@@ -4904,10 +4912,28 @@ impl<'a> Compiler<'a> {
         // An Image showing an atlas slice: the slice already IS a part of
         // its picture, and a 9-slice always fills its rectangle.
         if kind == Kind::Image {
-            let slice: Option<ImageSlice> = match tmp.props.iter().rev().find(|pr| pr.key == PropKey::Source).map(|pr| pr.value) {
+            let source: Option<Value> = tmp.props.iter().rev().find(|pr| pr.key == PropKey::Source).map(|pr| pr.value);
+            let release: bool = tmp.props.iter().any(|pr| pr.key == PropKey::Release);
+            let slice: Option<ImageSlice> = match source {
                 Some(Value::VImage(k)) => self.slice_def(k),
                 _ => None,
             };
+            // The line declares its picture for `release=` (the atlas line
+            // declares an atlas picture; a host picture has no file).
+            match source {
+                Some(Value::VImage(k)) if slice.is_none() && k != crate::page::NO_IMAGE => {
+                    let is_file: bool = self.with_images(|im| im.names.get(k.index()).is_some_and(|n| n.starts_with("res://")));
+                    if is_file {
+                        self.with_images(|im| im.release_lines.push((k, release)));
+                    } else if release {
+                        self.error("G2020", n.line, "`release=unused` frees a built-in picture — this Image shows one the app draws itself, which its owner frees");
+                    }
+                }
+                _ if release && slice.is_some() => {
+                    self.error("G2020", n.line, "this Image shows an atlas slice — the `atlas` line declares the picture, so `release=unused` goes there");
+                }
+                _ => {}
+            }
             if let Some(s) = slice {
                 if tmp.props.iter().any(|pr| pr.key == PropKey::Window) {
                     self.error("G2018", n.line, "`window=` shows a part of a whole picture — this Image shows an atlas slice, which already is one; declare a smaller slice instead");

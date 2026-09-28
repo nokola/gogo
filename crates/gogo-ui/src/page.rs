@@ -281,9 +281,24 @@ pub struct Images {
     /// Build-time only: every `atlas` line seen, by name (one namespace
     /// for the whole build, like translation keys).
     pub atlases: Vec<AtlasDecl>,
+    /// Build-time only: one row per line that declares a picture (an
+    /// `atlas` line, an Image naming a file) — the picture, and whether
+    /// that line says `release=unused`. A picture may be freed only when
+    /// every row says so (`release_unused`).
+    pub release_lines: Vec<(ImageKey, bool)>,
 }
 
 impl Images {
+    /// The pictures every declaring line marks `release=unused`, by key
+    /// order — one line without it keeps the picture for the session, the
+    /// way one eager line makes a picture eager everywhere.
+    pub fn release_unused(&self) -> Vec<ImageKey> {
+        let mut out: Vec<ImageKey> = self.release_lines.iter().filter(|(k, yes)| *yes && !self.release_lines.iter().any(|(o, no)| o == k && !*no)).map(|(k, _)| *k).collect();
+        out.sort_unstable_by_key(|k| k.index());
+        out.dedup();
+        out
+    }
+
     /// A table over `names` in id order — the host seeds one from the
     /// build's `IMAGES` so its ids match what the pages carry. The table
     /// is SEALED for `res://` names: interning a file the build did not
@@ -817,6 +832,10 @@ pub enum PropKey {
     /// them; the host program reads them off the page (`UNREAD_BY_DESIGN`
     /// says which and why).
     Loading,
+    /// `release=unused` on an Image (or an `atlas` line): the host may free
+    /// the picture's decoded copy once no live page names it, and decode
+    /// it again when one does. Default: kept for the whole session.
+    Release,
     TouchTarget,
     TapPulse,
     AccessibilityName,
@@ -938,6 +957,7 @@ pub const WORDS: &[(&str, PropKey)] = &[
     ("span", PropKey::Span),
     ("full_row", PropKey::FullRow),
     ("loading", PropKey::Loading),
+    ("release", PropKey::Release),
     ("touch_target", PropKey::TouchTarget),
     ("tap_pulse", PropKey::TapPulse),
     ("accessibility_name", PropKey::AccessibilityName),
@@ -1158,7 +1178,7 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
         // its box (a Button's text stays text).
         Kind::Label => &[BOX, PLATE, PADDING, TEXT, &[PropKey::TextFit, PropKey::TextFlip]],
         Kind::Button => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::ToggleMode, PropKey::SelectedProp, PropKey::IconSrc, PropKey::IconSize]],
-        Kind::Image => &[BOX, PLATE, &[PropKey::Source, PropKey::Fit, PropKey::Loading, PropKey::Window, PropKey::Sampling]],
+        Kind::Image => &[BOX, PLATE, &[PropKey::Source, PropKey::Fit, PropKey::Loading, PropKey::Release, PropKey::Window, PropKey::Sampling]],
         Kind::Rectangle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::CornerRadius, PropKey::CornerRadiusTopLeft, PropKey::CornerRadiusTopRight, PropKey::CornerRadiusBottomRight, PropKey::CornerRadiusBottomLeft, PropKey::BorderThickness, PropKey::BorderColor, PropKey::BorderDash]],
         Kind::Circle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::BorderThickness, PropKey::BorderColor, PropKey::BorderDash]],
         // `corner_radius` (Q9, user 2026-09-05): a rounded or disc-shaped
@@ -1774,6 +1794,7 @@ pub fn palette_color(word: &str) -> Option<Color_Straight_Srgb_4xU8_RGBA> {
 /// nor listed here.
 pub const UNREAD_BY_DESIGN: &[(PropKey, &str)] = &[
     (PropKey::Loading, "host-read: `loading=lazy` asks the host to decode that image off the frame, starting at its first draw; it draws empty until the pixels land"),
+    (PropKey::Release, "read at compile into the build's `RELEASE_UNUSED` list (`Images::release_lines`); the host frees those pictures when no live page names them"),
     (PropKey::TouchTarget, "accepted: `touch_target=off` silences the 44-epx finger-target lint; the lint is not built here yet (GP41), and hit testing always uses the node's own rect"),
     (PropKey::AccessibilityName, "host-read: no screen-reader bridge here yet"),
     (PropKey::KeyboardTarget, "host-read: no keyboard focus routing here yet"),

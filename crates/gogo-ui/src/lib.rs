@@ -322,7 +322,9 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
             errors.push_str(&format!("gogo_image!({path:?}): a code image is a `res://` asset path\n"));
             continue;
         }
-        options.compile.images.expect("set above").borrow_mut().intern(path);
+        let mut images = options.compile.images.expect("set above").borrow_mut();
+        let key = images.intern(path);
+        images.release_lines.push((key, false)); // a code site never says `release=unused`
     }
     // The image table, dense by `ImageKey`: every path a `source=` named,
     // with the file's bytes for a `res://` asset and `None` for a picture
@@ -351,6 +353,12 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
             }
         }
         source.push_str("        other => panic!(\"gogo_image!({other:?}) is not in the build's image table — the build scans src/**/*.rs for the literal; a path built at runtime cannot be embedded\"),\n    }\n}\n\n");
+        // The pictures the host may free while no page names them.
+        source.push_str("/// The pictures every declaring line marks `release=unused`: the host frees them while no live page names them.\npub static RELEASE_UNUSED: &[gogo::ImageKey] = &[");
+        for key in images.release_unused() {
+            source.push_str(&format!("gogo::ImageKey::new({}), ", key.index()));
+        }
+        source.push_str("];\n\n");
         // The slice table every page points at, and the atlases as code.
         source.push_str(&emit::emit_slices(&images.slices));
         match emit::emit_atlases(&images.atlases) {
