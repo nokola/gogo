@@ -771,6 +771,15 @@ impl<'a> Lay<'a> {
                 // capped hug axis stops at its cap.
                 if sx {
                     w = p.max_width.map_or(0.0, |cap| w.min(cap));
+                } else if let Some(offered) = inner_w {
+                    // The axis that does not pan asks for no more than it is
+                    // offered, or one line too long to wrap would widen
+                    // every parent up to the window and push the whole page
+                    // past the screen edge (the Bulgarian settings page did,
+                    // 2026-09-29). The content is cut instead
+                    // (`place_scroll`). WPF's ScrollViewer with the sideways
+                    // bar disabled answers the same.
+                    w = w.min(offered);
                 }
                 if sy {
                     h = p.max_height.map_or(0.0, |cap| h.min(cap));
@@ -1423,8 +1432,12 @@ impl<'a> Lay<'a> {
             let w = if sx { inner.w.max(min_w) } else { inner.w };
             let h = if sy { inner.h.max(min_h) } else { inner.h };
             let frame = Rect::new(inner.x - if sx { offset[0] } else { 0.0 }, inner.y - if sy { offset[1] } else { 0.0 }, w, h);
-            let written = self.written[id];
-            self.place(c, frame, [!sx && written[0], !sy && written[1]]);
+            // On an axis that does not pan, the viewport is as hard as a
+            // number the author wrote, so content that fills that axis
+            // stays on screen. Only what cannot bend (a Label's text) pokes
+            // past it and is cut, instead of stretching every full-width
+            // row past the edge with it.
+            self.place(c, frame, [!sx, !sy]);
         }
     }
 
