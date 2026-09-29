@@ -6043,8 +6043,8 @@ impl<'a> Compiler<'a> {
                     Value::VIdent(id) if self.page.str(id).eq_ignore_ascii_case("safe") => p.padding_safe = [true; 4],
                     _ => p.padding = [self.num(v, line, "padding"); 4],
                 },
-                PropKey::Size => {
-                    if let Value::VSize(w, h) = v {
+                PropKey::Size => match v {
+                    Value::VSize(w, h) => {
                         if let Some(w) = w {
                             p.width = Len::Exact(w);
                         }
@@ -6052,7 +6052,16 @@ impl<'a> Compiler<'a> {
                             p.height = Len::Exact(h);
                         }
                     }
-                }
+                    // `size=hug` (an Image at its picture's own size),
+                    // `size=fill`, `size=48`: one sizing word for both
+                    // sides, read as `width=` reads it. Before, a word
+                    // here compiled and did nothing.
+                    _ => {
+                        let both = self.len(v, line, "size");
+                        p.width = both;
+                        p.height = both;
+                    }
+                },
                 PropKey::MinSize => {
                     if let Value::VSize(w, h) = v {
                         p.min_width = w.unwrap_or(0.0);

@@ -3204,8 +3204,8 @@ fn apply_placement(p: &mut Placement, page: &Page, prop: Prop) {
         PropKey::PaddingRight => p.padding[2] = num(prop.value),
         PropKey::PaddingBottom => p.padding[3] = num(prop.value),
         PropKey::Padding => p.padding = [num(prop.value); 4],
-        PropKey::Size => {
-            if let Value::VSize(w, h) = prop.value {
+        PropKey::Size => match prop.value {
+            Value::VSize(w, h) => {
                 if let Some(w) = w {
                     p.width = Len::Exact(w);
                 }
@@ -3213,7 +3213,16 @@ fn apply_placement(p: &mut Placement, page: &Page, prop: Prop) {
                     p.height = Len::Exact(h);
                 }
             }
-        }
+            // One sizing word for both sides (`size=hug`), as the compiler
+            // reads it.
+            v => {
+                let both = len(v);
+                if both != Len::Unset {
+                    p.width = both;
+                    p.height = both;
+                }
+            }
+        },
         _ => {}
     }
 }

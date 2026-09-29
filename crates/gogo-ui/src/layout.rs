@@ -521,7 +521,10 @@ impl<'a> Lay<'a> {
     /// `stack_min` instead.)
     fn main_min(&self, id: NodeId, axis: Axis, cross: Option<f32>) -> f32 {
         let p = self.placement(id);
-        let (w, h) = self.size_at(id, if axis == Axis::Y { cross } else { None });
+        let (w, h) = match self.bare_image_in_column(id, if axis == Axis::Y { cross } else { None }) {
+            Some(size) => size,
+            None => self.size_at(id, if axis == Axis::Y { cross } else { None }),
+        };
         let content = if axis == Axis::X { w } else { h };
         if let Len::Fill(_) = self.main_len(id, axis) {
             let declared = if axis == Axis::X { p.min_width } else { p.min_height };
@@ -795,21 +798,56 @@ impl<'a> Lay<'a> {
     fn aspect_ratio(&self, id: NodeId) -> Option<f32> {
         match self.res.prop(self.page, id, PropKey::Aspect) {
             Some(Value::VNum(r)) if r > 0.0 => Some(r),
-            Some(Value::VIdent(word)) if self.page.str(word) == "natural" => {
-                let key: Option<ImageKey> = match self.res.prop(self.page, id, PropKey::Source) {
-                    Some(Value::VImage(key)) if key != NO_IMAGE => Some(key),
-                    _ => None,
-                };
-                // An atlas slice knows its own size from the build; only
-                // a whole picture asks the host.
-                let size = key.and_then(|k| match self.page.atlas_slice(k) {
-                    Some(slice) => Some(slice.natural_size()),
-                    None => self.text.image_size(k),
-                });
-                size.filter(|(_, h)| *h > 0.0).map(|(w, h)| w / h)
-            }
+            Some(Value::VIdent(word)) if self.page.str(word) == "natural" => self.picture_ratio(id),
             _ => None,
         }
+    }
+
+    /// The size of the picture an Image shows, one picture pixel per
+    /// layout unit. `None` = no picture yet, or one the host has not
+    /// measured (a `loading=lazy` bitmap still decoding, a runtime key not
+    /// uploaded).
+    fn picture_size(&self, id: NodeId) -> Option<(f32, f32)> {
+        let key: Option<ImageKey> = match self.res.prop(self.page, id, PropKey::Source) {
+            Some(Value::VImage(key)) if key != NO_IMAGE => Some(key),
+            _ => None,
+        };
+        // An atlas slice knows its own size from the build; only a whole
+        // picture asks the host.
+        key.and_then(|k| match self.page.atlas_slice(k) {
+            Some(slice) => Some(slice.natural_size()),
+            None => self.text.image_size(k),
+        })
+    }
+
+    /// The ratio (width / height) of the picture an Image shows (`None`
+    /// as `picture_size`).
+    fn picture_ratio(&self, id: NodeId) -> Option<f32> {
+        self.picture_size(id).filter(|(_, h)| *h > 0.0).map(|(w, h)| w / h)
+    }
+
+    /// A Column asking a bare Image (no size word, no `aspect=`) how tall
+    /// it is: without an answer from the picture it would say 0 and
+    /// vanish, as `Column { Image source="a.jpg" }` did on the What's New
+    /// page. The answer is WPF's `Stretch=Uniform` in a vertical
+    /// StackPanel: the Column's whole width, and the height the picture's
+    /// shape gives at that width. Only a Column asks this way — a Panel
+    /// or a Button tells its bare Image its size and the picture fits
+    /// inside, so a big picture never makes the welcome screen's panel
+    /// taller than the window. `None` = not a bare Image, no width
+    /// offered, or no picture measured yet.
+    fn bare_image_in_column(&self, id: NodeId, inner_w: Option<f32>) -> Option<(f32, f32)> {
+        if self.node(id).kind != Kind::Image || self.res.prop(self.page, id, PropKey::Aspect).is_some() {
+            return None;
+        }
+        let p = self.placement(id);
+        let has_no_size = p.width == Len::Unset && p.height == Len::Unset && p.min_width == 0.0 && p.min_height == 0.0 && p.max_width.is_none() && p.max_height.is_none() && !p.max_width_fill && !p.max_height_fill;
+        if !has_no_size {
+            return None;
+        }
+        let w = inner_w?;
+        let ratio = self.picture_ratio(id)?;
+        Some((w, w / ratio))
     }
 
     /// What `place` derives from an `aspect=`, given the sizing words: the
@@ -860,8 +898,18 @@ impl<'a> Lay<'a> {
     /// the file sized drives, the other follows; with neither, the width
     /// the parent offers drives (WPF UniformToFill measure).
     fn image_min(&self, id: NodeId, avail_w: Option<f32>) -> (f32, f32) {
-        let Some(ratio) = self.aspect_ratio(id) else { return (0.0, 0.0) };
         let p = self.placement(id);
+        let Some(ratio) = self.aspect_ratio(id) else {
+            // An Image's content is its picture, so a side written `hug`
+            // is the picture's own size on that side (`width=hug,
+            // height=hug` = the picture's size). Only the written word:
+            // an alignment alone also hugs (`free_axis`), but the mask
+            // tiles' `halign=left` and the caption preview's centering
+            // must not pick up the picture's size. Any other side answers
+            // 0 and takes what its parent gives it.
+            let (pw, ph) = self.picture_size(id).unwrap_or((0.0, 0.0));
+            return (if matches!(p.width, Len::Hug(_)) { pw } else { 0.0 }, if matches!(p.height, Len::Hug(_)) { ph } else { 0.0 });
+        };
         match (p.width, p.height) {
             (Len::Exact(w), _) => (w, w / ratio),
             (_, Len::Exact(h)) => (h * ratio, h),
@@ -892,7 +940,8 @@ impl<'a> Lay<'a> {
                 // it is a no-op there; Rust measures fractionally end to
                 // end, and truncating here made wrap labels wrap a line
                 // early — behavior Godot never shows.
-                let (w, h) = self.size_at(*c, if axis == Axis::Y { inner_w } else { None });
+                let asked = if axis == Axis::Y { inner_w } else { None };
+                let (w, h) = self.bare_image_in_column(*c, asked).unwrap_or_else(|| self.size_at(*c, asked));
                 if axis == Axis::Y { (h, w) } else { (w, h) }
             };
             main += m;
@@ -1156,7 +1205,7 @@ impl<'a> Lay<'a> {
                 (cursor, size)
             };
             let rect = if axis == Axis::Y {
-                let (min_w, _) = self.size_at(*c, Some(inner.w));
+                let (min_w, _) = self.bare_image_in_column(*c, Some(inner.w)).unwrap_or_else(|| self.size_at(*c, Some(inner.w)));
                 // A Column child whose `aspect=` derives its width from
                 // its height: the width follows the slot it got (B26).
                 let min_w = self.width_from_height(*c, main_size).unwrap_or(min_w);
