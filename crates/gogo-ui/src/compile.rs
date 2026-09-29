@@ -51,6 +51,12 @@ pub struct CompileOptions<'a> {
     /// `build_pages` passes one over its resource root; `None` (a
     /// standalone compile) makes an atlas that needs a file an error.
     pub assets: Option<&'a dyn Fn(&str) -> Result<Vec<u8>, String>>,
+    /// Every displayed string needs a translation key (G8002): a build
+    /// that ships in several languages turns this on so no English-only
+    /// text slips out. Off by default — most gogo users never translate.
+    /// A string opts out with `/_`, a whole file with `allow untranslated`
+    /// at its top.
+    pub require_keys: bool,
 }
 
 /// The gogo events; anything else on `on:` is a raw signal — gone (§7).
@@ -779,6 +785,8 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
     // `Runtime::variant` to it whether or not the file has a `theme dark`
     // block (GPAR111 — mode tokens flip on pages that never mention dark).
     c.page.intern("dark");
+    // The main file's own name is already on every diagnostic it gets.
+    c.untranslated_check(&doc, "");
     c.document(&doc, true);
     c.finish();
     // The slices this compile knows, so a standalone page draws them; a
@@ -789,6 +797,49 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
     };
     c.page.slices = std::borrow::Cow::Owned(slices);
     Compiled { page: c.page, diags: c.diags, keys: c.local_keys, images: c.local_images }
+}
+
+/// The strings a file item shows with no translation key (G8002's
+/// walk): props, widget params, positional args, `when` responses and
+/// theme values, children included. Lines that name files or layout rows
+/// are skipped whole.
+fn untranslated_in_item(item: &AstItem, found: &mut Vec<(u32, String)>) {
+    match item {
+        AstItem::Assign { value, .. } => untranslated_in_value(value, found),
+        AstItem::Node(n) => {
+            if matches!(n.type_word.as_str(), "uses" | "allow" | "atlas" | "arrangement") {
+                return;
+            }
+            for a in &n.args {
+                untranslated_in_value(a, found);
+            }
+            for p in n.props.iter().chain(&n.params) {
+                if !matches!(p.key.as_str(), "source" | "font" | "areas") {
+                    untranslated_in_value(&p.value, found);
+                }
+            }
+            for c in &n.children {
+                untranslated_in_item(c, found);
+            }
+        }
+    }
+}
+
+fn untranslated_in_value(v: &AstValue, found: &mut Vec<(u32, String)>) {
+    match v {
+        AstValue::Str { text, key: None, line } => {
+            let lower = text.to_ascii_lowercase();
+            // A path or a host picture address (`res://`, `collage://before`).
+            let is_asset = text.contains("://") || IMAGE_EXTS.iter().chain(FONT_EXTS).any(|e| lower.ends_with(e));
+            if !is_asset && text.chars().any(char::is_alphabetic) {
+                found.push((*line, text.clone()));
+            }
+        }
+        AstValue::List(items) => items.iter().for_each(|i| untranslated_in_value(i, found)),
+        AstValue::Call { args, .. } => args.iter().for_each(|a| untranslated_in_value(a, found)),
+        AstValue::Named { value, .. } => untranslated_in_value(value, found),
+        _ => {}
+    }
 }
 
 /// The bare color words: `page::PALETTE` plus `transparent`. Aliases are
@@ -1338,7 +1389,9 @@ impl<'a> Compiler<'a> {
                     // Keys live on DISPLAYED text only (GPAR89, the
                     // addon's rule): a keyed theme value would translate
                     // in some uses and not others.
-                    if let AstValue::Str { key: Some(tk), .. } = value {
+                    if let AstValue::Str { key: Some(tk), .. } = value
+                        && tk != "_"
+                    {
                         self.error("G8001", *line, format!("`${key} = \"…\"/{tk}` — a theme value never carries a translation key; the key goes on the displayed text (`text=$title/{tk}` is not a form either: write the key at the `text=` use)"));
                     }
                     // Color context (GPAR30, the shipped rule): `$dim =
@@ -1361,6 +1414,7 @@ impl<'a> Compiler<'a> {
                 }
                 AstItem::Node(n) => match n.type_word.as_str() {
                     "uses" => self.uses(n),
+                    "allow" => self.allow(n),
                     "theme" => self.theme(n),
                     "style" => self.style(n),
                     "widget" | "control" => self.widget(n),
@@ -1397,7 +1451,7 @@ impl<'a> Compiler<'a> {
         // Pass 2: the root.
         for item in &doc.items {
             if let AstItem::Node(n) = item {
-                if matches!(n.type_word.as_str(), "uses" | "theme" | "style" | "widget" | "control" | "anim" | "arrangement" | "atlas" | "transition" | "when") {
+                if matches!(n.type_word.as_str(), "uses" | "allow" | "theme" | "style" | "widget" | "control" | "anim" | "arrangement" | "atlas" | "transition" | "when") {
                     continue;
                 }
                 if self.root_seen {
@@ -1441,9 +1495,49 @@ impl<'a> Compiler<'a> {
         for d in diags {
             self.diags.push(Diagnostic { message: format!("{full}: {}", d.message), ..d });
         }
+        self.untranslated_check(&doc, &full);
         self.use_dirs.push(full.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default());
         self.document(&doc, false);
         self.use_dirs.pop();
+    }
+
+    /// `allow untranslated`: this file's text stays English on purpose,
+    /// so the G8002 check skips it (`untranslated_check` reads the line;
+    /// here it is only validated). Top of a file only.
+    fn allow(&mut self, n: &AstNode) {
+        let is_bare = n.args.is_empty() && n.props.is_empty() && n.params.is_empty() && n.children.is_empty() && n.styles.is_empty() && n.flags.is_empty();
+        if n.name.as_deref() != Some("untranslated") || !is_bare {
+            self.error("G8003", n.line, "`allow` takes one word: `allow untranslated` (this file's text stays English on purpose)");
+        }
+    }
+
+    /// G8002, when the host asks for it (`CompileOptions::require_keys`):
+    /// every string this file displays carries a translation key — `/key`,
+    /// or `/_` for text that stays English on purpose. Needed so a build
+    /// that ships in several languages cannot ship English-only text by
+    /// accident. Limit: it reads THIS file's own lines, before `uses`
+    /// merges anything, so `allow untranslated` covers exactly the text
+    /// written in the file that says it (a widget's body follows its own
+    /// file, an instance line's `caption="…"` the page's). Skipped: asset
+    /// paths and host picture addresses (`collage://before`), `areas=` rows, `atlas`/`arrangement`/`uses` lines, and text
+    /// with no letter in it ("100%", "1/1", "16:9").
+    fn untranslated_check(&mut self, doc: &Document, file: &str) {
+        if !self.options.require_keys {
+            return;
+        }
+        let allowed = doc.items.iter().any(|i| matches!(i, AstItem::Node(n) if n.type_word == "allow" && n.name.as_deref() == Some("untranslated")));
+        if allowed {
+            return;
+        }
+        let mut found: Vec<(u32, String)> = Vec::new();
+        for item in &doc.items {
+            untranslated_in_item(item, &mut found);
+        }
+        let prefix = if file.is_empty() { String::new() } else { format!("{file}: ") };
+        for (line, text) in found {
+            let shown: String = if text.chars().count() > 40 { format!("{}…", text.chars().take(40).collect::<String>()) } else { text };
+            self.error("G8002", line, format!("{prefix}\"{shown}\" has no translation key — write \"…\"/key, \"…\"/_ for text that stays English, or `allow untranslated` at the top of the file"));
+        }
     }
 
     fn theme(&mut self, n: &AstNode) {
@@ -1462,7 +1556,9 @@ impl<'a> Compiler<'a> {
                 AstItem::Assign { key, dollar: true, value, line } => {
                     // Keys live on displayed text only (GPAR89) — see
                     // the top-level `$` arm.
-                    if let AstValue::Str { key: Some(tk), .. } = value {
+                    if let AstValue::Str { key: Some(tk), .. } = value
+                        && tk != "_"
+                    {
                         self.error("G8001", *line, format!("`${key} = \"…\"/{tk}` — a theme value never carries a translation key; keys live on displayed text"));
                     }
                     // Color context — see the top-level `$` arm (GPAR30).
@@ -2500,7 +2596,7 @@ impl<'a> Compiler<'a> {
         };
         // A widget wearing a built-in word's name is dead: the built-in
         // is matched first, so the widget could never be instantiated.
-        if Kind::from_word(&name).is_some() || matches!(name.as_str(), "when" | "transition" | "theme" | "style" | "anim" | "widget" | "control" | "uses" | "layout" | "gap" | "choice" | "slot" | "empty" | "repeat") {
+        if Kind::from_word(&name).is_some() || matches!(name.as_str(), "when" | "transition" | "theme" | "style" | "anim" | "widget" | "control" | "uses" | "allow" | "layout" | "gap" | "choice" | "slot" | "empty" | "repeat") {
             self.error("G5001", n.line, format!("widget name `{name}` shadows a built-in — pick another name"));
             return;
         }
@@ -3673,7 +3769,9 @@ impl<'a> Compiler<'a> {
                     return if text.is_empty() { Value::VImage(NO_IMAGE) } else { Value::VImage(self.image_key(text)) };
                 }
                 let text_id = self.intern(text);
+                // `/_`: text that stays English on purpose — no key.
                 let key_id = match term {
+                    Some(k) if k == "_" => NO_KEY,
                     Some(k) => self.key(k, text, line),
                     None => NO_KEY,
                 };
@@ -4451,6 +4549,10 @@ impl<'a> Compiler<'a> {
                 // A control whose look comes from the host's code: an empty
                 // box of its declared size, so the page still lays out.
                 self.warning("G7013", n.line, format!("`{}` is drawn by code — an empty box here", n.type_word));
+                Kind::Custom
+            }
+            None if n.type_word == "allow" => {
+                self.error("G8003", n.line, "`allow untranslated` covers a whole file — it goes at the top of the file, not inside a node");
                 Kind::Custom
             }
             None if n.type_word == "atlas" || n.type_word == "slice" => {

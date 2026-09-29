@@ -187,6 +187,8 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G7012", "`View` is the screen root only"),
     ("G7013", "a code-drawn control — an empty box (warning)"),
     ("G8001", "a translation key carries different English"),
+    ("G8002", "displayed text with no translation key (`CompileOptions::require_keys`)"),
+    ("G8003", "`allow` takes one word: `allow untranslated`"),
     ("G9002", "repeat/slot clause shape (`as $binding`)"),
     ("G9003", "`by` keys the item binding"),
     ("G9004", "the item binding shadows a `$` value"),
