@@ -1,0 +1,349 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Gogo",
+  "scopeName": "source.gogo",
+  "fileTypes": ["gogo"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#builtin-type" },
+    { "include": "#style-decl" },
+    { "include": "#widget-decl" },
+    { "include": "#widget-type" },
+    { "include": "#control-keyword" },
+    { "include": "#structure-keyword" },
+    { "include": "#theme-assign" },
+    { "include": "#property" },
+    { "include": "#property-group" },
+    { "include": "#call" },
+    { "include": "#index" },
+    { "include": "#clause-keyword" },
+    { "include": "#state-word" },
+    { "include": "#boolean" },
+    { "include": "#flag" },
+    { "include": "#screen-class" },
+    { "include": "#layout-word" },
+    { "include": "#style-ref" },
+    { "include": "#operator" },
+    { "include": "#value-literal" },
+    { "include": "#dotted-path" },
+    { "include": "#node-name" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comment": {
+      "match": "//.*$",
+      "name": "comment.line.double-slash.gogo"
+    },
+    "builtin-type": {
+      "comment": "The capitalization law: a capitalized first word is an addressable node. These are gogo's own kinds (page.rs KIND_WORDS; tests/vscode_grammar.rs keeps the list equal).",
+      "match": "(?:^|(?<=[{;]))\\s*(View|Panel|Column|Row|Flow|Layers|Scroll|Grid|Tiles|Label|Button|Image|Rectangle|Circle|Arc|Gradient|Slider|Input|Check|Toggle|Radio|List|ListItem)\\b",
+      "captures": {
+        "1": { "name": "support.class.gogo" }
+      }
+    },
+    "widget-type": {
+      "comment": "Any other capitalized head word is a widget instance (a type the file or a `uses` file declares).",
+      "match": "(?:^|(?<=[{;]))\\s*([A-Z]\\w*)\\b",
+      "captures": {
+        "1": { "name": "entity.name.type.gogo" }
+      }
+    },
+    "style-decl": {
+      "match": "(?:^|(?<=[{;]))\\s*(style)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "storage.type.gogo" },
+        "2": { "name": "entity.other.attribute-name.class.gogo" }
+      }
+    },
+    "widget-decl": {
+      "match": "(?:^|(?<=[{;]))\\s*(widget)\\s+([A-Za-z_]\\w*)",
+      "captures": {
+        "1": { "name": "storage.type.gogo" },
+        "2": { "name": "entity.name.type.gogo" }
+      }
+    },
+    "control-keyword": {
+      "comment": "Lowercase structure words that change what shows or moves.",
+      "match": "(?:^|(?<=[{;]))\\s*(when|transition|anim|repeat)\\b",
+      "captures": {
+        "1": { "name": "keyword.control.gogo" }
+      }
+    },
+    "structure-keyword": {
+      "comment": "Lowercase structure words that declare something (never named, erased at build). Includes gogo's lowercase kinds (gap, row, skip, choice, slot, seat, empty).",
+      "match": "(?:^|(?<=[{;]))\\s*(uses|widget|style|theme|slot|seat|atlas|slice|arrangement|key|keys|allow|layout|script|control|signal|signals|state|state_builtin|behavior|gap|row|skip|choice|empty)\\b",
+      "captures": {
+        "1": { "name": "storage.type.gogo" }
+      }
+    },
+    "theme-assign": {
+      "comment": "`$name = value` — a theme value at top level or in a `theme` block, or a widget's parameter default.",
+      "begin": "(\\$[A-Za-z_]\\w*)\\s*(=)(?!=)",
+      "beginCaptures": {
+        "1": { "name": "variable.other.theme.gogo" },
+        "2": { "name": "keyword.operator.assignment.gogo" }
+      },
+      "end": "(?=\\s*[,{}\\]);]|\\s*$|\\s+(?:as|by|in|and|then|signals)\\b)",
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#value" }
+      ]
+    },
+    "property": {
+      "comment": "`key=value`, `on:event=action`, or a `when` response `node.key=value`. The value runs to the next comma, brace, line end or clause word.",
+      "begin": "(?<![$\\w.])((?:[A-Za-z_]\\w*\\.)*)(?:(on)(:))?([A-Za-z_]\\w*)\\s*(=)(?!=)",
+      "beginCaptures": {
+        "1": { "name": "variable.other.node.gogo" },
+        "2": { "name": "keyword.other.event.gogo" },
+        "3": { "name": "punctuation.separator.event.gogo" },
+        "4": { "name": "entity.other.attribute-name.gogo" },
+        "5": { "name": "keyword.operator.assignment.gogo" }
+      },
+      "end": "(?=\\s*[,{}\\]);]|\\s*$|\\s+(?:as|by|in|and|then|signals)\\b)",
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#value" }
+      ]
+    },
+    "property-group": {
+      "comment": "`node.{a, b}` — the property list of a transition target.",
+      "begin": "(\\.)(\\{)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.accessor.gogo" },
+        "2": { "name": "punctuation.section.group.begin.gogo" }
+      },
+      "end": "(\\})",
+      "endCaptures": {
+        "1": { "name": "punctuation.section.group.end.gogo" }
+      },
+      "patterns": [
+        { "match": "\\b[A-Za-z_]\\w*\\b", "name": "entity.other.attribute-name.gogo" },
+        { "include": "#comma" }
+      ]
+    },
+    "call": {
+      "comment": "`emit(Name)`, `live($value)`, `fill(2)`, `arc(from=-225, sweep=270)`.",
+      "begin": "\\b([a-z_]\\w*)\\s*(\\()",
+      "beginCaptures": {
+        "1": { "name": "support.function.gogo" },
+        "2": { "name": "punctuation.section.parens.begin.gogo" }
+      },
+      "end": "(\\))",
+      "endCaptures": {
+        "1": { "name": "punctuation.section.parens.end.gogo" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#property" },
+        { "match": "\\b[A-Za-z_]\\w*\\b(?!\\s*[=(\\[])", "name": "variable.other.argument.gogo" },
+        { "include": "#value" },
+        { "include": "#comma" }
+      ]
+    },
+    "index": {
+      "comment": "`animals[12]` — one cell of a grid atlas (the bracket touches the word).",
+      "match": "\\b([A-Za-z_]\\w*)(\\[)(\\d+)(\\])",
+      "captures": {
+        "1": { "name": "variable.other.atlas.gogo" },
+        "2": { "name": "punctuation.section.index.begin.gogo" },
+        "3": { "name": "constant.numeric.index.gogo" },
+        "4": { "name": "punctuation.section.index.end.gogo" }
+      }
+    },
+    "clause-keyword": {
+      "comment": "Words that delimit without a comma: `repeat x as $b by $b.id`, `slot p by $value in $min..$max`, anim lanes `and`/`then`/`play`/`each`/`group`/`delay`.",
+      "match": "\\b(as|by|in|and|then|play|each|group|delay)\\b(?!\\s*[=(:])",
+      "captures": {
+        "1": { "name": "keyword.control.gogo" }
+      }
+    },
+    "state-word": {
+      "comment": "Built-in states and the transition endpoints `base` / `any`.",
+      "match": "\\b(held|hovered|focused|focus_within|disabled|selected|base|any)\\b(?!\\s*[=(:.])",
+      "captures": {
+        "1": { "name": "constant.language.state.gogo" }
+      }
+    },
+    "boolean": {
+      "match": "\\b(true|false)\\b",
+      "captures": {
+        "1": { "name": "constant.language.boolean.gogo" }
+      }
+    },
+    "flag": {
+      "match": "\\b(signals|interactive)\\b(?!\\s*=)",
+      "captures": {
+        "1": { "name": "storage.modifier.gogo" }
+      }
+    },
+    "screen-class": {
+      "comment": "`when screen.wide`, `when screen.landscape`.",
+      "match": "\\b(screen)(\\.)([A-Za-z_]\\w*)\\b",
+      "name": "constant.language.screen.gogo"
+    },
+    "layout-word": {
+      "comment": "`gap fill` / `gap hug` outside a property.",
+      "match": "\\b(fill|hug)\\b(?!\\s*[=(])",
+      "captures": {
+        "1": { "name": "support.constant.property-value.gogo" }
+      }
+    },
+    "style-ref": {
+      "comment": "`.Look` after whitespace applies a style (a dot after a word is a path, handled elsewhere).",
+      "match": "(?<![\\w)\\]\"$.])(\\.)([A-Za-z_]\\w*)\\b",
+      "captures": {
+        "1": { "name": "punctuation.definition.style.gogo" },
+        "2": { "name": "entity.other.attribute-name.class.gogo" }
+      }
+    },
+    "operator": {
+      "patterns": [
+        { "match": "->", "name": "keyword.operator.arrow.gogo" },
+        { "match": "\\.\\.", "name": "keyword.operator.range.gogo" }
+      ]
+    },
+    "value": {
+      "comment": "A property's value: a literal, or a bare word (an enum, a palette color, an anim name).",
+      "patterns": [
+        { "include": "#value-literal" },
+        { "include": "#value-word" }
+      ]
+    },
+    "value-literal": {
+      "comment": "Values that are not bare words — what a node line can also carry as a positional argument (`Circle 8x8`, `gap 12`, `uses \"path\"`).",
+      "patterns": [
+        { "include": "#path-string" },
+        { "include": "#string" },
+        { "include": "#color" },
+        { "include": "#ref" },
+        { "include": "#size" },
+        { "include": "#number" },
+        { "include": "#call" },
+        { "include": "#index" },
+        { "include": "#boolean" },
+        { "include": "#opacity-suffix" },
+        { "include": "#pos-suffix" },
+        { "include": "#operator" },
+        { "include": "#list" }
+      ]
+    },
+    "value-word": {
+      "comment": "A bare word as a value: an enum (`center`, `gone`, `host`), a palette color (`white`), an anim or arrangement name.",
+      "match": "\\b[A-Za-z_]\\w*\\b",
+      "name": "support.constant.property-value.gogo"
+    },
+    "path-string": {
+      "comment": "A string with a scheme: `res://` is an embedded asset, anything else a host picture.",
+      "match": "\"([a-z][a-z0-9+.\\-]*://)(?:[^\"\\\\]|\\\\.)*\"",
+      "name": "string.quoted.double.path.gogo",
+      "captures": {
+        "1": { "name": "constant.other.scheme.gogo" }
+      }
+    },
+    "string": {
+      "comment": "`\"text\"/key` — the optional suffix is the translation key (`/_` = stays English).",
+      "match": "(\")((?:[^\"\\\\]|\\\\.)*)(\")(?:(/)([A-Za-z0-9_]+))?",
+      "name": "string.quoted.double.gogo",
+      "captures": {
+        "1": { "name": "punctuation.definition.string.begin.gogo" },
+        "2": { "patterns": [ { "include": "#escape" } ] },
+        "3": { "name": "punctuation.definition.string.end.gogo" },
+        "4": { "name": "punctuation.separator.translation-key.gogo" },
+        "5": { "name": "entity.name.tag.translation-key.gogo" }
+      }
+    },
+    "escape": {
+      "patterns": [
+        { "match": "\\\\[nt\"\\\\]", "name": "constant.character.escape.gogo" },
+        { "match": "\\\\.", "name": "invalid.illegal.escape.gogo" }
+      ]
+    },
+    "color": {
+      "comment": "One hex form: `#RRGGBB` or `#RRGGBBAA` (alpha last). `#F00` is refused by the compiler (G0005).",
+      "patterns": [
+        { "match": "#(?:[0-9A-Fa-f]{8}|[0-9A-Fa-f]{6})(?![0-9A-Fa-f])", "name": "constant.other.color.gogo" },
+        { "match": "#[0-9A-Fa-f]*", "name": "invalid.illegal.color.gogo" }
+      ]
+    },
+    "ref": {
+      "comment": "`$name` — a theme value or widget parameter; `$item.field` reads a repeat item.",
+      "match": "(\\$)([A-Za-z_]\\w*(?:\\.[A-Za-z_]\\w*)*)",
+      "name": "variable.other.theme.gogo",
+      "captures": {
+        "1": { "name": "punctuation.definition.variable.gogo" }
+      }
+    },
+    "size": {
+      "comment": "`220x110`, `220x`, `x110`.",
+      "match": "(?<![\\w.])(?:\\d+(?:\\.\\d+)?x(?:\\d+(?:\\.\\d+)?)?|x\\d+(?:\\.\\d+)?)(?![\\w.])",
+      "name": "constant.numeric.size.gogo"
+    },
+    "number": {
+      "comment": "A bare number is epx; `px` and `%` are the other units.",
+      "match": "(?<![\\w.])(-?\\d+(?:\\.\\d+)?)(epx|px|%)?(?!\\w)",
+      "captures": {
+        "1": { "name": "constant.numeric.gogo" },
+        "2": { "name": "keyword.other.unit.gogo" }
+      }
+    },
+    "opacity-suffix": {
+      "comment": "`/0.5` after a color, a palette name or a `$ref`.",
+      "match": "(/)(\\d+(?:\\.\\d+)?|\\.\\d+)",
+      "captures": {
+        "1": { "name": "punctuation.separator.opacity.gogo" },
+        "2": { "name": "constant.numeric.opacity.gogo" }
+      }
+    },
+    "pos-suffix": {
+      "comment": "`@0.24` after a gradient stop color.",
+      "match": "(@)(\\d+(?:\\.\\d+)?|\\.\\d+)",
+      "captures": {
+        "1": { "name": "punctuation.separator.stop.gogo" },
+        "2": { "name": "constant.numeric.stop.gogo" }
+      }
+    },
+    "list": {
+      "begin": "\\[",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.list.begin.gogo" }
+      },
+      "end": "\\]",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.list.end.gogo" }
+      },
+      "name": "meta.list.gogo",
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#value" },
+        { "include": "#comma" }
+      ]
+    },
+    "dotted-path": {
+      "comment": "`arrowIcon.translate.x` — an anim lane's target.",
+      "match": "\\b([A-Za-z_]\\w*)((?:\\.[A-Za-z_]\\w*)+)\\b",
+      "captures": {
+        "1": { "name": "variable.other.node.gogo" },
+        "2": { "name": "entity.other.attribute-name.gogo" }
+      }
+    },
+    "node-name": {
+      "comment": "A bare word in a node line is the node's name (an address), a `when` condition, a transition endpoint or an anim name.",
+      "match": "\\b[A-Za-z_]\\w*\\b",
+      "name": "variable.other.node.gogo"
+    },
+    "comma": {
+      "match": ",",
+      "name": "punctuation.separator.comma.gogo"
+    },
+    "punctuation": {
+      "patterns": [
+        { "match": "\\{", "name": "punctuation.section.block.begin.gogo" },
+        { "match": "\\}", "name": "punctuation.section.block.end.gogo" },
+        { "include": "#comma" },
+        { "match": ";", "name": "punctuation.terminator.gogo" },
+        { "match": "\\(", "name": "punctuation.section.parens.begin.gogo" },
+        { "match": "\\)", "name": "punctuation.section.parens.end.gogo" }
+      ]
+    }
+  }
+}
