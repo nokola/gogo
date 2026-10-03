@@ -57,6 +57,13 @@ pub struct CompileOptions<'a> {
     /// A string opts out with `/_`, a whole file with `allow untranslated`
     /// at its top.
     pub require_keys: bool,
+    /// The `keys` and `images` tables are a RUNNING binary's (a hot
+    /// reload, `reload::recompile`): a `/key` or a picture not already in
+    /// them is an error at its line (G8004, G2021), never a new id — the
+    /// binary has no string and no pixels for it, so the file needs a
+    /// rebuild. Off at build time, where the tables grow as pages name
+    /// things.
+    pub refuse_new_keys_and_pictures: bool,
 }
 
 /// The gogo events; anything else on `on:` is a raw signal — gone (§7).
@@ -873,6 +880,18 @@ impl<'a> Compiler<'a> {
     /// the table, so it holds across every file of the build).
     fn key(&mut self, name: &str, english: &str, line: u32) -> KeyId {
         let origin = self.options.source_name;
+        if self.options.refuse_new_keys_and_pictures {
+            // A hot reload: the binary's table is complete — a key it never
+            // baked has no string in any language (see `refuse_new_keys_and_pictures`).
+            let known = match self.options.keys {
+                Some(shared) => shared.borrow().get(name),
+                None => self.local_keys.get(name),
+            };
+            if known.is_none() {
+                self.error("G8004", line, format!("`/{name}` — a translation key not in this build; rebuild to add it"));
+                return NO_KEY;
+            }
+        }
         let result = match self.options.keys {
             Some(shared) => shared.borrow_mut().intern(name, english, origin),
             None => self.local_keys.intern(name, english, origin),
@@ -892,7 +911,19 @@ impl<'a> Compiler<'a> {
 
     /// The id of image path `name` — from the build's shared table when
     /// there is one, else this page's own (see `CompileOptions::images`).
-    fn image_key(&mut self, name: &str) -> ImageKey {
+    /// `line` is where the file names the picture: a hot reload refuses a
+    /// picture the binary never embedded there (G2021, see `refuse_new_keys_and_pictures`).
+    fn image_key(&mut self, name: &str, line: u32) -> ImageKey {
+        if self.options.refuse_new_keys_and_pictures {
+            let known = match self.options.images {
+                Some(shared) => shared.borrow().get(name),
+                None => self.local_images.get(name),
+            };
+            if known.is_none() {
+                self.error("G2021", line, format!("`{name}` — a picture not in this build; rebuild to add it"));
+                return NO_IMAGE;
+            }
+        }
         match self.options.images {
             Some(shared) => shared.borrow_mut().intern(name),
             None => self.local_images.intern(name),
@@ -1065,7 +1096,7 @@ impl<'a> Compiler<'a> {
                     self.error("G2011", line, format!("`source=\"{src}\"` — an atlas picture is a .png or .jpg"));
                     return;
                 }
-                let picture = self.image_key(&src);
+                let picture = self.image_key(&src, line);
                 self.with_images(|im| im.release_lines.push((picture, release)));
                 if let Some((cw, ch)) = cell {
                     form = AtlasForm::Grid;
@@ -1147,7 +1178,7 @@ impl<'a> Compiler<'a> {
                     self.error("G2017", line, format!("`{json}` names `{}` — an atlas picture is a .png or .jpg", import.image));
                     return;
                 }
-                let picture = self.image_key(&src);
+                let picture = self.image_key(&src, line);
                 self.with_images(|im| im.release_lines.push((picture, release)));
                 let Some((w, h)) = self.picture_size_of(&src, line, "`from=`") else { return };
                 if let Some((mw, mh)) = import.size {
@@ -3777,7 +3808,7 @@ impl<'a> Compiler<'a> {
                 // id and never a string.
                 let is_image = key == Some(PropKey::Source) || IMAGE_EXTS.iter().any(|e| lower.ends_with(e));
                 if is_image {
-                    return if text.is_empty() { Value::VImage(NO_IMAGE) } else { Value::VImage(self.image_key(text)) };
+                    return if text.is_empty() { Value::VImage(NO_IMAGE) } else { Value::VImage(self.image_key(text, line)) };
                 }
                 let text_id = self.intern(text);
                 // `/_`: text that stays English on purpose — no key.

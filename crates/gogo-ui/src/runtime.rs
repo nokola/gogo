@@ -529,6 +529,114 @@ impl Runtime {
         }
     }
 
+    /// A runtime for `new_page` — a fresh compile of this page's source
+    /// with the same node list (`reload::same_shape`) — carrying THIS
+    /// runtime's state, so a hot reload lands on the same screen in the
+    /// same state: the locale and safe insets, every scroll offset, every
+    /// node's state bits, the theme variant and screen words, the
+    /// arrangement, every raised control state, and every code write
+    /// (`writes`). Strings those carry index the OLD page's pool and are
+    /// re-interned into the new one; a write whose value indexes the old
+    /// page's value pool (`VList`, `VCall`) cannot move and is dropped.
+    ///
+    /// Every field is named below on purpose: a field added to `Runtime`
+    /// does not compile until it is listed as carried or as reset, so a
+    /// reload never silently forgets a new piece of state.
+    pub fn carried_to(&self, old_page: &Page, new_page: &mut Page) -> Runtime {
+        let Runtime {
+            // Carried: what the user and the code-behind put here.
+            arrangement,
+            variant,
+            screen,
+            states,
+            scroll,
+            locale,
+            safe,
+            writes,
+            customs,
+            // Reset — rebuilt from the new page by `new`.
+            arrangement_count: _,
+            radio_choice: _,
+            toggle: _,
+            auto_rest: _,
+            owned_text: _,
+            // Reset — derived again by the next resolve, layout and draw.
+            dirty: _,
+            last_seat: _,
+            resolved: _,
+            retained: _,
+            retained_layout: _,
+            retained_draw: _,
+            static_node: _,
+            static_look: _,
+            static_mask_on: _,
+            written: _,
+            resolve_changes: _,
+            pending_rewrites: _,
+            shown: _,
+            last_rects: _,
+            vis_seen: _,
+            prop_standing: _,
+            // Reset — motion and gestures in flight end with the old page.
+            changes: _,
+            pending_change_dt: _,
+            glide_late: _,
+            tweens: _,
+            instant_props: _,
+            players: _,
+            motion: _,
+            held: _,
+            prop_anim: _,
+            held_props: _,
+            live_follow: _,
+            state_anims: _,
+            finished: _,
+            pulses: _,
+            glide_start: _,
+            glide_node_rules: _,
+            rect_tweens: _,
+            instant_flips: _,
+            pending_settle: _,
+            scroll_clamp_pending: _,
+            focus_reset_pending: _,
+            auto_glides: _,
+            raised: _,
+            // Reset — not carried yet (the D113 limits): repeat rows code
+            // set (`set_items` — the page shows its template until the code
+            // sets them again), List selections, the focused Input's caret,
+            // selection and edit bar.
+            pools: _,
+            list_sel: _,
+            caret: _,
+            selection: _,
+            sel_handles: _,
+            edit_bar: _,
+        } = self;
+        let mut rt = Runtime::new(new_page);
+        rt.set_locale(locale.clone());
+        rt.safe = *safe;
+        rt.scroll = scroll.clone();
+        rt.states = states.clone();
+        rt.variant = reintern(old_page, new_page, *variant);
+        rt.screen = screen.iter().map(|s| reintern(old_page, new_page, *s)).collect();
+        rt.customs = customs.iter().map(|(node, state)| (*node, reintern(old_page, new_page, *state))).collect();
+        if arrangement.index() < new_page.arrangements.len() {
+            rt.go_instant_id(*arrangement);
+        }
+        for (node, prop) in writes {
+            let value = match prop.value {
+                Value::VText { text, key } => Value::VText { text: reintern(old_page, new_page, text), key },
+                Value::VIdent(s) => Value::VIdent(reintern(old_page, new_page, s)),
+                Value::VRef { name, opacity } => Value::VRef { name: reintern(old_page, new_page, name), opacity },
+                Value::VList(..) | Value::VCall { .. } => continue,
+                other => other,
+            };
+            rt.set_prop_instant(*node, prop.key, value);
+        }
+        rt.dirty = true;
+        rt
+    }
+
     /// Something is moving: keep redrawing.
     pub fn animating(&self) -> bool {
         !self.tweens.is_empty() || !self.players.is_empty() || !self.rect_tweens.is_empty() || !self.auto_glides.is_empty() || !self.pulses.is_empty()
@@ -4261,4 +4369,13 @@ mod tests {
         assert_eq!(rt.motion[bar].translate[0], 0.0);
         assert!(rt.players.is_empty());
     }
+}
+
+/// `s` (a string of `old_page`) as an id in `new_page`'s pool — a hot
+/// reload's carry (`Runtime::carried_to`). `NO_STR` stays `NO_STR`.
+fn reintern(old_page: &Page, new_page: &mut Page, s: StrId) -> StrId {
+    if s == NO_STR {
+        return NO_STR;
+    }
+    new_page.intern(old_page.str(s))
 }
