@@ -136,6 +136,9 @@ impl TextMeasure for FixedAdvance {
 }
 
 pub const DEFAULT_FONT_SIZE: f32 = 15.0;
+/// Air a wrapping label's bound gets past the width it is granted — float
+/// noise, not a visible size (see the Label measure).
+const WRAP_SLACK_EPX: f32 = 0.01;
 /// A Button with no `padding` declared gets this air around its content.
 pub const BUTTON_PADDING: [f32; 4] = [12.0, 6.0, 12.0, 6.0];
 pub const SLIDER_HEIGHT: f32 = 32.0;
@@ -651,6 +654,14 @@ impl<'a> Lay<'a> {
                     let cap = if p.max_width_fill { inner_w } else { p.max_width.map(|c| (c - inset[0] - inset[2]).max(0.0)) };
                     cap.map(|c| inner_w.map_or(c, |i| c.min(i)))
                 };
+                // A hair of slack on the bound: a box that took its width
+                // FROM this text (a natural Tiles cell, a hugging Flow
+                // item, a hug chain) hands back a bound equal to the text
+                // to the last float digit, and the sums arrive in another
+                // order — without the slack the compare flips and a name
+                // that fits exactly folds to two lines (D112, the
+                // "Red Eyes Fix" chip).
+                let bound = bound.map(|b| b + WRAP_SLACK_EPX);
                 let (w, h) = self.text.measure(text, self.font_size(id), bound, self.font_key(id));
                 // A `clip_text=true` label demands no width — it cuts
                 // itself to whatever it gets (the effect captions in
@@ -1317,6 +1328,14 @@ impl<'a> Lay<'a> {
         let spacing = 0.0f32;
         let cols = self.res.num(self.page, id, PropKey::Cols).unwrap_or(1.0).max(1.0) as usize;
         let unit = (inner_w / cols as f32).max(0.0);
+        // `cells=natural` (D112): a cell is as wide as its own content, so
+        // short names pack several to a row and a long one takes what it
+        // needs — the names-only catalog. `span=` says nothing then (there
+        // is no unit to count); `full_row` and exact widths keep their
+        // meaning. Capped at the lattice width: a name wider than the
+        // screen gets its own row and its content clips or wraps there,
+        // like any oversized cell.
+        let natural = self.res.ident(self.page, id, PropKey::Cells) == Some("natural");
         let mut out: Vec<(NodeId, Rect)> = Vec::new();
         let mut x = 0.0f32;
         let mut in_row = 0usize;
@@ -1337,6 +1356,8 @@ impl<'a> Lay<'a> {
                 inner_w
             } else if let Len::Exact(fw) = self.res.placement[c].width {
                 fw
+            } else if natural {
+                self.size_at(c, None).0.min(inner_w)
             } else {
                 unit * span as f32 + spacing * (span as f32 - 1.0)
             };

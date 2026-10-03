@@ -3695,8 +3695,11 @@ impl<'a> Compiler<'a> {
                 Some(opacity.map_or(c, |o| c.with_opacity(o)))
             }
             AstValue::Ref { name, .. } => {
-                let param = self.scopes.iter().rev().find_map(|s| s.get(name).cloned());
-                param.and_then(|p| self.color_value(&p, line))
+                let Some((depth, p)) = self.param_in_scope(name) else { return None };
+                let above: Vec<HashMap<String, AstValue>> = self.scopes.drain(depth..).collect();
+                let c = self.color_value(&p, line);
+                self.scopes.extend(above);
+                c
             }
             _ => None,
         }
@@ -3727,6 +3730,14 @@ impl<'a> Compiler<'a> {
                 v
             }
         }
+    }
+
+    /// The innermost widget scope that binds `$name`: its depth in
+    /// `scopes` and the value as the instance line (or the param default)
+    /// wrote it. `None` = no param of that name is in scope (a theme ref).
+    fn param_in_scope(&self, name: &str) -> Option<(usize, AstValue)> {
+        let depth = self.scopes.iter().rposition(|s| s.contains_key(name))?;
+        Some((depth, self.scopes[depth][name].clone()))
     }
 
     fn value(&mut self, v: &AstValue, line: u32, key: Option<PropKey>) -> Value {
@@ -3790,9 +3801,17 @@ impl<'a> Compiler<'a> {
                     }
                 }
                 // A widget param in scope substitutes; else a theme ref.
-                let param = self.scopes.iter().rev().find_map(|s| s.get(name).cloned());
-                if let Some(p) = param {
+                if let Some((depth, p)) = self.param_in_scope(name) {
+                    // Evaluated with the scopes from the param's own
+                    // widget inward set aside: the value was written on
+                    // the instance line, in the ENCLOSING scope, so a
+                    // same-named pass-through (`NameChip text=$text`
+                    // inside a widget with its own `$text`) reads the
+                    // outer param — looked up here it would find itself
+                    // and recurse until the stack ran out (D112).
+                    let above: Vec<HashMap<String, AstValue>> = self.scopes.drain(depth..).collect();
                     let inner = self.value(&p, line, key);
+                    self.scopes.extend(above);
                     let v = match (inner, opacity) {
                         (Value::VColor(c), Some(o)) => Value::VColor(c.with_opacity(*o)),
                         (Value::VRef { name, .. }, Some(o)) => Value::VRef { name, opacity: Some(*o) },
@@ -4046,6 +4065,7 @@ impl<'a> Compiler<'a> {
             PropKey::TextFlip => Some(&["none", "horizontal", "vertical", "both"]),
             PropKey::Allow => Some(&["horizontal", "vertical", "both"]),
             PropKey::Bars => Some(&["auto", "never", "always", "reserve"]),
+            PropKey::Cells => Some(&["lattice", "natural"]),
             PropKey::Orientation => Some(&["horizontal", "vertical"]),
             PropKey::Select => Some(&["one", "many", "off"]),
             PropKey::TouchTarget | PropKey::KeyboardTarget => Some(&["off"]),

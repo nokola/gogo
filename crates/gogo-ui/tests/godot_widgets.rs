@@ -107,6 +107,53 @@ fn fader_static() -> String {
 // ------------------------------------------------------------ _widget_tests
 
 /// `_widget_tests` 3063-3079 (widget.ok, root-is-instance-name,
+/// D112: a widget inside a widget may hand its own param on under the SAME
+/// name (`NameChip chip text=$text` inside a widget with `$text`) — the
+/// inner param reads the outer one. Before the fix the lookup found the
+/// instance value `$text` in the inner scope, resolved it there again and
+/// overflowed the stack with no diagnostic.
+#[test]
+fn a_param_passed_on_under_its_own_name_reads_the_outer_value() {
+    let c = ok("widget Chip $text=\"\" {
+ Panel {
+  Label chipLabel text=$text
+ }
+}
+widget Tile $text=\"\" {
+ Column {
+  Label caption text=$text
+  Chip chip text=$text
+ }
+}
+View v {
+ Tile a text=\"Colorize\"
+}
+");
+    let p = &c.page;
+    let tile = find(p, "a");
+    let caption = kids(p, tile)[0];
+    let chip_label = kids(p, kids(p, tile)[1])[0];
+    assert_eq!(text_of(p, caption), "Colorize");
+    assert_eq!(text_of(p, chip_label), "Colorize", "the inner $text is the outer $text");
+    // A param that names a THEME value still reaches the theme.
+    let c = ok("$accent = #E51400FF
+widget Dot $tint=#FF0000FF {
+ Rectangle r 4x4, color=$tint
+}
+widget Pair $tint=#00FF00FF {
+ Row {
+  Dot d tint=$tint
+ }
+}
+View v {
+ Pair pr tint=$accent
+}
+");
+    let p = &c.page;
+    let r = kids(p, find(p, "pr"))[0];
+    assert!(matches!(p.prop(r, PropKey::Color), Some(Value::VRef { .. })), "{:?}", p.node_props(r));
+}
+
 /// passthrough, param, param-override) + `slot.ok`, `slot.child-placed`
 /// (3084-3097): a widget instance takes the instance's name on the body
 /// root, passes placement through, substitutes `$params` with the

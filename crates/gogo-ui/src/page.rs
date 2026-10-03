@@ -762,6 +762,12 @@ pub enum PropKey {
     Min,
     Max,
     Cols,
+    /// `cells=` on a Tiles: `lattice` (the default — a cell is `span`
+    /// units of the width) or `natural` (a cell is as wide as its own
+    /// content; names-only catalogs, tag rows). `full_row` rows and exact
+    /// widths pack the same either way. Live: code flips it and the mosaic
+    /// re-packs (D112).
+    Cells,
     /// `areas=` on a Grid: the named-region form, expanded at compile into
     /// the same `row { }` structure the row form builds.
     Areas,
@@ -927,6 +933,7 @@ pub const WORDS: &[(&str, PropKey)] = &[
     ("min", PropKey::Min),
     ("max", PropKey::Max),
     ("cols", PropKey::Cols),
+    ("cells", PropKey::Cells),
     ("areas", PropKey::Areas),
     ("row_height", PropKey::RowHeight),
     ("col_span", PropKey::ColSpan),
@@ -1173,7 +1180,7 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
         Kind::Flow => &[BOX, PLATE, PADDING, &[PropKey::Spacing, PropKey::Orientation]],
         Kind::Scroll => &[BOX, PLATE, PADDING, &[PropKey::Allow, PropKey::Bars]],
         Kind::Grid => &[BOX, PLATE, PADDING, &[PropKey::Cols, PropKey::Areas, PropKey::RowHeight, PropKey::Spacing]],
-        Kind::Tiles => &[BOX, PLATE, PADDING, &[PropKey::Cols, PropKey::Spacing]],
+        Kind::Tiles => &[BOX, PLATE, PADDING, &[PropKey::Cols, PropKey::Cells, PropKey::Spacing]],
         // `text_fit`/`text_flip`: a Label alone stretches a glyph over
         // its box (a Button's text stays text).
         Kind::Label => &[BOX, PLATE, PADDING, TEXT, &[PropKey::TextFit, PropKey::TextFlip]],

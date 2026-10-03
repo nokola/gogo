@@ -535,6 +535,50 @@ fn fixed_size_cells_pack_at_their_own_pitch() {
     assert!((a.w, a.h) == (300.0, 20.0), "{a:?}");
 }
 
+/// D112 (`cells=natural`, the names-only effects catalog): a cell is as
+/// wide as its own minimum and the row wraps where the next one would not
+/// fit — 80 + 120 fill a 200-wide row, the 50 wraps; a `full_row` header
+/// still takes the row; `span=` says nothing; a cell wider than the lattice
+/// is capped at the lattice width. The word is live: writing `lattice` back
+/// from code returns every cell to its unit.
+#[test]
+fn natural_cells_pack_at_their_own_width_and_wrap() {
+    let c = ok("View v {
+ Tiles t cols=2, cells=natural, width=200, height=hug, halign=left, valign=top {
+  Rectangle hdr full_row=true, min_size=10x16
+  Rectangle a min_size=80x20
+  Rectangle b span=2, min_size=120x30
+  Rectangle c min_size=50x20
+  Rectangle wide min_size=260x10
+ }
+}
+");
+    let mut page = c.page;
+    let mut rt = Runtime::new(&page);
+    let r = relay(&page, &rt, 400.0, 400.0);
+    assert_eq!(rect(&page, &r, "hdr"), Rect::new(0.0, 0.0, 200.0, 16.0), "{r:?}");
+    assert_eq!(rect(&page, &r, "a"), Rect::new(0.0, 16.0, 80.0, 20.0), "own width: {r:?}");
+    assert_eq!(rect(&page, &r, "b"), Rect::new(80.0, 16.0, 120.0, 30.0), "span ignored, packs beside a: {r:?}");
+    assert_eq!(rect(&page, &r, "c"), Rect::new(0.0, 46.0, 50.0, 20.0), "wraps under the tallest: {r:?}");
+    assert_eq!(rect(&page, &r, "wide"), Rect::new(0.0, 66.0, 200.0, 10.0), "capped at the lattice: {r:?}");
+    assert_eq!(rect(&page, &r, "t").h, 76.0, "{r:?}");
+    let t = page.find("t").unwrap();
+    let lattice = page.intern("lattice");
+    rt.set_prop(t, PropKey::Cells, Value::VIdent(lattice));
+    let r = relay(&page, &rt, 400.0, 400.0);
+    assert_eq!(rect(&page, &r, "a"), Rect::new(0.0, 16.0, 100.0, 20.0), "back on the lattice: {r:?}");
+    assert_eq!(rect(&page, &r, "b"), Rect::new(0.0, 36.0, 200.0, 30.0), "span=2 counts again: {r:?}");
+}
+
+/// `cells=` is a closed pair of words — a typo is a build error, not a
+/// silent lattice.
+#[test]
+fn cells_takes_lattice_or_natural_only() {
+    let src = in_view("Tiles t cols=2, cells=loose { Rectangle a min_size=1x1 }");
+    assert!(fails(&src), "{:?}", codes(&src));
+    ok(&in_view("Tiles t cols=2, cells=lattice { Rectangle a min_size=1x1 }"));
+}
+
 /// `_tiles_tests` 11700-11712: `aspect=natural` makes a bitmap-exact
 /// tile — a 100×50 image spanning a 200-wide lattice is 200×100, and the
 /// Tiles' own height is that 100.
