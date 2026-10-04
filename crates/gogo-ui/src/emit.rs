@@ -275,14 +275,36 @@ fn entry_value(e: &NameEntry, indent: usize) -> String {
     }
 }
 
-/// The widget structs a page's instances need: widget → (field, type) rows,
-/// every instance of one widget agreeing on the rows (they stamp one body).
-fn collect_widget_shapes(entries: &[(String, NameEntry)], shapes: &mut Vec<(String, Vec<(String, String)>)>, where_: &str) -> Result<(), String> {
+/// One field of a `<Widget>Names` struct.
+#[derive(Clone, Debug, PartialEq)]
+struct WidgetRow {
+    /// The Rust field (`root_check`).
+    field: String,
+    /// `NodeId`, or `super::<Widget>Names` for a nested instance.
+    ty: String,
+    /// The body node's own name in the page (`rootCheck`), the last
+    /// segment of its full name — what `bind` looks the node up by.
+    local: String,
+}
+
+/// The last segment of a node's full name (`control/rootCheck` → `rootCheck`).
+fn local_name(page: &Page, id: NodeId) -> String {
+    let full = page.str(page.nodes[id.index()].name);
+    full.rsplit('/').next().unwrap_or(full).to_string()
+}
+
+/// The widget structs a page's instances need: widget → field rows, every
+/// instance of one widget agreeing on the rows (they stamp one body).
+fn collect_widget_shapes(page: &Page, entries: &[(String, NameEntry)], shapes: &mut Vec<(String, Vec<WidgetRow>)>, where_: &str) -> Result<(), String> {
     for (_, e) in entries {
         if let NameEntry::Instance { widget, body, .. } = e {
-            let mut rows: Vec<(String, String)> = vec![("root".to_string(), "NodeId".to_string())];
+            let mut rows: Vec<WidgetRow> = vec![WidgetRow { field: "root".to_string(), ty: "NodeId".to_string(), local: String::new() }];
             for (f, be) in body {
-                rows.push((f.clone(), entry_type(be)));
+                let id = match be {
+                    NameEntry::Node(id) => *id,
+                    NameEntry::Instance { root, .. } => *root,
+                };
+                rows.push(WidgetRow { field: f.clone(), ty: entry_type(be), local: local_name(page, id) });
             }
             match shapes.iter().find(|(w, _)| w == widget) {
                 Some((_, have)) if *have != rows => {
@@ -291,7 +313,7 @@ fn collect_widget_shapes(entries: &[(String, NameEntry)], shapes: &mut Vec<(Stri
                 Some(_) => {}
                 None => shapes.push((widget.clone(), rows)),
             }
-            collect_widget_shapes(body, shapes, where_)?;
+            collect_widget_shapes(page, body, shapes, where_)?;
         }
     }
     Ok(())
@@ -300,34 +322,65 @@ fn collect_widget_shapes(entries: &[(String, NameEntry)], shapes: &mut Vec<(Stri
 /// The build-wide `<Widget>Names` structs: one per widget any page in
 /// `pages` instances, at the generated module's top level (`(module, page)`
 /// pairs). One struct per widget means a widget's code-behind takes
-/// `&SliderPhoneNames` whichever page the instance sits on.
+/// `&SliderPhoneNames` whichever page the instance sits on. Each struct
+/// also gets `bind` (the same names over a page compiled at run time —
+/// a test's host page) and `rebase` (a repeat slot's copy).
 pub fn emit_widget_names(pages: &[(&str, &Page)]) -> Result<String, String> {
-    let mut shapes: Vec<(String, Vec<(String, String)>)> = Vec::new();
+    let mut shapes: Vec<(String, Vec<WidgetRow>)> = Vec::new();
     for (module, page) in pages {
         let entries = name_entries(page, "").map_err(|e| format!("{module}: {e}"))?;
-        collect_widget_shapes(&entries, &mut shapes, module)?;
+        collect_widget_shapes(page, &entries, &mut shapes, module)?;
         // A widget placed only inside a repeat's template still needs its
         // struct: the slots are typed through it (`<Repeat>Slot::at`).
         for (_, template) in repeat_templates(page) {
             let entries = name_entries(page, &template).map_err(|e| format!("{module}: {e}"))?;
-            collect_widget_shapes(&entries, &mut shapes, module)?;
+            collect_widget_shapes(page, &entries, &mut shapes, module)?;
         }
     }
     let mut out = String::new();
     for (widget, rows) in &shapes {
         out.push_str(&format!("/// The body of one `{widget}` instance, by node id (`root` = the instance itself).\n"));
         out.push_str(&format!("#[allow(dead_code)]\n#[derive(Clone, Copy, Debug)]\npub struct {} {{\n", widget_struct(widget)));
-        for (f, t) in rows {
-            let t = t.strip_prefix("super::").unwrap_or(t);
-            out.push_str(&format!("    pub {f}: {t},\n"));
+        for r in rows {
+            out.push_str(&format!("    pub {}: {},\n", r.field, plain_type(&r.ty)));
         }
         out.push_str("}\n\n");
-        out.push_str(&rebase_impl(&widget_struct(widget), rows, ""));
+        out.push_str(&names_impl(&widget_struct(widget), rows, ""));
     }
     if !shapes.is_empty() {
         out = format!("use gogo::NodeId;\n\n{out}");
     }
     Ok(out)
+}
+
+/// A row's type as written beside the struct it names (same module).
+fn plain_type(ty: &str) -> &str {
+    ty.strip_prefix("super::").unwrap_or(ty)
+}
+
+/// `impl <Struct>` with `bind` and `rebase`. `bind(page, instance)` builds
+/// the struct over a page compiled at run time (a test's host page: `uses`
+/// the widget, places one instance, no build step) — the instance by its
+/// name, every body node by its name under it, a nested instance by its
+/// own `bind`; `None` when a node is missing (no such instance, or a body
+/// that differs from this build's). `rebase(from, to)` moves every field
+/// to a cloned subtree (a repeat slot) — a node field by `NodeId::rebase`,
+/// an instance field by its own `rebase`. `indent` is the module nesting.
+fn names_impl(struct_name: &str, rows: &[WidgetRow], indent: &str) -> String {
+    let mut s = format!("{indent}impl {struct_name} {{\n{indent}    /// The same names over the instance `instance` of a page compiled at run time (a test's host page); `None` when a body node is missing.\n{indent}    pub fn bind(page: &gogo::Page, instance: &str) -> Option<{struct_name}> {{\n{indent}        Some({struct_name} {{\n");
+    for r in rows {
+        if r.field == "root" {
+            s.push_str(&format!("{indent}            root: page.find(instance)?,\n"));
+        } else if r.ty == "NodeId" {
+            s.push_str(&format!("{indent}            {}: page.find(&format!(\"{{instance}}/{}\"))?,\n", r.field, r.local));
+        } else {
+            s.push_str(&format!("{indent}            {}: {}::bind(page, &format!(\"{{instance}}/{}\"))?,\n", r.field, plain_type(&r.ty), r.local));
+        }
+    }
+    s.push_str(&format!("{indent}        }})\n{indent}    }}\n{indent}}}\n\n"));
+    let fields: Vec<(String, String)> = rows.iter().map(|r| (r.field.clone(), r.ty.clone())).collect();
+    s.push_str(&rebase_impl(struct_name, &fields, indent));
+    s
 }
 
 /// `impl <Struct> { pub fn rebase(self, from, to) -> Self }` moving every
