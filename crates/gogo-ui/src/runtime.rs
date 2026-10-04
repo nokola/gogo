@@ -1966,6 +1966,46 @@ impl Runtime {
         self.dirty = true;
     }
 
+    /// Scrolls `scroll` the least that puts `item` fully inside its
+    /// viewport, on each axis on its own: nothing when it already is; an
+    /// item past the far edge lands on that edge, one before the near edge
+    /// on that edge, each with `margin` epx of air past it so a neighbor
+    /// peeks in (0 = flush). `rects` are the frame's drawn rects, which
+    /// carry the current offset, so the write is the current offset plus
+    /// the overshoot. Clamped at 0 here; the far end clamps on the next
+    /// idle tick like every `set_scroll`. Returns whether it wrote.
+    ///
+    /// The one door for "show me this row" from code (a list opening on
+    /// its selection, a strip following a pick) — each page spelled its own
+    /// before, with its own edge rule (D116).
+    pub fn scroll_into_view(&mut self, scroll: NodeId, item: NodeId, rects: &[Rect], margin: f32) -> bool {
+        let (Some(v), Some(r)) = (rects.get(scroll.index()).copied(), rects.get(item.index()).copied()) else { return false };
+        if v.w <= 0.0 || v.h <= 0.0 || r.w <= 0.0 || r.h <= 0.0 {
+            return false; // no box yet (hidden, not laid out)
+        }
+        let overshoot = |near: f32, far: f32, item_near: f32, item_far: f32| -> f32 {
+            if item_near < near {
+                item_near - near - margin
+            } else if item_far > far {
+                item_far - far + margin
+            } else {
+                0.0
+            }
+        };
+        let dx: f32 = overshoot(v.x, v.x + v.w, r.x, r.x + r.w);
+        let dy: f32 = overshoot(v.y, v.y + v.h, r.y, r.y + r.h);
+        if dx == 0.0 && dy == 0.0 {
+            return false;
+        }
+        let [x, y]: [f32; 2] = self.scroll_of(scroll);
+        let target: [f32; 2] = [(x + dx).max(0.0), (y + dy).max(0.0)];
+        if target == [x, y] {
+            return false;
+        }
+        self.set_scroll(scroll, target);
+        true
+    }
+
     /// A Scroll's offset in epx: how far its content moved up and left.
     pub fn scroll_of(&self, node: NodeId) -> [f32; 2] {
         self.scroll.get(node.index()).copied().unwrap_or([0.0; 2])
