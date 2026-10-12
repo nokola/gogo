@@ -1124,7 +1124,7 @@ impl Input {
 
     /// A gesture ends without a release: the press and any half-done value
     /// go back to where the finger found them.
-    fn cancel_press(&mut self, page: &Page, rt: &mut Runtime, events: &mut Vec<Event>, p: &Press) {
+    fn restore_press(&mut self, page: &Page, rt: &mut Runtime, events: &mut Vec<Event>, p: &Press) {
         rt.set_state(p.node, HELD, false);
         // GP52/GP53: a reclaimed behavior drag restores the grabbed value
         // (the labels follow at the next tick; never leave a half-drag
@@ -1149,6 +1149,27 @@ impl Input {
             }
             _ => {}
         }
+    }
+
+    /// Ends the gesture in flight as if the finger were cancelled: `held`
+    /// goes off, a half-dragged Slider/Toggle/behavior value goes back to
+    /// where the finger found it, and the owed closing edges (`release`,
+    /// `drag_ended`) come back as events for the host to deliver. Focus,
+    /// the glide and the caret stay — only the press goes. A host calls
+    /// it when it HIDES a page whose rects it then forgets (a child pane):
+    /// the finger's Up can no longer be delivered there, and a page the
+    /// host hides on `frame(None)` keeps its glide for the re-show (the
+    /// paint app's brush-options pane, user 2026-10-11). A page that
+    /// merely leaves the screen needs neither this nor `reset` — see
+    /// `reset` for that door.
+    pub fn cancel_press(&mut self, page: &Page, rt: &mut Runtime) -> Vec<Event> {
+        let mut events = Vec::new();
+        self.drag_handle = None;
+        if let Some(mut p) = self.press.take() {
+            self.release(page, rt, &mut events, &mut p);
+            self.restore_press(page, rt, &mut events, &p);
+        }
+        events
     }
 
     /// Forgets the gesture in flight and any glide. A door, not a duty:
@@ -1875,6 +1896,17 @@ impl Input {
     /// Feeds one touch sample; returns the events it completed.
     pub fn touch(&mut self, page: &Page, rt: &mut Runtime, f: Frame<'_>, measure: &dyn TextMeasure, t: Touch) -> Vec<Event> {
         let (res, rects): (&Resolved, &[Rect]) = (f.look(), f.rects());
+        // The frame must be THIS page's layout: every arm below indexes
+        // `rects` by node. A host that forgot the rects (a hidden child
+        // page, `KeptFrame::clear`) and still routes a finger here — the
+        // finger it took the Down of, or a new finger reusing that id —
+        // gets the press ended and nothing hit, not an index panic (the
+        // Moto g60 abort of v59: Move on a hidden clone intro). Loud in
+        // a dev build: the host's routing is the bug.
+        if rects.len() != page.nodes.len() {
+            debug_assert!(false, "Input::touch on a frame of {} rects for a page of {} nodes — the host routed a finger to a page it forgot the layout of", rects.len(), page.nodes.len());
+            return if self.press.is_some_and(|p| p.id == t.id) { self.cancel_press(page, rt) } else { Vec::new() };
+        }
         let mut events = Vec::new();
         match t.phase {
             Phase::Down => {
@@ -2094,7 +2126,7 @@ impl Input {
                         self.push_event(rt, &mut events, p.node, EventKind::Pointer { phase: Phase::Cancel, x: t.x - r.x, y: t.y - r.y }, Some(action));
                     }
                     self.release(page, rt, &mut events, &mut p);
-                    self.cancel_press(page, rt, &mut events, &p);
+                    self.restore_press(page, rt, &mut events, &p);
                     self.press = None;
                     return events;
                 }
@@ -2128,7 +2160,7 @@ impl Input {
                                 p.scroll = Some(scroll);
                                 p.panning = true;
                                 self.release(page, rt, &mut events, &mut p);
-                                self.cancel_press(page, rt, &mut events, &p);
+                                self.restore_press(page, rt, &mut events, &p);
                                 // B36 (user-seen: repeating press-hold-swipe-lift
                                 // on the preset strip, every swipe after the
                                 // first opened with the strip snapping part-way
@@ -2287,7 +2319,7 @@ impl Input {
                     return events;
                 }
                 if t.phase == Phase::Cancel {
-                    self.cancel_press(page, rt, &mut events, &p);
+                    self.restore_press(page, rt, &mut events, &p);
                     return events;
                 }
                 if p.caught_fling {
@@ -3118,5 +3150,62 @@ mod tests {
         fx.touch(Phase::Down, 10.0, 10.0, 1.0);
         fx.touch(Phase::Up, 10.0, 10.0, 1.1);
         assert_eq!(fx.rt.arrangement, BASE);
+    }
+
+    /// `cancel_press` is the hide door: the press ends (held off, the
+    /// dragged value back, the owed `release` returned), while the glide
+    /// and the focus stay for the re-show. The finger's later samples
+    /// are nobody's.
+    #[test]
+    fn cancel_press_ends_the_press_and_keeps_the_glide() {
+        let mut fx = Fx::new("View v { Slider s width=200, height=32, halign=left, valign=top, min=0, max=100, value=50, on:press=hold, on:release=let_go }");
+        let s = fx.page.find("s").unwrap();
+        fx.touch(Phase::Down, 100.0, 16.0, 0.0);
+        fx.touch(Phase::Move, 160.0, 16.0, 0.1);
+        let res = resolve(&fx.page, &fx.rt);
+        assert!(value_of(&fx.rt, &res, &fx.page, s) > 50.0, "the drag moved the value");
+        assert!(fx.rt.has(s, HELD));
+        fx.input.fling = Some(Fling { scroll: s, v: [0.0, -300.0], accum: [0.0, 0.0] });
+        fx.input.focus = Some(s);
+        let ev = fx.input.cancel_press(&fx.page, &mut fx.rt);
+        assert_eq!(ev.iter().filter(|e| e.kind == EventKind::Release).count(), 1, "the owed release comes back: {ev:?}");
+        let res = resolve(&fx.page, &fx.rt);
+        assert_eq!(value_of(&fx.rt, &res, &fx.page, s), 50.0, "the value is back where the finger found it");
+        assert!(!fx.rt.has(s, HELD) && fx.input.press.is_none());
+        assert!(fx.input.fling.is_some() && fx.input.focus == Some(s), "the glide and the focus stay");
+        assert!(fx.touch(Phase::Move, 170.0, 16.0, 0.2).is_empty() && fx.touch(Phase::Up, 170.0, 16.0, 0.3).is_empty(), "the finger's later samples are nobody's");
+        assert_eq!(fx.input.cancel_press(&fx.page, &mut fx.rt), Vec::new(), "nothing to cancel twice");
+    }
+
+    /// A frame that is not this page's layout (a host that forgot the
+    /// rects — `KeptFrame::clear` — and still routes a finger) is a host
+    /// bug: loud in a dev build.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "forgot the layout")]
+    fn touch_on_a_forgotten_frame_is_loud_in_dev() {
+        let mut fx = Fx::new("View v { Button b width=100, height=40, halign=left, valign=top }");
+        fx.touch(Phase::Down, 10.0, 10.0, 0.0);
+        let mut kept = fx.lay();
+        kept.clear();
+        fx.input.touch(&fx.page, &mut fx.rt, kept.frame(), &FixedAdvance, Touch { phase: Phase::Move, x: 20.0, y: 20.0, t: 0.1, id: 1 });
+    }
+
+    /// ...and in a store build the same sample ends the press and hits
+    /// nothing — never an index panic (the v59 Moto g60 abort).
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn touch_on_a_forgotten_frame_ends_the_press_in_release() {
+        let mut fx = Fx::new("View v { Button b width=100, height=40, halign=left, valign=top, on:release=let_go }");
+        let b = fx.page.find("b").unwrap();
+        fx.touch(Phase::Down, 10.0, 10.0, 0.0);
+        assert!(fx.rt.has(b, HELD));
+        let mut kept = fx.lay();
+        kept.clear();
+        let ev = fx.input.touch(&fx.page, &mut fx.rt, kept.frame(), &FixedAdvance, Touch { phase: Phase::Move, x: 20.0, y: 20.0, t: 0.1, id: 1 });
+        assert_eq!(ev.iter().filter(|e| e.kind == EventKind::Release).count(), 1, "{ev:?}");
+        assert!(!fx.rt.has(b, HELD) && fx.input.press.is_none());
+        let ev = fx.input.touch(&fx.page, &mut fx.rt, kept.frame(), &FixedAdvance, Touch { phase: Phase::Down, x: 20.0, y: 20.0, t: 0.2, id: 1 });
+        assert!(ev.is_empty() && fx.input.press.is_none(), "a new finger on the forgotten frame hits nothing");
     }
 }
