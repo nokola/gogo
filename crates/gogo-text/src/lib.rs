@@ -1,10 +1,21 @@
 //! `text` — shaping and glyph rasterization for gogo, pure Rust
 //! (`cosmic-text` + `swash`): no GPU, no OS. Needed as its own crate so
 //! `gogo` stays text-engine-free (it measures through `TextMeasure`) and
-//! the backend only uploads what this crate rasterizes. Limit: one 8-bit
-//! coverage atlas, shelf-packed; when it fills it doubles and every glyph
-//! is rasterized again on demand. All sizes here are DEVICE pixels — the
+//! the backend only uploads what this crate rasterizes. Two atlases,
+//! shelf-packed, each doubling when it fills (every glyph of the grown one
+//! is rasterized again on demand): an 8-bit coverage atlas for letters,
+//! tinted by the text color, and an RGBA color atlas for emoji, drawn as
+//! they are (DECISIONS.md D119). All sizes here are DEVICE pixels — the
 //! caller converts epx.
+//!
+//! Emoji come from a COLOR FACE — one with color palettes or color bitmap
+//! strikes, the phone's own emoji font after `add_fallback_font_file` or
+//! the OS scan. Who paints one: the host first (`set_host_color_glyphs`,
+//! Android's own text stack over the bridge, so the box shows exactly the
+//! keyboard's emoji on every Android version and every phone maker), else
+//! swash (COLRv0 layers and CBDT/sbix bitmaps — Windows' Segoe UI Emoji on
+//! the PC; the COLRv1 file Android 13+ ships draws nothing through it,
+//! hence the host door).
 //!
 //! Faces arrive two ways: the page fonts at construction, and later by
 //! key — a file's bytes (`add_face`, the picker's built-in fonts, parsed
@@ -79,7 +90,7 @@ impl FaceMetrics {
     }
 }
 
-/// Where a glyph sits in the atlas plus its placement relative to the pen.
+/// Where a glyph sits in its atlas plus its placement relative to the pen.
 #[derive(Clone, Copy, Debug)]
 struct Slot {
     u0: f32,
@@ -90,6 +101,8 @@ struct Slot {
     top: i32,
     width: u32,
     height: u32,
+    /// In the color atlas (an emoji), not the coverage atlas.
+    color: bool,
 }
 
 /// One glyph to draw: a rect in device pixels and its atlas uv.
@@ -100,6 +113,69 @@ pub struct GlyphQuad {
     pub w: f32,
     pub h: f32,
     pub uv: [f32; 4],
+    /// The uv is into the COLOR atlas (`color_atlas`): draw the texels as
+    /// they are, the text color's alpha only. False = the coverage atlas,
+    /// tinted by the text color.
+    pub color: bool,
+}
+
+/// One emoji the host painted (`HostColorGlyphs`): straight (not
+/// premultiplied) RGBA rows, and where the ink sits against the pen —
+/// `left` px right of it, `top` px above the baseline (FreeType's
+/// bitmap_left / bitmap_top).
+///
+/// Needed so a raster from outside the engine (Android's text stack)
+/// lands in the color atlas like swash's own: same rows, same placement.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostColorGlyph {
+    pub width: u32,
+    pub height: u32,
+    pub left: i32,
+    pub top: i32,
+    pub rgba: Vec<u8>,
+}
+
+/// The host's emoji painter: the text of one shaped cluster ("😀",
+/// "👨‍👩‍👧", a flag pair) and the font size in device px; `None` = the
+/// host draws nothing for it (the engine then tries swash).
+pub type HostColorGlyphs = Box<dyn FnMut(&str, f32) -> Option<HostColorGlyph>>;
+
+/// The color atlas's first side; it doubles when it fills (`grow_color`).
+const COLOR_ATLAS_START: u32 = 512;
+
+/// A shelf packer over one square atlas: slots go left to right along a
+/// row, a new row starts when one does not fit.
+///
+/// Needed because both atlases (coverage and color) pack the same way and
+/// grow the same way — one packer, two sizes.
+#[derive(Clone, Copy, Debug)]
+struct Shelf {
+    size: u32,
+    x: u32,
+    y: u32,
+    h: u32,
+}
+
+impl Shelf {
+    fn new(size: u32) -> Shelf {
+        Shelf { size, x: 0, y: 0, h: 0 }
+    }
+
+    /// The top-left of a `w` × `h` slot, or `None` when the atlas is full.
+    fn pack(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
+        if self.x + w > self.size {
+            self.y += self.h;
+            self.x = 0;
+            self.h = 0;
+        }
+        if self.y + h > self.size {
+            return None;
+        }
+        let pos = (self.x, self.y);
+        self.x += w;
+        self.h = self.h.max(h);
+        Some(pos)
+    }
 }
 
 /// A loaded font file: which family/weight `Attrs` asks for, and its
@@ -119,11 +195,25 @@ pub struct TextEngine {
     default_face: Option<Face>,
     atlas: Vec<u8>,
     atlas_size: u32,
-    shelf_x: u32,
-    shelf_y: u32,
-    shelf_h: u32,
-    /// (glyph, faux bold) → its atlas slot; a bold glyph is its own raster.
+    shelf: Shelf,
+    /// (glyph, faux bold) → its coverage-atlas slot; a bold glyph is its
+    /// own raster.
     slots: HashMap<(CacheKey, bool), Option<Slot>>,
+    /// The emoji atlas: straight RGBA, `color_shelf.size` square.
+    color_atlas: Vec<u8>,
+    color_shelf: Shelf,
+    /// A swash-painted color glyph → its color-atlas slot.
+    color_slots: HashMap<CacheKey, Option<Slot>>,
+    /// A host-painted cluster (its text, the size's bits) → its
+    /// color-atlas slot.
+    host_slots: HashMap<(String, u32), Option<Slot>>,
+    /// Whether a face is a color face (palettes or color strikes), by id —
+    /// read from the file once.
+    color_faces: HashMap<fontdb::ID, bool>,
+    /// The host's emoji painter, when it has one (Android).
+    host_color_glyphs: Option<HostColorGlyphs>,
+    /// The color atlas changed since the last `take_color_dirty`.
+    color_dirty: bool,
     /// The OS font scan ran (once per engine).
     system_loaded: bool,
     /// Family names the scan found, sorted, each once.
@@ -190,10 +280,17 @@ impl TextEngine {
             default_face,
             atlas: vec![0; (atlas_size * atlas_size) as usize],
             atlas_size,
-            shelf_x: 0,
-            shelf_y: 0,
-            shelf_h: 0,
+            shelf: Shelf::new(atlas_size),
             slots: HashMap::new(),
+            color_atlas: vec![0; (COLOR_ATLAS_START * COLOR_ATLAS_START * 4) as usize],
+            color_shelf: Shelf::new(COLOR_ATLAS_START),
+            color_slots: HashMap::new(),
+            host_slots: HashMap::new(),
+            color_faces: HashMap::new(),
+            host_color_glyphs: None,
+            // Not dirty: nothing points into it until the first emoji
+            // packs, so a boot without one uploads nothing.
+            color_dirty: false,
             system_loaded: false,
             system_families: Vec::new(),
             dirty: true,
@@ -338,6 +435,42 @@ impl TextEngine {
 
     pub fn atlas(&self) -> (&[u8], u32) {
         (&self.atlas, self.atlas_size)
+    }
+
+    /// The emoji atlas: straight RGBA rows, `side` square.
+    pub fn color_atlas(&self) -> (&[u8], u32) {
+        (&self.color_atlas, self.color_shelf.size)
+    }
+
+    pub fn take_color_dirty(&mut self) -> bool {
+        std::mem::replace(&mut self.color_dirty, false)
+    }
+
+    /// Installs (or removes) the host's emoji painter. A load-time call:
+    /// drops the shape cache and every host-painted slot, so a cluster
+    /// the old painter drew is painted again by the new one.
+    pub fn set_host_color_glyphs(&mut self, host: Option<HostColorGlyphs>) {
+        self.host_color_glyphs = host;
+        self.host_slots.clear();
+        self.shape_cache.clear();
+    }
+
+    /// Whether the face `id` carries color glyphs: color palettes (COLR,
+    /// any version) or color bitmap strikes (CBDT, sbix).
+    ///
+    /// Needed to tell an emoji from a letter: an emoji goes to the host
+    /// painter, a letter never does. Read once per face; a face that
+    /// cannot be opened is not one.
+    fn is_color_face(&mut self, id: fontdb::ID) -> bool {
+        if let Some(c) = self.color_faces.get(&id) {
+            return *c;
+        }
+        let is_color: bool = self.fs.get_font(id, Weight::NORMAL).is_some_and(|f| {
+            let s = f.as_swash();
+            s.color_palettes().len() > 0 || s.color_strikes().len() > 0
+        });
+        self.color_faces.insert(id, is_color);
+        is_color
     }
 
     /// The language text is shaped for (a BCP-47 tag: `de`, `bn-IN`). Line
@@ -486,21 +619,27 @@ impl TextEngine {
         }
     }
 
-    /// One shaping pass into `out`; its uvs are good only if the atlas did
-    /// not grow during it (`shape_uncached` checks and runs it again).
+    /// One shaping pass into `out`; its uvs are good only if neither atlas
+    /// grew during it (`shape_uncached` checks and runs it again).
     fn shape_pass(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>, box_w: f32, halign: u8, out: &mut Vec<GlyphQuad>) {
         let (x, y) = (0.0f32, 0.0f32);
         let (bold, _) = Self::style(font);
         let buffer = self.buffer(text, font_size, max_width, font);
-        let runs: Vec<(f32, f32, Vec<cosmic_text::PhysicalGlyph>)> = buffer.layout_runs().map(|run| (run.line_w, run.line_y, run.glyphs.iter().map(|g| g.physical((0.0, 0.0), 1.0)).collect())).collect();
+        // Per glyph: its raster key, its face, and the bytes of its line it
+        // covers (the cluster an emoji painter is asked for).
+        let lines: Vec<&str> = buffer.lines.iter().map(|l| l.text()).collect();
+        let runs: Vec<(f32, f32, Vec<(cosmic_text::PhysicalGlyph, fontdb::ID, &str)>)> = buffer
+            .layout_runs()
+            .map(|run| (run.line_w, run.line_y, run.glyphs.iter().map(|g| (g.physical((0.0, 0.0), 1.0), g.font_id, &lines[run.line_i][g.start..g.end])).collect()))
+            .collect();
         for (line_w, line_y, glyphs) in runs {
             let shift = match halign {
                 1 => ((box_w - line_w) / 2.0).max(0.0),
                 2 => (box_w - line_w).max(0.0),
                 _ => 0.0,
             };
-            for g in glyphs {
-                let Some(slot) = self.slot(g.cache_key, bold) else { continue };
+            for (g, font_id, cluster) in glyphs {
+                let Some(slot) = self.slot(g.cache_key, bold, font_id, cluster) else { continue };
                 if slot.width == 0 || slot.height == 0 {
                     continue;
                 }
@@ -513,37 +652,80 @@ impl TextEngine {
                     w: slot.width as f32,
                     h: slot.height as f32,
                     uv: [slot.u0, slot.v0, slot.u1, slot.v1],
+                    color: slot.color,
                 });
             }
         }
     }
 
-    fn slot(&mut self, key: CacheKey, bold: bool) -> Option<Slot> {
+    /// The slot of one glyph, rasterizing it on first sight. An emoji (a
+    /// glyph of a color face) goes to the host painter when there is one,
+    /// else to swash; a letter to swash. A raster that grew its atlas is
+    /// packed again into the grown one (`None` from the first try).
+    fn slot(&mut self, key: CacheKey, bold: bool, font_id: fontdb::ID, cluster: &str) -> Option<Slot> {
+        if self.host_color_glyphs.is_some() && self.is_color_face(font_id) {
+            let host_key = (cluster.to_string(), key.font_size_bits);
+            if let Some(s) = self.host_slots.get(&host_key) {
+                return *s;
+            }
+            if let Some(slot) = self.host_slot(cluster, key.font_size_bits) {
+                self.host_slots.insert(host_key, slot);
+                return slot;
+            }
+            // The host drew nothing for it: swash's turn, below.
+        }
         if let Some(s) = self.slots.get(&(key, bold)) {
+            return *s;
+        }
+        if let Some(s) = self.color_slots.get(&key) {
             return *s;
         }
         let generation = self.generation;
         let slot = self.rasterize(key, bold);
-        if slot.is_none() && self.generation != generation {
-            // The atlas grew under this glyph: pack it again into the new one.
-            let again = self.rasterize(key, bold);
-            self.slots.insert((key, bold), again);
-            return again;
+        let slot = if slot.is_none() && self.generation != generation {
+            // An atlas grew under this glyph: pack it again into the new one.
+            self.rasterize(key, bold)
+        } else {
+            slot
+        };
+        if slot.is_some_and(|s| s.color) {
+            self.color_slots.insert(key, slot);
+        } else {
+            self.slots.insert((key, bold), slot);
         }
-        self.slots.insert((key, bold), slot);
         slot
+    }
+
+    /// The host's raster of `cluster` packed into the color atlas; `None`
+    /// = the host drew nothing (the caller falls back to swash). A pack
+    /// that grows the atlas packs again into the grown one.
+    fn host_slot(&mut self, cluster: &str, font_size_bits: u32) -> Option<Option<Slot>> {
+        let painted: HostColorGlyph = (self.host_color_glyphs.as_mut()?)(cluster, f32::from_bits(font_size_bits))?;
+        if painted.width == 0 || painted.height == 0 || painted.rgba.len() != (painted.width * painted.height * 4) as usize {
+            return Some(Some(Slot { u0: 0.0, v0: 0.0, u1: 0.0, v1: 0.0, left: 0, top: 0, width: 0, height: 0, color: true }));
+        }
+        let first = self.pack_color(&painted.rgba, painted.width, painted.height, painted.left, painted.top, false);
+        Some(first.or_else(|| self.pack_color(&painted.rgba, painted.width, painted.height, painted.left, painted.top, false)))
     }
 
     fn rasterize(&mut self, key: CacheKey, bold: bool) -> Option<Slot> {
         let image = self.cache.get_image(&mut self.fs, key).clone();
         let slot = image.and_then(|img| {
+            let (mut w, mut h) = (img.placement.width, img.placement.height);
+            let (mut left, mut top) = (img.placement.left, img.placement.top);
+            if img.content == SwashContent::Color {
+                // A color bitmap or COLRv0 layers (swash hands RGBA rows):
+                // the color atlas, never emboldened.
+                if w == 0 || h == 0 {
+                    return Some(Slot { u0: 0.0, v0: 0.0, u1: 0.0, v1: 0.0, left: 0, top: 0, width: 0, height: 0, color: true });
+                }
+                return self.pack_color(&img.data, w, h, left, top, true);
+            }
             if img.content != SwashContent::Mask {
                 return None;
             }
-            let (mut w, mut h) = (img.placement.width, img.placement.height);
-            let (mut left, mut top) = (img.placement.left, img.placement.top);
             if w == 0 || h == 0 {
-                return Some(Slot { u0: 0.0, v0: 0.0, u1: 0.0, v1: 0.0, left: 0, top: 0, width: 0, height: 0 });
+                return Some(Slot { u0: 0.0, v0: 0.0, u1: 0.0, v1: 0.0, left: 0, top: 0, width: 0, height: 0, color: false });
             }
             let mut data: std::borrow::Cow<[u8]> = std::borrow::Cow::Borrowed(&img.data);
             if bold {
@@ -562,38 +744,74 @@ impl TextEngine {
             }
             self.dirty = true;
             let s = self.atlas_size as f32;
-            Some(Slot { u0: px as f32 / s, v0: py as f32 / s, u1: (px + w) as f32 / s, v1: (py + h) as f32 / s, left, top, width: w, height: h })
+            Some(Slot { u0: px as f32 / s, v0: py as f32 / s, u1: (px + w) as f32 / s, v1: (py + h) as f32 / s, left, top, width: w, height: h, color: false })
         });
         slot
     }
 
-    /// Shelf packing; `None` after a grow (the caller retries via `slot`).
-    fn pack(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
-        if self.shelf_x + w > self.atlas_size {
-            self.shelf_y += self.shelf_h;
-            self.shelf_x = 0;
-            self.shelf_h = 0;
-        }
-        if self.shelf_y + h > self.atlas_size {
-            self.grow();
+    /// `rgba` (`w` x `h`) into the color atlas, which holds STRAIGHT
+    /// color (the renderer's image quads premultiply on sample):
+    /// `premultiplied` rows (swash's) are divided out on the way in. `None`
+    /// after a grow (the caller packs again).
+    fn pack_color(&mut self, rgba: &[u8], w: u32, h: u32, left: i32, top: i32, premultiplied: bool) -> Option<Slot> {
+        let Some((px, py)) = self.color_shelf.pack(w + 1, h + 1) else {
+            self.grow_color();
             return None;
+        };
+        let side = self.color_shelf.size;
+        for row in 0..h {
+            let src = &rgba[(row * w * 4) as usize..((row + 1) * w * 4) as usize];
+            let dst = (((py + row) * side + px) * 4) as usize;
+            let out = &mut self.color_atlas[dst..dst + (w * 4) as usize];
+            out.copy_from_slice(src);
+            if premultiplied {
+                for texel in out.chunks_exact_mut(4) {
+                    let a = texel[3] as u32;
+                    if a != 0 && a != 255 {
+                        for c in &mut texel[..3] {
+                            *c = ((*c as u32 * 255 + a / 2) / a).min(255) as u8;
+                        }
+                    }
+                }
+            }
         }
-        let pos = (self.shelf_x, self.shelf_y);
-        self.shelf_x += w;
-        self.shelf_h = self.shelf_h.max(h);
-        Some(pos)
+        self.color_dirty = true;
+        let s = side as f32;
+        Some(Slot { u0: px as f32 / s, v0: py as f32 / s, u1: (px + w) as f32 / s, v1: (py + h) as f32 / s, left, top, width: w, height: h, color: true })
+    }
+
+    /// Shelf packing into the coverage atlas; `None` after a grow (the
+    /// caller retries via `slot`).
+    fn pack(&mut self, w: u32, h: u32) -> Option<(u32, u32)> {
+        let pos = self.shelf.pack(w, h);
+        if pos.is_none() {
+            self.grow();
+        }
+        pos
     }
 
     fn grow(&mut self) {
         self.shape_cache.clear();
         self.atlas_size *= 2;
         self.atlas = vec![0; (self.atlas_size * self.atlas_size) as usize];
-        self.shelf_x = 0;
-        self.shelf_y = 0;
-        self.shelf_h = 0;
+        self.shelf = Shelf::new(self.atlas_size);
         self.slots.clear();
         self.generation += 1;
         self.dirty = true;
+    }
+
+    /// The color atlas doubles: every emoji slot handed out is stale, the
+    /// shape cache with them (`generation`, the same stale-uv law as the
+    /// coverage atlas's `grow`).
+    fn grow_color(&mut self) {
+        self.shape_cache.clear();
+        let side: u32 = self.color_shelf.size * 2;
+        self.color_atlas = vec![0; (side * side * 4) as usize];
+        self.color_shelf = Shelf::new(side);
+        self.color_slots.clear();
+        self.host_slots.clear();
+        self.generation += 1;
+        self.color_dirty = true;
     }
 
     /// Rasterizes every glyph of `chars` at `font_size` so the first frame
@@ -730,6 +948,111 @@ mod tests {
     fn engine() -> TextEngine {
         let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/Fonts/Roboto Regular.ttf")).expect("font");
         TextEngine::new(&[("assets/Fonts/Roboto Regular.ttf", bytes)])
+    }
+
+    /// Roboto plus Windows' Segoe UI Emoji as a fallback face (a color
+    /// face: COLRv0 layers swash paints itself); `None` prints SKIPPED
+    /// where the file is absent (a non-Windows box).
+    fn engine_with_emoji() -> Option<TextEngine> {
+        let segoe = Path::new("C:/Windows/Fonts/seguiemj.ttf");
+        if !segoe.exists() {
+            eprintln!("SKIPPED: no {}", segoe.display());
+            return None;
+        }
+        let mut e = engine();
+        assert!(e.add_fallback_font_file(segoe));
+        Some(e)
+    }
+
+    /// The color atlas texel at the top-left of `q`'s slot, RGBA.
+    fn color_texel_of(e: &TextEngine, q: &GlyphQuad) -> [u8; 4] {
+        let (atlas, side) = e.color_atlas();
+        let (x, y) = ((q.uv[0] * side as f32).round() as usize, (q.uv[1] * side as f32).round() as usize);
+        let i = (y * side as usize + x) * 4;
+        [atlas[i], atlas[i + 1], atlas[i + 2], atlas[i + 3]]
+    }
+
+    /// An emoji of a color face lands in the COLOR atlas with its own
+    /// colors (`color: true`, texels that are not gray), a letter beside
+    /// it in the coverage atlas; both atlases report dirty. Red before
+    /// D119: the rasterizer dropped every non-mask glyph, and the user saw
+    /// a box for each emoji (S24, 2026-09-02).
+    #[test]
+    fn an_emoji_lands_in_the_color_atlas_beside_the_letters() {
+        let Some(mut e) = engine_with_emoji() else { return };
+        assert!(!e.take_color_dirty(), "nothing packed yet");
+        let quads: Vec<GlyphQuad> = e.shape("a😀", 40.0, None, None, 0.0, 0.0, 0.0, 0);
+        assert_eq!(quads.len(), 2, "{quads:?}");
+        assert!(!quads[0].color, "the letter: coverage atlas");
+        assert!(quads[1].color, "the emoji: color atlas");
+        assert!(quads[1].w > 20.0 && quads[1].h > 20.0, "an emoji at 40 px is a real box: {:?}", quads[1]);
+        assert!(e.take_dirty() && e.take_color_dirty());
+        // Somewhere in the emoji's slot a texel is opaque and colored.
+        let (atlas, side) = e.color_atlas();
+        let (x0, y0, x1, y1) = ((quads[1].uv[0] * side as f32) as usize, (quads[1].uv[1] * side as f32) as usize, (quads[1].uv[2] * side as f32) as usize, (quads[1].uv[3] * side as f32) as usize);
+        let colored = (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).any(|(x, y)| {
+            let i = (y * side as usize + x) * 4;
+            let (r, g, b, a) = (atlas[i], atlas[i + 1], atlas[i + 2], atlas[i + 3]);
+            // swash's layered coverage tops out a hair under 255.
+            a >= 250 && (r != g || g != b)
+        });
+        assert!(colored, "the slot holds the emoji's own colors");
+    }
+
+    /// With a host painter installed, an emoji is painted by the host
+    /// (its raster lands in the color atlas, placed by its left/top), a
+    /// letter still by swash, and a host that declines (`None`) leaves
+    /// the emoji to swash. The painter runs once per (cluster, size).
+    #[test]
+    fn the_host_paints_an_emoji_when_it_has_one() {
+        let Some(mut e) = engine_with_emoji() else { return };
+        let asked: std::rc::Rc<RefCell<Vec<(String, f32)>>> = std::rc::Rc::new(RefCell::new(Vec::new()));
+        let log = asked.clone();
+        e.set_host_color_glyphs(Some(Box::new(move |cluster: &str, px: f32| {
+            log.borrow_mut().push((cluster.to_string(), px));
+            // A 6×6 solid green square sitting 2 px right of the pen, 5 above the baseline.
+            (cluster == "😀").then(|| HostColorGlyph { width: 6, height: 6, left: 2, top: 5, rgba: [0, 255, 0, 255].repeat(36) })
+        })));
+        let quads: Vec<GlyphQuad> = e.shape("a😀", 40.0, None, None, 0.0, 0.0, 0.0, 0);
+        assert_eq!(quads.len(), 2, "{quads:?}");
+        assert!(!quads[0].color, "the letter: swash, coverage atlas");
+        assert_eq!(asked.borrow().as_slice(), &[("😀".to_string(), 40.0)], "asked once, the cluster text and the px size");
+        assert!(quads[1].color);
+        assert_eq!((quads[1].w, quads[1].h), (6.0, 6.0), "the host's raster size");
+        assert_eq!(color_texel_of(&e, &quads[1]), [0, 255, 0, 255], "the host's pixels");
+        // The second shape of the same run is served from the cache.
+        let _ = e.shape("a😀", 40.0, None, None, 0.0, 0.0, 0.0, 0);
+        assert_eq!(asked.borrow().len(), 1, "no second ask for a cached run");
+        // The quad sits `left` px right of the pen and `top` px above the
+        // baseline: against a painter that reports (0, 0), it is 2 right
+        // and 5 up. A new painter repaints (the old slots are dropped).
+        e.set_host_color_glyphs(Some(Box::new(|_: &str, _: f32| Some(HostColorGlyph { width: 6, height: 6, left: 0, top: 0, rgba: [0, 0, 255, 255].repeat(36) }))));
+        let at_pen: Vec<GlyphQuad> = e.shape("a😀", 40.0, None, None, 0.0, 0.0, 0.0, 0);
+        assert_eq!((quads[1].x - at_pen[1].x, quads[1].y - at_pen[1].y), (2.0, -5.0), "{quads:?} vs {at_pen:?}");
+        assert_eq!(color_texel_of(&e, &at_pen[1]), [0, 0, 255, 255], "the new painter's pixels");
+        // A host that declines leaves the emoji to swash.
+        e.set_host_color_glyphs(Some(Box::new(|_: &str, _: f32| None)));
+        let declined: Vec<GlyphQuad> = e.shape("a😀", 40.0, None, None, 0.0, 0.0, 0.0, 0);
+        assert!(declined[1].color && declined[1].w > 20.0, "swash's own raster: {declined:?}");
+    }
+
+    /// A host raster that fills the color atlas grows it, and the run is
+    /// shaped whole against the grown one (the coverage atlas's law,
+    /// `a_run_that_grows_the_atlas_is_shaped_whole_against_the_grown_one`).
+    #[test]
+    fn a_host_emoji_that_fills_the_color_atlas_grows_it() {
+        let Some(mut e) = engine_with_emoji() else { return };
+        e.set_host_color_glyphs(Some(Box::new(|_: &str, _: f32| Some(HostColorGlyph { width: 300, height: 300, left: 0, top: 300, rgba: [255, 0, 0, 255].repeat(300 * 300) }))));
+        let before: u32 = e.generation;
+        // Four 300-px squares do not fit a 512 atlas: it doubles mid-run.
+        let quads: Vec<GlyphQuad> = e.shape("😀😁😂🤣", 40.0, None, None, 0.0, 0.0, 0.0, 0);
+        assert!(e.generation > before, "the precondition: the run grew the color atlas");
+        assert_eq!(e.color_atlas().1, 1024);
+        assert_eq!(quads.len(), 4, "{quads:?}");
+        for q in &quads {
+            assert!(q.color);
+            assert_eq!(color_texel_of(&e, q), [255, 0, 0, 255], "every slot is into the grown atlas: {q:?}");
+        }
     }
 
     /// A fallback file serves the glyphs no page font has: Roboto has no

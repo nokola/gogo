@@ -92,9 +92,13 @@ struct Screen {
     _pad: [f32; 2],
 }
 
-/// Texture slot: 0 = the glyph atlas, 1.. = images in `images` order.
+/// Texture slot: 0 = the glyph coverage atlas, 1 = the emoji color atlas,
+/// 2.. = images in `images` order.
 type TexId = u32;
 const ATLAS: TexId = 0;
+/// The text engine's color atlas (emoji, DECISIONS.md D119): straight
+/// RGBA, drawn as image quads with a white tint.
+const COLOR_ATLAS: TexId = 1;
 
 struct Batch {
     first: u32,
@@ -228,6 +232,9 @@ pub struct UiRenderer {
     free_slots: Vec<TexId>,
     atlas_texture: Option<wgpu::Texture>,
     atlas_size: u32,
+    /// Slot 1: the engine's emoji atlas (rebuilt when it changes size).
+    color_atlas_texture: Option<wgpu::Texture>,
+    color_atlas_size: u32,
     /// Texture slot by `ImageKey` (the `source=` id); `None` = no pixels
     /// yet. Grows as the host interns pictures past the build's table.
     images: Vec<Option<TexId>>,
@@ -333,6 +340,8 @@ impl UiRenderer {
             free_slots: Vec::new(),
             atlas_texture: None,
             atlas_size: 0,
+            color_atlas_texture: None,
+            color_atlas_size: 0,
             images: Vec::new(),
             externals: Vec::new(),
             host_layers: Vec::new(),
@@ -347,6 +356,10 @@ impl UiRenderer {
         let (tex, entry) = r.make_texture(device, 1, 1, wgpu::TextureFormat::R8Unorm);
         r.textures.push(entry);
         r.atlas_texture = Some(tex);
+        // Slot 1: the emoji atlas, the same way.
+        let (tex, entry) = r.make_texture(device, 1, 1, wgpu::TextureFormat::Rgba8Unorm);
+        r.textures.push(entry);
+        r.color_atlas_texture = Some(tex);
         r
     }
 
@@ -617,20 +630,31 @@ impl UiRenderer {
         self.add_image(device, queue, key, rgba, width, height);
     }
 
-    /// Uploads the glyph atlas when the engine changed it.
+    /// Uploads the glyph atlases when the engine changed them.
     fn sync_atlas(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, text: &mut TextEngine) {
-        if !text.take_dirty() {
-            return;
+        if text.take_dirty() {
+            let (data, size) = text.atlas();
+            if size != self.atlas_size {
+                let (tex, entry) = self.make_texture(device, size, size, wgpu::TextureFormat::R8Unorm);
+                self.textures[ATLAS as usize] = entry;
+                self.atlas_texture = Some(tex);
+                self.atlas_size = size;
+            }
+            if let Some(tex) = &self.atlas_texture {
+                Self::write(queue, tex, data, size, size, 1);
+            }
         }
-        let (data, size) = text.atlas();
-        if size != self.atlas_size {
-            let (tex, entry) = self.make_texture(device, size, size, wgpu::TextureFormat::R8Unorm);
-            self.textures[ATLAS as usize] = entry;
-            self.atlas_texture = Some(tex);
-            self.atlas_size = size;
-        }
-        if let Some(tex) = &self.atlas_texture {
-            Self::write(queue, tex, data, size, size, 1);
+        if text.take_color_dirty() {
+            let (data, size) = text.color_atlas();
+            if size != self.color_atlas_size {
+                let (tex, entry) = self.make_texture(device, size, size, wgpu::TextureFormat::Rgba8Unorm);
+                self.textures[COLOR_ATLAS as usize] = entry;
+                self.color_atlas_texture = Some(tex);
+                self.color_atlas_size = size;
+            }
+            if let Some(tex) = &self.color_atlas_texture {
+                Self::write(queue, tex, data, size, size, 4);
+            }
         }
     }
 
@@ -809,12 +833,16 @@ impl UiRenderer {
                             self.culled += 1;
                             continue;
                         }
-                        if current_tex != ATLAS || current_pixel {
+                        // An emoji is an image quad over the color atlas:
+                        // its own colors, the text's alpha (the Text page's
+                        // opacity slider fades it with the letters).
+                        let (tex, kind, tint) = if g.color { (COLOR_ATLAS, KIND_IMAGE, [1.0, 1.0, 1.0, color[3]]) } else { (ATLAS, KIND_GLYPH, color) };
+                        if current_tex != tex || current_pixel {
                             self.close_batch(&mut batch_first, current, current_tex, current_pixel);
-                            current_tex = ATLAS;
+                            current_tex = tex;
                             current_pixel = false;
                         }
-                        self.quads.push(Quad { rect: glyph_rect, color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_GLYPH, 0.0], uv: g.uv, rot, wedge, swing, eye });
+                        self.quads.push(Quad { rect: glyph_rect, color: tint, border_color: [0.0; 4], params: [0.0, 0.0, kind, 0.0], uv: g.uv, rot, wedge, swing, eye });
                     }
                 }
                 Draw::TextStretch { rect, text: text_id, key, color, font, flip } => {
@@ -823,19 +851,22 @@ impl UiRenderer {
                         self.culled += 1;
                         continue;
                     }
-                    if current_tex != ATLAS || current_pixel {
-                        self.close_batch(&mut batch_first, current, current_tex, current_pixel);
-                        current_tex = ATLAS;
-                        current_pixel = false;
-                    }
                     let s = gogo::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let size_px = r[2].max(r[3]).clamp(8.0, STRETCH_RASTER_MAX_PX);
                     if let Some(g) = text.glyph(s, size_px, font_key) {
+                        let color = color.to_f32();
+                        // A stretched emoji is an image quad like a run's.
+                        let (tex, kind, tint) = if g.color { (COLOR_ATLAS, KIND_IMAGE, [1.0, 1.0, 1.0, color[3]]) } else { (ATLAS, KIND_GLYPH, color) };
+                        if current_tex != tex || current_pixel {
+                            self.close_batch(&mut batch_first, current, current_tex, current_pixel);
+                            current_tex = tex;
+                            current_pixel = false;
+                        }
                         // The ink box IS the quad; a flip swaps the uv ends.
                         let (u0, u1) = if flip.0 { (g.uv[2], g.uv[0]) } else { (g.uv[0], g.uv[2]) };
                         let (v0, v1) = if flip.1 { (g.uv[3], g.uv[1]) } else { (g.uv[1], g.uv[3]) };
-                        self.push_quad(current, Quad { rect: r, color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_GLYPH, 0.0], uv: [u0, v0, u1, v1], rot, wedge, swing, eye });
+                        self.push_quad(current, Quad { rect: r, color: tint, border_color: [0.0; 4], params: [0.0, 0.0, kind, 0.0], uv: [u0, v0, u1, v1], rot, wedge, swing, eye });
                     }
                 }
                 Draw::Selection { rect, text: text_id, key, font_size, font, lo, hi, color } => {
