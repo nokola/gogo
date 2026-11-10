@@ -1,11 +1,13 @@
 //! End to end on a real GPU: a `.gogo` page compiled, laid out with
 //! real text measures, drawn into a texture by `UiRenderer`, read back.
+//! One test draws a plate and its text. The other uploads pictures the
+//! way a host does, several times over, and reads them back.
 //!
 //! Needed because nothing else in this repository runs the shader: the
 //! unit tests cover the gradient tables only, and a renderer whose quads
 //! are right but whose pipeline draws nothing would pass them all.
 //!
-//! Ignored unless asked for: it needs a GPU adapter, which a hosted test
+//! Ignored unless asked for: both need a GPU adapter, which a hosted test
 //! machine may not have, and a test that returned early there would count
 //! as passed without having run. On a machine with a GPU:
 //!
@@ -18,7 +20,7 @@ use std::time::Duration;
 use gogo_text::{EpxMeasure, TextEngine};
 use gogo_ui::layout::Rect;
 use gogo_ui::runtime::{Runtime, resolve};
-use gogo_ui::{Compiled, Draw, KeptFrame, Page, compile, draw, has_errors};
+use gogo_ui::{Compiled, Draw, ImageKey, KeptFrame, Page, compile, draw, has_errors};
 use gogo_wgpu::{PrepareStage, PrepareTimings, Tex_Tile_Premul_Srgb_4xU8_RGBA, UiRenderer};
 
 const PAGE: &str = r#"
@@ -140,4 +142,99 @@ fn a_page_drawn_to_a_texture_shows_its_plate_and_its_text() {
     // The timings heard every stage once, in order, with the text time
     // inside the walk.
     assert_eq!(log.lock().expect("the log").as_slice(), ["begin Pass", "text", "end Pass", "begin Atlas", "end Atlas", "begin Upload", "end Upload"]);
+}
+
+/// Two pictures side by side, each in a rect of 40 x 40 epx. An Image
+/// letterboxes its picture unless it says otherwise.
+const ALBUM: &str = r#"
+View album {
+    Row shelf halign=left, valign=top, spacing=20 {
+        Image photo 40x40, source="res://photo.png"
+        Image other 40x40, source="res://other.png"
+    }
+}
+"#;
+
+/// `width` x `height` pixels of one color, as straight sRGB RGBA rows.
+fn solid(color: [u8; 4], width: u32, height: u32) -> Vec<u8> {
+    color.repeat((width * height) as usize)
+}
+
+/// A picture uploaded again keeps its ONE texture slot: at the same size,
+/// at a new size, and after a release. Each time the tile shows the new
+/// pixels, placed by the new size, and the picture beside it keeps its
+/// own.
+///
+/// Needed because a new size used to move the picture to a fresh slot and
+/// leave the old texture in the list until the renderer was dropped: a
+/// host that uploaded one picture at changing sizes held more GPU memory
+/// with every change, and nothing showed it.
+#[test]
+#[ignore = "needs a GPU adapter: run with --include-ignored on a machine that has one"]
+fn a_picture_uploaded_again_keeps_its_one_texture_slot() {
+    const RED: [u8; 4] = [255, 0, 0, 255];
+    const GREEN: [u8; 4] = [0, 255, 0, 255];
+    const BLUE: [u8; 4] = [0, 0, 255, 255];
+    const YELLOW: [u8; 4] = [255, 255, 0, 255];
+    const CLEAR: [u8; 4] = [0, 0, 0, 0];
+
+    let compiled: Compiled = compile(ALBUM, &|_| None);
+    assert!(!has_errors(&compiled.diags), "{:?}", compiled.diags);
+    let photo_key: ImageKey = compiled.images.get("res://photo.png").expect("the photo's key");
+    let other_key: ImageKey = compiled.images.get("res://other.png").expect("the other picture's key");
+    let page: Page = compiled.page;
+
+    let font: Vec<u8> = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/Fonts/Roboto Regular.ttf")).expect("the font");
+    let text: RefCell<TextEngine> = RefCell::new(TextEngine::new(&[(FONT_KEY, font)]));
+    let runtime: Runtime = Runtime::new(&page);
+    let screen: Rect = Rect::new(0.0, 0.0, TILE.0 as f32, TILE.1 as f32);
+    let measure = EpxMeasure { engine: &text, epx: 1.0, font: None, images: &[] };
+    let kept: KeptFrame = KeptFrame::fresh(&page, resolve(&page, &runtime), screen, &measure);
+    let photo: Rect = kept.frame().rects()[page.find("photo").expect("the photo").index()];
+    let other: Rect = kept.frame().rects()[page.find("other").expect("the other picture").index()];
+    assert_eq!((photo.x, photo.y, photo.w, photo.h), (0.0, 0.0, 40.0, 40.0));
+    assert_eq!((other.x, other.y, other.w, other.h), (60.0, 0.0, 40.0, 40.0));
+    let draws: Vec<Draw> = draw(&page, kept.frame());
+
+    let (device, queue) = device();
+    let mut ui: UiRenderer = UiRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    // What the tile shows in the middle and near the top edge of the
+    // photo's rect, then of the other picture's rect.
+    let shown = |ui: &mut UiRenderer| -> [[u8; 4]; 4] {
+        let tile: Tex_Tile_Premul_Srgb_4xU8_RGBA = ui.render_to_texture(&device, &queue, &draws, &page, &mut text.borrow_mut(), None, 1.0, (0.0, 0.0), TILE);
+        let pixels: Vec<u8> = read_back(&device, &queue, &tile);
+        let at = |x: u32, y: u32| -> [u8; 4] {
+            let i: usize = ((y * TILE.0 + x) * 4) as usize;
+            [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+        };
+        [at(20, 20), at(20, 3), at(80, 20), at(80, 3)]
+    };
+
+    // First uploads: each picture gets a slot of its own.
+    let before: usize = ui.debug_texture_slot_count();
+    ui.write_image_texture_only(&device, &queue, photo_key, &solid(RED, 2, 2), 2, 2);
+    ui.write_image_texture_only(&device, &queue, other_key, &solid(YELLOW, 2, 2), 2, 2);
+    let slots: usize = ui.debug_texture_slot_count();
+    assert_eq!(slots, before + 2, "one slot per picture");
+    assert_eq!(shown(&mut ui), [RED, RED, YELLOW, YELLOW], "two squares, each filling its rect");
+
+    // The same size again: written in place.
+    ui.write_image_texture_only(&device, &queue, photo_key, &solid(BLUE, 2, 2), 2, 2);
+    assert_eq!(ui.debug_texture_slot_count(), slots, "the same size makes no slot");
+    assert_eq!(shown(&mut ui), [BLUE, BLUE, YELLOW, YELLOW], "the photo's new pixels");
+
+    // A new size, twice as wide as tall: no new slot, and the photo is
+    // letterboxed by its NEW shape, 40 x 20 in the middle of its rect.
+    ui.write_image_texture_only(&device, &queue, photo_key, &solid(GREEN, 4, 2), 4, 2);
+    assert_eq!(ui.debug_texture_slot_count(), slots, "a new size makes no slot either");
+    assert_eq!(shown(&mut ui), [GREEN, CLEAR, YELLOW, YELLOW], "the photo by its new shape, the other picture untouched");
+
+    // Released, the photo draws nothing; uploaded again, it takes the
+    // emptied slot back.
+    assert!(ui.release_image(&device, photo_key), "the photo's texture is freed");
+    assert!(!ui.has_image(photo_key));
+    assert_eq!(shown(&mut ui), [CLEAR, CLEAR, YELLOW, YELLOW], "a released picture draws nothing");
+    ui.write_image_texture_only(&device, &queue, photo_key, &solid(RED, 2, 2), 2, 2);
+    assert_eq!(ui.debug_texture_slot_count(), slots, "the emptied slot is taken again");
+    assert_eq!(shown(&mut ui), [RED, RED, YELLOW, YELLOW], "the photo is back, a square again");
 }

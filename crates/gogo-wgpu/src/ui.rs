@@ -580,6 +580,16 @@ impl UiRenderer {
         self.externals.iter().filter(|e| e.texture.is_some()).count()
     }
 
+    /// For tests: how many texture slots this renderer has made so far,
+    /// the two glyph atlases and the slots `release_image` emptied
+    /// included.
+    ///
+    /// Needed so that a test can check that a picture uploaded again, at
+    /// the same size or a new one, makes no new slot.
+    pub fn debug_texture_slot_count(&self) -> usize {
+        self.textures.len()
+    }
+
     fn write(queue: &wgpu::Queue, tex: &wgpu::Texture, data: &[u8], width: u32, height: u32, bytes_per_pixel: u32) {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
@@ -589,9 +599,9 @@ impl UiRenderer {
         );
     }
 
-    /// Registers an RGBA8 image under `key` (the `source=` id) in a fresh
-    /// texture. `write_image_texture_only` is the public way in.
-    fn add_image(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: ImageKey, rgba: &[u8], width: u32, height: u32) {
+    /// A fresh RGBA8 texture holding `rgba`, as the slot entry of an
+    /// uploaded picture. `write_image_texture_only` puts it in a slot.
+    fn make_image(&self, device: &wgpu::Device, queue: &wgpu::Queue, rgba: &[u8], width: u32, height: u32) -> Texture {
         // sRGB bytes in, sRGB bytes out. Needed because the shader writes
         // sRGB-encoded values to a target whose format is not `*Srgb`
         // (`UiRenderer::new`): an sRGB texture here would be decoded on
@@ -600,8 +610,7 @@ impl UiRenderer {
         let (tex, mut entry) = self.make_texture(device, width, height, wgpu::TextureFormat::Rgba8Unorm);
         Self::write(queue, &tex, rgba, width, height, 4);
         entry.texture = Some(tex);
-        let slot: TexId = self.take_slot(entry);
-        self.set_slot(key, slot);
+        entry
     }
 
     /// Puts `entry` in a slot `release_image` emptied, else a new one.
@@ -643,31 +652,43 @@ impl UiRenderer {
     }
 
     /// Writes an image's pixels (straight sRGB RGBA8 rows): the TEXTURE
-    /// ONLY. A texture of the same size is written IN PLACE; a new size,
-    /// or a key never written, gets a fresh texture.
+    /// ONLY. A picture keeps ONE slot however often it is written: the
+    /// same size is written into its texture IN PLACE, and a new size
+    /// puts a fresh texture in the slot and frees the old one. A key
+    /// never written, or released since, takes a slot.
     ///
-    /// Needed in place because a picture that refreshes while shown (a
-    /// thumbnail redrawn after every edit) would otherwise leave a fresh
-    /// texture behind per refresh, for the whole session.
-    ///
-    /// A picture written again at a NEW size leaves its old texture
-    /// behind that way: call `release_image` first.
+    /// Needed because a picture that refreshes while shown (a thumbnail
+    /// redrawn after every edit, or redrawn in the shape of a new photo)
+    /// would otherwise leave a texture behind per refresh, for the whole
+    /// session.
     ///
     /// WARNING: the layout needs the picture's size as well
     /// (`gogo_text::EpxMeasure::images`), so a host keeps one place of its
     /// own that does both: an Image sized by its picture
     /// (`aspect=natural`) is 0 wide while only the texture is written.
     pub fn write_image_texture_only(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: ImageKey, rgba: &[u8], width: u32, height: u32) {
-        let slot: Option<TexId> = self.images.get(key.index()).copied().flatten();
-        if let Some(entry) = slot.map(|s| &self.textures[s as usize]) {
-            if let Some(tex) = &entry.texture {
-                if entry.width == width && entry.height == height {
-                    Self::write(queue, tex, rgba, width, height, 4);
-                    return;
-                }
+        // The slot that holds a texture written HERE for the key. An image
+        // opened with `external_image` has its host's texture in its slot
+        // (`texture: None`): a write to such a key leaves that slot alone
+        // and takes one like a key never written.
+        let own: Option<TexId> = self.slot(key).filter(|slot| self.textures[*slot as usize].texture.is_some());
+        if let Some(slot) = own {
+            let entry: &Texture = &self.textures[slot as usize];
+            if let (true, Some(tex)) = (entry.width == width && entry.height == height, &entry.texture) {
+                Self::write(queue, tex, rgba, width, height, 4);
+                return;
             }
         }
-        self.add_image(device, queue, key, rgba, width, height);
+        let entry: Texture = self.make_image(device, queue, rgba, width, height);
+        match own {
+            // A new size: the entry that was in the slot is dropped here,
+            // and its texture and bind groups with it.
+            Some(slot) => self.textures[slot as usize] = entry,
+            None => {
+                let slot: TexId = self.take_slot(entry);
+                self.set_slot(key, slot);
+            }
+        }
     }
 
     /// Uploads the glyph atlases when the engine changed them.
