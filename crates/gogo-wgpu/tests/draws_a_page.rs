@@ -1,4 +1,4 @@
-//! The whole road on a real GPU: a `.gogo` page compiled, laid out with
+//! End to end on a real GPU: a `.gogo` page compiled, laid out with
 //! real text measures, drawn into a texture by `UiRenderer`, read back.
 //!
 //! Needed because nothing else in this repository runs the shader: the

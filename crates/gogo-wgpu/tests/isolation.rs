@@ -4,8 +4,9 @@
 //! Needed because neither breakage shows on the PC a change is first
 //! tried on. A window crate in the dependencies would force that window
 //! library on every host, and a host with its own (a game engine, a
-//! phone shell) could no longer use the renderer. A `const` array in the
-//! shader compiles everywhere and draws wrong on one old phone GPU.
+//! phone app with its own window code) could no longer use the renderer.
+//! A `const` array in the shader compiles everywhere and draws wrong on
+//! one old phone GPU.
 
 use std::fs;
 use std::path::{Path, PathBuf};

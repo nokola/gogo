@@ -1,29 +1,35 @@
-//! `gogo-text` — shaping and glyph rasterization for gogo, pure Rust
-//! (`cosmic-text` + `swash`): no GPU, no OS. Needed as its own crate so
-//! `gogo-ui` stays text-engine-free (it measures through `TextMeasure`) and
-//! the backend only uploads what this crate rasterizes. Two atlases,
-//! shelf-packed, each doubling when it fills (every glyph of the grown one
-//! is rasterized again on demand): an 8-bit coverage atlas for letters,
-//! tinted by the text color, and an RGBA color atlas for emoji, drawn as
-//! they are (DECISIONS.md D119). All sizes here are DEVICE pixels — the
-//! caller converts epx.
+//! `gogo-text` shapes text and rasterizes glyphs for gogo, in pure Rust
+//! (`cosmic-text` + `swash`): no GPU, no window.
 //!
-//! Emoji come from a COLOR FACE — one with color palettes or color bitmap
-//! strikes, the phone's own emoji font after `add_fallback_font_file` or
-//! the OS scan. Who paints one: the host first (`set_host_color_glyphs`,
-//! Android's own text stack over the bridge, so the box shows exactly the
-//! keyboard's emoji on every Android version and every phone maker), else
-//! swash (COLRv0 layers and CBDT/sbix bitmaps — Windows' Segoe UI Emoji on
-//! the PC; the COLRv1 file Android 13+ ships draws nothing through it,
-//! hence the host door).
+//! Needed as its own crate so that `gogo-ui` stays free of a text engine
+//! (it measures through `TextMeasure`) and a renderer only uploads what
+//! this crate rasterizes.
+//!
+//! Glyphs go into two atlases, shelf-packed: an 8-bit coverage atlas for
+//! letters, tinted by the text color, and an RGBA color atlas for emoji,
+//! drawn in their own colors. Each doubles when it fills, and every glyph
+//! of the grown one is rasterized again on demand. All sizes here are
+//! DEVICE pixels: the caller converts epx (`EpxMeasure` does it for the
+//! layout).
+//!
+//! Emoji come from a COLOR FACE: one with color palettes or color bitmap
+//! strikes, such as the phone's own emoji font after
+//! `add_fallback_font_file` or the OS scan. A host that installed a
+//! painter (`set_host_color_glyph_painter`) paints an emoji first; else swash
+//! does (COLRv0 layers and CBDT/sbix bitmaps, so Windows' Segoe UI Emoji
+//! draws). Swash draws nothing for the COLRv1 file Android 13+ ships,
+//! which is why an Android host paints emoji with the platform's own text
+//! stack: a text box then shows exactly the emoji the keyboard offered,
+//! on every Android version and from every phone maker.
 //!
 //! Faces arrive two ways: the page fonts at construction, and later by
-//! key — a file's bytes (`add_face`, the picker's built-in fonts, parsed
-//! on first use so boot stays fast) or an OS family after the one system
-//! scan (`load_system_fonts` + `add_system_face`). A font key may end in
-//! a style suffix (`styled_key`): `#bold` thickens the coverage, `#italic`
-//! skews it — faux styles, since no shipped face carries real ones
-//! (shipped FontLoader.MakeStyled).
+//! key. A later face is a file's bytes (`add_face`: the file is parsed
+//! when it is added, so a host adds it when the key is first needed and
+//! still starts fast) or an OS family after the one system scan
+//! (`load_system_fonts` + `add_system_face`). A font key may end in a
+//! style suffix (`styled_key`): `#bold` thickens the coverage and
+//! `#italic` skews it. Both are faux styles, for a face that has no bold
+//! or italic member of its own.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -35,22 +41,32 @@ use cosmic_text::{Align, Attrs, Buffer, CacheKey, CacheKeyFlags, Family, FontSys
 use gogo_ui::layout::TextMeasure;
 use gogo_ui::ImageKey;
 
-/// Godot's default `Label` line_spacing (px), added between lines.
+/// Pixels added between two lines of a label: none above the first line,
+/// none below the last. Device pixels, the same at every scale.
+///
+/// Needed as one shared number because the layout sizes a label's box
+/// with it (`FaceMetrics::block_height`) and the shaper places the rows
+/// by it.
 pub const LINE_SPACING_PX: f32 = 3.0;
 
-/// Entries a measure / shape cache holds before it is emptied. Needed
-/// because a label that changes every few frames (the debug overlay's
-/// stats line, a zoom readout) is a new string each time — an unbounded
-/// cache would grow for as long as the app runs. Emptying costs one
-/// re-shape per visible string on the next frame, far below a frame.
+/// Entries a measure cache or a shape cache holds before it is emptied.
+///
+/// Needed because a label that changes every few frames (a frame counter,
+/// a zoom readout) is a new string each time, so an unbounded cache would
+/// grow for as long as the app runs.
+///
+/// Emptying costs one re-shape per visible string on the next frame, far
+/// below a frame.
 pub const CACHE_CAP: usize = 4096;
 
 /// Faux bold: how far the coverage grows on every side, in pixels per
-/// pixel of font size — 0.6 px at a 24 px face, the weight shipped's
-/// `VariationEmbolden = 0.6` reads as at the text page's default size.
+/// pixel of font size. 0.6 px at a 24 px face.
+///
+/// Needed as a share of the size so that `#bold` looks equally heavy at
+/// every font size.
 pub const BOLD_GROW_PER_PX: f32 = 0.6 / 24.0;
 
-/// The font-key style suffix (`"Angelina#bold"`) is gogo vocabulary: the
+/// The font-key style suffix (`"Title#bold"`) is gogo vocabulary: the
 /// app spells it, this engine reads it.
 pub use gogo_ui::font_style::{split_style, styled_key};
 
@@ -63,15 +79,22 @@ pub struct FaceMetrics {
 }
 
 impl FaceMetrics {
-    /// Roboto's hhea metrics (1900 / 500 over 2048): the fallback when a
-    /// face carries none.
-    pub const ROBOTO: FaceMetrics = FaceMetrics { ascent: 1900.0, descent: 500.0, units_per_em: 2048.0 };
+    /// The metrics a face gets when its file carries none: Roboto's hhea
+    /// metrics (1900 / 500 over 2048).
+    ///
+    /// Needed so that text in such a face still gets a line height. The
+    /// engine answers with it too while no face is loaded.
+    pub const FALLBACK: FaceMetrics = FaceMetrics { ascent: 1900.0, descent: 500.0, units_per_em: 2048.0 };
 
-    /// One line's own height in px at `font_size` px (no spacing) — a
-    /// single-line label's box, the way Godot measures it: FreeType rounds
-    /// the scaled ascender up and the descender down to whole pixels
-    /// (`FT_Size_Metrics`), so 24 px Roboto is 23 + 6 = 29, not
-    /// round(28.13) = 28 — one pixel per list row otherwise.
+    /// One line's own height in px at `font_size` px (no spacing): a
+    /// single-line label's box. The scaled ascent and the scaled descent
+    /// are each rounded UP to a whole pixel, the way FreeType sizes a
+    /// face (`FT_Size_Metrics`).
+    ///
+    /// Needed because glyphs are rasterized on whole pixels, so a line
+    /// needs both rounded up: 24 px Roboto is 23 + 6 = 29 px. Rounding
+    /// the sum instead gives round(28.13) = 28, one pixel short on every
+    /// row of a list.
     pub fn font_height(&self, font_size: f32) -> f32 {
         let scale = font_size / self.units_per_em;
         (self.ascent * scale).ceil() + (self.descent * scale).ceil()
@@ -83,7 +106,7 @@ impl FaceMetrics {
     }
 
     /// The box height of `lines` lines: spacing sits only BETWEEN lines
-    /// (Godot: lines × font height + (lines − 1) × line_spacing).
+    /// (lines × font height + (lines − 1) × `LINE_SPACING_PX`).
     pub fn block_height(&self, font_size: f32, lines: f32) -> f32 {
         let n = lines.max(1.0);
         n * self.font_height(font_size) + (n - 1.0) * LINE_SPACING_PX
@@ -119,7 +142,7 @@ pub struct GlyphQuad {
     pub color: bool,
 }
 
-/// One emoji the host painted (`HostColorGlyphs`): straight (not
+/// One emoji the host painted (`HostColorGlyphPainter`): straight (not
 /// premultiplied) RGBA rows, and where the ink sits against the pen —
 /// `left` px right of it, `top` px above the baseline (FreeType's
 /// bitmap_left / bitmap_top).
@@ -138,7 +161,7 @@ pub struct HostColorGlyph {
 /// The host's emoji painter: the text of one shaped cluster ("😀",
 /// "👨‍👩‍👧", a flag pair) and the font size in device px; `None` = the
 /// host draws nothing for it (the engine then tries swash).
-pub type HostColorGlyphs = Box<dyn FnMut(&str, f32) -> Option<HostColorGlyph>>;
+pub type HostColorGlyphPainter = Box<dyn FnMut(&str, f32) -> Option<HostColorGlyph>>;
 
 /// The color atlas's first side; it doubles when it fills (`grow_color`).
 const COLOR_ATLAS_START: u32 = 512;
@@ -211,7 +234,7 @@ pub struct TextEngine {
     /// read from the file once.
     color_faces: HashMap<fontdb::ID, bool>,
     /// The host's emoji painter, when it has one (Android).
-    host_color_glyphs: Option<HostColorGlyphs>,
+    host_color_glyph_painter: Option<HostColorGlyphPainter>,
     /// The color atlas changed since the last `take_color_dirty`.
     color_dirty: bool,
     /// The OS font scan ran (once per engine).
@@ -260,7 +283,9 @@ impl TextEngine {
                 loaded.push((key.to_string(), face.id, family, face.weight));
             }
         }
-        // Only our fonts: no system-font scan (hundreds of ms on Android).
+        // Only the fonts handed in. The system-font scan costs hundreds of
+        // milliseconds on a phone, so it runs when a host asks for it
+        // (`load_system_fonts`), never here.
         let mut fs = FontSystem::new_with_locale_and_db("en-US".to_string(), db);
         let mut faces = HashMap::new();
         let mut default_face = None;
@@ -287,7 +312,7 @@ impl TextEngine {
             color_slots: HashMap::new(),
             host_slots: HashMap::new(),
             color_faces: HashMap::new(),
-            host_color_glyphs: None,
+            host_color_glyph_painter: None,
             // Not dirty: nothing points into it until the first emoji
             // packs, so a boot without one uploads nothing.
             color_dirty: false,
@@ -300,11 +325,17 @@ impl TextEngine {
         }
     }
 
-    /// A face `font=` / a draw can name by `key` — `bytes` is a TTF/OTF
-    /// file. Parses now, so call it when the key is first needed, not at
-    /// boot (28 picker fonts would cost the boot a second on a phone).
-    /// An existing key keeps its face. Returns false when the bytes hold
-    /// no face.
+    /// Adds a face that `font=` or a draw can name by `key`; `bytes` is a
+    /// TTF/OTF file. An existing key keeps its face.
+    ///
+    /// Needed for fonts that are not page fonts: the ones a user picks
+    /// from a list, or a file fetched after start.
+    ///
+    /// WARNING: parses the file now. Call it when the key is first
+    /// needed, not at start: parsing 28 font files took about a second on
+    /// a phone.
+    ///
+    /// Returns false when the bytes hold no face.
     pub fn add_face(&mut self, key: &str, bytes: Vec<u8>) -> bool {
         if self.faces.contains_key(key) {
             return true;
@@ -327,16 +358,19 @@ impl TextEngine {
 
     /// The one OS font scan: every face under the system font folders
     /// joins the database (mapped, not copied), and their family names
-    /// become `system_families`. Needed for the picker's OS arm (shipped
-    /// FontLoader lists the device's fonts after the built-ins) and for
-    /// script fallback — a glyph no page font has is then looked up
-    /// across the OS faces instead of drawing a box. Hundreds of
-    /// milliseconds on a phone: call it when the picker first opens,
-    /// never at boot for a Latin/Cyrillic/Greek language. A script
-    /// language whose known OS file is missing pays it at language load
-    /// instead (the shell's `script_fonts`, the fallback arm of
-    /// `add_fallback_font_file`). A second call does nothing. Returns
-    /// the family count.
+    /// become `system_families`. A second call does nothing.
+    ///
+    /// Needed for a font picker that lists the device's fonts, and for
+    /// script fallback: a glyph no page font has is then looked up across
+    /// the OS faces instead of drawing as a box.
+    ///
+    /// WARNING: hundreds of milliseconds on a phone. Call it when such a
+    /// picker first opens, never at start. A host that needs the letters
+    /// of one script adds that one file instead
+    /// (`add_fallback_font_file`), and scans only when the file is
+    /// missing.
+    ///
+    /// Returns the family count.
     pub fn load_system_fonts(&mut self) -> usize {
         if self.system_loaded {
             return self.system_families.len();
@@ -347,8 +381,7 @@ impl TextEngine {
         #[cfg(target_os = "android")]
         {
             // fontdb scans no Android folder itself; these are where every
-            // Android build keeps its fonts (Godot's OS.GetSystemFonts
-            // read the same).
+            // Android build keeps its fonts.
             for dir in ["/system/fonts", "/system/font", "/data/fonts", "/product/fonts"] {
                 db.load_fonts_dir(dir);
             }
@@ -373,16 +406,20 @@ impl TextEngine {
     }
 
     /// One font FILE joins the database as a fallback face: a glyph no
-    /// page font has is then looked up in it. Needed so a script
-    /// language costs ONE file, not the whole OS scan (Roboto has no
-    /// Arabic — USER SAW 2026-09-13: `--lang ar` drew every label as a
-    /// row of boxes until the picker's `load_system_fonts` ran; with the
-    /// phone's Noto Naskh Arabic added here, the labels read). The face
-    /// gets no key: `font=` cannot name it and the picker does not list
-    /// it. Mapped, not copied (a .ttc adds every face it holds). Drops
-    /// the measure/shape caches — a label measured as boxes is wrong
-    /// now; the atlas and its glyphs stay. Returns false when the file
-    /// is missing, unreadable, or holds no face.
+    /// page font has is then looked up in it. Mapped, not copied (a .ttc
+    /// adds every face it holds).
+    ///
+    /// Needed so that a language in another script costs ONE file, not
+    /// the whole OS scan: Roboto has no Arabic letters, so an Arabic page
+    /// draws every label as a row of boxes until the phone's Arabic font
+    /// (Noto Naskh Arabic) is added here.
+    ///
+    /// The face gets no key, so `font=` cannot name it. The measure and
+    /// shape caches are dropped, because a label measured as boxes is
+    /// wrong now; the atlas and its glyphs stay.
+    ///
+    /// Returns false when the file is missing, unreadable, or holds no
+    /// face.
     pub fn add_fallback_font_file(&mut self, path: &Path) -> bool {
         let db = self.fs.db_mut();
         let before: usize = db.faces().count();
@@ -449,8 +486,8 @@ impl TextEngine {
     /// Installs (or removes) the host's emoji painter. A load-time call:
     /// drops the shape cache and every host-painted slot, so a cluster
     /// the old painter drew is painted again by the new one.
-    pub fn set_host_color_glyphs(&mut self, host: Option<HostColorGlyphs>) {
-        self.host_color_glyphs = host;
+    pub fn set_host_color_glyph_painter(&mut self, host: Option<HostColorGlyphPainter>) {
+        self.host_color_glyph_painter = host;
         self.host_slots.clear();
         self.shape_cache.clear();
     }
@@ -519,9 +556,10 @@ impl TextEngine {
         }
     }
 
-    /// The metrics of the face `font` names (the default face, else Roboto's).
+    /// The metrics of the face `font` names, else the default face's, else
+    /// `FaceMetrics::FALLBACK`.
     pub fn metrics(&self, font: Option<&str>) -> FaceMetrics {
-        self.face(font).map_or(FaceMetrics::ROBOTO, |f| f.metrics)
+        self.face(font).map_or(FaceMetrics::FALLBACK, |f| f.metrics)
     }
 
     fn buffer(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> Buffer {
@@ -532,13 +570,11 @@ impl TextEngine {
         let attrs = self.attrs(font);
         buffer.set_text(text, &attrs, Shaping::Advanced, None);
         // Every line starts at the box's left edge; `halign` then shifts it
-        // (`shape_pass`). Needed because cosmic's default puts a
+        // (`shape_pass`). Needed because cosmic-text's default puts a
         // right-to-left line (Arabic, Urdu, Hebrew) against the RIGHT edge
-        // of the wrap width: a full-width left-aligned label showed عربي at
-        // the far right of its row (USER SAW in the language picker, S24,
-        // 2026-09-28). The letters still run right to left inside the line;
-        // only where the line sits changes — WP's left-to-right pages did
-        // the same.
+        // of the wrap width: a left-aligned label as wide as its row would
+        // show عربي at the far right of the row. The letters still run
+        // right to left inside the line; only where the line sits changes.
         for line in buffer.lines.iter_mut() {
             line.set_align(Some(Align::Left));
         }
@@ -577,10 +613,11 @@ impl TextEngine {
         out
     }
 
-    /// `shape` appending to `out` instead of returning a vector: a run
-    /// the cache holds costs no allocation — the UI renderer shapes every
-    /// label of every frame through here (its zero-allocation frame,
-    /// DECISIONS.md D76).
+    /// `shape` appending to `out` instead of returning a vector.
+    ///
+    /// Needed because a renderer shapes every label of every frame
+    /// through here: a run the cache holds then costs no allocation, so a
+    /// frame that shows only cached text allocates nothing.
     #[allow(clippy::too_many_arguments)]
     pub fn shape_into(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>, x: f32, y: f32, box_w: f32, halign: u8, out: &mut Vec<GlyphQuad>) {
         let (dx, dy) = (x.round(), y.round());
@@ -599,14 +636,18 @@ impl TextEngine {
         self.shape_cache.insert(key, (self.generation, quads));
     }
 
-    /// Quads with the pen at the origin. A glyph packed past the atlas's
-    /// edge grows it (`pack` → `grow`), and every uv handed out before —
-    /// this run's earlier glyphs included — is into the atlas that was, so
-    /// the run is shaped again against the grown one, in the same buffer.
-    /// Nothing extra when the atlas held (the usual run). User-seen: the
-    /// first letters of a label missing — "t effect changes?" for "Keep
-    /// Sculpt effect changes?" (S24, 2026-09-14) — and staying missing,
-    /// because the run had gone into the cache with the stale uvs.
+    /// Shapes `text` into quads with the pen at the origin, every uv into
+    /// the atlas as it is when the run ends.
+    ///
+    /// Needed because a glyph packed past the atlas's edge grows the
+    /// atlas (`pack` → `grow`), and every uv handed out before, this
+    /// run's earlier glyphs included, is into the atlas that was. A run
+    /// kept that way shows without its first letters ("ve changes?" for
+    /// "Save changes?") and stays that way, because it goes into the
+    /// shape cache with the stale uvs.
+    ///
+    /// The run is shaped again against the grown atlas, in the same
+    /// buffer. A run that grows nothing (the usual one) is shaped once.
     fn shape_uncached(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>, box_w: f32, halign: u8) -> Vec<GlyphQuad> {
         let mut out: Vec<GlyphQuad> = Vec::new();
         loop {
@@ -645,9 +686,9 @@ impl TextEngine {
                 }
                 out.push(GlyphQuad {
                     x: (x + shift).round() + g.x as f32 + slot.left as f32,
-                    // cosmic splits the line spacing half above each line;
-                    // Godot puts none above the first, so the rows sit
-                    // half a spacing higher.
+                    // cosmic-text puts half of the line spacing above each
+                    // line; `block_height` counts none above the first, so
+                    // every row moves up by half a spacing.
                     y: y.round() + (line_y - LINE_SPACING_PX / 2.0).round() + g.y as f32 - slot.top as f32,
                     w: slot.width as f32,
                     h: slot.height as f32,
@@ -663,7 +704,7 @@ impl TextEngine {
     /// else to swash; a letter to swash. A raster that grew its atlas is
     /// packed again into the grown one (`None` from the first try).
     fn slot(&mut self, key: CacheKey, bold: bool, font_id: fontdb::ID, cluster: &str) -> Option<Slot> {
-        if self.host_color_glyphs.is_some() && self.is_color_face(font_id) {
+        if self.host_color_glyph_painter.is_some() && self.is_color_face(font_id) {
             let host_key = (cluster.to_string(), key.font_size_bits);
             if let Some(s) = self.host_slots.get(&host_key) {
                 return *s;
@@ -700,7 +741,7 @@ impl TextEngine {
     /// = the host drew nothing (the caller falls back to swash). A pack
     /// that grows the atlas packs again into the grown one.
     fn host_slot(&mut self, cluster: &str, font_size_bits: u32) -> Option<Option<Slot>> {
-        let painted: HostColorGlyph = (self.host_color_glyphs.as_mut()?)(cluster, f32::from_bits(font_size_bits))?;
+        let painted: HostColorGlyph = (self.host_color_glyph_painter.as_mut()?)(cluster, f32::from_bits(font_size_bits))?;
         if painted.width == 0 || painted.height == 0 || painted.rgba.len() != (painted.width * painted.height * 4) as usize {
             return Some(Some(Slot { u0: 0.0, v0: 0.0, u1: 0.0, v1: 0.0, left: 0, top: 0, width: 0, height: 0, color: true }));
         }
@@ -814,16 +855,20 @@ impl TextEngine {
         self.color_dirty = true;
     }
 
-    /// Rasterizes every glyph of `chars` at `font_size` so the first frame
-    /// that shows them does no work (the boot warm).
+    /// Rasterizes every glyph of `chars` at `font_size`.
+    ///
+    /// Needed so that the first frame that shows them rasterizes nothing:
+    /// a host calls it at start with the letters its first screen shows.
     pub fn warm(&mut self, chars: &str, font_size: f32, font: Option<&str>) {
         let _ = self.shape(chars, font_size, None, font, 0.0, 0.0, 0.0, 0);
     }
 }
 
-/// A face's vertical metrics as the file carries them: the line height
-/// comes from them, not from a constant fitted to one size. Roboto's when
-/// the file has none.
+/// A face's vertical metrics as its file carries them, or
+/// `FaceMetrics::FALLBACK` when the file has none.
+///
+/// Needed because the line height comes from them, not from a constant
+/// fitted to one size.
 fn metrics_of(fs: &mut FontSystem, id: fontdb::ID, weight: Weight) -> FaceMetrics {
     fs.get_font(id, weight)
         .map(|font| {
@@ -831,7 +876,7 @@ fn metrics_of(fs: &mut FontSystem, id: fontdb::ID, weight: Weight) -> FaceMetric
             FaceMetrics { ascent: m.ascent, descent: m.descent, units_per_em: m.units_per_em as f32 }
         })
         .filter(|m| m.units_per_em > 0.0 && m.ascent > 0.0)
-        .unwrap_or(FaceMetrics::ROBOTO)
+        .unwrap_or(FaceMetrics::FALLBACK)
 }
 
 /// Faux bold: the coverage mask grown by `grow` pixels on every side (a
@@ -858,7 +903,12 @@ fn embolden(mask: &[u8], w: u32, h: u32, grow: u32) -> Vec<u8> {
     out
 }
 
-/// `TextMeasure` for gogo's layout: epx in, epx out, device pixels inside.
+/// `gogo-ui`'s `TextMeasure` answered by a `TextEngine`: epx in, epx out,
+/// device pixels inside.
+///
+/// Needed because the layout works in epx and knows no font: it asks a
+/// `TextMeasure` how big a label is, and this one converts to the device
+/// pixels the engine shapes in, and back.
 pub struct EpxMeasure<'a> {
     pub engine: &'a RefCell<TextEngine>,
     pub epx: f32,
@@ -872,8 +922,11 @@ pub struct EpxMeasure<'a> {
 impl TextMeasure for EpxMeasure<'_> {
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> (f32, f32) {
         let mut e = self.engine.borrow_mut();
-        // Godot sizes fonts as `int(epx * size)` (truncated): same here, or
-        // every line measures a hair wider and wraps a word early.
+        // The size in device pixels is truncated to a whole pixel, the
+        // same way a renderer truncates it when it draws. Needed because a
+        // label has to be measured at the size it is drawn at: measured a
+        // fraction of a pixel bigger, every line is a hair wider and wraps
+        // a word early.
         let (w, h) = e.measure(text, (font_size * self.epx).floor().max(1.0), max_width.map(|w| w * self.epx), font.or(self.font.as_deref()));
         (w / self.epx, h / self.epx)
     }
@@ -901,10 +954,10 @@ mod tests {
     use super::*;
 
     /// A run whose glyph grows the atlas mid-way comes out whole against
-    /// the grown atlas: its uvs equal a re-shape's. Red before the fix: the
-    /// glyphs shaped before the grow kept uvs into the atlas that was, and
-    /// the run sat in the cache that way — the user saw "t effect
-    /// changes?" for "Keep Sculpt effect changes?" (S24, 2026-09-14).
+    /// the grown atlas: its uvs equal a re-shape's. Red when the glyphs
+    /// shaped before the grow keep uvs into the atlas that was and the run
+    /// sits in the cache that way: the user sees a label without its first
+    /// letters ("ve changes?" for "Save changes?").
     #[test]
     fn a_run_that_grows_the_atlas_is_shaped_whole_against_the_grown_one() {
         let mut e = engine();
@@ -924,11 +977,11 @@ mod tests {
 
     /// A right-to-left line in a wide box starts at the box's left edge
     /// like a Latin one, and `halign` still moves it: centre and end land
-    /// where they would for Latin text, not twice as far. Red before the
-    /// fix: cosmic put the Arabic word against the right edge of the wrap
-    /// width (the picker's عربي row, S24, 2026-09-28). Ignored unless asked
-    /// for: it needs an OS font with Arabic letters, which a bare test
-    /// machine may not have (see `engine_with_emoji`).
+    /// where they would for Latin text, not twice as far. Red when
+    /// cosmic-text's default stands: the Arabic word sits against the
+    /// right edge of the wrap width. Ignored unless asked for: it needs an
+    /// OS font with Arabic letters, which a bare test machine may not
+    /// have (see `engine_with_emoji`).
     #[test]
     #[ignore = "needs an OS font with Arabic letters: run with --include-ignored on Windows"]
     fn a_right_to_left_line_starts_at_the_left_edge_and_halign_still_moves_it() {
@@ -977,9 +1030,9 @@ mod tests {
 
     /// An emoji of a color face lands in the COLOR atlas with its own
     /// colors (`color: true`, texels that are not gray), a letter beside
-    /// it in the coverage atlas; both atlases report dirty. Red before
-    /// D119: the rasterizer dropped every non-mask glyph, and the user saw
-    /// a box for each emoji (S24, 2026-09-02).
+    /// it in the coverage atlas; both atlases report dirty. Red when the
+    /// rasterizer keeps coverage masks only: every other glyph is dropped,
+    /// and the user sees a box for each emoji.
     #[test]
     #[ignore = "needs Windows' Segoe UI Emoji font: run with --include-ignored on Windows"]
     fn an_emoji_lands_in_the_color_atlas_beside_the_letters() {
@@ -1013,7 +1066,7 @@ mod tests {
         let mut e: TextEngine = engine_with_emoji();
         let asked: std::rc::Rc<RefCell<Vec<(String, f32)>>> = std::rc::Rc::new(RefCell::new(Vec::new()));
         let log = asked.clone();
-        e.set_host_color_glyphs(Some(Box::new(move |cluster: &str, px: f32| {
+        e.set_host_color_glyph_painter(Some(Box::new(move |cluster: &str, px: f32| {
             log.borrow_mut().push((cluster.to_string(), px));
             // A 6×6 solid green square sitting 2 px right of the pen, 5 above the baseline.
             (cluster == "😀").then(|| HostColorGlyph { width: 6, height: 6, left: 2, top: 5, rgba: [0, 255, 0, 255].repeat(36) })
@@ -1031,12 +1084,12 @@ mod tests {
         // The quad sits `left` px right of the pen and `top` px above the
         // baseline: against a painter that reports (0, 0), it is 2 right
         // and 5 up. A new painter repaints (the old slots are dropped).
-        e.set_host_color_glyphs(Some(Box::new(|_: &str, _: f32| Some(HostColorGlyph { width: 6, height: 6, left: 0, top: 0, rgba: [0, 0, 255, 255].repeat(36) }))));
+        e.set_host_color_glyph_painter(Some(Box::new(|_: &str, _: f32| Some(HostColorGlyph { width: 6, height: 6, left: 0, top: 0, rgba: [0, 0, 255, 255].repeat(36) }))));
         let at_pen: Vec<GlyphQuad> = e.shape("a😀", 40.0, None, None, 0.0, 0.0, 0.0, 0);
         assert_eq!((quads[1].x - at_pen[1].x, quads[1].y - at_pen[1].y), (2.0, -5.0), "{quads:?} vs {at_pen:?}");
         assert_eq!(color_texel_of(&e, &at_pen[1]), [0, 0, 255, 255], "the new painter's pixels");
         // A host that declines leaves the emoji to swash.
-        e.set_host_color_glyphs(Some(Box::new(|_: &str, _: f32| None)));
+        e.set_host_color_glyph_painter(Some(Box::new(|_: &str, _: f32| None)));
         let declined: Vec<GlyphQuad> = e.shape("a😀", 40.0, None, None, 0.0, 0.0, 0.0, 0);
         assert!(declined[1].color && declined[1].w > 20.0, "swash's own raster: {declined:?}");
     }
@@ -1048,7 +1101,7 @@ mod tests {
     #[ignore = "needs Windows' Segoe UI Emoji font: run with --include-ignored on Windows"]
     fn a_host_emoji_that_fills_the_color_atlas_grows_it() {
         let mut e: TextEngine = engine_with_emoji();
-        e.set_host_color_glyphs(Some(Box::new(|_: &str, _: f32| Some(HostColorGlyph { width: 300, height: 300, left: 0, top: 300, rgba: [255, 0, 0, 255].repeat(300 * 300) }))));
+        e.set_host_color_glyph_painter(Some(Box::new(|_: &str, _: f32| Some(HostColorGlyph { width: 300, height: 300, left: 0, top: 300, rgba: [255, 0, 0, 255].repeat(300 * 300) }))));
         let before: u32 = e.generation;
         // Four 300-px squares do not fit a 512 atlas: it doubles mid-run.
         let quads: Vec<GlyphQuad> = e.shape("😀😁😂🤣", 40.0, None, None, 0.0, 0.0, 0.0, 0);
@@ -1102,7 +1155,7 @@ mod tests {
         let (w, h) = e.measure("Hello", 20.0, None, None);
         assert!(w > 30.0 && w < 70.0, "{w}");
         assert_eq!(h, 24.0);
-        // PR4: Godot's per-size whole-pixel ascent + descent, not a ratio.
+        // Whole-pixel ascent + descent at each size, not a ratio of it.
         let m = e.metrics(None);
         assert_eq!(m.font_height(24.0), 29.0);
         assert_eq!(m.font_height(28.0), 33.0);

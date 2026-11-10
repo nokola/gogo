@@ -1,15 +1,18 @@
 //! The gogo draw list on wgpu: one instanced draw of UI quads per (clip,
-//! texture) batch. Needed so a whole page costs one buffer write and a
-//! handful of draw calls; the page's rects are epx and are scaled to device
-//! pixels here (`gogo-ui` never sees a device pixel). Text is shaped by
-//! `gogo-text` into glyph quads over its coverage atlas (texture 0);
-//! images are RGBA textures the host's image table writes through
-//! `write_image_texture_only` (the table records the size alongside). A gradient
-//! arrives as one quad per stop pair (its `band`); a `RotatePush` turns
-//! every quad until its pop about the given center, a `SwingPush` turns
-//! them in 3D about a vertical hinge under a perspective camera (the
-//! WP7 turnstile), and a `TextStretch` maps one glyph's ink box onto its
-//! rect.
+//! texture) batch.
+//!
+//! Needed so that a whole page costs one buffer write and a handful of
+//! draw calls.
+//!
+//! The page's rects are epx and are scaled to device pixels here
+//! (`gogo-ui` never sees a device pixel). Text is shaped by `gogo-text`
+//! into glyph quads over its coverage atlas (texture 0); images are RGBA
+//! textures the host uploads by `ImageKey` (`write_image_texture_only`).
+//! A gradient is ONE quad whose stops sit in a row of the gradient tables
+//! (`GradientTable`); a `RotatePush` turns every quad until its pop about
+//! the given center, a `SwingPush` turns them in 3D about a vertical
+//! hinge under a perspective camera (the WP7 turnstile), and a
+//! `TextStretch` maps one glyph's ink box onto its rect.
 
 use crate::textures::{Tex_Image_Straight_Srgb_4xU8_RGBA, Tex_Tile_Premul_Srgb_4xU8_RGBA};
 use crate::timings::{PrepareStage, PrepareTimings};
@@ -22,12 +25,16 @@ use gogo_ui::page::{NO_STR, Page};
 use gogo_ui::ImageKey;
 use gogo_text::TextEngine;
 
-/// The frame's draw lists, in draw order, each with the page that owns
-/// its strings — handed to `UiRenderer::prepare_pages` as a walk so the
-/// host builds no vector of them per frame (DECISIONS.md D76). A slice or
-/// an array of `(draws, page)` pairs is one (the pins, a one-page bake).
-/// The page outlives the walk (it lives in the host); a list may be a
-/// copy made for the call (a page mid-slide).
+/// A frame's draw lists, in draw order, each with the page that owns its
+/// strings. A slice, an array or a `Vec` of `(draws, page)` pairs is one.
+///
+/// Needed so that `UiRenderer::prepare_pages` takes the lists as a walk:
+/// a host that keeps its pages in a structure of its own implements this
+/// and builds no vector of pairs per frame, so its frame stays free of
+/// allocations.
+///
+/// A page outlives the walk (it lives in the host); a list may be a copy
+/// made for the call (a page drawn mid-slide).
 pub trait DrawLists {
     fn for_each_list<'a>(&'a self, f: &mut dyn FnMut(&[Draw], &'a Page));
 }
@@ -60,11 +67,13 @@ struct Quad {
     border_color: [f32; 4],
     /// corner, border, kind, angle.
     params: [f32; 4],
-    /// Glyph/image: u0, v0, u1, v1. Gradient: band start, band end.
+    /// Glyph/image: u0, v0, u1, v1. Gradient: its table row, the slot
+    /// count, the tiling period's start and length. Arc: the dash offset,
+    /// dash and period. A rect with per-corner radii: the four radii.
     uv: [f32; 4],
     /// sin, cos of the rotation and its center (device px); `[0, 1, 0, 0]` = none.
     rot: [f32; 4],
-    /// Arc-wedge mask (GP33): center x, y (device px), from (radians),
+    /// Arc-wedge mask: center x, y (device px), from (radians),
     /// span (radians). span < 0 = none; span 0 hides the quad whole.
     wedge: [f32; 4],
     /// The 3D swing: sin, cos of the angle, the hinge x (device px), the
@@ -96,8 +105,8 @@ struct Screen {
 /// 2.. = images in `images` order.
 type TexId = u32;
 const ATLAS: TexId = 0;
-/// The text engine's color atlas (emoji, DECISIONS.md D119): straight
-/// RGBA, drawn as image quads with a white tint.
+/// The text engine's color atlas (emoji): straight RGBA, drawn as image
+/// quads with a white tint.
 const COLOR_ATLAS: TexId = 1;
 
 struct Batch {
@@ -121,12 +130,12 @@ struct Batch {
 /// same math.
 ///
 /// Needed because a phone GPU of 2014 pays for ALL of `fs_main` on every
-/// pixel, the ones that use none of it included: through `full` alone the
-/// screen pass is one 31-49 ms GPU job on the OnePlus A0001 and every
-/// screen tops out near 20 frames a second; through the pair it is 6-10 ms
-/// and a frame lands every screen refresh (DECISIONS.md D57,
-/// docs/todo-perf-smudge.md/PS22). Images, glyphs and borderless rects are
-/// 97 % and more of the pixels of every main screen.
+/// pixel, the ones that use none of it included. Measured on a OnePlus
+/// One (Adreno 330): through `full` alone the screen pass is one 31-49 ms
+/// GPU job and every screen tops out near 20 frames a second; through the
+/// pair it is 6-10 ms and a frame lands every screen refresh. Images,
+/// glyphs and borderless rects were 97 % and more of the pixels of every
+/// screen measured.
 struct PipelinePair {
     full: wgpu::RenderPipeline,
     plain: wgpu::RenderPipeline,
@@ -194,8 +203,8 @@ pub struct UiRenderer {
     screen_buffer: wgpu::Buffer,
     screen_bind: wgpu::BindGroup,
     /// The size the screen uniform holds on the GPU: written only when
-    /// the size changes (D34) — a stroke's frames never change it, and
-    /// on the GLES road every buffer write is an EGL context switch.
+    /// the size changes. Needed because on wgpu's GL backend every buffer
+    /// write is an EGL context switch, and most frames keep the size.
     screen_written: Option<(u32, u32)>,
     tex_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
@@ -206,15 +215,15 @@ pub struct UiRenderer {
     quads: Vec<Quad>,
     batches: Vec<Batch>,
     /// The quads the GPU buffer holds: `prepare_pages` writes the buffer
-    /// only when this frame's quads differ (a buffer write is an EGL
-    /// context switch on the GLES road, D33) — an idle frame writes
-    /// nothing. Emptied when the buffer is remade.
+    /// only when this frame's quads differ, so an idle frame writes
+    /// nothing. Needed because on wgpu's GL backend a buffer write is an
+    /// EGL context switch. Emptied when the buffer is remade.
     quads_written: Vec<Quad>,
-    /// How many times the quad buffer was written (the pins).
+    /// How many times the quad buffer was written (read by tests).
     quad_writes: u32,
-    // The prepare pass's scratch, kept between frames so a frame
-    // allocates nothing once warm (DECISIONS.md D76): the clip, rotation,
-    // wedge and swing stacks, and one label's shaped glyphs.
+    // The prepare pass's scratch, kept between frames so that a frame
+    // allocates nothing once warm: the clip, rotation, wedge and swing
+    // stacks, and one label's shaped glyphs.
     clips: Vec<[u32; 4]>,
     rots: Vec<[f32; 4]>,
     wedges: Vec<[f32; 4]>,
@@ -246,12 +255,12 @@ pub struct UiRenderer {
     /// The format of the screen's pass (the host's bundles are recorded
     /// for it).
     target_format: wgpu::TextureFormat,
-    /// The gradient tables (D21): a row per gradient on screen, cached by
+    /// The gradient tables: a row per gradient on screen, cached by
     /// content across frames.
     gradients: GradientTable,
     /// Commands with no texture to draw them (a missing image).
     pub skipped: u32,
-    /// Off only in a pin that compares a culled frame with the whole one
+    /// Off only in a test that compares a culled frame with the whole one
     /// (`debug_set_culling`).
     cull: bool,
     /// Quads and images of this frame left out because they lie outside
@@ -268,12 +277,17 @@ const KIND_GLYPH: f32 = 4.0;
 const KIND_CONIC: f32 = 6.0;
 const KIND_ARC: f32 = 7.0;
 /// A rect whose four corner radii differ (`corner_radius_top_left=` …);
-/// the radii ride the uv slot (unused for untextured quads).
+/// the radii are sent in the uv slot (unused for untextured quads).
 const KIND_RECT4: f32 = 8.0;
 const KIND_IMAGE: f32 = 5.0;
 const NO_UV: [f32; 4] = [0.0; 4];
 
 impl UiRenderer {
+    /// A renderer whose screen pass draws into `target_format`.
+    ///
+    /// WARNING: `target_format` must not be an `*Srgb` format. The shader
+    /// writes sRGB-ENCODED values, so such a target would encode them a
+    /// second time and every color would come out too bright.
     pub fn new(device: &wgpu::Device, target_format: wgpu::TextureFormat) -> UiRenderer {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("ui"), source: wgpu::ShaderSource::Wgsl(include_str!("ui.wgsl").into()) });
         let screen_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -434,15 +448,18 @@ impl UiRenderer {
         Texture { bind_group, bind_group_pixel, width, height, texture: None }
     }
 
-    /// Opens the image `key` (the `source=` id) for an externally-owned
-    /// DISPLAY texture and hands back its handle — the D302 road for live
-    /// GPU content in a gogo Image (D10): the owner keeps the texture and
-    /// re-encodes it when it changes; the UI samples it like any uploaded
-    /// image. Needed for the brush page's live preview (its display cache,
-    /// an sRGB8 encode of the preview renderer). Open once, then
-    /// `set_external_image` per frame — the handle remembers the texture
-    /// identity, so a same-texture frame makes no bind group. Opening a
-    /// key twice returns the same handle.
+    /// Opens the image `key` (the `source=` id) for a texture the HOST
+    /// owns and hands back its handle.
+    ///
+    /// Needed for live GPU content inside a gogo Image (a preview the
+    /// host renders itself): the host keeps the texture and redraws it
+    /// when it changes, and the UI samples it like any uploaded image,
+    /// with no copy through the CPU.
+    ///
+    /// Open once, then `set_external_image` per frame: the handle
+    /// remembers the texture identity, so a frame that shows the same
+    /// texture makes no bind group. Opening a key twice returns the same
+    /// handle.
     pub fn external_image(&mut self, key: ImageKey) -> ExternalImage {
         if let Some(i) = self.externals.iter().position(|e| e.key == key) {
             return ExternalImage(i as u32);
@@ -458,14 +475,17 @@ impl UiRenderer {
     }
 
     /// Opens the image `key` as a HOST LAYER and hands back its handle: an
-    /// Image with `source=` this key draws no picture — the bundle the
-    /// host hands `set_host_layer` plays at that point of the UI's own
-    /// pass, under everything drawn after it. Needed so a page can put
-    /// the host's own drawing (the stickers over the photo) between the
-    /// layers of the UI without a pass of its own: on the OnePlus every
-    /// pass costs a whole-screen load and store, and a blend with what is
-    /// already on screen (burn-in, light) needs the SAME pass. Opening a
-    /// key twice returns the same handle.
+    /// Image with `source=` this key draws no picture. The bundle the host
+    /// hands `set_host_layer` plays at that point of the UI's own pass
+    /// instead, under everything drawn after it.
+    ///
+    /// Needed so that a page can put the host's own drawing (pictures a
+    /// user moves over a photo, a 3D view) between the layers of the UI
+    /// without a render pass of its own: on a tile-based phone GPU every
+    /// extra pass costs a whole-screen load and store, and a blend with
+    /// what is already on screen needs the SAME pass.
+    ///
+    /// Opening a key twice returns the same handle.
     pub fn host_layer(&mut self, key: ImageKey) -> HostLayer {
         if let Some(i) = self.host_layers.iter().position(|(k, _)| *k == key) {
             return HostLayer(i as u32);
@@ -502,10 +522,15 @@ impl UiRenderer {
     }
 
     /// Shows `texture` as the opened image. Another texture replaces the
-    /// slot (the ping-pong renderers swap); the SAME texture again is a
-    /// no-op — no bind group per frame. Returns true when it (re)registered.
+    /// slot (a host that draws into two textures in turn hands the other
+    /// one each time); the SAME texture again does nothing, so no bind
+    /// group is made per frame.
+    ///
     /// Takes the typed texture: what its texels hold is said once, where
     /// the host wraps it (`Tex_Image_Straight_Srgb_4xU8_RGBA`).
+    ///
+    /// Returns true when it registered the texture, false when that
+    /// texture was already the one shown.
     pub fn set_external_image(&mut self, device: &wgpu::Device, image: ExternalImage, texture: Tex_Image_Straight_Srgb_4xU8_RGBA<'_>) -> bool {
         let raw: &wgpu::Texture = texture.RGBA;
         let external: &External = &self.externals[image.0 as usize];
@@ -527,10 +552,11 @@ impl UiRenderer {
     }
 
     /// Drops the texture an opened image shows: the slot points at a
-    /// blank 1x1 until the next `set_external_image`. Needed because the
-    /// bind group here holds the texture alive — a released full-res crop
-    /// photo (hundreds of MB) would otherwise stay on the GPU until the
-    /// next open replaced it.
+    /// blank 1x1 until the next `set_external_image`.
+    ///
+    /// Needed because the bind group here holds the texture alive: a
+    /// full-size photo the host let go of (hundreds of MB) would otherwise
+    /// stay on the GPU until the next open replaced it.
     pub fn release_external_image(&mut self, device: &wgpu::Device, image: ExternalImage) {
         let external: &External = &self.externals[image.0 as usize];
         if external.texture.is_none() {
@@ -546,8 +572,10 @@ impl UiRenderer {
         self.externals[image.0 as usize].texture = None;
     }
 
-    /// Test-only: how many opened images hold a texture right now — a
-    /// page's close pins that its pictures left the GPU.
+    /// For tests: how many opened images hold a texture right now.
+    ///
+    /// Needed so that a test of a page's close can check that its
+    /// pictures left the GPU.
     pub fn debug_held_external_count(&self) -> usize {
         self.externals.iter().filter(|e| e.texture.is_some()).count()
     }
@@ -561,12 +589,14 @@ impl UiRenderer {
         );
     }
 
-    /// Registers an RGBA8 image under `key` (the `source=` id) — a fresh
-    /// texture; `write_image_texture_only` is the door in.
+    /// Registers an RGBA8 image under `key` (the `source=` id) in a fresh
+    /// texture. `write_image_texture_only` is the public way in.
     fn add_image(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: ImageKey, rgba: &[u8], width: u32, height: u32) {
-        // sRGB bytes in, sRGB bytes out: the surface is non-sRGB (the canvas
-        // blit copies encoded bytes), so an sRGB texture here would be
-        // decoded on sample and never re-encoded — every image too dark.
+        // sRGB bytes in, sRGB bytes out. Needed because the shader writes
+        // sRGB-encoded values to a target whose format is not `*Srgb`
+        // (`UiRenderer::new`): an sRGB texture here would be decoded on
+        // sample and never encoded again, and every image would come out
+        // too dark.
         let (tex, mut entry) = self.make_texture(device, width, height, wgpu::TextureFormat::Rgba8Unorm);
         Self::write(queue, &tex, rgba, width, height, 4);
         entry.texture = Some(tex);
@@ -589,12 +619,17 @@ impl UiRenderer {
     }
 
     /// Frees an uploaded picture's texture: `key` shows nothing until its
-    /// pixels are uploaded again. Needed because built-in pictures would
-    /// otherwise stay on the GPU for the whole session once any page
-    /// showed them (the effects page's ~11 MB of tile photos, the sticker
-    /// sheets) — the host calls this for pictures no live page shows. An
-    /// opened external image is left alone (its owner releases it with
-    /// `release_external_image`). Returns whether a texture was freed.
+    /// pixels are uploaded again.
+    ///
+    /// Needed because built-in pictures would otherwise stay on the GPU
+    /// for the whole session once any page showed them (a gallery's
+    /// photos, sheets of stickers): the host calls this for pictures no
+    /// live page shows.
+    ///
+    /// An opened external image is left alone (its owner releases it with
+    /// `release_external_image`).
+    ///
+    /// Returns whether a texture was freed.
     pub fn release_image(&mut self, device: &wgpu::Device, key: ImageKey) -> bool {
         let Some(slot) = self.slot(key) else { return false };
         if slot == ATLAS || self.externals.iter().any(|e| e.key == key) {
@@ -607,14 +642,21 @@ impl UiRenderer {
         true
     }
 
-    /// Writes an image's pixels — the TEXTURE ONLY. Page code never calls
-    /// this: the host's image table is the door (`ImageTable::upload_image`
-    /// in app_wgpu), because layout needs the picture's size as well and a
-    /// texture written without it draws into a 0-wide box (todo-bugs B26).
-    /// The same-size texture is written IN PLACE, a new size (or a key
-    /// never added) takes `add_image` — pictures that refresh while shown
-    /// (the mask panel's tiles per effect pass, the preset strip per open)
-    /// would otherwise pile up a fresh texture per refresh for the session.
+    /// Writes an image's pixels (straight sRGB RGBA8 rows): the TEXTURE
+    /// ONLY. A texture of the same size is written IN PLACE; a new size,
+    /// or a key never written, gets a fresh texture.
+    ///
+    /// Needed in place because a picture that refreshes while shown (a
+    /// thumbnail redrawn after every edit) would otherwise leave a fresh
+    /// texture behind per refresh, for the whole session.
+    ///
+    /// A picture written again at a NEW size leaves its old texture
+    /// behind that way: call `release_image` first.
+    ///
+    /// WARNING: the layout needs the picture's size as well
+    /// (`gogo_text::EpxMeasure::images`), so a host keeps one place of its
+    /// own that does both: an Image sized by its picture
+    /// (`aspect=natural`) is 0 wide while only the texture is written.
     pub fn write_image_texture_only(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: ImageKey, rgba: &[u8], width: u32, height: u32) {
         let slot: Option<TexId> = self.images.get(key.index()).copied().flatten();
         if let Some(entry) = slot.map(|s| &self.textures[s as usize]) {
@@ -670,11 +712,11 @@ impl UiRenderer {
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_pages<L: DrawLists + ?Sized>(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, pages: &L, epx: f32, screen: (u32, u32), text: &mut TextEngine, locale: Option<&Locale>) {
         // A glyph that grows the atlas during the pass leaves every run
-        // shaped before it this frame — the cache's included — with uvs into
-        // the atlas that was: the pass runs again against the grown one. A
-        // grow doubles the atlas, a few times in an app's life; the usual
-        // frame pays nothing. User-seen: a button with no letters ("cancel")
-        // until the next redraw (S24, 2026-09-14).
+        // shaped before it this frame, the cache's included, with uvs into
+        // the atlas that was: the pass runs again against the grown one.
+        // Needed because the user otherwise sees a button with no letters
+        // until the next redraw. A grow doubles the atlas, a few times in
+        // an app's life; the usual frame pays nothing.
         let generation: u32 = text.generation;
         self.stage_begins(PrepareStage::Pass);
         self.prepare_pass(device, pages, epx, screen, text, locale);
@@ -764,11 +806,12 @@ impl UiRenderer {
         self.skipped = 0;
         self.culled = 0;
         self.screen = screen;
-        // Each rect's origin snaps to a whole device pixel here, at draw time,
-        // so a fractional size upstream (`Image height=205.7`) never blurs
-        // the glyph runs and quads below it; the layout keeps its fractions
-        // (Godot snaps per node, compounding — this rounds each node once
-        // from its true position).
+        // Each rect's origin snaps to a whole device pixel here, at draw
+        // time, so that a fractional size upstream (`Image height=205.7`)
+        // never blurs the glyph runs and quads below it. The layout keeps
+        // its fractions: each node is rounded once, from its true
+        // position. Rounding node by node down the tree would add the
+        // errors up.
         let px = |r: &Rect| [(r.x * epx).round(), (r.y * epx).round(), r.w * epx, r.h * epx];
         // The scratch stacks step out of self for the pass (push_quad and
         // close_batch borrow self) and go back at its end.
@@ -826,15 +869,15 @@ impl UiRenderer {
                         GradientKind::Conic => KIND_CONIC,
                         GradientKind::Linear => KIND_LINEAR,
                     };
-                    // ONE quad (D21): the stops go to the table row this
-                    // gradient's content owns; the shader looks each pixel's
-                    // pair up. params.x is the rounded-rect radius the
-                    // shader masks EVERY quad by — a Gradient's
-                    // `corner_radius` (Q9). The compass (0 = to top,
-                    // clockwise) as the shader's direction angle (0 = to the
-                    // right): a quarter turn back. uv: the row, the slot
-                    // count, then the tiling period (start, length in run
-                    // units; 0 length = no tiling).
+                    // ONE quad: the stops go to the table row this
+                    // gradient's content owns, and the shader looks each
+                    // pixel's pair up. params.x is the rounded-rect radius
+                    // the shader masks EVERY quad by (a Gradient's
+                    // `corner_radius`). The compass (0 = to top,
+                    // clockwise) becomes the shader's direction angle (0 =
+                    // to the right): a quarter turn back. uv: the row, the
+                    // slot count, then the tiling period (start, length in
+                    // run units; 0 length = no tiling).
                     let r = px(rect);
                     if self.cull && Self::quad_is_outside(&r, &rot, &swing, current, screen) {
                         self.culled += 1;
@@ -852,7 +895,8 @@ impl UiRenderer {
                     let s = gogo_ui::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let r = px(rect);
-                    // Truncated like Godot's `int(epx * size)` (see `EpxMeasure`).
+                    // Truncated to whole device pixels, the size
+                    // `gogo_text::EpxMeasure` measured the label at.
                     let size_px = (font_size * epx).floor().max(1.0);
                     let max_w = if *wrap { Some(r[2]) } else { None };
                     let (_, th) = text.measure(s, size_px, max_w, font_key);
@@ -884,8 +928,8 @@ impl UiRenderer {
                             continue;
                         }
                         // An emoji is an image quad over the color atlas:
-                        // its own colors, the text's alpha (the Text page's
-                        // opacity slider fades it with the letters).
+                        // its own colors, the text's alpha (so that a label
+                        // that fades out fades its emoji too).
                         let (tex, kind, tint) = if g.color { (COLOR_ATLAS, KIND_IMAGE, [1.0, 1.0, 1.0, color[3]]) } else { (ATLAS, KIND_GLYPH, color) };
                         if current_tex != tex || current_pixel {
                             self.close_batch(&mut batch_first, current, current_tex, current_pixel);
@@ -980,10 +1024,11 @@ impl UiRenderer {
                         continue;
                     };
                     // Judged on the Image's rect BEFORE the batch turns to
-                    // its texture (every fit draws inside the rect): on a
-                    // long list of pictures each texture is a draw call of
-                    // its own, and the ones scrolled out were a third of a
-                    // frame's CPU on an old phone (docs/todo-perf-smudge.md/PS29).
+                    // its texture (every fit draws inside the rect).
+                    // Needed because on a long list of pictures each
+                    // texture is a draw call of its own, and the ones
+                    // scrolled out were a third of a frame's CPU on a
+                    // phone of 2014.
                     if self.cull && Self::quad_is_outside(&px(rect), &rot, &swing, current, screen) {
                         self.culled += 1;
                         continue;
@@ -1111,9 +1156,8 @@ impl UiRenderer {
     /// Needed because the GPU throws such a quad away only AFTER the CPU
     /// paid for it: its bytes in the quad upload and, for a picture with a
     /// texture of its own, a draw call. A list many screens long sends
-    /// all of itself every frame - on the OnePlus A0001 the effect list's
-    /// scrolled-out pictures were a third of the frame's CPU
-    /// (docs/todo-perf-smudge.md/PS29).
+    /// all of itself every frame: on a OnePlus One the scrolled-out
+    /// pictures of a long list were a third of the frame's CPU.
     ///
     /// A TURNED or SWUNG quad is never outside: its rect is where it was
     /// laid out, not where the vertex stage puts it. A rect with a NaN in
@@ -1156,9 +1200,10 @@ impl UiRenderer {
     ///
     /// Needed because `fs_plain` has no code for a border, a circle, a
     /// gradient, an arc, per-corner radii or a wedge mask: such a quad sent
-    /// to it would draw as a flat rect. The pin
-    /// `tests/ui_plain_pipeline.rs` holds the two shaders to the same
-    /// pixels for the quads this admits.
+    /// to it would draw as a flat rect.
+    ///
+    /// `debug_render_through_fs_main` lets a test hold the two shaders to
+    /// the same pixels for the quads this admits.
     fn quad_is_plain(q: &Quad) -> bool {
         let kind: f32 = q.params[2];
         let borderless_rect: bool = kind == KIND_RECT && q.params[1] == 0.0;
@@ -1227,14 +1272,16 @@ impl UiRenderer {
         self.draw_calls = calls;
     }
 
-    /// Pin probe: `render` with EVERY batch through `fs_main` — what the
-    /// split's pin (`tests/ui_plain_pipeline.rs`) compares a `render` to.
+    /// For tests: `render` with EVERY batch through `fs_main`.
+    ///
+    /// Needed so that a test can hold `fs_plain` to `fs_main`'s pixels: it
+    /// draws one frame both ways and compares.
     pub fn debug_render_through_fs_main(&mut self, pass: &mut wgpu::RenderPass<'_>) {
         let calls: u32 = self.record(pass, &self.pipelines, true, true);
         self.draw_calls = calls;
     }
 
-    /// Pin probe: (plain batches, all batches) of the last `prepare`.
+    /// For tests: (plain batches, all batches) of the last `prepare`.
     pub fn debug_plain_batches(&self) -> (usize, usize) {
         (self.batches.iter().filter(|b| b.plain).count(), self.batches.len())
     }
@@ -1290,27 +1337,27 @@ impl UiRenderer {
 
     /// The format a tile is stored in: the shader writes sRGB-ENCODED
     /// premultiplied values, so a plain Unorm target keeps them as written
-    /// (an `*Srgb` format would encode them a second time) — the same rule
-    /// that picks the shell's non-sRGB surface format.
+    /// (an `*Srgb` format would encode them a second time). The screen's
+    /// format follows the same rule (`UiRenderer::new`).
     const TILE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-    /// Draws `draws` (page epx — one node's list from `gogo_ui::draw_subtree`)
-    /// into a NEW texture of `size_px`: `origin_epx` lands on the tile's
-    /// top-left, `epx` device px per epx — a text callout's bake tile at
-    /// the painting's scale (todo-rust 2.8.3; shipped's SubViewport +
-    /// TextBakeDrawer pair).
+    /// Draws `draws` (page epx: one node's list from
+    /// `gogo_ui::draw_subtree`) into a NEW texture of `size_px`.
+    /// `origin_epx` lands on the tile's top-left, at `epx` device px per
+    /// epx.
     ///
-    /// Needed so a bake draws through the ONE code path the screen uses —
-    /// the same walk, shaping, atlas and shader — so what the user sees is
-    /// what bakes; a CPU rasterizer would be a second renderer to keep in
-    /// step (not a perf choice: a bake runs once per keep).
+    /// Needed so that a host can keep a piece of UI as a picture (a text
+    /// box burned into a painting, at the painting's scale) drawn by the
+    /// ONE code path the screen uses: the same walk, shaping, atlas and
+    /// shader, so what the user sees is what is kept. A CPU rasterizer
+    /// would be a second renderer to keep in step.
     ///
     /// The tile is PREMULTIPLIED sRGB8, the pipeline's output over a
-    /// transparent clear — the typed return keeps it out of the straight
-    /// image decode. Uses the renderer's quad and screen buffers in queue
-    /// order, so it may run any time between two frames (the frame's own
-    /// `prepare` rewrites both). `locale`: the table the page laid out
-    /// with (`prepare_pages`).
+    /// transparent clear; the typed return says so, so that a host does
+    /// not read it as straight color. Uses the renderer's quad and screen
+    /// buffers in queue order, so it may run any time between two frames
+    /// (the frame's own `prepare` rewrites both). `locale`: the table the
+    /// page laid out with (`prepare_pages`).
     #[allow(clippy::too_many_arguments)]
     pub fn render_to_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, draws: &[Draw], page: &Page, text: &mut TextEngine, locale: Option<&Locale>, epx: f32, origin_epx: (f32, f32), size_px: (u32, u32)) -> Tex_Tile_Premul_Srgb_4xU8_RGBA {
         let shifted: Vec<Draw> = draws.iter().map(|d| d.posed(-origin_epx.0, -origin_epx.1, 1.0)).collect();
@@ -1347,14 +1394,13 @@ impl UiRenderer {
         Tex_Tile_Premul_Srgb_4xU8_RGBA::new(tex)
     }
 
-    /// Pin probe: gradient table rows in use after the last frame.
+    /// For tests: gradient table rows in use after the last frame.
     pub fn debug_gradient_rows(&self) -> usize {
         self.gradients.debug_rows_in_use()
     }
 
-    /// Culling off or on (`quad_is_outside`), for the pin that holds a
-    /// culled frame to the pixels of the whole one
-    /// (`tests/ui_cull.rs`).
+    /// Culling off or on (`quad_is_outside`), for a test that holds a
+    /// culled frame to the pixels of the whole one.
     pub fn debug_set_culling(&mut self, on: bool) {
         self.cull = on;
     }
@@ -1369,8 +1415,8 @@ impl UiRenderer {
         self.quads.len()
     }
 
-    /// How many frames wrote the quad buffer so far (the pin: an unchanged
-    /// frame writes nothing).
+    /// How many frames wrote the quad buffer so far, for a test that an
+    /// unchanged frame writes nothing.
     pub fn debug_quad_writes(&self) -> u32 {
         self.quad_writes
     }
@@ -1380,13 +1426,13 @@ impl UiRenderer {
     }
 }
 
-// ---- The gradient tables (D21) ---------------------------------------------------
+// ---- The gradient tables ---------------------------------------------------------
 
 /// Slots per index-map row: a gradient uses as many as its box has device
 /// pixels along the run (see `slots_for`), at most this.
 const GRAD_MAP_WIDTH: u32 = 1024;
-/// Stops per table row (two texels each). The editor caps a gradient at
-/// 60; a mirrored one doubles; more is cut.
+/// Stops per table row (two texels each). A gradient with more stops is
+/// cut at this many (`GradientTable::fill`).
 const GRAD_MAX_STOPS: u32 = 128;
 const GRAD_STOP_TEXELS: u32 = GRAD_MAX_STOPS * 2;
 const GRAD_ROWS_INITIAL: u32 = 64;
@@ -1408,12 +1454,12 @@ struct GradEntry {
 ///
 /// Both tables are INTEGER textures (R8Uint, Rgba16Uint). Needed because a
 /// float32 texture bound without a filter is an INCOMPLETE texture on GLES
-/// 3.0 drivers without OES_texture_float_linear (the OnePlus A0001's
-/// Adreno 330, 2026-09-06) and samples as opaque black — every gradient on
-/// the phone was a black box while the desktop pins were green. Integer
-/// textures can never filter, so every driver fetches them by texel. The
-/// stops are 16-bit fixed point over -1..1 (step 3e-5, well under the
-/// 8-bit encode), the position two 16-bit halves of a 32-bit fraction.
+/// 3.0 drivers without OES_texture_float_linear (seen on an Adreno 330)
+/// and samples as opaque black: every gradient on that phone was a black
+/// box while the desktop tests passed. Integer textures can never filter,
+/// so every driver fetches them by texel. The stops are 16-bit fixed
+/// point over -1..1 (step 3e-5, well under the 8-bit encode), the
+/// position two 16-bit halves of a 32-bit fraction.
 pub struct GradientTable {
     layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
@@ -1609,7 +1655,7 @@ impl GradientTable {
         }
     }
 
-    /// Pin probes.
+    /// For tests: the gradient rows in use.
     pub fn debug_rows_in_use(&self) -> usize {
         self.entries.len()
     }

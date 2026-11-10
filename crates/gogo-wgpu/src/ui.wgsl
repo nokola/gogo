@@ -4,7 +4,7 @@
 // 3 radial gradient, 4 glyph (atlas coverage × color), 5 image (texture ×
 // tint), 6 conic gradient (sweep about the center), 7 arc stroke
 // (params: thickness, from radians, kind, sweep radians), 8 rect with
-// per-corner radii (the radii ride the uv slot, tl/tr/br/bl).
+// per-corner radii (sent in the uv slot: tl, tr, br, bl).
 // Anti-aliased by a signed distance in the fragment stage.
 
 struct Screen {
@@ -15,14 +15,14 @@ struct Screen {
 @group(0) @binding(0) var<uniform> screen: Screen;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
-// The gradient tables (D21), one row per gradient on screen, read by exact
-// texel — no sampler, no filtering: `grad_map` holds, per slot along the
+// The gradient tables, one row per gradient on screen, read by exact
+// texel (no sampler, no filtering): `grad_map` holds, per slot along the
 // run, WHICH stop pair covers it; `grad_stops` holds the stops, two
 // texels each (the premultiplied Oklab color as 16-bit fixed point over
 // -1..1, then the position as two 16-bit halves of a 32-bit fraction).
 // Integer textures on purpose: a float32 texture bound unfiltered is
 // INCOMPLETE on GLES 3.0 without OES_texture_float_linear and samples as
-// opaque black (Adreno 330, 2026-09-06); integers always fetch.
+// opaque black (seen on an Adreno 330); integers always fetch.
 @group(2) @binding(0) var grad_map: texture_2d<u32>;
 @group(2) @binding(1) var grad_stops: texture_2d<u32>;
 
@@ -38,8 +38,8 @@ fn grad_stop_pos(pair_texel: i32, row: i32) -> f32 {
 
 struct Quad {
     @location(0) rect: vec4<f32>,          // x, y, w, h (device px)
-    @location(1) color: vec4<f32>,         // fill (gradient: from, PREMULTIPLIED OKLAB; glyph/image: tint)
-    @location(2) border_color: vec4<f32>,  // border (gradient: to, premultiplied Oklab)
+    @location(1) color: vec4<f32>,         // fill (glyph/image: tint; a gradient's colors are in its table row)
+    @location(2) border_color: vec4<f32>,  // border
     @location(3) params: vec4<f32>,        // corner, border, kind, angle (radians)
     @location(4) uv: vec4<f32>,            // u0, v0, u1, v1 (kinds 4, 5); table row, slot count, period start, period length (kinds 2, 3, 6); dash offset, dash, period (kind 7)
     @location(5) rot: vec4<f32>,           // sin, cos, center x, center y (device px)
@@ -129,15 +129,14 @@ fn srgb_pm_from_oklab_pm(lab_pm: vec4<f32>) -> vec4<f32> {
 
 // The fragment stage of a pipeline pair's `plain` pipeline (`PipelinePair`,
 // ui.rs): an image, a glyph, or a rect without a border, drawn with the
-// SAME math as fs_main's arms for those kinds — ui.rs `quad_is_plain` sends
-// nothing else here, and tests/ui_plain_pipeline.rs pins the two to the
-// same pixels.
+// SAME math as fs_main's arms for those kinds. ui.rs `quad_is_plain` sends
+// nothing else here.
 //
 // Needed because a phone GPU of 2014 runs ALL of fs_main for every pixel,
-// the kinds a pixel does not use included: the canvas image and the flat
+// the kinds a pixel does not use included: a full-screen picture and flat
 // panels, 97 % and more of a screen's pixels, cost about five times less
-// here (OnePlus A0001: the screen pass 31-49 ms through fs_main alone,
-// 6-10 ms through the pair; DECISIONS.md D57).
+// here (OnePlus One: the screen pass 31-49 ms through fs_main alone,
+// 6-10 ms through the pair).
 //
 // No branch on purpose: one texture read, the three results, a pick. A
 // rect reads the batch's texture at uv 0 and drops the result.
@@ -158,9 +157,9 @@ fn fs_plain(in: VsOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
-    // Arc-wedge mask (GP33): only fragments whose angle about the wedge
-    // center sits within [from, from + span] survive (the shared wedge
-    // formula -- draw.rs wedge_contains; hits use the same test).
+    // Arc-wedge mask: only fragments whose angle about the wedge center
+    // sits within [from, from + span] survive (the shared wedge formula:
+    // gogo-ui's `wedge_contains` in draw.rs; hits use the same test).
     if (in.wedge.w >= 0.0) {
         let d = in.pos.xy - in.wedge.xy;
         if (in.wedge.w <= 0.0) {
@@ -229,15 +228,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Both colors premultiplied BEFORE any mix, and every mix below stays
     // premultiplied. Needed because a straight mix drags the result toward
     // a transparent color's rgb (black): a dark fringe inside a ring on a
-    // light background (the color picker marker), a dark middle in a
-    // gradient fading to transparent.
+    // light background, a dark middle in a gradient fading to transparent.
     let fill_pm = vec4<f32>(in.color.rgb * in.color.a, in.color.a);
     let border_pm = vec4<f32>(in.border_color.rgb * in.border_color.a, in.border_color.a);
     var color = fill_pm;
     if (kind == 2.0 || kind == 3.0 || kind == 6.0) {
-        // Position along the run, then this quad's band of it: outside the
-        // band another stop pair's quad paints (the run's ends belong to
-        // the first and last bands).
+        // Where this pixel sits along the gradient's run, 0..1.
         var run: f32;
         if (kind == 2.0) {
             let dir = vec2<f32>(cos(in.params.w), sin(in.params.w));
@@ -259,7 +255,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         } else {
             run = clamp(length(p / half), 0.0, 1.0);
         }
-        // The lookup (D21): the run's slot names the stop pair — the CPU
+        // The lookup: the run's slot names the stop pair — the CPU
         // filled the map with the SAME floor (slot = floor(run * n)), so
         // the two agree at every slot edge — then the pair's two stops
         // blend by where the run sits between them. Before the first stop
@@ -276,19 +272,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let c1 = grad_stop_color(pair * 2 + 2, row);
         let p1 = grad_stop_pos(pair * 2 + 3, row);
         let t = clamp((run - p0) / max(p1 - p0, 0.0001), 0.0, 1.0);
-        // Authored colors mix in premultiplied Oklab (gogo's one law —
-        // gogo/src/color.rs is the CPU twin of this math): the table holds
-        // each stop as (L,a,b)*alpha + alpha, so the plain mix IS the
-        // Oklab lerp; only the mixed result converts back to the
-        // premultiplied sRGB the blend expects.
+        // Authored colors mix in premultiplied Oklab (gogo's one rule for
+        // mixing colors; gogo-ui's color.rs is the CPU twin of this math):
+        // the table holds each stop as (L,a,b)*alpha + alpha, so the plain
+        // mix IS the Oklab lerp; only the mixed result converts back to
+        // the premultiplied sRGB the blend expects.
         color = srgb_pm_from_oklab_pm(mix(c0, c1, t));
     } else if (border > 0.0) {
         // Blends fill into border over one pixel at the border's inner
         // edge, the same ramp the rim gets below.
         //
         // Needed because a plain per-pixel pick shows as a staircase
-        // inside every bordered circle and rounded corner (the gradient
-        // mark knob, FanRust/docs/parity/report/report.md).
+        // inside every bordered circle and rounded corner.
         let border_coverage = clamp(0.5 + (d + border), 0.0, 1.0);
         color = mix(fill_pm, border_pm, border_coverage);
     }
