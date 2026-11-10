@@ -325,7 +325,7 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
   root: `behavior <name> by $value in $min..$max[, step=$step][,
   key_unit=5%]` (the behavior that answers the instance's finger and keys
   — gogo's `slider` and `toggle`, or one the host registered in Rust
-  (`gogo::Behavior` + `CompileOptions::behaviors` + `Input::register`);
+  (`gogo_ui::Behavior` + `CompileOptions::behaviors` + `Input::register`);
   optional — without one the control's input is its code-behind's, through
   `on:pointer=` and `keys`; the name is checked, the slots the behavior
   reads must be declared, and the key groups it owns refuse a `keys`
@@ -1282,7 +1282,7 @@ compile error, not a silent meaning change). Widgets may declare scoped
 widget's per-instance node names and are invisible outside; `self` targets
 the node a style is applied to.
 
-```kdl
+```kdl partial
 anim appear duration_each=0.5, easing=cubic_out {  // one and-cluster;
     listBrush.translate.x from=-60, to=0           // duration_each= is each
     and panelMiddle.opacity from=0, to=1           // step's DEFAULT (a
@@ -1568,7 +1568,7 @@ type, one contract each.
 ```kdl
 Tiles gallery cols=2 {
     Label title text="top picks", full_row=true
-    Panel a { Image source="a.jpg", aspect=natural }
+    Panel a { Image source="res://a.jpg", aspect=natural }
     Panel wide span=2 { ... }
 }
 ```
@@ -1637,7 +1637,7 @@ sort-time warning keeps overflow loud instead).
 An `atlas` line names one picture and how to cut it into **slices**;
 `source=` shows a slice. One keyword, four forms:
 
-```kdl
+```kdl partial
 atlas animals source="res://s/animals.jpg", cell=80x80   // grid:  animals[12]
 atlas toolbar source="res://s/toolbar.png" {              // named: toolbar.play
     slice play x=0, y=0, size=48x48, edge=8
@@ -1896,7 +1896,7 @@ widget LabeledSlider $label="", $min=0, $max=100, $value=0 {
 }
 ```
 
-```kdl
+```kdl partial
 // brush_options.gogo
 uses "styles/theme.gogo"
 
@@ -1904,7 +1904,7 @@ Panel visibility=gone, halign=center, valign=bottom, margin_bottom=72 {
     Column spacing=8, min_width=240 {
         LabeledSlider sizeSlider label="Size", min=1, max=300, value=80
         LabeledSlider hardnessSlider label="Hardness", value=30
-        Control preview size=220x110
+        Layers preview size=220x110
     }
 }
 ```

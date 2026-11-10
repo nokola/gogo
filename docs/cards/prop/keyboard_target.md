@@ -7,7 +7,7 @@ advisory lint asks whether that's deliberate. It is on WP-style app bars
 small target).
 
 ```
-Button dotsButton 50x90, focus_mode=none, keyboard_target=off, text="…"
+Button dotsButton 50x90, keyboard_target=off, text="…"
 ```
 
 If the button should simply work with a keyboard, drop `focus_mode=none`

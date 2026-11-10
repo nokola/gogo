@@ -2,9 +2,17 @@
   "name": "gogo-language",
   "displayName": "Gogo UI",
   "description": "Syntax highlighting for .gogo UI files.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "nikolamsft",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nokola/gogo",
+    "directory": "vscode"
+  },
+  "bugs": {
+    "url": "https://github.com/nokola/gogo/issues"
+  },
   "engines": {
     "vscode": "^1.80.0"
   },

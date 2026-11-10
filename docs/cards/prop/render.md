@@ -11,7 +11,7 @@ casts like `as HSlider` stop working on that instance (address it through
 | `gogo` | gogo's composite draws it — slots, contract states and fills work |
 | `native` | the plain Godot node — also the spelled opt-out against a `theme { Slider ... }` default |
 
-```
+```kdl stale
 Slider volume render=gogo, value=30, min=0, max=100, step=5
 ```
 

@@ -3,7 +3,7 @@ built-in set — `hovered`, `focused`, `focus_within`, `disabled`, `held`,
 `selected`. The runtime maintains them (hover's touch rules, focus order,
 input blocking); nothing but the runtime writes them.
 
-```
+```kdl partial
 control Knob $value=0, $min=0, $max=1 {
     behavior slider by $value in $min..$max
     state_builtin hovered, focused, disabled   // focused: keyboard needs it

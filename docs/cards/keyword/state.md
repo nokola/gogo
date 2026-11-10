@@ -2,7 +2,7 @@ Inside a `control` block: declares the control's CUSTOM states — semantics
 defined by the code-behind, which raises and lowers them
 (`Runtime::set_custom`).
 
-```
+```kdl partial
 control Fader $value=0, $min=0, $max=100 {
     behavior slider by $value in $min..$max
     state clipping              // code: rt.set_custom(&page, fader, "clipping", true)

@@ -13,7 +13,7 @@ Scroll page width=fill, height=fill {
         Slider sizeSlider min=1, max=300, value=80, width=fill, min_height=44
         Label l2 text="Smoothing"
         Slider smoothSlider min=0, max=1, value=0.35, width=fill, min_height=44
-        Check hapticsCheck text="Haptic feedback", button_pressed=true, min_height=44
+        Check hapticsCheck text="Haptic feedback", selected=true, min_height=44
         Check autosaveCheck text="Autosave", min_height=44
     }
 }

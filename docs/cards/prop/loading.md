@@ -7,8 +7,8 @@ the pictures stream in.
 
 ```
 Tiles cols=2 {
-    Image a texture="res://icon.svg", loading=lazy
-    Image b texture="res://icon.svg", loading=lazy
+    Image a source="res://icon.svg", loading=lazy
+    Image b source="res://icon.svg", loading=lazy
 }
 ```
 

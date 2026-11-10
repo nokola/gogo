@@ -670,7 +670,7 @@ can show were embedded when the app was built. A `source=` naming a file
 the build never saw has no pixels to show, so the reload is refused at
 that line. Rebuild the app once; from then on the picture reloads like
 any other value. The compile-time switch is
-`CompileOptions::refuse_new_keys_and_pictures` (`gogo::reload`).
+`CompileOptions::refuse_new_keys_and_pictures` (`gogo_ui::reload`).
 
 ## G3002 — an automatic slot property assigned
 

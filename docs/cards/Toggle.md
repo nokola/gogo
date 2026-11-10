@@ -16,7 +16,7 @@ middle is zero changes; state is live presentation, `change` is
 commitment. Code-behind reads/writes the `selected` bool (or `value`);
 `change` auto-wires as `On<Name>Change`.
 
-```
+```kdl stale
 style BigSwitch for=Toggle, slot.track.corner_radius=4 {
     when selected slot.track.background=green
 }

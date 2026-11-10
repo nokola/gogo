@@ -1,0 +1,81 @@
+// Gogo in one file — a guided tour. Open it next to the Gogo editor panel,
+// change anything, save, and watch it hot reload. Errors point at the line
+// and usually suggest the fix; while a file has an error, the last good
+// version stays on screen.
+//
+// One line shape is the whole language:
+//   WidgetType name .StyleName property=value, property=value { children }
+//
+// Bare numbers on sizes/margins are effective pixels (epx) — density
+// independent, so the layout means the same thing on desktop and phone.
+
+// ---- theme values: $name = value, referenced anywhere a value goes --------
+$accent = #E51400
+$chrome = #1F1F1F
+$scrim  = #000000AA
+
+theme {
+    font_size = 15    // propagating default: every Label without its own
+}                     // font_size inherits this, epx-scaled
+
+// ---- styles: a named property bag applied with .Name; `when` responses
+// react to conditions, `transition` rules time the changes ------------------
+style ToolButton min_height=36, background=#00000000 {
+    transition any -> held duration=0.05, easing=cubic_out   // finger down
+    transition held -> any duration=0.2,  easing=cubic_out   // finger up
+    when held  background=$accent
+    when disabled opacity=0.4
+}
+
+// ---- a reusable widget: $params with defaults, one root, one `slot` -------
+widget Card $title="" {
+    Panel background=$chrome, corner_radius=8, padding=12 {
+        Column spacing=8 {
+            Label text=$title, font_size=18
+            slot                                 // instance children land here
+        }
+    }
+}
+
+// ---- an animation: a chain of steps (`and` = together, `then` = after) ----
+// Motion words (translate/scale/rotate/opacity) are visual-only — layout
+// never moves, and the transform disarms itself at rest. from= is asserted
+// from play start; `duration_each=` is every step's default (the word says
+// per-step), a line's own easing= or duration= wins.
+anim appear duration_each=0.4, easing=cubic_out {
+    panel.opacity     from=0,  to=1
+    and panel.translate.y from=24, to=0, easing=back_out
+}
+
+// ---- the view --------------------------------------------------------------
+// Placement is two questions with two props each:
+//   WHERE    halign=left/center/right   valign=top/center/bottom
+//   HOW BIG  width/height = 200 (exact epx) | hug (natural) | fill (leftover)
+// The same words work under a Layers (free stacking) and inside Column/Row
+// (stacked layout). min_width means "at least — still stretchy".
+// The default: a child takes the space its parent gives it — the backdrop
+// below fills the screen with no placement keys at all. A view file opens
+// with `View` (the root keyword): its children place freely, like Layers.
+View screen {
+    Rectangle backdrop color=$scrim
+
+    Card panel halign=center, valign=center, min_width=260, on:show=play(appear) {
+        Row spacing=8 {
+            Label caption text="Size", valign=center
+            Slider sizeSlider width=fill, min=1, max=100, value=40
+        }
+        Row spacing=8 {
+            Button cancelButton .ToolButton width=fill, text="Cancel"
+            Button okButton .ToolButton width=fill(2), text="OK"   // 2x share
+        }
+        Label hint text="edit me and save — the view reloads live",
+            font_size=12, halign=center
+    }
+}
+
+// Where to go next:
+//   COOKBOOK.md  — task-shaped recipes ("How do I center a control?")
+//   REFERENCE.md — every property, condition, easing and error, for lookup
+// Wiring: a named node auto-connects its signals to your host script by
+// convention (okButton + held -> OnOkButtonPressed), or explicitly with
+// on:activate=HandlerName / on:activate=emit(HostSignal).

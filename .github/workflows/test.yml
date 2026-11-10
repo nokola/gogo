@@ -1,0 +1,26 @@
+# Runs the whole test suite on every push to main and on every pull request,
+# on Windows, Linux and macOS.
+#
+# Needed because gogo is written and tested on one Windows PC: a path
+# written with the wrong letter case, or a test that leans on Windows line
+# endings, passes there and fails for everyone else.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      # rust-toolchain.toml names the toolchain (stable); this brings the
+      # runner's copy up to date before cargo uses it.
+      - run: rustup update stable --no-self-update
+      - run: cargo test --workspace --no-fail-fast

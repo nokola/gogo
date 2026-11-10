@@ -12,7 +12,7 @@ Adding `min_width` forms the band (D135): `width=hug, min_width=100, max_width=3
 Layers {
     Panel toast width=hug, max_width=fill, halign=center,
             margin_left=12, margin_right=12, padding=12 {
-        Label tipText text="Saved!", autowrap_mode=word_smart
+        Label tipText text="Saved!", wrap=true
     }
 }
 ```

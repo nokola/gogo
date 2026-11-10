@@ -2,7 +2,7 @@ Inside a `control` block: names the INPUT BEHAVIOR that answers every
 instance — the runtime routes the finger, the keys and the wheel to it and
 takes back one value write per event.
 
-```
+```kdl partial
 control Switch $value=0, $min=0, $max=1 {
     behavior toggle by $value in $min..$max
     ...
@@ -19,7 +19,7 @@ or a value amount) are the words. The behaviors gogo ships: `slider`
 (press-jump, drag over the `track` slot, arrows/Home/End/wheel step) and
 `toggle` (a tap glides to the other end, a drag settles nearest, Enter and
 Space flip; reads `slot track` and `slot thumb`). A host adds its own in
-Rust: a type implementing `gogo::Behavior` with a `BehaviorSpec` (the
+Rust: a type implementing `gogo_ui::Behavior` with a `BehaviorSpec` (the
 name, the slots it reads, the key groups it owns), named to the compiler
 (`CompileOptions::behaviors`) and seated on the page's `Input`
 (`input.register`).

@@ -443,7 +443,7 @@ widget LabeledSlider $label="", $min=0, $max=100, $value=0 {
 
 Instantiate it like a built-in:
 
-```kdl
+```kdl partial
 LabeledSlider sizeSlider     label="Size", min=1, max=300, value=80
 LabeledSlider hardnessSlider label="Hardness", value=30
 ```
@@ -519,7 +519,7 @@ StatCard runCard {
 Declare the shape in gogo; hand the data over from code. `repeat` renders
 one template per item, and the `by` key is each item's identity.
 
-```kdl
+```kdl partial
 Column spacing=8 {
     Label text="Today"
     repeat tasks by $item.id {
@@ -672,13 +672,13 @@ $min..$max` over a `slot track` holding a `slot thumb`: a tap glides to
 the other end, a drag settles nearest, Enter/Space flip.
 
 A shape neither fits (a knob, a vertical fader) is a behavior of your own:
-a Rust type implementing `gogo::Behavior` that only ever sees values —
+a Rust type implementing `gogo_ui::Behavior` that only ever sees values —
 the value triad and the slots as control-local rects — and writes only
 the value. The runtime keeps everything else (`held`, `edit`/`change`,
 the drag edges, restore on cancel, the glide):
 
 ```rust
-use gogo::{Behavior, BehaviorSpec, Claim, Cx, KeyAction, KEYS_ARROWS, Payload};
+use gogo_ui::{Behavior, BehaviorSpec, Claim, Cx, KeyAction, KEYS_ARROWS, Payload};
 
 /// A vertical fader: the value follows y over the track, bottom = min.
 #[derive(Default)]
@@ -717,7 +717,7 @@ CompileOptions { behaviors: &[VFADER], ..CompileOptions::default() }
 input.register(Box::new(VFader));
 ```
 
-```kdl
+```kdl partial
 control Vol $value=5, $min=0, $max=10, $step=0 {
     behavior vfader by $value in $min..$max, key_unit=10%
     state_builtin focused, held
@@ -745,7 +745,7 @@ width (`width=20`), not `width=fill`.
 Point a style at the control with `for=` (always the first property) — slot
 paths and state names are then checked as you type:
 
-```kdl
+```kdl partial
 style ThinFader for=Fader, slot.track.height=4, slot.thumb.size=8 {
     when held    slot.thumb.scale=1.2
     when focused slot.track.background=$accent
@@ -773,7 +773,7 @@ A plain `Slider` is Godot's native HSlider — it has no slots to restyle.
 Opt the instance into gogo's implementation with `render=gogo` (it looks
 the same until you style it), then style it like any control:
 
-```kdl
+```kdl stale
 style ThinSlider for=Slider, slot.track.corner_radius=0 {
     when held    slot.thumb.scale=1.15
     when focused slot.track.background=$accent
@@ -785,7 +785,7 @@ Slider volume .ThinSlider render=gogo, value=$vol, min=0, max=100, step=5
 The slots are `track`, `progress` (grows with the value), `thumb` (follows
 the value) and `label` (empty by default — fill it):
 
-```kdl
+```kdl stale
 Slider gain render=gogo, value=0, min=-60, max=6 {
     slot label { Label text="gain", font_size=12 }
 }
@@ -794,7 +794,7 @@ Slider gain render=gogo, value=0, min=-60, max=6 {
 To flip every slider at once, make it app policy in the theme — and opt
 out per instance where code-behind still casts `as HSlider`:
 
-```kdl
+```kdl stale
 theme {
     Slider .ThinSlider render=gogo    // every Slider: this look, gogo backend
 }
@@ -817,7 +817,7 @@ step (they run together), `then` starts after it. Each line targets
 `nodeName.property.path`; `duration_each=` on the header is every step's
 default (per-step by NAME — it is never the anim's total):
 
-```kdl
+```kdl partial
 anim appear duration_each=0.5, easing=cubic_out {
     listBrush.translate.x from=-60, to=0
     and panelMiddle.opacity from=0, to=1, duration=0.3   // its own wins
@@ -865,7 +865,7 @@ a chain choreographs several controls. `group` blocks come in when steps
 SHARE timing words, or when a step must be referenced by name (`after=` —
 the escape hatch for dependencies that cross the `and`/`then` flow):
 
-```kdl
+```kdl partial
 anim openMenu {
     group dim { backdrop.opacity to=0.6, duration=0.15 }
     then group drop duration_each=0.25 {          // starts when dim ends
@@ -943,7 +943,7 @@ in the `when` (`when held scale=0.95`, see the shrink recipe). Reach for
 properties on their own clocks. Point a `transition` rule's `anim=` at a
 named anim:
 
-```kdl
+```kdl partial
 anim pressBounce {
     self.scale from=1.0 {
         key t=0.1,  v=0.92, easing=cubic_out
@@ -1011,7 +1011,7 @@ widget FxButton $icon="", $text="" {
 
 Every instance gets the behavior:
 
-```kdl
+```kdl partial
 FxButton paintButton icon="res://icons/brush.png", text="Paint"
 FxButton undoButton  icon="res://icons/undo.png",  text="Undo"
 ```
@@ -1039,7 +1039,7 @@ Notes:
 
 `on:show` and `on:hide` fire when the node is shown or hidden:
 
-```kdl
+```kdl partial
 Panel optionsPanel on:show=play(appear), on:hide=play(disappear) {
     ...
 }
@@ -1053,7 +1053,7 @@ parenthesized argument, naming an anim in scope.
 
 Arrangements flip declaratively the same way — no host handler needed:
 
-```kdl
+```kdl partial
 Button settingsButton text="Settings", on:activate=go(settings)
 Button backButton     text="Back",     on:activate=go(base)
 ```
@@ -1110,7 +1110,7 @@ Any word a `transition` rule can move, an anim can drive — colors
 included, with everything a track already has (chains, `autoreverse`,
 `repeat=forever`, easings):
 
-```kdl
+```kdl partial
 anim warn {
     saveButton.background to=#E51400FF, duration=0.2,
         autoreverse=true, repeat=forever
@@ -1136,13 +1136,13 @@ and `rotate` transform about — a 0..1 box point, the Gradient `from=`
 spelling; unset = the center:
 
 ```kdl
-Panel card width=220, height=120, background=$surface, pivot=0x0 {
+Panel card width=220, height=120, background=surface, pivot=0x0 {
     // scale=1.1 grows RIGHT and DOWN — the top-left corner holds still
     transition any -> held duration=0.1
     when held scale=1.05
 }
 
-Image door src="door.png", pivot=0x0.5      // rotate swings on the left
+Image door source="res://door.png", pivot=0x0.5      // rotate swings on the left
                                             // edge like a hinge
 ```
 
@@ -1212,7 +1212,7 @@ panel.gogo:4: state 'held' isn't available on Rectangle
 Bare numbers are effective pixels (density-independent). `width`/`height`
 answer "how big?" three ways — exact, natural, or flexible:
 
-```kdl
+```kdl stale
 Button save width=200, text="Save"   // exactly 200 epx wide
 Button ok   width=hug,  text="OK"    // natural size — shrink to content
 Slider vol  width=fill               // take the leftover space
@@ -1248,7 +1248,7 @@ parent frame minus the margins — tracked live across resizes:
 Layers {
     Panel toast width=hug, max_width=fill, halign=center, valign=top,
             margin_left=12, margin_right=12, padding=12, background=#000000FF {
-        Label tipText text="Saved!", autowrap_mode=word_smart,
+        Label tipText text="Saved!", wrap=true,
             horizontal_alignment=center
     }
 }
@@ -1276,7 +1276,7 @@ Some boxes belong to the code-behind: the page seats them in px and the
 content must never talk back — an ad strip sized to the banner, a card the
 code drags. Declare that on the root with `host` (D283):
 
-```kdl
+```kdl stale
 Panel adPlate width=host, height=host, min_width=320, min_height=50 {
     Row width=fill, height=fill {
         Label textInfo width=fill, autowrap_mode=word_smart,
@@ -1432,7 +1432,7 @@ stretches it, or `max_width=fill` on a hugging box (wrap at the screen):
 
 ```kdl
 Label blurb text="A longer description that wraps onto several lines",
-    font_size=13, min_width=180, autowrap_mode=word_smart
+    font_size=13, min_width=180, wrap=true
 ```
 
 Under a pure hug chain wrap-text renders single-line at its full text width
@@ -1521,7 +1521,7 @@ a sliver-sized touch target):
 Button settingsRow {
     Panel padding=6 {                       // measured air — WPF Padding
         Row spacing=6 {                     // passive content never steals the press
-            Image texture="icons/settings.png", min_width=32, min_height=32
+            Image source="res://icons/settings.png", min_width=32, min_height=32
             Label text="settings", font_size=12, vertical_alignment=center
         }
     }
@@ -1547,7 +1547,7 @@ top — and each child places itself with the usual `halign`/`valign`/`width`/
 
 ```kdl
 Layers screen {
-    Image photo source="photo.png", width=fill, height=fill
+    Image photo source="res://photo.png", width=fill, height=fill
     Rectangle scrim color=#000000B0, width=fill, height=fill   // darkens below
     Panel toast halign=center, valign=top, margin_top=20,
             background=$chrome, corner_radius=6, padding=10 {
@@ -1671,9 +1671,9 @@ on a `hug` axis.
 
 ```kdl
 // a bar whose bottom 30 epx (its labels) hang below the screen edge:
-Control bar width=fill, valign=bottom, height=80, margin_bottom=-30
+Layers bar width=fill, valign=bottom, height=80, margin_bottom=-30
 // parked fully past the bottom (off-screen until a state lifts it):
-Control tray valign=bottom, height=50, margin_bottom=-90
+Layers tray valign=bottom, height=50, margin_bottom=-90
 // two per-edge keys with no alignment pin BOTH edges — the box spans:
 Rectangle rule margin_left=20, margin_right=20
 ```
@@ -1813,7 +1813,7 @@ when expanded {
 
 Layers chrome {
     // base pose: the bar hangs 30 below the edge, the tile parks past the corner
-    Control bar width=fill, valign=bottom, height=80, margin_bottom=-30 { ... }
+    Layers bar width=fill, valign=bottom, height=80, margin_bottom=-30 { ... }
     Button tile 60x60, halign=right, valign=bottom,
             margin_right=-80, margin_bottom=200, text="fullscreen"
 }
@@ -1832,7 +1832,7 @@ Scope rules to EXACT pairs and the other flips snap declaratively — a
 switch whose option poses glide into each other while entering or leaving
 Off seats instantly needs no code flag:
 
-```kdl
+```kdl partial
 transition option1 -> option2 duration=0.5, easing=cubic_out
 transition option2 -> option1 duration=0.5, easing=cubic_out
 // no rules touching base — those flips snap
@@ -1845,7 +1845,7 @@ flip — a plate sliding slower than the tiles it backs, or a toast that must
 snap to its seat while only its opacity fades — give THAT node an exact
 pair rule; `duration=0` means "this node snaps":
 
-```kdl
+```kdl partial
 Rectangle plate 60x120 {
     transition option2 -> option1 duration=0.6, easing=cubic_out
     transition option1 -> option2 duration=0.4, easing=cubic_out
@@ -1901,7 +1901,7 @@ button. Once the app names the active size class from its resize handler
 portraitSmall / portraitMedium / portraitLarge / landscapeSmall /
 lotsOfSpace), every view's matching block applies, instantly:
 
-```kdl
+```kdl partial
 when screen.landscapeSmall {
     optionsPane.halign = left     // re-declares the h axis: the portrait
     optionsPane.width = 280       // base's stretch pins drop, the pose's
@@ -1925,7 +1925,7 @@ When the layout question is "is the screen SIDEWAYS?" — not "how much
 room is there?" — key the ORIENTATION axis instead
 (`gogo.set_screen_orientation`, two fixed values):
 
-```kdl
+```kdl partial
 when screen.landscape {          // wider than tall, any size
     bodyStack.visible = false
     wideRow.visible = true
@@ -1945,7 +1945,7 @@ When a pose only makes sense with an arrangement open ON a certain screen
 the conditions in one block, arrangement first (the second slot takes a
 class or an orientation):
 
-```kdl
+```kdl partial
 when expanded screen.landscapeSmall {
     optionsPane.margin_left = 300   // only while BOTH hold; wins any key
     hint.opacity = 0.25             // the single-axis blocks also set
@@ -1979,7 +1979,7 @@ MORE specific condition needs the node back where the class alone moved
 it FROM — the panel leaves the app bar again while a dialog is open —
 `home` is the reserved return target:
 
-```kdl
+```kdl partial
 when expanded screen.landscapeSmall {
     savedStack.seat = home          // back at its declared spot while BOTH hold
 }
@@ -1996,7 +1996,7 @@ an app bar's back column narrows to make room); on a free child it moves
 the box AND the minimum it reports, so a pose can shrink a node below
 its declared size:
 
-```kdl
+```kdl partial
 when screen.landscapeSmall {
     backColumn.width = 60           // pinned; the slot column takes the star
 }
@@ -2098,7 +2098,7 @@ past the fixed part:
 
 ```kdl
 Layers row min_height=48 {
-    Image icon source="icon.png", size=32x32, valign=center, margin_left=8
+    Image icon source="res://icon.png", size=32x32, valign=center, margin_left=8
     Label title width=fill, height=fill, margin_left=48,
         font_size=15, vertical_alignment=center
 }
@@ -2121,7 +2121,7 @@ Grid cols=[hug, fill, 60] {        // label hugs, control stretches, value 60
     row { Label a text="Size";     Slider s;  Label sv }
     row { Label b text="Hardness"; Slider h;  Label hv }
     row height=fill {
-        Control preview col_span=3     // one cell spanning all three tracks
+        Layers preview col_span=3      // one cell spanning all three tracks
     }
 }
 ```
@@ -2237,9 +2237,9 @@ the top of the page first:
 ```kdl
 Scroll {
     Tiles catalog cols=2 {
-        Panel p1 { Image a texture="res://a.jpg", loading=lazy,
+        Panel p1 { Image a source="res://a.jpg", loading=lazy,
             aspect=natural }
-        Panel p2 { Image b texture="res://b.jpg", loading=lazy,
+        Panel p2 { Image b source="res://b.jpg", loading=lazy,
             aspect=natural }
     }
 }
@@ -2272,7 +2272,7 @@ this with a **sheet**: one picture with all 54 thumbnails laid out in
 a grid. An `atlas` line tells gogo how to cut that picture, and each
 Image shows one piece of it:
 
-```kdl
+```kdl partial
 // 480x720 picture, 80x80 squares: 6 across, 9 down, cells 0 to 53.
 atlas animals source="res://assets/stickers/animals.jpg", cell=80x80
 
@@ -2318,7 +2318,7 @@ fit a long caption and the corners stretch too — fat, blurry, lopsided.
 A **9-slice** keeps the corners at their own size: `edge=` says how many
 picture pixels on each side must not stretch.
 
-```kdl
+```kdl partial
 atlas bubble source="res://assets/ui/bubble.png", edge=10
 
 View v {
@@ -2348,7 +2348,7 @@ Point `from=` at the exported JSON ("JSON (Hash)" or "JSON (Array)" —
 Free Texture Packer and ShoeBox write the same). The JSON names its own
 picture; every frame becomes a named slice:
 
-```kdl
+```kdl partial
 atlas ui from="res://assets/ui/ui.json" {
     slice panel edge=16     // make the imported `panel` a 9-slice
 }
@@ -2436,7 +2436,7 @@ gesture began (wiggling across the middle is zero changes). Code-behind
 reads/writes the `selected` bool; `change(bool)` auto-wires as
 `On<Name>Change`.
 
-```kdl
+```kdl stale
 style BigSwitch for=Toggle, slot.track.corner_radius=4 {
     when selected slot.track.background=green
 }
@@ -2460,7 +2460,12 @@ choice size value=medium {
     Radio medium text="Medium"
     Radio large text="Large"
 }
-choice size value=medium {           // same set, two columns
+```
+
+The same set in two columns:
+
+```kdl
+choice size value=medium {
     Row {
         Column { Radio small text="Small";  Radio medium text="Medium" }
         Column { Radio large text="Large" }
@@ -2593,7 +2598,7 @@ Column spacing=8 {
 One view per file; shared themes/styles/widgets in their own files, imported with
 `uses` (paths relative to the current file):
 
-```kdl
+```kdl partial
 uses "styles/theme.gogo"
 uses "widgets/cards.gogo"
 ```

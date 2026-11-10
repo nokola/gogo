@@ -1,0 +1,24 @@
+// The shared theme of the docs' examples: the colors that the snippets in
+// COOKBOOK.md and REFERENCE.md use by name. A page gets them with
+//   uses "styles/theme.gogo"
+
+$accent        = #E51400      // #RRGGBB — opaque
+$foreground    = #FFFFFF
+$chrome        = #1F1F1F
+$swatchDefault = #EB6428
+$scrim         = #000000AA    // #RRGGBBAA — alpha last
+$fontMediumLarge = 20
+
+// The looks the cookbook builds and then shares from this file.
+style ToolButton min_height=36, background=$chrome {
+    transition any -> held duration=0.05, easing=cubic_out
+    transition held -> any duration=0.2,  easing=elastic_out
+    when held     background=$accent
+    when disabled opacity=0.4
+}
+
+style GalleryItem background=$chrome {
+    transition any -> selected duration=0.1, easing=cubic_out
+    when held background=#FFFFFF22          // momentary flash while the press is held
+    when selected background=$accent        // persists while toggled on
+}

@@ -4,7 +4,7 @@ after the release's commit and on a cancelled gesture too — and
 `on:<name>=` wiring at use sites is checked against this list, so signal
 typos are caught like state typos.
 
-```
+```kdl partial
 control Fader $value=0, $min=0, $max=100 {
     behavior slider by $value in $min..$max
     signal drag_started, drag_ended

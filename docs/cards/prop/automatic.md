@@ -8,7 +8,7 @@ A slider is made of pieces:
 
 In gogo, each piece is written with the `slot` keyword, and slots are the parts styles can reach — as `slot.` paths on the style line. A slot region takes placement (`width`/`height`/`halign`/`valign`/margins) and the box family (`background`/`corner_radius`/`border-*`/`padding`):
 
-```
+```kdl stale
 style Chunky for=Slider, slot.thumb.width=32, slot.thumb.height=32
 ```
 
@@ -28,7 +28,7 @@ So a control needs a way to say, for each part: styles can change anything about
 
 Here is a slider built from scratch — call it Fader. In the `control` declaration, the coupling goes on the slot line, fully spelled (gogo's built-in `Slider` declares exactly these couplings on its own track/progress/thumb):
 
-```
+```kdl stale
 control Fader $value=0, $min=0, $max=100 {
     script "res://ui/fader_behavior.gd"
     transition duration=0.12, easing=cubic_out
@@ -69,7 +69,7 @@ The theme author from before finds out the moment they build, with a message poi
 
 A progress bar is the simplest control with an automatic slot — a track, and a progress part that grows with the value:
 
-```
+```kdl stale
 control Progress $value=0, $min=0, $max=100 {
     script "res://ui/progress_behavior.gd"
     transition duration=0.12, easing=cubic_out
@@ -88,7 +88,7 @@ The `script` line names the control's behavior (every control has one — see th
 
 Now style it. Everything except what the value drives is open:
 
-```
+```kdl stale
 style Thicc for=Progress, slot.track.height=16
 style Dark for=Progress, slot.track.background=#222222FF
 ```
@@ -97,7 +97,7 @@ Taller, or darker — and it still works, because neither style touched the driv
 
 Recolor the Rectangle inside the progress slot — content isn't the region. Restyling content IS filling, so bring your own node at the use site instead:
 
-```
+```kdl stale
 Progress dl 200x8, value=30 {
     slot progress { Rectangle color=#44CC88FF }
 }
@@ -153,7 +153,7 @@ There is no kind for a spinner going round or a caret blinking, on purpose. The 
 
 The round ones are more fun. A volume knob is a circle with a progress arc and a dot that moves around the rim:
 
-```
+```kdl stale
 control Knob $value=0, $min=0, $max=1, min_size=48x48 {
     script "res://ui/knob_behavior.gd"
     transition duration=0.15, easing=cubic_out

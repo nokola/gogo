@@ -217,7 +217,7 @@ pub fn draw(page: &Page, resolved: &Resolved, rects: &[Rect]) -> Vec<Draw>
 - THE COLOR-MIXING LAW (user call 2026-09-02): gogo mixes AUTHORED
   colors in premultiplied Oklab — gradient stops on the GPU (ui.wgsl),
   `transition` tweens and `anim` color lanes on the CPU
-  (`gogo::color::mix_rgba`, ONE implementation the shader mirrors).
+  (`gogo_ui::color::mix_rgba`, ONE implementation the shader mirrors).
   Premultiplying keeps fades to transparent clean (no dark fringe from a
   transparent color's rgb); Oklab keeps lightness even across hues
   (red→green passes through a real midtone, not muddy brown). CSS
@@ -785,7 +785,7 @@ call: option C over the closed enum):
   pointer into a sibling's space — `Event::pointer_in(rects, node)`
   now (gradient_edit uses it).
 - `behavior <name>` names a behavior the RUNTIME routes to: the addon's
-  `GogoControlScript` reborn as `gogo::Behavior` — `began(cx, x, y) ->
+  `GogoControlScript` reborn as `gogo_ui::Behavior` — `began(cx, x, y) ->
   Claim`, `moved`, `ended`, `canceled`, `key(cx, action) -> bool` —
   with `Cx` handing the value triad and the slots as CONTROL-LOCAL rects
   and taking ONE write back (`set_value`/`set_fraction`, snapped and
@@ -1068,7 +1068,7 @@ emulator-verified):
   (hinge x, the camera on the box's center, `swing_focal(height)`), the
   renderer projects it like Silverlight's PlaneProjection. `tap_pulse`
   rides this lane (D23); hits read the door's projected span.
-- **A font key may end in a style suffix** (`gogo::font_style`:
+- **A font key may end in a style suffix** (`gogo_ui::font_style`:
   `"Angelina#bold"`, `#italic`, `#bold-italic`) — faux bold and italic
   through the one `font=` word; the text engine reads the suffix.
 

@@ -83,7 +83,7 @@ See [States](#states) and [Animations](#animations).
 
 One line shape covers the whole language:
 
-```kdl
+```text
 WidgetType name .StyleName property=value, property=value { children }
 ```
 
@@ -272,7 +272,7 @@ parents are load-time errors.
 type's CONTRACT — its slots and states — and turns on write-time checking
 (customization spec §2, D109):
 
-```kdl
+```kdl partial
 style ThinFader for=Fader, slot.track.height=4, slot.thumb.size=8 {
     when held    slot.thumb.scale=1.2       // contract state — checked as you type
     when focused slot.track.background=$accent
@@ -315,7 +315,7 @@ Fader vol .ThinFader value=50
 
 ### Widgets
 
-```kdl
+```kdl partial
 widget LabeledSlider $label="", $min=0, $max=100 {
     anim nudge { handle.translate.x from=-2, to=0, duration=0.2 }  // widget-scoped
     style Row min_height=24                                        // widget-scoped
@@ -508,7 +508,7 @@ unconditionally) extended to user controls.
   gesture. The FEEL: a write while the finger holds the control lands
   direct (the thumb stays under the finger); a tap's settle, a key step
   and a code write glide by the control's `transition` rule.
-- **Your own behavior** (Rust): implement `gogo::Behavior` — `began(cx, x,
+- **Your own behavior** (Rust): implement `gogo_ui::Behavior` — `began(cx, x,
   y) -> Claim` (`Take` the gesture or `Pass` the press on), `moved`,
   `ended`, `canceled`, `key(cx, action) -> bool` (`Increment`,
   `Decrement`, `ToMin`, `ToMax`, `Activate`) — reading the value triad and
@@ -584,7 +584,7 @@ slots, no contract states, byte-identical for existing projects. An
 instance gains its Gogo contract only when it opts in (customization spec
 §5.7, D111):
 
-```kdl
+```kdl stale
 Slider volume render=gogo, value=$vol, min=0, max=100, step=5
 ```
 
@@ -642,7 +642,7 @@ Per-instance `render=`/styles are right for one-offs and wrong as app
 policy. A **type-keyed theme entry** defaults every instance of a control
 type (spec §5.8):
 
-```kdl
+```kdl stale
 theme {
     Slider .ThinSlider render=gogo   // every Slider: ThinSlider look, Gogo backend
     Button .AppButton                // plain default style — native Buttons keep working
@@ -694,7 +694,7 @@ once and every slice shares it (Rust gogo; built 2026-09-27).
 
 Four forms, one keyword:
 
-```kdl
+```kdl partial
 // A grid: every square the same size, numbered from 0 left to right,
 // then top to bottom. The counts come from the picture: a 480x720
 // picture in 80x80 squares is 6 by 9 = cells 0 to 53.
@@ -1292,8 +1292,8 @@ the vacated tail stays empty.
 ```kdl
 Tiles gallery cols=2 {
     Label title text="top picks", full_row=true    // the whole row
-    Panel a { Image source="a.jpg", aspect=natural }
-    Panel b { Image source="b.jpg", aspect=natural }
+    Panel a { Image source="res://a.jpg", aspect=natural }
+    Panel b { Image source="res://b.jpg", aspect=natural }
     Panel wide span=2 { ... }                      // two units of width
 }
 ```
@@ -1311,7 +1311,7 @@ Tiles gallery cols=2 {
   like `cols=`, and a pose may
   flip it (`when names { panel.cells = natural }`) — one list, two packings:
 
-  ```kdl
+  ```kdl partial
   Tiles catalog cols=2, cells=lattice {
       Label title text="top effects", full_row=true
       Panel colorize { Image .PictureOnly source="colorize.jpg", aspect=natural; NameChip text="Colorize" }
@@ -1683,7 +1683,7 @@ repeat modes × arbitrary stops × from/to geometry.
 
 ```kdl
 Gradient veil  fill=radial, stops=[accent, accent/0]        // fade to clear
-Gradient sky   angle=90, stops=[bg0, bg1], repeat=mirror    // linear, aimed
+Gradient sky   angle=90, stops=[blue, indigo], repeat=mirror // linear, aimed
 Gradient wheel fill=conic, stops=[red, yellow, green, blue, red]
 Gradient flash fill=radial, stops=[#FFFFFF6B@0, #FFFFFF6B@0.94, #FFFFFF6B/0@1]
 ```
@@ -1731,7 +1731,12 @@ choice size value=medium {
     Radio medium text="Medium"
     Radio large text="Large"
 }
-choice size value=medium {           // same set, laid out in columns
+```
+
+The same set, laid out in columns:
+
+```kdl
+choice size value=medium {
     Row {
         Column { Radio small text="Small";  Radio medium text="Medium" }
         Column { Radio large text="Large" }
@@ -1797,7 +1802,7 @@ choice size value=medium {           // same set, laid out in columns
 key (design: `docs/design/2026-07-15-spec-repeat-and-list.md`; codes G90xx
 build / G91xx runtime refusals).
 
-```kdl
+```kdl partial
 Column spacing=8 {
     Label text="Today"
     repeat tasks as $task by $task.id {     // as optional: default $item
@@ -1880,7 +1885,7 @@ is engine focus (the **`focused`** state), a press in flight is
 **`held`**. Gogo-implemented always —
 `render=native` errors, like Toggle.
 
-```kdl
+```kdl partial
 List picker select=many, spacing=4 {
     Label .SectionHeader text="Today"
     empty { Label .Muted text="Nothing due today" }
@@ -2139,7 +2144,7 @@ Button dangerRow .GalleryItem { when held background=#B00020 }  // node-level ov
 
 ### Arrangements
 
-```kdl
+```kdl partial
 arrangement expanded            // declares one configuration of the view
 arrangement fullscreen          // (base is predeclared: the declarations)
 
@@ -2203,7 +2208,7 @@ smooth-slide recipe).
 
 ### Screen classes and orientation (`when screen.*`)
 
-```kdl
+```kdl partial
 when screen.landscapeSmall {
     middlePanel.width = 280
     middlePanel.margin_left = 0
@@ -2315,7 +2320,7 @@ catches big PORTRAIT tablets, because `lotsOfSpace` covers both shapes.
 
 How changes between standing truths feel — a directive line, never a block:
 
-```kdl
+```kdl partial
 transition duration=0.3, easing=cubic_out            // the default: any -> any
 transition base -> expanded duration=0.25, easing=cubic_out
 transition expanded -> base duration=0.2,  easing=cubic_in
@@ -2341,7 +2346,7 @@ transition any -> settings duration=0.25             // one-sided wildcard
   its new seat while the rest glides. Timing only — `anim=` and one-sided
   arrangement rules stay at the view's top level.
 
-  ```kdl
+  ```kdl partial
   Rectangle plate 60x120 {
       transition option2 -> option1 duration=0.6, easing=cubic_out
       transition option1 -> option2 duration=0.4, easing=cubic_out
@@ -2363,7 +2368,7 @@ transition any -> settings duration=0.25             // one-sided wildcard
 - **A property's own timing** (2026-09-27): name `node.prop` targets
   instead of an arrow, at the top level —
 
-  ```kdl
+  ```kdl partial
   transition commandBar.{margin_left, margin_top, opacity} duration=0.4, easing=expo_in_out
   transition underline.margin_left duration=0.4, easing=expo_in_out
   ```
@@ -2388,7 +2393,7 @@ connective — `and` (runs WITH the previous step) or `then` (runs after it
 and everything `and`-joined to it) — or an `after=<group>` reference
 instead. Sequencing is always written, never defaulted.
 
-```kdl
+```kdl partial
 anim disappear duration_each=0.25, easing=cubic_in { // header defaults:
     brushPanel.translate.x to=-60                    // duration_each= is EACH
     and brushPanel.opacity to=0, duration=0.4        // step's default; a
@@ -2530,7 +2535,7 @@ ease-out. Parameters are written as sibling props next to `easing=`:
 | `bounce` | `bounces` (3), `bounciness` (2) |
 | `elastic` | `oscillations` (3), `springiness` (3) |
 
-```kdl
+```kdl partial
 line.size.y to=52, duration=0.5, easing=bounce_out, bounces=1, bounciness=3
 ```
 

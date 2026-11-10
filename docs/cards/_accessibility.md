@@ -85,7 +85,7 @@ is invisible to a reader unless it's a LIVE region — one property, and
 its text is spoken when it shows or changes (`polite` waits for a pause;
 `assertive` interrupts, for errors only):
 
-```
+```kdl stale
 Panel savedToast background=#000000CC, corner_radius=6, padding=12, accessibility_live=polite, visibility=gone {
     Label savedText text="Sketch saved", font_size=15
 }
