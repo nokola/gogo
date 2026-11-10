@@ -1,0 +1,62 @@
+// FantasiaGodot/ui/whats_new_dialog.gogo ported to the Rust dialect (§7 of
+// docs/gogo-design.md): `texture=` → `source=`, `autowrap_mode=word_smart` →
+// `wrap=true`, `Control` → `Layers`, `interactive=` gone. Layout numbers are
+// verbatim. The version label is set from code (`NAMES.text_version`).
+uses "styles/theme.gogo"
+
+// Implicit WP Button held visual (FanStyle.xaml:565-574): the face floods
+// with PhoneAccentBrush while held; the label keeps white.
+style WhatsNewOkLook background=#00000000 {
+    when held face.background=$accent
+}
+
+// Page entrance/exit: the WP page transition, slide + fade (Metro
+// "continuum"-style; the 3D turnstile needs rotation, which the quad
+// renderer does not draw).
+anim pageIn duration_each=0.3, easing=expo_out {
+    whatsNewRoot.translate.x from=80, to=0
+    and whatsNewRoot.opacity from=0, to=1
+}
+
+anim pageOut duration_each=0.2, easing=quad_in {
+    whatsNewRoot.translate.x from=current, to=80
+    and whatsNewRoot.opacity to=0
+}
+
+View whatsNewRoot visibility=gone, on:show=play(pageIn), on:hide=play(pageOut) {
+    theme font=$fontFamilyLight
+    // Full-bleed chrome backdrop under the cutout — every shipped page's
+    // PhoneChromeBrush ground.
+    Rectangle color=$chrome
+    Scroll scroll allow=vertical {
+        Panel padding=safe {
+            Panel padding_left=20, padding_top=20, padding_right=20, padding_bottom=86 {
+                Column spacing=0 {
+                    Label text="What's New", font_size=$fontLarge
+                    Label textVersion text="Version"
+                    gap 20
+                    Label text="After a few years, we're back with few significant updates:", wrap=true
+                    gap 20
+                    Image source="res://assets/Images/New/30_gradient.jpg", width=250, height=100
+                    gap 20
+                    Label font_size=$fontNormal, wrap=true,
+                        text="• Pleasant, high quality gradients\n• Richer color, light, and high-precision painting\n• More than 30 fixes for crashes, and similar issues\n\n"
+                    Image source="res://assets/Images/New/30_logo.jpg", width=200, height=200
+                    Label font_size=$fontNormal, wrap=true,
+                        text="Let me know what works or doesn't - thank you!\nI read all reviews from the last 3 years."
+                    gap 20
+                    Button okButton .WhatsNewOkLook width=130, height=60, halign=center,
+                            on:activate=emit(OkPressed) {
+                        theme font=$fontFamilyNormal
+                        Panel face margin=8, background=#00000000,
+                                border_color=#FFFFFFFF, border_thickness=1.5 {
+                            Label text="ok", font_size=$fontMedium,
+                                horizontal_alignment=center, vertical_alignment=center
+                        }
+                    }
+                    gap 10
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,57 @@
+// Fantasia palette — ported from Assets/XAMLs/Themes/FanStyle.xaml (WP/Metro, D14).
+// Colors are #RRGGBBAA (alpha LAST). WPF sources use #AARRGGBB — when porting
+// from XAML, move the leading alpha pair to the end (#AA000000 -> #000000AA).
+// Top-level $name = value entries are the defaults; a `theme <variant> { }`
+// block would override them while that variant is active (Gogo.set_theme_variant).
+// The `theme { }` block at the bottom holds control DEFAULTS (the app
+// typeface) that land on every using view's root and propagate down.
+$accent          = #E51400FF  // PhoneAccentColor — WP accent red
+$foreground      = #FFFFFFFF
+$chrome          = #1F1F1FFF
+$semitransparent = #000000AA
+$semitransparent2 = #000000D7 // PhoneSemitransparentColor2 — mask panel plate
+$swatchDefault   = #FFFFFFFF  // startup brush color — WHITE like shipped (Fan.cs:162, Q2/D148)
+$galleryBg       = #2F2F2FFF  // BrushSelectControl sidebar background
+$hovered           = #FFFFFF1C
+$subtle          = #FFFFFF99  // PhoneSubtleBrush — WPF #99FFFFFF (settings about/hall-of-fame body)
+// WP type ramp — FanStyle.xaml PhoneFontSize* resources, values already epx.
+// Godot font_size does NOT inherit to child Labels (unlike WPF FontSize; see
+// REFERENCE.md "Fonts don't inherit"), so every Label takes one of these
+// explicitly — the theme block's font_size default below is the safety net
+// for omissions, not a license to skip the rule. Literal sizes in views
+// (back "18") are shipped literals/measurements, not ramp members.
+$fontAppBar       = 11      // PhoneFontSizeAppBar — app-bar button labels
+$fontSelectionBar = 12      // PhoneFontSizeSelectionBar — gallery rows, app links
+$fontSliderLabel  = 12.445  // PhoneFontSizeSliderLabel — SliderPhoneSmall caption/value
+$fontSmall        = 13.334  // PhoneFontSizeSmall
+$fontNormal       = 14.29   // PhoneFontSizeNormal — body text
+$fontMedium       = 16.19   // PhoneFontSizeMedium
+$fontMediumLarge  = 18.1    // PhoneFontSizeMediumLarge — toast tip; fileOps op rows
+                            // (inherited via btnFileOps' BasedOn PhoneButtonBase, D45)
+$fontLarge        = 22.86   // PhoneFontSizeLarge
+
+// WP font families — FanStyle.xaml PhoneFontFamily* resources mapped to the
+// shipped Roboto files (assets/Fonts, copied verbatim). The doubling-up is
+// FanStyle's own: ExtraLight is Roboto THIN ("use only for experiments"),
+// and Light AND SemiLight are both Roboto LIGHT.
+$fontFamilyExtraLight = "res://assets/Fonts/Roboto Thin.ttf"
+$fontFamilyLight      = "res://assets/Fonts/Roboto Light.ttf"
+$fontFamilySemiLight  = "res://assets/Fonts/Roboto Light.ttf"
+$fontFamilyNormal     = "res://assets/Fonts/Roboto Regular.ttf"
+$fontFamilySemiBold   = "res://assets/Fonts/Roboto Medium.ttf"
+$fontFamilyBold       = "res://assets/Fonts/Roboto Bold.ttf"
+
+// App default typeface. MainPage.xaml's root FontFamily=PhoneFontFamilyNormal
+// flows into every WPF TextBlock the same way this default theme block flows into
+// the root of every view that uses theme.gogo (font family DOES inherit —
+// unlike font_size). Views deviate per subtree with `theme font=...` lines,
+// exactly where the shipped XAML sets an explicit FontFamily.
+theme {
+    font = $fontFamilyNormal
+    // Parity: in shipped WP every TextBlock's size comes from an epx-aware
+    // source; Godot's fallback is a raw 16 px — epx-blind, so an unsized
+    // Label looks fine in the ~1 px/epx desktop window and tiny at 3 px/epx
+    // on device (how the D36 fileOps bug escaped). With this default an
+    // omission renders 14.29 epx consistently on every density instead.
+    font_size = $fontNormal
+}

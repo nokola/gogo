@@ -1,0 +1,36 @@
+{
+  "name": "gogo-language",
+  "displayName": "Gogo UI",
+  "description": "Syntax highlighting for .gogo UI files.",
+  "version": "0.2.1",
+  "publisher": "nikolamsft",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "gogo",
+        "aliases": [
+          "Gogo",
+          "gogo"
+        ],
+        "extensions": [
+          ".gogo"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "gogo",
+        "scopeName": "source.gogo",
+        "path": "./syntaxes/gogo.tmLanguage.json"
+      }
+    ]
+  }
+}

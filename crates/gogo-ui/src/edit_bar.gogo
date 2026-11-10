@@ -1,0 +1,30 @@
+// The Input long-press edit bar (Cut / Copy / Paste / All), authored as
+// a PAGE: `build_pages` compiles this file into every app (module
+// `gogo_edit_bar`), so the labels are translation keys and the look is
+// plain gogo — restyle it HERE, not in Rust.
+//
+// The shell composes it as the topmost page and drives it while a
+// field's long-press raise (`Runtime::edit_bar`) stands: shows the
+// root, packs the buttons (Cut/Copy need a selection, All needs text —
+// `set_visible`), docks `bar` against the field by writing its margins
+// (`input::edit_bar_anchor`), and answers the taps through the same
+// doors as Ctrl+C/X/V. All keeps the bar up — Copy is the natural next
+// tap; the other three dismiss it.
+//
+// `keyboard_target=off`: transient chrome never takes Tab focus — the
+// field keeps the caret while the bar is up.
+
+style EditBarButton width=64, height=40, font_size=14, font_color=#FFFFFFFF,
+    background=#333333F5, corner_radius=4, border_thickness=1, border_color=#FFFFFF28,
+    keyboard_target=off {
+    when held background=#4A4A4AF5
+}
+
+View gogo_edit_bar visibility=gone {
+    Row bar width=hug, height=hug, spacing=4 {
+        Button cut   .EditBarButton text="Cut"/cut
+        Button copy  .EditBarButton text="Copy"/copy
+        Button paste .EditBarButton text="Paste"/paste
+        Button all   .EditBarButton text="All"/selectAll
+    }
+}
