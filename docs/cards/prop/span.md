@@ -1,6 +1,6 @@
 A Tiles cell prop: take N lattice units of width (default 1). A span wider
 than the remaining row wraps whole to the next row — first-fit, the vacated
-tail stays empty. `span=` past the Tiles' `cols=` is a load error. The whole
+tail stays empty. `span=` past the Tiles' `cols=` is a build error. The whole
 row is `full_row=true`, not a maximal span (it survives `cols=` changes).
 
 ```

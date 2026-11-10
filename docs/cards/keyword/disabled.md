@@ -1,5 +1,5 @@
-Holds while the control is disabled (`disabled=true` — the engine
-property): it stops receiving input, and the `when disabled` response
+Holds while the control is disabled (`disabled=true`): it stops
+receiving input, and the `when disabled` response
 styles the grayed-out look. Flip it from code to gate actions.
 
 ```

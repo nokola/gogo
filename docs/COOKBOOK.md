@@ -1,7 +1,8 @@
 # Gogo Cookbook
 
-Short answers to common questions. Each recipe is complete — copy it, rename things,
-save, and watch it hot reload.
+Short answers to common questions. Each recipe is complete: copy it and rename
+things. Every gogo example here is compiled by the tests, and every Rust
+example is cut from a program the tests run (`docs/examples/host_tour.rs`).
 
 ---
 
@@ -11,13 +12,77 @@ save, and watch it hot reload.
 Button okButton text="OK"
 ```
 
-The type is `Button`, `okButton` is its name. A named button auto-wires its events
-by convention: `activate` (the completed tap, or a key/gamepad accept) calls
-`OnOkButtonActivate()` in the code-behind. To wire explicitly instead:
+The type is `Button`, `okButton` is its name. A completed tap on a named
+button (or Enter/Space while it has focus) reaches your code as an `Activate`
+event, and the handler that event names is the button's own name, `okButton`.
+To name the handler yourself:
 
 ```kdl
 Button okButton text="OK", on:activate=HandleOk
 ```
+
+---
+
+## How do I hear a button in my code?
+
+Your program hands gogo each touch and gets back a list of events. An event
+says what happened (`Activate`, `Change`, `Edit`, ...), on which node, and
+which `on:` action the file wrote for it. This function reads the handler
+name off an event:
+
+```rust
+pub fn handler_name<'a>(page: &'a Page, ev: &Event) -> Option<&'a str> {
+    match ev.action {
+        Some(Action::Named(id)) | Some(Action::Emit(id)) => Some(page.str(id)),
+        Some(Action::Go(_)) | Some(Action::ToggleArrangement(_)) | Some(Action::Play(_)) => None,
+        None => {
+            let mut n: NodeId = ev.node;
+            loop {
+                let node = &page.nodes[n.index()];
+                if node.name != NO_STR && !page.str(node.name).contains('/') {
+                    return Some(page.str(node.name));
+                }
+                if node.parent == NO_NODE {
+                    return None;
+                }
+                n = node.parent;
+            }
+        }
+    }
+}
+```
+
+- `on:activate=HandleOk` and `on:activate=emit(HandleOk)` both name
+  `HandleOk`.
+- With no `on:` line for the event, the name is the node's own
+  (`okButton`); an unnamed node inside a widget answers with the name of
+  the instance around it.
+- `go(...)` and `play(...)` actions are carried out by gogo itself and name
+  no handler.
+
+A program that compiles its pages in `build.rs` (`gogo_ui::build_pages`)
+also gets one `Handler` enum per page, with a variant for every handler
+name in the file, so code that names a handler the file no longer has
+stops compiling:
+
+```rust partial
+// Generated for menu.gogo, which holds `Button startButton` and
+// `on:activate=emit(QuitPressed)`:
+//     pub enum Handler { QuitPressed, StartButton }
+use ui::menu::Handler;
+
+for ev in events {
+    let Some(handler) = handler_name(&page, &ev).and_then(Handler::from_name) else { continue };
+    match (handler, ev.kind) {
+        (Handler::StartButton, EventKind::Activate) => start_game(),
+        (Handler::QuitPressed, EventKind::Activate) => quit(),
+        _ => {}
+    }
+}
+```
+
+(The tests do not compile this last example: it needs the code a build
+generates.)
 
 ---
 
@@ -37,17 +102,16 @@ its biggest child and lets each child place itself (`halign`/`valign`,
 `width`/`height`, `margin`). A child with no placement keys takes the whole
 space its parent gives it, so a backdrop is just the first layer with a
 color — `Rectangle bg color=$chrome` (the explicit `width=fill,
-height=fill` spelling means the same). Godot's stock classes
-(`GridContainer`, `TextureRect`, ...) still work by name when you need
-them, but these four are the vocabulary the rest of this cookbook speaks.
+height=fill` spelling means the same). These four are the vocabulary the
+rest of this cookbook speaks.
 (A file's ROOT is `View` — see "How do I start a view file?".)
 
 ---
 
 ## How do I start a view file?
 
-The root type is `View` — the host class IS this node, and it comes with
-the defaults every view wants (transparent background, fill both axes):
+The root type is `View`: it is the screen, and it comes with the defaults
+every view wants (no background, the whole space the host program gives it):
 
 ```kdl
 uses "styles/theme.gogo"
@@ -121,16 +185,16 @@ center, the WP tilt feel), `scale.x=`/`scale.y=` per axis, `translate.x=`/
 
 For choreographed press feedback (bounce, shake, multi-part) point a
 transition's `anim=` at an anim instead — but one property gets one writer:
-a `when` can't hold a property the transition's anim also drives (load-time
-error).
+a `when` can't hold a property the transition's anim also drives (build
+error G4003).
 
 ---
 
 ## How do I show keyboard/gamepad focus? (game menus)
 
-You mostly don't have to: every gogo button shows its theme's focus ring
-for key-driven focus out of the box — and ONLY key-driven (D129): a tap
-parks engine focus silently, so no ring is left standing after every
+You mostly don't have to: every gogo button shows a focus ring for
+key-driven focus out of the box — and ONLY key-driven (D129): a tap moves
+focus without showing it, so no ring is left standing after every
 touch. To replace the ring with your own look, respond to `focused` — your
 response takes the default's place:
 
@@ -172,13 +236,16 @@ and indicates on any focus — the caret is coming.
 
 ## How do I make my UI accessible?
 
-Most of it is already done: buttons show a keyboard-only focus ring,
-composites (`Slider render=gogo`, `Toggle`) report role/value/on-off to
-screen readers as ONE element with working increment/decrement actions,
-native nodes report themselves, and the touch_target lint flags anything
-interactive under 44 epx. What's left for you is mostly ONE property:
-`accessibility_name` wherever a control has no text of its own — an
-icon-only button, or a slider whose caption is a separate `Label`:
+What gogo does today: buttons, checks, radios and toggles show a focus
+ring when focus arrives by key, Tab walks the page, the arrow keys step a
+focused Slider, and `when focused` / `when focus_within` restyle both
+(previous recipe). What it does not do yet: gogo hands nothing to a screen
+reader.
+
+Write `accessibility_name` now wherever a control has no text of its own —
+an icon-only button, or a slider whose caption is a separate `Label`. The
+compiler accepts the word and keeps it on the node, where a host program
+can read it for a screen-reader bridge of its own:
 
 ```kdl
 style SettingsRow padding=8, corner_radius=4 {
@@ -201,16 +268,9 @@ Column spacing=2 {
 }
 ```
 
-A reader hears "Music volume, slider, 40" / "Mute effects, switch, off" —
-and adjusts both without touching the screen. Three rules come with it: when
-you replace the focus default (`when focused ...`), keep the look clearly
-distinct from resting; custom `control`s declare what they are with one
-behavior line (`accessibility_role() -> &"slider"`); and a toast/banner
-that appears on its own gets `accessibility_live=polite` so it's spoken.
-Reduced motion is one call — `gogo.set_reduce_motion("on")` completes
-every transition and anim instantly, values intact; wire it to an app
-setting. The full story lives in the info pane's **Accessibility**
-section.
+Two more things are yours for now. Keep every control a finger must hit at
+least 44 epx on a side. And when you replace the focus default (`when
+focused ...`), keep the look clearly distinct from resting.
 
 ---
 
@@ -296,25 +356,24 @@ uses "styles/theme.gogo"
 
 ## How do I style a control I build in code?
 
-A component that creates its buttons in code (GDScript or C#) uses the same
-declared styles through `apply_style` — name the file the style lives in,
-because styles are file-scoped:
+In gogo, code does not create controls. The file declares every node and
+styles it with `.StyleName` like any other; code decides how many there
+are and what they show. For "one button per item my code has", that is a
+`repeat` (see "How do I show a list of items"):
 
-```gdscript
-var button := Button.new()
-gogo.apply_style(button, "res://ui/object_page.gogo", "ToolButton")
+```kdl
+style ToolButton min_height=36, tap_pulse=true, background=$chrome
+
+Row tools spacing=8 {
+    repeat toolButtons by $item.id {
+        empty { }
+        Button .ToolButton text=$item.title
+    }
+}
 ```
 
-```csharp
-// C# hosts call through the shared runtime object (see Runtime API)
-gogo.Call("apply_style", button, "res://ui/object_page.gogo", "ToolButton");
-```
-
-The control gets the style's standing props now and its `when` responses
-(held, hovered, disabled, ...) through the same machinery a declared
-`.ToolButton` node uses. A style that needs declared structure around the
-control is refused with an error: responses reaching other nodes
-(`mark.opacity=`), `slot.` paths, and `anim=` transition rules.
+For a control that is only sometimes there, declare it with
+`visibility=gone` and show it from code (`Runtime::set_visible`).
 
 ---
 
@@ -369,13 +428,13 @@ Rectangle swatch color=$swatchDefault
 Label title text="Hello", font_color=$foreground
 ```
 
-A typo like `$swatchDefalt` is a load-time error with a suggestion.
+A typo like `$swatchDefalt` is a build error with a suggestion.
 
 Code that draws with a theme color (a GPU outline, a chart) reads it by
 name, following the dark/light variant:
 
-```rust
-let accent = rt.theme_color(&page, Theme::Accent); // the page's `enum Theme`
+```rust partial
+let accent = rt.theme_color(&page, Theme::Accent); // the page's generated `enum Theme`
 ```
 
 (You don't have to start from hex: named colors — `red`, `accent`,
@@ -410,8 +469,8 @@ Three kinds of names:
   Aliases into the literals, resolved at theme time: remap
   `theme { accent = purple }` once and every widget follows.
 - **Mode tokens** — `surface panel border text text_muted`. These carry
-  light *and* dark values; `Gogo.set_theme_variant("dark")` flips them all
-  (the well-known variant name), no theme file needed.
+  light *and* dark values; `Runtime::set_theme_variant(&page, "dark")` flips
+  them all (the well-known variant name), no theme file needed.
 
 Overrides go inside theme blocks, no `$` prefix — and your values always
 win. Override one literal and the semantic tokens pointing at it follow:
@@ -448,9 +507,10 @@ LabeledSlider sizeSlider     label="Size", min=1, max=300, value=80
 LabeledSlider hardnessSlider label="Hardness", value=30
 ```
 
-`signals` marks which inner node exposes events: `sizeSlider`'s `change`
-auto-wires to `OnSizeSliderChange(value)` — the committed value; the live
-per-tick stream is `edit` → `OnSizeSliderEdit(value)`.
+`signals` marks which inner node's events the instance reports. A drag on
+`sizeSlider` arrives as `Edit` events while the finger moves and one
+`Change` when it lifts, each carrying the value, and the handler they name
+is `sizeSlider`.
 
 ---
 
@@ -529,13 +589,19 @@ Column spacing=8 {
 }
 ```
 
-```gdscript
-# In the view's code-behind (a GogoView/GogoPanelView subclass), typically
-# from _on_view_loaded(); elsewhere: Gogo.set_items(view_root, "tasks", ...).
-set_items("tasks", [
-    {"id": 1, "title": "Sketch", "done": false},
-    {"id": 2, "title": "Ink",    "done": true},
-])
+An item is a record of named fields. Here `host.rt` is the page's
+`Runtime` and `tasks` is the repeat's node (`page.find("tasks")`):
+
+```rust
+fn task(id: i64, title: &str) -> Item {
+    Item::Record(vec![("id".to_string(), ItemValue::Int(id)), ("title".to_string(), ItemValue::Str(title.to_string()))])
+}
+```
+
+```rust
+    // The whole collection, every time it changes. Rows are matched by
+    // key: a kept key keeps its row.
+    host.rt.set_items(&mut host.page, tasks, &[task(1, "Buy milk"), task(2, "Call mom")]).expect("two rows with different keys");
 ```
 
 - Assignment IS the change event: re-assign and gogo reconciles by key —
@@ -546,15 +612,14 @@ set_items("tasks", [
   (`repeat tasks as $task by $task.id`). Primitive collections key on the
   item itself: `repeat names by $item`.
 - `empty { ... }` is REQUIRED, first in the body — the zero-items screen,
-  which also shows before the first assignment; `set_items(view, "tasks",
-  [])` clears back to it. Truly nothing to show? A literal `empty { }`
+  which also shows before the first assignment; `set_items` with no items
+  clears back to it. Truly nothing to show? A literal `empty { }`
   says so explicitly.
-- Buttons inside the template know their row: any handler wired in the body
-  receives the item's key as its last argument
-  (`func OnRowActivate(key): ...`).
-- Bad data — a duplicate `id` above all — refuses the WHOLE assignment with
-  a loud console block, and the list keeps showing the last good items.
-  Fix the data, assign again.
+- Buttons inside the template know their row: for an event from inside a
+  row, `Runtime::item_key(&page, ev.node)` is the key of that row.
+- Bad data — a duplicate `id` above all — refuses the WHOLE assignment:
+  `set_items` returns an error that says why (G9101 to G9103), and the
+  list keeps showing the last good items. Fix the data, assign again.
 - Selection, keyboard navigation and activation belong to the `List`
   control (next recipe) — a plain `repeat` in a `Column`/`Scroll` is pure
   rendering.
@@ -567,10 +632,10 @@ Put the repeat inside a `List` instead of a `Column`, and root each row in
 a `ListItem` — the selectable/focusable/tappable unit (required, D121).
 The chosen row's `ListItem` holds the universal `selected` (style it THERE),
 the keyboard cursor is the `focused` state, `when held` gives WP press
-feedback, and tapping a row fires `On<Name>Activate`. The List scrolls
+feedback, and tapping a row reports `Activate` on that row. The List scrolls
 itself — no `Scroll` wrapper, ever. A bare list already shows selection,
-the cursor and press feedback (the theme's list-selection fill and its
-echoes, D122); styles like the ones below replace those defaults per state.
+the cursor and press feedback (a selection fill and its echoes, D122);
+styles like the ones below replace those defaults per state.
 
 ```kdl
 style TaskLook padding=8 {
@@ -586,21 +651,28 @@ List picker select=many, spacing=2 {
 }
 ```
 
-```gdscript
-set_items("tasks", tasks)                      # data, exactly as before
+The data is handed over exactly as before (`set_items`). Then, with
+`handler_name` from "How do I hear a button in my code?":
 
-func OnPickerChange(selected) -> void:         # the selection changed —
-    save_selection(selected)                   # an Array under select=many
+```rust
+    // A tap on a row: `Change` on the List when the selection changed,
+    // then `Activate` on the row. The row's key says which item it was.
+    let first_row: NodeId = host.rt.items(&host.page, tasks)[0];
+    for ev in host.tap(first_row, 1.0) {
+        match ev.kind {
+            EventKind::Change(_) => assert_eq!(handler_name(&host.page, &ev), Some("picker")),
+            EventKind::Activate => assert_eq!(host.rt.item_key(&host.page, ev.node), Some(&ItemKey::Int(1))),
+            _ => {}
+        }
+    }
+    assert_eq!(host.rt.selected_keys(&host.page, picker), vec![ItemKey::Int(1)]);
 
-func OnPickerActivate(key, item) -> void:      # an item was tapped/Entered
-    open_task(key)
-
-# Code owns the selection too — a live property on the node:
-var picker := view("picker")
-picker.selected = ["t1", "t9"]                 # keys; [] clears
+    // Code writes the selection too: a list of keys, empty to clear.
+    host.rt.set_selected(&host.page, picker, &[ItemKey::Int(2)]).expect("key 2 is a row");
+    assert_eq!(host.rt.selected_keys(&host.page, picker), vec![ItemKey::Int(2)]);
 ```
 
-- `select=one` (default) — `selected` is a key or `null`; tapping selects,
+- `select=one` (default) — the selection is one key or none; tapping selects,
   tapping the selected item again does NOT deselect (radio doctrine).
   `select=many` — taps toggle. `select=off` — no selection at all, items
   just focus and activate (menus).
@@ -650,7 +722,7 @@ control Fader $value=0, $min=0, $max=100, $step=0 {
 }
 
 Column width=fill, spacing=10 {
-    Fader gain value=25, width=fill   // drag_started auto-wires OnGainDragStarted
+    Fader gain value=25, width=fill   // drag_started reaches code as a Signal event
     Fader vol  value=50, width=fill { when held opacity=0.85 }
 }
 ```
@@ -678,8 +750,6 @@ the value. The runtime keeps everything else (`held`, `edit`/`change`,
 the drag edges, restore on cancel, the glide):
 
 ```rust
-use gogo_ui::{Behavior, BehaviorSpec, Claim, Cx, KeyAction, KEYS_ARROWS, Payload};
-
 /// A vertical fader: the value follows y over the track, bottom = min.
 #[derive(Default)]
 struct VFader;
@@ -688,20 +758,27 @@ static VFADER: BehaviorSpec = BehaviorSpec { name: "vfader", slots: &["track"], 
 
 impl VFader {
     fn apply(cx: &mut Cx, y: f32) {
-        let track = cx.slot(0);                                   // the spec's slot order
-        cx.set_fraction((track.y + track.h - y) / track.h);       // snaps to step=, clamps
+        let track = cx.slot(0); // the spec's slot order
+        cx.set_fraction((track.y + track.h - y) / track.h); // snaps to step=, clamps
     }
 }
 
 impl Behavior for VFader {
-    fn spec(&self) -> &'static BehaviorSpec { &VFADER }
-    fn began(&mut self, cx: &mut Cx, _x: f32, y: f32) -> Claim { Self::apply(cx, y); Claim::Take }
-    fn moved(&mut self, cx: &mut Cx, _x: f32, y: f32) { Self::apply(cx, y); }
+    fn spec(&self) -> &'static BehaviorSpec {
+        &VFADER
+    }
+    fn began(&mut self, cx: &mut Cx, _x: f32, y: f32) -> Claim {
+        Self::apply(cx, y);
+        Claim::Take
+    }
+    fn moved(&mut self, cx: &mut Cx, _x: f32, y: f32) {
+        Self::apply(cx, y);
+    }
     fn key(&mut self, cx: &mut Cx, action: KeyAction) -> bool {
         match action {
             KeyAction::Increment => cx.set_value(cx.value() + cx.key_step()),
             KeyAction::Decrement => cx.set_value(cx.value() - cx.key_step()),
-            _ => return false,                                    // Home/End: not ours
+            _ => return false, // Home/End: not ours
         }
         true
     }
@@ -711,10 +788,13 @@ impl Behavior for VFader {
 Two registrations, then the file names it:
 
 ```rust
-// build.rs — the compiler checks the `.gogo` against the spec (slots, keys)
-CompileOptions { behaviors: &[VFADER], ..CompileOptions::default() }
-// at run — the page's Input routes to the behavior, by name
-input.register(Box::new(VFader));
+    // The compiler checks the `.gogo` text against the spec (slots, keys).
+    let options = CompileOptions { behaviors: &[VFADER], ..CompileOptions::default() };
+    let compiled: Compiled = compile_with(VOLUME, &|_| None, options);
+    assert!(!has_errors(&compiled.diags), "{:?}", compiled.diags);
+    let mut host: Hosted = Hosted::new(compiled.page, 360.0, 640.0);
+    // While the program runs, the page's Input finds the behavior by name.
+    host.input.register(Box::new(VFader));
 ```
 
 ```kdl partial
@@ -769,43 +849,34 @@ Fader gain slot.track.corner_radius=3, value=25   // one-off: no style needed
 
 ## How do I restyle the built-in Slider?
 
-A plain `Slider` is Godot's native HSlider — it has no slots to restyle.
-Opt the instance into gogo's implementation with `render=gogo` (it looks
-the same until you style it), then style it like any control:
+The built-in `Slider` draws its own parts: a `track`, the `fill` that
+grows with the value, and a `thumb`. A `for=Slider` style (or a slot path
+on the instance line) can restyle three things today: the track's color,
+the track's corners, and the fill's color.
 
-```kdl stale
-style ThinSlider for=Slider, slot.track.corner_radius=0 {
-    when held    slot.thumb.scale=1.15
-    when focused slot.track.background=$accent
-}
+```kdl
+style ThinSlider for=Slider, slot.track.corner_radius=0, slot.track.background=$chrome,
+    slot.fill.background=$accent
 
-Slider volume .ThinSlider render=gogo, value=$vol, min=0, max=100, step=5
+Slider volume .ThinSlider value=50, min=0, max=100, step=5
+Slider gain slot.track.corner_radius=3, value=25   // one-off: no style needed
 ```
 
-The slots are `track`, `progress` (grows with the value), `thumb` (follows
-the value) and `label` (empty by default — fill it):
+Any other slot word on a built-in Slider is a build error that lists those
+three (G3002). To give every slider in the app the look, name the style in
+a theme entry:
 
-```kdl stale
-Slider gain render=gogo, value=0, min=-60, max=6 {
-    slot label { Label text="gain", font_size=12 }
-}
-```
-
-To flip every slider at once, make it app policy in the theme — and opt
-out per instance where code-behind still casts `as HSlider`:
-
-```kdl stale
+```kdl
+style ThinSlider for=Slider, slot.track.corner_radius=0
 theme {
-    Slider .ThinSlider render=gogo    // every Slider: this look, gogo backend
+    Slider .ThinSlider    // every Slider: this look
 }
-Slider legacy render=native, value=1  // opts out — stays a real HSlider
+Slider plain value=1
 ```
 
-You don't have to memorize any of this: using a `for=Slider` style (or a
-fill) on a native slider errors with `render=gogo` offered as the fix. The
-one cost is stated there too — `as HSlider` stops working on an opted-in
-instance; read `value` / listen to `on:change` (committed) or `on:edit`
-(live) instead, both backends speak them.
+A slider that needs more (its own thumb, a label that follows the value,
+another shape) is a `control` with `behavior slider`: see "How do I build
+a control (slider, knob)?". Its slots are yours to draw and to restyle.
 
 ---
 
@@ -850,11 +921,18 @@ transformed.
   recipe); staggering wearers to `each` blocks ("How do I stagger buttons
   into a menu?").
 
-Play it from code:
+Play it from code. On a page compiled while the program runs, an anim is
+found by its name:
 
-```gdscript
-gogo.play(view, "appear")
+```rust
+    // An anim's id on a page compiled while the program runs.
+    let appear: StrId = host.page.intern_lookup("appear");
+    host.rt.play_id(&host.page, appear, Finish::Nothing); // restarts if already running
 ```
+
+A build generates an `enum Anim` per page, and the call is then
+`rt.play(&page, Anim::Appear, Finish::Nothing)`: a misspelled anim does
+not compile.
 
 ---
 
@@ -880,7 +958,7 @@ anim openMenu {
   when THAT group's chain completes, no matter what else runs — a
   referenced step stands alone (no connective; the reference places it).
   To overlap an anchor's tail, shift with `offset=` (`after=dim,
-  offset=-0.05`). Unknown names and cycles are load-time errors — retiming
+  offset=-0.05`). Unknown names and cycles are build errors — retiming
   `dim` never breaks what follows it.
 - `group duration_each=` is each inner step's default (a line's own
   `duration=` wins) — never the group's total; names are opt-in, only
@@ -1002,7 +1080,7 @@ widget FxButton $icon="", $text="" {
 
     Button signals .Root {
         Row spacing=6 {
-            Image icon texture=$icon
+            Image icon source=$icon
             Label caption text=$text
         }
     }
@@ -1025,11 +1103,11 @@ Notes:
   at 0) need no undo.
 - Rapid press/release is safe: entering a state cancels its exit tween
   (and vice versa), always starting from current values.
-- Scaling pops from the center: motion uses the offset transform, whose
-  engine pivot default is the control's center (the WP tilt feel).
-- The `$icon=""` default is safe: an empty string on a resource-typed property
-  means null — no load attempt, no error. A *non-empty* path that fails to load
-  is still a load-time error.
+- Scaling pops from the center: `scale` and `rotate` turn about the box's
+  center unless `pivot=` says otherwise (the WP tilt feel).
+- The `$icon=""` default is safe: an empty string on a picture property
+  means no picture. A *non-empty* `res://` path that names no file is still
+  a build error.
 - Names you invent share one convention: camelCase for nodes and anims
   (`caption`, `pressFx`), PascalCase for widgets and styles (`FxButton`, `Root`).
 
@@ -1062,11 +1140,11 @@ Button backButton     text="Back",     on:activate=go(base)
 
 ## How do I stop an animation and put things back?
 
-`stop_anim("name")` from code (`gogo.stop(view, "name")`, C# `StopAnim`)
-ends the anim without playing it out and returns every property it
-animated to what the file says without the anim — the declared value, the
-`when` value holding at the time, or a finished anim's end pose the play
-started from. No `finished` signal fires.
+`Runtime::stop` ends the anim without playing it out and returns every
+property it animated to what the file says without the anim — the declared
+value, the `when` value holding at the time, or a finished anim's end pose
+the play started from. A stopped anim is not in the list
+`Runtime::take_finished` hands out.
 
 ```kdl
 anim pulse repeat=forever {
@@ -1080,9 +1158,12 @@ Button dotButton .DotLook width=40, height=40 {
 }
 ```
 
-```gdscript
-play_anim("pulse")     # the dot breathes 1 -> 1.2 -> 1 ...
-stop_anim("pulse")     # dot.scale = 1 again: the declared value
+With `pulse` in place of `appear` (the dot breathes 1 -> 1.2 -> 1 until
+the stop puts `dot.scale` back to 1, the declared value):
+
+```rust
+    host.rt.play_id(&host.page, appear, Finish::Nothing);
+    host.rt.stop_id(appear, true); // true: every property goes back to what the file says
 ```
 
 Three answers to "back to what?":
@@ -1096,15 +1177,13 @@ Three answers to "back to what?":
   is a standing value the author chose, not something `stop` undoes.
 
 One property, one writer: a `when` and a `transition … anim=` may not both
-drive the same property in one scope (load error G4003 — "two writers
+drive the same property in one scope (build error G4003 — "two writers
 would fight on every flip"); an anim started from code simply outranks the
 `when` while it plays.
 
 ---
 
 ## How do I animate a color (a glow, a flash)?
-
-*(FanRust runtime, 2026-09-02 — the Godot addon predates these lanes.)*
 
 Any word a `transition` rule can move, an anim can drive — colors
 included, with everything a track already has (chains, `autoreverse`,
@@ -1131,7 +1210,7 @@ brown, and a fade to transparent never darkens.
 
 ## How do I scale or rotate from a corner (pivot)?
 
-*(FanRust runtime, 2026-09-02.)* `pivot=` places the fixed point `scale`
+`pivot=` places the fixed point `scale`
 and `rotate` transform about — a 0..1 box point, the Gradient `from=`
 spelling; unset = the center:
 
@@ -1153,7 +1232,7 @@ drawn, pivot and all.
 
 ## How do I give my control arrow keys?
 
-*(FanRust runtime, 2026-09-02.)* Declare the claim in the contract — a
+Declare the claim in the contract — a
 list line like `state_builtin`:
 
 ```kdl
@@ -1168,7 +1247,7 @@ With focus on a `Stepper`, arrows and Home/End arrive at your code-behind
 as `Key` events on the instance root — step `$value` there — and never
 move focus. Unclaimed keys traverse as always, and Tab ALWAYS leaves (the
 way off a control, never claimable). The file says which keys the control
-eats — no script to read.
+eats.
 
 ---
 
@@ -1196,14 +1275,8 @@ toggle-mode button, a Radio, a `List`).
 `hovered` answers a real mouse only — a finger isn't a pointer, so touch
 screens never show hover styles (the emulated pointer would otherwise strand
 the look wherever the finger lifted) — and a mouse press holds hover through
-a mid-drag slip off the control until release. Using a state where it
-can't apply is a load-time error that lists what's available:
-
-```
-panel.gogo:4: state 'held' isn't available on Rectangle
-    when held background=$accent
-         ^^^^ available here: hovered, focused, focus_within, disabled, selected
-```
+a mid-drag slip off the control until release. A misspelled state is a
+build error that names the states (G0036).
 
 ---
 
@@ -1212,14 +1285,16 @@ panel.gogo:4: state 'held' isn't available on Rectangle
 Bare numbers are effective pixels (density-independent). `width`/`height`
 answer "how big?" three ways — exact, natural, or flexible:
 
-```kdl stale
+```kdl
 Button save width=200, text="Save"   // exactly 200 epx wide
 Button ok   width=hug,  text="OK"    // natural size — shrink to content
 Slider vol  width=fill               // take the leftover space
 Panel body width=fill(2)            // a double share of the leftover
 Label name min_width=220         // at least 220 — still stretches
-Rectangle hairline height=1px        // device pixels, explicitly
 ```
+
+There is no device-pixel unit: every length is epx (a `px` suffix is build
+error G0038), and the renderer snaps each box to whole device pixels.
 
 `size=WxH` (or a bare `50x90`) is the exact-size shorthand for both axes;
 omit a component to leave that axis alone (`size=x72`). `min-*` is the
@@ -1227,11 +1302,10 @@ omit a component to leave that axis alone (`size=x72`). `min-*` is the
 Heads-up on the default: children stretch across a `Column`'s width unless
 you say `hug` (or give an exact size).
 
-An exact size smaller than the content can't hold: the real box is the
-combined minimum, so content wins and the build says so
-(`Column height=100 but content needs 316`). Wrap it in a `Scroll` and put
-the exact size there (the next recipe), let the axis `hug`, or shrink the
-content. To hug *up to a limit* — a box that follows its text until a cap,
+An exact size is a hard edge: the box is exactly that size, and content
+that needs more hangs out and is cut at the edge. Wrap the content in a
+`Scroll` and put the exact size there (the next recipe), let the axis
+`hug`, or shrink the content. To hug *up to a limit* — a box that follows its text until a cap,
 then wraps — see "How do I make a box hug text that can wrap (a toast)?".
 
 ---
@@ -1259,50 +1333,50 @@ the plate stops at the screen minus 24 and the text wraps. Swapping
 `tipText.text` from code re-fits the plate. On a fill-capped axis the
 margins bind the measuring frame (the one place a centered axis takes
 margins); a number (`max_width=336`) is the fixed-limit form. Caps bind
-under free parents (`Layers`, plain `Control`, slots) and never shear
-content that can't shrink — hard minimums win.
+under free parents (`Layers`, slots) and never shear content that can't
+shrink — hard minimums win.
 
 Add `min_width=` for a floor and the box hugs inside a band (D135):
 `width=hug, min_width=100, max_width=336` never drops below 100 however
-short the text runs, and the floor beats the cap (WPF clamp order). A
-raw-register `RichTextLabel` hugs and caps too since D135 — give it
-`fit_content=true` (its engine minimum counts no content otherwise).
+short the text runs, and the floor beats the cap (WPF clamp order).
 
 ---
 
 ## How do I make a box my code sizes (an ad strip, a seated card)?
 
-Some boxes belong to the code-behind: the page seats them in px and the
-content must never talk back — an ad strip sized to the banner, a card the
-code drags. Declare that on the root with `host` (D283):
+Some boxes get their size from code: an ad strip sized to the banner the
+ad network returned, a card the code drags. There are two ways, by what
+the box is.
 
-```kdl stale
-Panel adPlate width=host, height=host, min_width=320, min_height=50 {
+**The box is a node on a page.** Write its size from code. A code write
+wins over the file until the code takes it back:
+
+```rust
+    // Any property the file could write, code can write. A code write
+    // wins over the file until `clear_prop` takes it back.
+    host.rt.set_prop(title, PropKey::Width, Value::VNum(200.0));
+```
+
+The file declares the floors and the content fills whatever box it gets:
+
+```kdl
+Panel adPlate min_width=320, min_height=50 {
     Row width=fill, height=fill {
-        Label textInfo width=fill, autowrap_mode=word_smart,
+        Label textInfo width=fill, wrap=true,
                 text="Free version. Everything works, but with ads."
         Button buy text="buy ad-free", min_height=44
     }
 }
 ```
 
-The code sets `Position` and `Size`; the file fills whatever box it gets.
-A `host` axis contributes nothing to the root's minimum — only the
-declared `min_width`/`min_height` floors count (they also give the lint a
-touch target) — so a child's transient measure can never inflate the box:
-without `host`, one frame of the wrapping label measured at a stale width
-(one character per line, a rotation re-seat) raises the root's minimum,
-`Size = ...` clamps up to it, and Godot never shrinks the box back — a
-320x50 strip renders over the whole screen until the next re-seat.
+**The box is a whole page** (a component file the host program places
+itself). The host lays that page out in the rectangle it chose: the
+`viewport` it passes for the page's frame (`KeptFrame::frame_retained`).
 
-`host` is root-only (a child's box belongs to its parent — G7004), takes
-no alignment, margin or cap (the code owns placement too), and on a
-`Panel` root needs the `GogoPanelView` host (G7005). Forgetting the
-declaration has a net: a free-standing component that stays bigger than
-the window warns at runtime, naming this fix. `width=hug,
-height=hug` with no other placement keys is the softer opt-out — natural
-size until the code moves it — for boxes the code positions but content
-still sizes.
+`width=host` / `height=host` from the Godot version are gone (build error
+G0055). They existed because content could push a code-sized box bigger
+there; in the Rust crate layout is one pass that writes nothing back, so
+there is nothing to guard.
 
 ---
 
@@ -1328,9 +1402,9 @@ left/right) is required: when the cap binds, the leftover space has to go
 somewhere, and the file says where instead of a silent default (WPF
 silently centers here — a classic surprise).
 
-The box needs a free parent (`Layers`, plain `Control`, a slot) — it
-reads its parent's space and places itself in it. Under a `Column`/`Row`/
-`Panel`, wrap it in a `Layers` first (the load error says so). Margins
+On a stack's own stacking axis (a width cap in a `Row`, a height cap in a
+`Column`) the cap is refused (G1002: the slot is the frame there) — cap
+the stack itself. Margins
 inset the measuring space, and rigid content wider than the cap still
 wins (a cap never shears — same floor-beats-cap law as the hug cap).
 
@@ -1379,16 +1453,14 @@ outright (a fill-width page that must not pan sideways; its content is then
 exactly the Scroll's width, so text with `wrap=true` wraps on screen and one
 line too long to wrap is cut at the edge on its own), and `bars=never`
 hides the scrollbar while the axis keeps panning — the handheld look
-(`bars=reserve` keeps the bar's space so content doesn't shift). Raw
-`horizontal_scroll_mode=`/`vertical_scroll_mode=` props stay the engine
-escape hatch and never mix with the gogo words on one Scroll.
+(`bars=reserve` keeps the bar's space so content doesn't shift).
 
 ---
 
 ## How do I center a control?
 
 `halign` and `valign` — and they work the same everywhere: on a free layer
-(`Layers`, any plain `Control`) and inside containers (`Column`, `Row`,
+(`Layers`) and inside containers (`Column`, `Row`,
 `Panel`, `Scroll`):
 
 ```kdl
@@ -1426,7 +1498,7 @@ Label caption text="fullscreen", font_size=12, horizontal_alignment=center
 Label rowLabel text="save + share", font_size=15, min_height=48, vertical_alignment=center
 ```
 
-Wrapping is `autowrap_mode=word_smart` (WPF `TextWrapping="Wrap"`). A wrapping
+Wrapping is `wrap=true` (WPF `TextWrapping="Wrap"`). A wrapping
 Label needs a width to wrap against — a `min_width`, a container that
 stretches it, or `max_width=fill` on a hugging box (wrap at the screen):
 
@@ -1466,7 +1538,7 @@ Layers padding_left=10, padding_right=10 {
 }
 ```
 
-- **Air around a free child** (under `Layers` / any plain `Control`) —
+- **Air around a free child** (under `Layers`) —
   `margin=N`, or per-edge:
 
 ```kdl
@@ -1513,9 +1585,7 @@ a real node instead. Row/Column only; in a `Flow` use `spacing=`, in a
 
 ## How do I make a button size to its content?
 
-You don't have to — gogo buttons do it (WPF behavior; a raw Godot Button
-would ignore free children in its minimum, draw the content anyway, and leave
-a sliver-sized touch target):
+You don't have to — gogo buttons do it (WPF behavior):
 
 ```kdl
 Button settingsRow {
@@ -1556,7 +1626,7 @@ Layers screen {
 }
 ```
 
-The layer host must be a `Layers` (a plain `Control`) — a `Column`/`Row`
+The layer host must be a `Layers` — a `Column`/`Row`
 would lay the children out in a line instead of letting them stack.
 
 ---
@@ -1592,28 +1662,36 @@ falling through between its controls.
 
 ## How do I draw custom visuals from code (fills, meters, charts)?
 
-Declare the node in gogo — layout, color, place in the tree — and let the
-code-behind subscribe to its `Draw` signal for the pixels gogo can't say.
-The declared `Rectangle` is the layout truth (rect, epx re-apply); the code
-owns only the drawing on top:
+First check whether gogo can say it. A bar that follows a value is
+`reveal_x=` or an `automatic=length` slot; a ring is an `Arc`; a fade is a
+`Gradient`. For pixels gogo cannot say (a chart, a color wheel), declare
+the box in gogo and let the host program draw what is inside. Two ways:
 
-```kdl
-Layers root interactive=true, height=40 {     // the drag surface (a slider row)
-    Rectangle trackBase color=#FFFFFF33, valign=bottom, height=8,
-        margin_left=16, margin_right=16, margin_bottom=10
+- **A host picture.** An `Image` whose `source=` names a picture your code
+  renders. That is the next recipe.
+- **A code control.** A node type the host draws itself. The host lists
+  the type names in `CompileOptions::code_controls`; in the file the node
+  is an empty box of its declared size (the compiler notes it with warning
+  G7013), laid out like any other:
+
+```kdl partial
+Layers wheelRow height=220 {
+    ColorWheel wheel width=200, height=200, halign=center, valign=center
 }
 ```
 
-```csharp
-_track = (ColorRect)GetGogoNode("sizeSlider/trackBase");
-_track.Draw += () => _track.DrawRect(
-    new Rect2(0, 0, _track.Size.X * pct, _track.Size.Y), FillColor);
-_track.QueueRedraw();   // whenever pct changes
+(`ColorWheel` is a name only a host declares, so the tests check this
+example's grammar only.) The host reads where the box landed from the last
+frame and draws there:
+
+```rust
+        let r: Rect = self.kept.rects()[node.index()];
 ```
 
-One writer per channel: gogo owns the rect and the base color, the handler
-draws the dynamic part. (This is the intended escape for WPF templates you'd
-otherwise re-create node by node — see REFERENCE "No ControlTemplates".)
+One owner per thing: gogo owns the box (where it is, how big), the host
+owns the pixels inside. To hear touches on the box, give it
+`interactive=true` and `on:pointer=<name>`: every touch phase arrives as a
+`Pointer` event with the position inside the box.
 
 ---
 
@@ -1630,13 +1708,18 @@ Panel previewStrip background=#000000FF {
 }
 ```
 
-```rust
+```rust partial
 // once: the id the build baked for that name, and a handle on the renderer
 let key = images.get("preview://brush").expect("the page names it");
 let on = ui.external_image(key);
 // whenever the picture changes: point the box at the new texture
 ui.set_external_image(&device, on, &texture);
 ```
+
+(`images` and `ui` here are the host's picture table and its renderer, not
+part of `gogo-ui`, so the tests do not compile this example. `gogo-ui`
+hands the renderer the picture's id in the draw list; showing the pixels
+is the renderer's job.)
 
 The name in the file is the whole contract: the build bakes it as the
 picture's id, so a box with no `source=` (or a different spelling) is a
@@ -1650,7 +1733,7 @@ draws one `Image` per tile (`canvas://tile`) the same way.
 ## How do I pin something to a screen corner or edge?
 
 Say *where* with `halign`/`valign`, push off the edge with margins — on a
-free layer these compile to Godot anchors for you:
+free layer that is all it takes:
 
 ```kdl
 Layers screen {
@@ -1678,7 +1761,7 @@ Layers tray valign=bottom, height=50, margin_bottom=-90
 Rectangle rule margin_left=20, margin_right=20
 ```
 
-A per-edge key that can't bind is a load-time error (the far edge of an
+A per-edge key that can't bind is a build error (the far edge of an
 aligned axis; any edge of a centered axis) — the `margin=N` shorthand stays
 pure breathing room and never errors. For poses that *change* at runtime
 (drawer open/closed), declare an `arrangement` (two recipes down); for
@@ -1689,9 +1772,16 @@ transient motion, animate `translate` (next recipe).
 ## How do I keep content out of the notch (safe area)?
 
 Give the element `safe` margins or padding — `safe` is a length value that
-reads the screen's inset for that edge, host-pushed
-(`gogo.set_safe_insets(left, top, right, bottom)`, pixels) and re-applied
-live on rotation or cutout change:
+reads the screen's inset for that edge. The host program writes the four
+insets (in epx) whenever they change, on rotation for example:
+
+```rust
+    // The screen's insets in epx: left, top, right, bottom.
+    host.rt.safe = [0.0, 24.0, 0.0, 0.0];
+    host.rt.dirty = true; // a plain field: say that the page must lay out again
+```
+
+In the file:
 
 ```kdl
 Layers screen {
@@ -1819,14 +1909,26 @@ Layers chrome {
 }
 ```
 
-`gogo.set_arrangement(root, "expanded")` tweens both nodes there with the
-matching rule; `set_arrangement(root, "base")` tweens home (going home
-mirrors the entering rule). Or flip straight from markup:
-`on:activate=go(expanded)`. The active pose **re-asserts itself** on rotation,
-units changes and hot reload — that's what makes an arrangement the right
-home for a standing pose, where an anim's end value would be stomped by the
-next re-apply. C#: `SetArrangement` / `await SetArrangementAsync("expanded")`
-/ `CurrentArrangement`.
+From code, `Runtime::go` tweens both nodes there with the matching rule,
+and going back to `BASE` tweens home (going home mirrors the entering
+rule). On a page compiled while the program runs, the arrangement is found
+by its name:
+
+```rust
+    let expanded = ArrangementId::from_index(host.page.arrangements.iter().position(|a| host.page.str(*a) == "expanded").expect("arrangement expanded"));
+    host.rt.go_id(expanded);
+```
+
+```rust
+    host.rt.go_id(gogo_ui::BASE); // back to what the page declares
+```
+
+A build generates an `enum Arrangement` per page, and the calls are then
+`rt.go(Arrangement::Expanded)` and `rt.go(Arrangement::Base)`. Or flip
+straight from markup: `on:activate=go(expanded)`. The active pose holds
+across rotation and hot reload — that's what makes an arrangement the right
+home for a standing pose, where an anim's end value is only where the anim
+happened to stop. `Runtime::arrangement_is` asks which pose is in force.
 
 Scope rules to EXACT pairs and the other flips snap declaratively — a
 switch whose option poses glide into each other while entering or leaving
@@ -1873,7 +1975,7 @@ View page {
 }
 ```
 
-```rust
+```rust partial
 // Every write slides from where the box shows now; a write mid-slide
 // turns around.
 rt.set_prop(NAMES.underline, PropKey::MarginLeft, Value::VNum(tab_x));
@@ -1896,10 +1998,16 @@ once. `visibility` itself never slides — fade `opacity`.
 ## How do I lay a view out differently in landscape?
 
 `when screen.<class>` blocks — a second pose axis the HOST drives, not a
-button. Once the app names the active size class from its resize handler
-(`gogo.set_screen_class("landscapeSmall")` — five fixed classes:
-portraitSmall / portraitMedium / portraitLarge / landscapeSmall /
-lotsOfSpace), every view's matching block applies, instantly:
+button. The host program names the screen's size class and orientation
+whenever the screen changes size (five fixed classes: portraitSmall /
+portraitMedium / portraitLarge / landscapeSmall / lotsOfSpace):
+
+```rust
+        // Tell the page which `when screen.*` words hold.
+        hosted.rt.set_screen(&hosted.page, Orientation::from_view(width_epx, height_epx), ScreenClass::from_view(width_epx, height_epx));
+```
+
+The page's matching block applies, instantly:
 
 ```kdl partial
 when screen.landscapeSmall {
@@ -1922,13 +2030,13 @@ landscape seat, not on the portrait base. No transition rules here: a
 rotation is the OS snapping the window, and the pose snaps with it.
 
 When the layout question is "is the screen SIDEWAYS?" — not "how much
-room is there?" — key the ORIENTATION axis instead
-(`gogo.set_screen_orientation`, two fixed values):
+room is there?" — key the ORIENTATION axis instead (the same
+`set_screen` call names it; two fixed values):
 
 ```kdl partial
 when screen.landscape {          // wider than tall, any size
-    bodyStack.visible = false
-    wideRow.visible = true
+    bodyStack.visibility = gone
+    wideRow.visibility = visible
 }
 ```
 
@@ -2008,7 +2116,7 @@ when screen.portraitSmall {
 A declared `min_width`/`min_height` floor still clamps every posed size
 (declare `min_width=30` and a posed `width=20` renders 30 — the floor
 rule), and a posed `min_*` replaces the declared floor for as long as
-its block applies. Margins and alignment on container children stay load
+its block applies. Margins and alignment on container children stay build
 errors — the parent seats its children; only the SIZE is poseable.
 
 ---
@@ -2075,10 +2183,10 @@ Collapsed, the label earns no height (clipped past its top edge, taps
 included) but stays alive; expanding tweens the fraction to 1 and every
 sibling reflows each frame. The resting value on the node's line is what
 DECLARES the channel — a `when` or anim driving `hello.reveal_y` without it
-is a load-time error. `reveal_x=` slides horizontally the same way. It
-needs a container parent (`Column`/`Row`/`Grid`/`Panel`/...): under
-`Layers`/free parents nothing reflows around minimums — overlay reveals
-there are `opacity`/`translate` territory.
+is a build error. `reveal_x=` slides horizontally the same way. It works
+under any parent: in a `Column`/`Row`/`Grid` the siblings close up as the
+box shrinks; under `Layers` the box shows its fraction from the edge its
+alignment names.
 
 ---
 
@@ -2227,7 +2335,7 @@ carry the entry's picture as a 40x40 thumbnail under the name's start.
 
 ## How do I open an image-heavy page fast (lazy images)?
 
-By default every `texture=` decodes before the first frame that shows it —
+By default every `source=` decodes before the first frame that shows it —
 fine for a few icons, a frozen first frame for a catalog of 70 photos (a
 fifth of a second on an old phone). `loading=lazy` moves the decode to a
 background thread: the page shows at once, never waiting for a picture, and
@@ -2250,16 +2358,17 @@ Scroll {
 - A lazy image draws EMPTY until its pixels land, usually a few frames
   later. Its size is read from the file header before the page first
   shows, so `aspect=natural` tiles have their final size from the start —
-  nothing moves when the pixels arrive. Code that needs the pixels
-  themselves (a screenshot, a reveal gate) waits for `gogo.lazy_pending()`
-  to read 0 first.
+  nothing moves when the pixels arrive. Decoding is the host program's
+  work (gogo-ui only carries the `loading=lazy` word to it), so code that
+  needs the pixels themselves (a screenshot, a reveal gate) asks the host
+  whether any decode is still out.
 - Reserve it for the image-heavy pages. `eager` stays the default: a
   toolbar icon that pops in a frame late looks broken; a catalog thumbnail
   that streams in behind the page slide looks fast.
-- The biggest win pairs it with a KEPT page: build the view once, hide it
-  instead of freeing on close, and every reopen is instant with the scroll
-  position physically still set — lazy loading makes that first build
-  cheap, keeping the instance makes it the only one.
+- The biggest win pairs it with a KEPT page: keep the page and its
+  `Runtime` when it closes, and every reopen is instant with the scroll
+  position still set — lazy loading makes the first open cheap, keeping
+  the page makes it the only one.
 
 ---
 
@@ -2420,8 +2529,7 @@ border says so. All three properties are anim/when-drivable
 
 ## How do I make an on/off switch (toggle)?
 
-`Toggle` is gogo's switch — drawn by gogo (there is no native Godot
-switch), so it restyles like any control:
+`Toggle` is gogo's switch:
 
 ```kdl
 Toggle mute value=1, on:change=OnMuteChange
@@ -2432,16 +2540,24 @@ One number is the truth: `value` runs 0..1, the thumb follows it, and
 (state is presentation). Taps
 glide to the other end; drags settle on the side they land — `change(bool)`
 fires on settle, and only when the settled side differs from where the
-gesture began (wiggling across the middle is zero changes). Code-behind
-reads/writes the `selected` bool; `change(bool)` auto-wires as
-`On<Name>Change`.
+gesture began (wiggling across the middle is zero changes). The `Change`
+event carries the new side as a bool.
 
-```kdl stale
-style BigSwitch for=Toggle, slot.track.corner_radius=4 {
-    when selected slot.track.background=green
+A Toggle answers to the states like any control, so a style can respond to
+`selected`, `held`, `focused` and `disabled`:
+
+```kdl
+style DimWhenOff for=Toggle {
+    when selected opacity=1
+    when disabled opacity=0.3
 }
-Toggle wifi .BigSwitch
+Toggle wifi .DimWhenOff opacity=0.7
 ```
+
+Its drawn parts (the pill and the knob) take no restyle today: a
+`slot.` path on a Toggle is build error G3002. A switch with its own look
+is a `control` with `behavior toggle` over a `slot track` holding a
+`slot thumb` ("How do I build a control (slider, knob)?").
 
 For an independent checkbox look use `Check`; for one-of-N use `choice`
 with `Radio`s (below).
@@ -2474,11 +2590,11 @@ choice size value=medium {
 ```
 
 - `value=` pre-presses one Radio by name; omit it for none-selected.
-- A named choice reports changes by convention:
-  `choice paintMode ...` → `OnPaintModeChange(radio_name)` on the host —
-  or explicitly, `on:change=Handler` / `on:change=emit(HostSignal)` (the
-  radio's name is passed as the argument). The event lives on the GROUP —
-  items refuse `on:change` (a Radio's rows expose `when selected`).
+- A named choice reports its pick as a `Change` event whose value is the
+  picked Radio's name. The handler it names is the choice's own name
+  (`choice paintMode ...` names `paintMode`), or the one you write:
+  `on:change=Handler` / `on:change=emit(Handler)`. The event lives on the
+  GROUP — items refuse `on:change` (a Radio's rows expose `when selected`).
 - Radios need names — the name IS the reported value. An independent
   toggle (no group) is `Check`:
 
@@ -2490,7 +2606,7 @@ Check newStroke text="new stroke", on:change=OnNewStrokeChange
 
 ## How do I make a radio that doesn't look like a checkbox?
 
-Give the `Radio` a body. A bodied Radio draws NONE of the native radio
+Give the `Radio` a body. A bodied Radio draws NONE of the default radio
 visuals — the body is the whole look (the same blank overlay canvas as
 Button content), while exclusivity, `value=` seating and the change
 report still come from the `choice`. `selected` is how the body shows the
@@ -2511,22 +2627,17 @@ choice paintMode value=color {
 }
 ```
 
-- The body replaces ALL native visuals, Button chrome included (D144):
+- The body replaces ALL default visuals, the Button plate included (D144):
   the plates come blank — no style needed for a plateless radio, and the
   focus ring stays so keyboard focus indicates. `background=`/`when`
   responses recolor the blank slate when you DO want a plate.
 - `text=` on a bodied Radio errors — letters live in the body's own
   Labels.
 - Re-tapping the current pick keeps it selected and does NOT re-report:
-  changed means CHANGED. A programmatic `button_pressed = true` reports
-  like a tap (one report per genuine transition); `set_pressed_no_signal`
-  seats silently and the choice never sees it — but the `when selected`
-  restyle then arrives a sweep-beat late, with a warning; seat silently
-  through `gogo.set_selected` instead for an instant restyle.
+  changed means CHANGED.
 - An independent toggle takes the same body spelling: `Check name { ... }`
   is the bodied Radio's twin — same blank canvas and `selected` responses,
-  checkbox reader role, no group, `change(bool)`/`on:change=` wiring
-  unchanged.
+  no group, and a `Change` event carrying a bool.
 
 ---
 
@@ -2578,15 +2689,11 @@ Layers strip width=hug, height=hug {
 }
 ```
 
-`space_only` holds space under FREE parents (Layers / plain Control /
-slot), where gogo owns the measure; an engine container skips hidden
-children in its own sorting and refuses the spelling (v1). Inside a
-`Column`/`Row`, hold the seat the old way — zero the opacity and take the
-node off the input map so the ghost doesn't catch taps:
+It holds its slot under any parent, a `Column` or `Row` included:
 
 ```kdl
 Column spacing=8 {
-    Button ghostButton text="soon", opacity=0, interactive=false
+    Button ghostButton text="soon", visibility=space_only
     Button saveButton  text="save"
 }
 ```
@@ -2615,13 +2722,24 @@ Label tip text="new stroke"/newStroke
 Button ok   text="keep changes"/keepChanges
 ```
 
-Feed locale tables from the host and flip — every keyed string on every live
-view updates in place, instantly:
+The host program builds one table per language and hands it to the page —
+every keyed string on the page shows the new language at the next frame:
 
-```gdscript
-gogo.set_translations("de", {"newStroke": "neuer Strich", "keepChanges": "Änderungen behalten"})
-gogo.set_locale("de")   # ...and back: gogo.set_locale("")
+```rust
+    // One language: (key, translated text). A key the list leaves out
+    // shows its English.
+    let title_key: KeyId = keys.get("appTitle").expect("the page names /appTitle");
+    let german: Locale = Locale::build(MENU_KEYS, &[(title_key, "Malen")]);
+    host.rt.set_locale(Some(Arc::new(german)));
 ```
+
+```rust
+    host.rt.set_locale(None); // the literals as the file wrote them
+```
+
+`MENU_KEYS` is the list of every key with its English, in id order. A
+build generates it as `KEYS`, with an `enum Key` beside it (`Key::from_name`
+turns a translation file's key into its id).
 
 - No table / missing key → the literal shows, so an untranslated app is just
   the English one. Your `.gogo` files ARE the English strings file.
@@ -2629,8 +2747,9 @@ gogo.set_locale("de")   # ...and back: gogo.set_locale("")
   under a known key is a build error (G8001) — that's the net that catches
   "edited one copy of the string, forgot the other".
 - Dynamic strings from code use the same rule:
-  `gogo.translate("PaintingSaved", "Your painting has been saved")`.
-- Make sure nothing ships untranslated (Rust app): turn on
+  `rt.translate("PaintingSaved", "Your painting has been saved")` (the key,
+  then the English to show when the language has no entry).
+- Make sure nothing ships untranslated: turn on
   `CompileOptions::require_keys` and every displayed string with no key
   fails the build (G8002). Mark a string that must stay English with `/_`
   (`text="Leon Shaw"/_`), and a whole dev or release-notes file with an
@@ -2645,38 +2764,41 @@ else is transparent, and `interactive=true/false` overrides per control**
 (REFERENCE "Input"). Then check, in order:
 
 1. **Is the surface declared?** A drag row, a blocking plate, a catcher —
-   anything passive that should respond needs `interactive=true`. In debug
-   builds a press nobody claims logs a one-time hint naming the topmost node
-   under the finger and this exact fix.
-2. **Look at the map.** `gogo.set_input_overlay(root, true)` (or the editor
-   preview's "Input" toggle) tints every region that currently claims input —
-   a dead surface shows no tint.
+   anything passive that should respond needs `interactive=true`.
+2. **Ask who is under the finger.** `gogo_ui::hit` answers with the node a
+   touch at that point lands on, or none:
+
+   ```rust
+       // Which node would a touch at this point land on? `false`: only
+       // nodes that take input count.
+       let r: Rect = host.kept.rects()[start.index()];
+       assert_eq!(gogo_ui::hit(&host.page, host.kept.frame(), r.x + 5.0, r.y + 5.0, false), Some(start));
+   ```
 3. **Is something eating it?** An `interactive=true` catcher (or another
    button) drawn ABOVE the target claims the tap first — later (higher)
    layers hit-test first.
-4. **Is the hit rect as big as the visuals?** Canvas items don't clip —
-   content can DRAW outside its control's rect while taps land by rect. gogo
-   buttons derive their minimum from their content (REFERENCE "Button
-   content sizing"), but a plain container can still be smaller than what it
-   shows: check the control's rect, not the pixels. `gogo.explain(node)`
-   prints both the rect and the input provenance.
+4. **Is the hit rect as big as the visuals?** Content can DRAW outside its
+   control's rect while taps land by rect. gogo buttons derive their minimum
+   from their content (REFERENCE "Button content sizing"), but a plain
+   container can still be smaller than what it shows: check the control's
+   rect (`frame.rects()[node.index()]`), not the pixels.
 
 ---
 
 ## How do I find out what's wrong?
 
-Save the file. Errors report the file, the line, the source with a caret, and
-usually the fix:
+Build. An error reports the file, the line, a code and the message, which
+usually names the fix:
 
-```
-toolbar.gogo:9: unknown widget type 'Buttn'
-    Buttn optionsButton .ToolButton text="Brush"
-    ^^^^^ did you mean 'Button'?
+```text
+ui/toolbar.gogo:9: error G7011: unknown node type `Buttn` — did you mean 'Button'? (or: List, empty, seat, slot)
 ```
 
-Widget types, properties, style names, states, easings, and `$values` are all known
-sets — most typos come back with a suggestion. While a file has an error, the last
-good version of the UI stays on screen.
+Node types, properties, style names, states, easings, and `$values` are all
+known sets — most typos come back with a suggestion. The code (`G7011`) is
+a search key: `docs/gogo-errors.md` has one entry per code, saying what the
+message means and how to fix it. With hot reload, a file with an error is
+refused and the last good version of the page stays on screen.
 
 ---
 
@@ -2691,18 +2813,18 @@ question; the dock's table of contents lists them as their own group.
 WPF's measure pass hands *available size* down to every element — even a
 size-to-content one. A left-aligned `CheckBox` in a 640-wide panel is
 measured with 640 available, its `TextBlock TextWrapping="Wrap"` wraps
-there, and the checkbox still hugs the wrapped result. Godot has no such
-pass: a control's minimum is answered with **no context**, so wrap-text
+there, and the checkbox still hugs the wrapped result. gogo does not hand
+a hugging box an available width: wrap-text
 only wraps where a .gogo width **binds** it (D254). Porting XAML text means
 deciding, per shape, where that bound comes from:
 
 | XAML shape | gogo spelling |
 |---|---|
-| `<TextBlock TextWrapping="Wrap"/>` stretching in a panel | `Label autowrap_mode=word_smart, width=fill` |
+| `<TextBlock TextWrapping="Wrap"/>` stretching in a panel | `Label wrap=true, width=fill` |
 | Left-aligned content control holding wrap text (`<CheckBox HorizontalAlignment="Left">`) | bind the chain: `width=fill` on the control, the row AND the label — a hug chain has no width to hand down, and a `fill` label inside one gets the leftover of a content-sized row: its own one-char raw minimum (linted, G1004) |
 | `MaxWidth` hug — size to text, wrap at the screen (a toast) | `width=hug, max_width=fill` on the box (a number caps at a fixed width) |
 | Wrap text inside a floored button (`MinWidth` guarantees the line) | `min_width` on the BUTTON + `width=fill` down to the label — the floor is the width the wrap binds at, and G1004 credits it |
-| `TextTrimming` / no wrapping | plain `Label` — no `autowrap_mode`, no width decision needed |
+| `TextTrimming` / no wrapping | plain `Label` — no `wrap=`, no width decision needed |
 
 The trade the left-aligned row makes: with the chain bound `fill`, the
 control's hit area spans the row instead of hugging the text. If the hug
@@ -2710,7 +2832,5 @@ tap target matters, keep the control hugging and cap the label instead
 (`max_width=` a number) — a *fixed* cap needs no parent frame, so it works
 under a hug chain where `max_width=fill` has nothing to read.
 
-If a page ever *grows every frame* after a port (a code-behind "fit to my
-panel" write feeding back into layout), the runaway-growth tripwire prints
-`gogo: runaway layout growth` naming the root — see G1004's sibling notes
-in `docs/errors/` and the `overlay=true` cut.
+A box that must sit on its parent without making the parent bigger (a
+badge, a touch plate larger than its button) is `overlay=true`.

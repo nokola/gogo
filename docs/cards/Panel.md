@@ -9,5 +9,5 @@ Panel card background=#27282C, corner_radius=6, padding=12 {
 ```
 
 At a FILE's root, `Panel` announces a COMPONENT: the root IS the box (a
-toast banner, a progress track) and the host node is the widget itself —
-no wrapper. Screens open with `View` instead.
+toast banner, a progress track), with no wrapper around it. Screens open
+with `View` instead.

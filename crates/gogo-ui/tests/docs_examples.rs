@@ -1,15 +1,17 @@
-//! Every gogo example in the docs is run through the compiler.
+//! Every example in the docs is checked: gogo examples go through the
+//! compiler, Rust examples are held against a program this test runs.
 //!
 //! Needed because people and AI assistants learn gogo by copying from
 //! `docs/` and the README: an example that no longer compiles teaches a
 //! dead spelling, and nothing else notices when the language moves on.
 //!
-//! What counts as an example: a fenced block tagged `kdl` or `gogo` in the
-//! README, `docs/gogo-spec.md`, `docs/REFERENCE.md` and `docs/COOKBOOK.md`,
-//! and in `docs/cards/` also a fenced block with no tag (the cards' habit).
-//! A block tagged with another language (`rust`, `text`) is not gogo.
+//! What counts as a gogo example: a fenced block tagged `kdl` or `gogo` in
+//! the README, `docs/gogo-spec.md`, `docs/REFERENCE.md`,
+//! `docs/COOKBOOK.md` and `docs/gogo-errors.md`, and in `docs/cards/` also
+//! a fenced block with no tag (the cards' habit). A block tagged `text`
+//! (or another language) is not an example.
 //!
-//! A second word after the tag says how an example is held to account:
+//! A second word after the tag says how a gogo example is held to account:
 //!
 //! - no second word: it compiles with no error. A snippet with no `View`
 //!   or `Panel` root is put inside a `View` first, and it may use the
@@ -19,18 +21,30 @@
 //!   earlier snippet, a control or a picture only a host has), so only
 //!   its grammar is checked.
 //! - `error=G1234`: it shows a mistake on purpose, and the compiler must
-//!   refuse it with exactly that code.
-//! - `stale`: it was written for the earlier Godot implementation and is
-//!   not rewritten yet. The compiler must still refuse it; once it
-//!   compiles, the word comes off. A reader of the Markdown source sees
-//!   the word and knows not to copy the example.
+//!   refuse it with exactly that code. The example is tried as a snippet
+//!   and, failing that, as a whole file exactly as written: a mistake
+//!   about the file's root (G7003) only shows when nothing is wrapped
+//!   around it.
+//! - `warning=G1234`: it compiles, and the compiler must give that
+//!   warning for it.
 //!
 //! `...` on a line of its own (also `...like this...`) and `{ ... }` mean
 //! "parts left out"; they are dropped before the check.
+//!
+//! A block tagged `rust` must be cut, line for line, from
+//! `docs/examples/host_tour.rs`: a small host program that this test
+//! compiles (it is a module of this file) and runs. `rust partial` marks
+//! a Rust example that cannot be held that way, because it uses code only
+//! a build generates or a crate that is not this one; nothing checks it,
+//! so the text beside it says so.
 
 use gogo_ui::{Diagnostic, Severity, compile};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// The host program the docs' Rust examples are cut from.
+#[path = "../../../docs/examples/host_tour.rs"]
+mod host_tour;
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -186,6 +200,10 @@ fn errors_of(source: &str) -> Vec<Diagnostic> {
     compile(source, &load_example_file).diags.into_iter().filter(|d| matches!(d.severity, Severity::Error)).collect()
 }
 
+fn warnings_of(source: &str) -> Vec<Diagnostic> {
+    compile(source, &load_example_file).diags.into_iter().filter(|d| matches!(d.severity, Severity::Warning)).collect()
+}
+
 /// The `$name = value` lines of the docs' shared theme.
 fn theme_values() -> String {
     let theme: String = load_example_file("styles/theme.gogo").expect("docs/examples/styles/theme.gogo");
@@ -247,7 +265,7 @@ fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
 fn checked_files() -> Vec<(PathBuf, String, bool)> {
     let root: PathBuf = repo_root();
     let mut out: Vec<(PathBuf, String, bool)> = Vec::new();
-    for name in ["README.md", "docs/gogo-spec.md", "docs/REFERENCE.md", "docs/COOKBOOK.md"] {
+    for name in ["README.md", "docs/gogo-spec.md", "docs/REFERENCE.md", "docs/COOKBOOK.md", "docs/gogo-errors.md"] {
         out.push((root.join(name), name.to_string(), false));
     }
     let cards_dir: PathBuf = root.join("docs/cards");
@@ -260,19 +278,44 @@ fn checked_files() -> Vec<(PathBuf, String, bool)> {
     out
 }
 
+/// The lines of a text with their indent and blank lines taken off, so
+/// that an example may be shown at another indent than the program has.
+fn code_lines(text: &str) -> Vec<&str> {
+    text.lines().map(str::trim).filter(|l| !l.is_empty()).collect()
+}
+
+/// Is `example` a run of lines of `program`, in order and with none left
+/// out between them?
+fn is_cut_from(example: &str, program: &str) -> bool {
+    let want: Vec<&str> = code_lines(example);
+    let have: Vec<&str> = code_lines(program);
+    !want.is_empty() && have.windows(want.len()).any(|w| w == want.as_slice())
+}
+
 #[test]
 fn every_docs_example_holds() {
     let mut failures: Vec<String> = Vec::new();
-    let (mut whole, mut partial, mut shown_errors, mut stale) = (0u32, 0u32, 0u32, 0u32);
+    let (mut whole, mut partial, mut shown_errors, mut shown_warnings) = (0u32, 0u32, 0u32, 0u32);
+    let (mut rust_cut, mut rust_unchecked) = (0u32, 0u32);
+    let tour: String = fs::read_to_string(repo_root().join("docs/examples/host_tour.rs")).expect("docs/examples/host_tour.rs");
     for (path, rel, bare_is_gogo) in checked_files() {
         let text: String = fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         for fence in fences(&text) {
             let tag: &str = fence.words.first().map(String::as_str).unwrap_or("");
+            let mode: &str = fence.words.get(1).map(String::as_str).unwrap_or("");
+            if tag == "rust" {
+                match mode {
+                    "" if is_cut_from(&fence.body, &tour) => rust_cut += 1,
+                    "" => failures.push(format!("{rel}:{} is a `rust` example that is not a run of lines of docs/examples/host_tour.rs: cut it from there, or mark it `rust partial` and say beside it why nothing compiles it", fence.line)),
+                    "partial" => rust_unchecked += 1,
+                    _ => failures.push(format!("{rel}:{}: `{mode}` is not a word this test knows after `rust` (`partial`)", fence.line)),
+                }
+                continue;
+            }
             let is_gogo: bool = tag == "kdl" || tag == "gogo" || (tag.is_empty() && bare_is_gogo);
             if !is_gogo {
                 continue;
             }
-            let mode: &str = fence.words.get(1).map(String::as_str).unwrap_or("");
             if mode == "partial" {
                 partial += 1;
                 let errors: Vec<Diagnostic> = grammar_errors(&fence.body);
@@ -282,14 +325,19 @@ fn every_docs_example_holds() {
             } else if let Some(code) = mode.strip_prefix("error=") {
                 shown_errors += 1;
                 let (file, errors) = check_whole(&fence.body);
-                if !errors.iter().any(|e| e.code == code) {
+                let as_written: Vec<Diagnostic> = errors_of(&strip_elisions(&fence.body));
+                if !errors.iter().chain(as_written.iter()).any(|e| e.code == code) {
                     let got: String = if errors.is_empty() { "no error".to_string() } else { errors.iter().map(|e| e.code.clone()).collect::<Vec<String>>().join(", ") };
                     failures.push(format!("{rel}:{} says it shows {code}, but the compiler reports {got}\n{}", fence.line, describe(&file, &errors)));
                 }
-            } else if mode == "stale" {
-                stale += 1;
-                if check_whole(&fence.body).1.is_empty() {
-                    failures.push(format!("{rel}:{} is marked `stale` but compiles now: take the word off its fence", fence.line));
+            } else if let Some(code) = mode.strip_prefix("warning=") {
+                shown_warnings += 1;
+                let (file, errors) = check_whole(&fence.body);
+                if !errors.is_empty() {
+                    failures.push(format!("{rel}:{} says it shows warning {code}, but it does not compile\n{}", fence.line, describe(&file, &errors)));
+                } else if !warnings_of(&file).iter().any(|w| w.code == code) {
+                    let got: String = warnings_of(&file).iter().map(|w| w.code.clone()).collect::<Vec<String>>().join(", ");
+                    failures.push(format!("{rel}:{} says it shows warning {code}, but the compiler gives [{got}]", fence.line));
                 }
             } else if mode.is_empty() {
                 whole += 1;
@@ -298,14 +346,27 @@ fn every_docs_example_holds() {
                     failures.push(format!("{rel}:{}\n{}", fence.line, describe(&file, &errors)));
                 }
             } else {
-                failures.push(format!("{rel}:{}: `{mode}` is not a word this test knows after the language tag (`partial`, `error=G1234`, `stale`)", fence.line));
+                failures.push(format!("{rel}:{}: `{mode}` is not a word this test knows after the language tag (`partial`, `error=G1234`, `warning=G1234`)", fence.line));
             }
         }
     }
-    println!("docs examples: {whole} compiled whole, {partial} checked for grammar only, {shown_errors} shown errors, {stale} stale");
+    println!("docs examples: {whole} compiled whole, {partial} checked for grammar only, {shown_errors} shown errors, {shown_warnings} shown warnings; rust: {rust_cut} cut from the tour, {rust_unchecked} unchecked");
     assert!(failures.is_empty(), "{} docs example(s) do not hold:\n\n{}\n", failures.len(), failures.join("\n\n"));
-    assert!(whole >= 250, "only {whole} examples were compiled whole: did a docs folder move, or did the examples lose their tags?");
+    assert!(whole >= 300, "only {whole} examples were compiled whole: did a docs folder move, or did the examples lose their tags?");
     assert!(partial <= whole / 5, "{partial} examples are `partial` against {whole} compiled whole: a partial example is checked for grammar only, so they should stay the few");
+    assert!(shown_errors >= 20, "only {shown_errors} examples show an error on purpose: did docs/gogo-errors.md lose its `error=` tags?");
+    assert!(rust_cut >= 10, "only {rust_cut} Rust examples were held against the tour: did they lose their `rust` tag?");
+    assert!(rust_unchecked <= rust_cut, "{rust_unchecked} Rust examples are `rust partial` against {rust_cut} cut from the tour: an unchecked example goes stale without a sound, so they should stay the few");
+}
+
+/// The host program the Rust examples are cut from runs to its end: every
+/// call in it does what the docs say it does.
+///
+/// Needed because "the example is in the program" proves only that it
+/// compiles; the asserts inside `tour` are what hold the claims.
+#[test]
+fn the_host_tour_runs() {
+    host_tour::tour();
 }
 
 /// Every `.gogo` file under `docs/examples` compiles: the docs' shared
@@ -363,4 +424,10 @@ fn the_example_helpers_do_what_they_say() {
     assert!(errors_of("View v {\n    Label a no_such_word=1\n}\n").iter().any(|e| e.code == "G2001"));
     assert!(grammar_errors("Label a text=\"x\"\n").is_empty());
     assert!(!grammar_errors("Label a text=\n").is_empty());
+
+    let program: &str = "fn main() {\n    let a = 1;\n\n    let b = 2;\n    let c = 3;\n}\n";
+    assert!(is_cut_from("let a = 1;\nlet b = 2;\n", program), "indent and blank lines do not count");
+    assert!(!is_cut_from("let a = 1;\nlet c = 3;\n", program), "a line left out between two is not a cut");
+    assert!(!is_cut_from("let d = 4;\n", program));
+    assert!(!is_cut_from("\n", program), "an empty example is cut from nothing");
 }

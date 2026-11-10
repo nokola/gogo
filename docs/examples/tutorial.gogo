@@ -1,7 +1,7 @@
-// Gogo in one file — a guided tour. Open it next to the Gogo editor panel,
-// change anything, save, and watch it hot reload. Errors point at the line
-// and usually suggest the fix; while a file has an error, the last good
-// version stays on screen.
+// Gogo in one file — a guided tour. Change anything and build (or save,
+// if your host program reloads pages while it runs). Errors point at the
+// line and usually suggest the fix; with hot reload, a file with an error
+// is refused and the last good version stays on screen.
 //
 // One line shape is the whole language:
 //   WidgetType name .StyleName property=value, property=value { children }
@@ -68,7 +68,7 @@ View screen {
             Button cancelButton .ToolButton width=fill, text="Cancel"
             Button okButton .ToolButton width=fill(2), text="OK"   // 2x share
         }
-        Label hint text="edit me and save — the view reloads live",
+        Label hint text="edit me and build",
             font_size=12, halign=center
     }
 }
@@ -76,6 +76,6 @@ View screen {
 // Where to go next:
 //   COOKBOOK.md  — task-shaped recipes ("How do I center a control?")
 //   REFERENCE.md — every property, condition, easing and error, for lookup
-// Wiring: a named node auto-connects its signals to your host script by
-// convention (okButton + held -> OnOkButtonPressed), or explicitly with
-// on:activate=HandlerName / on:activate=emit(HostSignal).
+// Wiring: a tap on a named node reaches your program as an event that
+// names a handler: the node's own name (okButton), or the one you write
+// with on:activate=HandlerName / on:activate=emit(Name).

@@ -1,6 +1,6 @@
 Marks the node inside a widget body that plays the widget's wiring
-surface: instance-site `on:` entries and the auto-wiring convention
-connect to IT instead of the root.
+surface: an `on:` entry written on an instance lands on IT instead of the
+root.
 
 ```
 widget LabeledSlider $label="" {
@@ -10,5 +10,5 @@ widget LabeledSlider $label="" {
     }
 }
 
-LabeledSlider sizeSlider label="Size"   // OnSizeSliderChange(v) hits the Slider
+LabeledSlider sizeSlider label="Size"   // the Slider's Change names `sizeSlider`
 ```

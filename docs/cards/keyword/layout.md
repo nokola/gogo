@@ -21,8 +21,8 @@ List bag select=one {
 }
 ```
 
-`set_items("loot", ...)` fills it; `OnBagChange(selected)` hears picks —
-the List surface is unchanged by the panel choice.
+`Runtime::set_items` fills `loot`; a `Change` event on `bag` reports a
+pick — the List's surface is unchanged by the panel choice.
 
 | panel | rows | scrolls | arrows |
 |---|---|---|---|

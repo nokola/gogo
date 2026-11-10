@@ -19,7 +19,7 @@ control Fader $value=0, $min=0, $max=100, $step=0 {
     }
 }
 
-Fader gain value=25   // drag_started auto-wires OnGainDragStarted
+Fader gain value=25   // drag_started reaches code as a Signal event
 ```
 
 Use `control` when input must become a value/state machine; pure

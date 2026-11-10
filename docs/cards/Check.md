@@ -4,5 +4,5 @@ genuine flip, programmatic writes included.
 
 ```
 Check gridToggle text="Show grid", selected=true
-// OnGridToggleChange(on: bool) auto-wires / on:change=Handler
+// a Change event carrying the bool; the handler is `gridToggle`, or on:change=Handler
 ```

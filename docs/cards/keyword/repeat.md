@@ -31,45 +31,28 @@ Column spacing=4 {
 }
 ```
 
-**To wire it up**: save the tree above as `res://ui/brush_list.gogo`, then
-create `res://ui/brush_list.gd` — the code-behind IS the view root — and
-drop the node into any scene:
+**To wire it up**, code hands the repeat its collection by the repeat's
+node (`page.find("brushes")`, or the generated `NAMES.brushes`), every
+time the collection changes. An item is a record of named fields:
 
-```gdscript
-class_name BrushList
-extends GogoView            # `Panel`-rooted component files: GogoPanelView
-
-func _init() -> void:
-    gogo_source = "res://ui/brush_list.gogo"
-
-func _on_view_loaded() -> void:      # after every (re)build
-    set_items("brushes", [
-        {"id": "b1", "name": "Round"},
-        {"id": "b2", "name": "Flat"},
-    ])
-    # Re-assign any time — assignment IS the change event:
-    set_items("brushes", [
-        {"id": "b2", "name": "Flat"},   # kept: same data, same node
-        {"id": "b3", "name": "Fan"},    # new: built
-    ])                                  # b1 absent: freed
-
-func OnBrushActivate(key: String) -> void:
-    print("row ", key)                  # handlers in the body get the
-                                        # item's key as the LAST argument
+```rust
+fn task(id: i64, title: &str) -> Item {
+    Item::Record(vec![("id".to_string(), ItemValue::Int(id)), ("title".to_string(), ItemValue::Str(title.to_string()))])
+}
 ```
 
-(Outside a `GogoView`/`GogoPanelView` host, the same call is
-`Gogo.set_items(view_root, "brushes", items)`.)
+```rust
+    // The whole collection, every time it changes. Rows are matched by
+    // key: a kept key keeps its row.
+    host.rt.set_items(&mut host.page, tasks, &[task(1, "Buy milk"), task(2, "Call mom")]).expect("two rows with different keys");
+```
+
+An event from inside a row carries the row's node, and
+`Runtime::item_key(&page, ev.node)` is that row's key.
 
 `by` is required — String or int keys, no index identity; a duplicate key
 refuses the whole assignment and the last good items stay live. Names
 inside the body are per-item local.
-
-The static preview shows the `empty` state; to see items while designing,
-use the **Test data** dropdown above the preview — every repeat gets
-`name: 0 (off) / 3 / 10` rows (synthesized placeholders, editor-only).
-Real data previews live via hot reload: run the scene and edit — the last
-`set_items` re-applies on every rebuild.
 
 When the items need SELECTION (selected rows, a keyboard cursor,
 activation) or SCROLLING, put the repeat inside a `List` instead of a

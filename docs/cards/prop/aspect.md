@@ -9,8 +9,8 @@ ratio rectangle that fits the space the parent offers, centered (WPF
 Uniform — the color-wheel shape). Both axes spelled + aspect is an
 error (drop one); `hug` and `max-*=` don't combine with it (v1).
 
-Numbers solve under free parents (Layers / plain Control / slot).
-`aspect=natural` uses the engine instead: the Image's MINIMUM follows
+Numbers solve under free parents (Layers / slot).
+`aspect=natural` works by the picture instead: the Image's MINIMUM follows
 the bitmap's ratio from the driving axis (the WPF UniformToFill
 measure) — works under containers and free parents alike, and stays
 correct while `loading=lazy` pixels are still decoding (the bitmap-

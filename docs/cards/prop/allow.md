@@ -11,6 +11,6 @@ Scroll page height=120, allow=vertical, bars=never {
 
 The axis left out holds the content to the Scroll's size: with `allow=vertical` a `fill` column is exactly the Scroll's width, so wrap text wraps on screen and one line too long to wrap is cut at the edge on its own.
 
-Naming a bare `hug` axis refuses at load — that axis is content-sized, nothing is left to scroll. A capped hug axis (`width=hug, max_width=300`) is legal to name: it scrolls past its cap (see `max_width`).
+Naming a bare `hug` axis refuses at build — that axis is content-sized, nothing is left to scroll. A capped hug axis (`width=hug, max_width=300`) is legal to name: it scrolls past its cap (see `max_width`).
 
-`Scroll` only. A `List` picks its axis with `layout` (`layout Row` pans sideways); other nodes don't scroll. Never mixed with the raw `horizontal_scroll_mode=`/`vertical_scroll_mode=` props on one Scroll — one spelling per control.
+`Scroll` only. A `List` picks its axis with `layout` (`layout Row` pans sideways); other nodes don't scroll.

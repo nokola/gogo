@@ -7,9 +7,9 @@ An Image's picture, named by a path string that always carries a scheme:
   code hands the renderer at run time under that exact name (a live
   brush preview, the canvas tiles, a crop photo). The name is baked as
   the picture's id at build time, so the box shows whatever the code
-  registers under it, and nothing until it does. Rust: the key from
-  `Images::get("preview://brush")`, `UiRenderer::external_image(key)`
-  once, `set_external_image` with the texture whenever it changes.
+  registers under it, and nothing until it does. `gogo-ui` hands the
+  renderer the picture's id in the draw list; showing the pixels is the
+  renderer's job.
 
 An empty string means no picture (no load attempt — safe widget
 `$icon=""` defaults). The box sizes with the normal vocabulary; the

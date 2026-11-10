@@ -2,8 +2,7 @@ Selection over repeated items — the one control that owns "which one is
 chosen". Its body: statics, the required `empty` view, and exactly ONE
 `repeat` whose row root is a `ListItem` — arranged by the optional
 `layout` panel (no block = a vertical column, `spacing=` like a Column's)
-inside the List's own scroll viewport. Gogo-drawn always; `render=native`
-errors.
+inside the List's own scroll viewport.
 
 ```
 style TaskLook padding=8 {

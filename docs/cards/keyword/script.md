@@ -8,6 +8,6 @@ control Knob $value=0, $min=0, $max=1 {
 }
 ```
 
-A `script` line in a control is a load error pointing here (G0082); a
+A `script` line in a control is a build error pointing here (G0082); a
 control that takes its input in code writes `on:pointer=` on a body node
 (plus `keys` for the groups it wants).

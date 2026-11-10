@@ -1,9 +1,9 @@
-THE root keyword — a view file opens with it, and the host control IS this
-node. Children place freely (`halign`/`valign` + margins, no wrapper);
+THE root keyword — a view file opens with it: this node is the screen.
+Children place freely (`halign`/`valign` + margins, no wrapper);
 injects `width=fill`, `height=fill` and a transparent background unless the
 file says otherwise (per axis). `background=`/`corner_radius=` draw the root
 plate; `padding` insets every declared child's placement and counts into the
-derived minimum (code-behind children aren't governed).
+derived minimum.
 
 ```
 View settingsSheet {

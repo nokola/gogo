@@ -11,7 +11,7 @@ What a property line can drive:
 | `opacity` | whole-node fade, 0..1 |
 | `background`, `font_color`, … | any numeric/color property nothing else writes |
 
-Layout geometry (`width`, `margin`, …) is fenced — an anim would fight the layout engine; a pose that changes and STAYS is arrangement + `when` + `transition` territory.
+Layout geometry (`width`, `margin`, …) is fenced — an anim would fight the layout; a pose that changes and STAYS is arrangement + `when` + `transition` territory.
 
 ```
 anim open {

@@ -11,6 +11,7 @@ Column pickHost spacing=4 {
         }
     }
 }
-// OnSizeChange(radio_name) by convention, or on:change=Handler / emit(HostSignal)
+// a Change event carries the picked Radio's name; the handler is `size`,
+// or on:change=Handler / emit(Handler)
 // on:change lives on the GROUP — a Radio inside refuses it
 ```

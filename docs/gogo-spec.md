@@ -1,9 +1,17 @@
-# Gogo — declarative UI language for Godot (v1 spec)
+# Gogo — a declarative UI language (v1 spec)
 
 *Change it. See it. Gogo.*
 
 This document is the authoritative v1 reference for the Gogo language. It is written
 for both humans and AI assistants generating or editing `.gogo` files and tooling.
+
+The language was first built as an addon for the Godot engine and is
+implemented today by the Rust crate `gogo-ui`. This spec describes the
+Rust crate. Where an earlier behavior is worth remembering, the text says
+"the Godot addon" for it; decision ids like D83 point into the project's
+history. "The resolver" is this spec's word for the compile step that
+follows parsing. How a program hosts gogo (compiling pages, feeding input,
+painting) is in REFERENCE.md, "Host API".
 
 ## Goals
 
@@ -15,57 +23,45 @@ for both humans and AI assistants generating or editing `.gogo` files and toolin
   concept, hidden semantics made visible, shorthand legal only as defined
   sugar.
 - **Node-type stability** (D83): a property edit must never change what a
-  node IS. Gogo compiles to scenes users script against
-  (`get_node("bg") as ColorRect`) — a prop that swapped the underlying class
-  would break casts and tweens, spooky action at a distance. When the cost
+  node IS. Code holds nodes by name and reads them by kind — a prop that
+  swapped the kind underneath would break that code from a distance. When the cost
   or character differs, the TYPE differs (`Rectangle` vs `Gradient` vs
   `Circle` — Rust's `&str`/`String` honesty).
 - **The capitalization law** (D83): **capitalized = an addressable node**
   (nameable, stylable, animatable); **lowercase = structure** (`row`,
   `skip`, `gap`, `choice`) — never named, erased at build or anonymous.
 
-1. **Declarative Godot UI** with XAML lineage (panels, styles, themes, includes) but
+1. **Declarative UI** with XAML lineage (panels, styles, themes, includes) but
    none of YAML's fragility (significant whitespace, `children:` ceremony, quoting rules).
-2. **Instant hot reload**: files are re-parsed and re-instantiated on save. Parse errors
-   never blank the running UI — the previous good tree stays live and the error is shown
-   as an overlay with `file:line`, the offending line, a caret, and a fix hint.
+2. **Hot reload**: a host can compile a changed file again inside the running
+   program. Errors never blank the running UI — the previous good page stays
+   and the errors come back with their line, code and fix hint.
 3. **Minimal ceremony**: the node name *is* the widget type; braces *are* the children;
    bare numbers *are* epx.
 4. **Dumb parser, smart resolver**: the parser knows only the grammar. `theme`, `style`,
    `widget`, `control`, `uses`, `slot`, `signals`, `behavior`, `state`, `state_builtin`,
    `signal` are ordinary nodes/flags that the *resolver* interprets. Property typing,
-   unit meaning, enum validation, did-you-mean suggestions, and auto-wiring all live in
-   the resolver against the widget registry.
+   unit meaning, enum validation and did-you-mean suggestions all live in
+   the resolver, against one table of words per kind.
 
 ## File model
 
 - Extension: `.gogo`. One UI fragment (or theme/style/widget library) per file.
 - **The ROOT KEYWORD SET is {`View`, `Panel`}** (D104/D105) — a file
   announces itself as a SCREEN or a COMPONENT in its first word.
-  **`View` — the screen**: the host class (a non-Container `Control`,
-  `GogoView`) IS the root; children place FREELY (halign/valign + margins);
-  the root reports its biggest child as its minimum — ANSWERED at query
-  time since 2026-08-16 (`GogoView`/the C# hosts delegate
-  `_get_minimum_size` to the one view formula), so `custom_minimum_size`
-  stays purely the declared floor and no build-time transient can be
-  stamped into it (a custom host class that extends neither base keeps the
-  old stamped wiring, best effort) — and
-  `View background=...` draws the root plate (`padding` on a View root
-  folds into every declared child's placement, D114 — no wrapper Panel).
+  **`View` — the screen**: the host program lays this node out in the
+  rectangle it passes; children place FREELY (halign/valign + margins),
+  and `View background=...` draws the root plate (`padding` on a View root
+  folds into every child's placement, D114 — no wrapper Panel).
   **`Panel` — the component**: the root IS the styled box (a toast banner,
-  a progress track) — container regime for its children, native
-  padding/border stacking, no wrapper node; the host extends
-  `GogoPanelView` (since D283 a plain `Container` playing PanelContainer
-  through gogo's own measure — needed so `width=host` axes can ignore
-  children; a raw `PanelContainer` host is still accepted, minus host
-  axes). Any other root type is a load-time error (G7003); a host class
-  that doesn't match the root kind is one too (G7002). Fragment files meant only for `uses` (themes/styles/widgets)
-  have no root and aren't built standalone.
+  a progress track) — container regime for its children, padding/border
+  stacking as on any Panel, no wrapper node. Any other root type is a
+  build error (G7003). Fragment files meant only for `uses`
+  (themes/styles/widgets) have no root and aren't built standalone.
 - `uses "relative/path.gogo"` imports another file's theme values, styles, and widgets.
 - Comments: `//` to end of line. No block comments in v1.
 - Whitespace between tokens: space, tab, CR — and NBSP (U+00A0), so text
-  pasted from rendered docs (the editor's Info-pane examples harden their
-  spaces to stay unwrapped) tokenizes identically (D86).
+  pasted from rendered docs tokenizes identically (D86).
 - WORD JOINERs (U+2060) are stripped before lexing: the same rendered docs
   glue `-` and `/` with them so `row_span` never wraps mid-token, and a
   joiner pasted INSIDE a token must not split or rename it. Zero-width,
@@ -79,9 +75,9 @@ for both humans and AI assistants generating or editing `.gogo` files and toolin
 | string | `"Paint"`, `"new stroke"/newStroke` | Escapes: `\"` `\\` `\n` `\t`. No interpolation in v1. Optional `/key` suffix = translation term (see below). |
 | path   | `"res://icons/undo.png"`, `"preview://brush"` | A string on a resource property (`source=`, `icon=`, `font=`), scheme always written (G0071 — a bare word could be a label or a path). `res://` is an asset under the build's resource root, checked and embedded at build time. Any other scheme on an `Image`'s `source=` is a **host picture**: the app's code registers pixels under that exact name at run time (a live preview, a canvas tile); the build bakes the name as the picture's id, and the box shows nothing until the code registers it. `""` = no picture. Never translated — `/key` on a path is an error. |
 | slice  | `animals[12]`, `toolbar.play`, `bubble` | An **atlas slice** on `source=` (and in a theme value or widget param that feeds one): a grid cell by number, a named slice, or a whole-picture atlas — see Atlases. A bare word on `source=` always names an atlas (a path is quoted); `[n]` touches the name, no space. |
-| number | `36`, `0.5`, `-4`       | Optional unit suffix: `epx`, `px`, `%`. Bare number on a *length* property = **epx** (effective pixels, density-independent). `px` = raw device pixels. Units on scalar properties (e.g. `Slider.value`) are a resolver error. |
+| number | `36`, `0.5`, `-4`       | A number on a *length* property is **epx** (effective pixels, density-independent); the suffix `epx` may be written. There is no device-pixel unit: `px` is refused (G0038). `%` is legal only where a rule names it (an anim's `from=`/`to=`, `key_unit=`). Units on scalar properties (e.g. `Slider.value`) are a resolver error. |
 | bool   | `true`, `false`         | |
-| color  | `#RRGGBBAA`, `#RRGGBB`, `red`, `black/0.5`, `white@0.24` | RGBA hex, alpha **last** (Godot/CSS convention). 6 digits ⇒ alpha `FF`. Bare palette names (`red`, `danger`, `surface`, `transparent`) are contextual keywords legal only in color-typed positions (see Resolver-defined vocabulary). Every color spelling takes an optional `/opacity` suffix (a bare 0..1 number) setting the **final alpha**: `black/0.5`, `#FF6347/0.25`, `$accent/0.3`. `/o` **replaces the alpha of the value it is written on** — on a `$ref` or palette word, the alpha that value would have had: `$flash/0` is `$flash` made transparent (a translucent disc's fade stop derives from the disc), `$dim/0.3` over `$dim = #80808080` draws 0.3, `$a/0.3` over `$a = $b/0.5` draws 0.3. An 8-digit hex takes it too (`#FFFFFF6B/0` — a pasted color, faded). The suffix written at the slot is the alpha the slot gets; there is nothing else to know (E6, 2026-08-31). Inside a Gradient's `stops=` list an entry may also carry `@position` (0..1, always after any `/`) — fenced everywhere else. **Porting from WPF/XAML:** WPF writes `#AARRGGBB` (alpha first) — move the leading alpha pair to the end (`#AA000000` → `#000000AA`). |
+| color  | `#RRGGBBAA`, `#RRGGBB`, `red`, `black/0.5`, `white@0.24` | RGBA hex, alpha **last** (the CSS convention). 6 digits ⇒ alpha `FF`. Bare palette names (`red`, `danger`, `surface`, `transparent`) are contextual keywords legal only in color-typed positions (see Resolver-defined vocabulary). Every color spelling takes an optional `/opacity` suffix (a bare 0..1 number) setting the **final alpha**: `black/0.5`, `#FF6347/0.25`, `$accent/0.3`. `/o` **replaces the alpha of the value it is written on** — on a `$ref` or palette word, the alpha that value would have had: `$flash/0` is `$flash` made transparent (a translucent disc's fade stop derives from the disc), `$dim/0.3` over `$dim = #80808080` draws 0.3, `$a/0.3` over `$a = $b/0.5` draws 0.3. An 8-digit hex takes it too (`#FFFFFF6B/0` — a pasted color, faded). The suffix written at the slot is the alpha the slot gets; there is nothing else to know (E6, 2026-08-31). Inside a Gradient's `stops=` list an entry may also carry `@position` (0..1, always after any `/`) — fenced everywhere else. **Porting from WPF/XAML:** WPF writes `#AARRGGBB` (alpha first) — move the leading alpha pair to the end (`#AA000000` → `#000000AA`). |
 | ref    | `$name`                 | Reads a widget parameter (innermost scope) or theme value. |
 | ident  | `center_bottom`         | Bare word: enum member or handler name; validated by resolver per property type. |
 | size   | `220x110`, `220x`, `x110` | Shorthand for an exact size on both axes (the `size=` prop: min_size + don't-stretch). Components are epx only (no units inside). Omitted component = unset. `min_size=` is the minimum-only spelling. |
@@ -107,11 +103,11 @@ string, `/` is the **translation term id** (D81): `text="new stroke"/newStroke`.
 A term id may start with a digit (`text="4:3"/4by3` — the position after a
 string's `/` is unambiguous, so the whole word is the key, never a number).
 The literal is the ENGLISH SOURCE TEXT and the design-time value; the key
-indexes host-fed locale tables (`gogo.set_translations` / `set_locale`), and
-a key the active locale lacks falls back to its literal — never the raw key,
-never a placeholder. A host can also RE-KEY a node's text at runtime: in
-FanRust the build emits a `Key` per term id and `set_key(node, Key)` swaps
-which term a node shows (localized under the active locale), while
+indexes the language table the host hands the page (`Runtime::set_locale`), and
+a key the active language lacks falls back to its literal — never the raw key,
+never a placeholder. A host can also RE-KEY a node's text while the program
+runs: a build generates a `Key` per term id and `Runtime::set_key(node, Key)`
+swaps which term a node shows (localized under the active locale), while
 `set_text` writes a literal that is never translated — two writes, two
 meanings, so a code-fed string can never half-translate. One key carries one English string: repeating a key with
 the same literal is legal sharing, a different literal is a build error
@@ -119,18 +115,16 @@ the same literal is legal sharing, a different literal is a build error
 wherever the string is DISPLAYED (node/style props, widget params, custom
 properties) and rejected where it isn't (theme `$values`, resource/`uses`
 paths). `/` on any other value type is an error. `/_` is no key at all:
-the string stays English on purpose (Rust app) — it never interns, so two
+the string stays English on purpose — it never interns, so two
 `/_` strings may carry different English. A file whose top carries the line
 `allow untranslated` keeps all its text English on purpose; a host that
-requires keys (`CompileOptions::require_keys`, Rust app) makes every other
+requires keys (`CompileOptions::require_keys`) makes every other
 displayed string with no key an error (G8002). `allow` is a top-of-file
 line and takes exactly `untranslated` (G8003).
 
 Property keys are snake_case — ONE spelling (D137; the kebab alias is gone,
-`min-height=` no longer lexes). Gogo keys and raw Godot engine properties now
-share the engine's own convention (`min_height`, `margin_bottom`,
-`autowrap_mode=word_smart` — copy-paste friendly both ways, and a double-click
-selects the whole key).
+`min-height=` no longer lexes): `min_height`, `margin_bottom` — a
+double-click selects the whole key.
 
 ## Grammar (EBNF)
 
@@ -188,7 +182,7 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
   needed for defaults.
 - **`theme <variant> { $name = value ... }`** — a **variant holder**: overrides that
   win over the defaults while `<variant>` is the active theme
-  (`Gogo.set_theme_variant("dark")`; tracked live views rebuild on switch). A file
+  (`Runtime::set_theme_variant`). A file
   that doesn't define the active variant just uses its defaults. A `theme` block
   without a variant name is the DEFAULTS block: its `$name` entries land in the
   same scope as top-level defaults, and it is also the home of palette overrides
@@ -228,34 +222,33 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
   Exact values: REFERENCE.md "Named colors".
 - **Control defaults in `theme { }`** — `prop = value` entries (`font`,
   `font_size`, and `color` — the document's text ink, decided 2026-08-30)
-  go on a Godot `Theme` on the view root and propagate to every
-  descendant without its own override (REFERENCE "Theme & tokens"). Inside
+  apply to every node of the page without its own override (REFERENCE
+  "Themes"). Inside
   a node's body, a one-line `theme font=… / font_size=… / font_color=…`
   carries those text words down that subtree only; any other word on a
   block theme line is refused (G3006), and a nested `theme dark { }`
   block is refused too — variants live at the top of the file.
   **Built-in default: `font_size = 15`** (D88): a document that declares no
-  font_size behaves exactly as if it declared 15 epx — text never silently
-  keeps Godot's raw, density-blind pixel default. A `default_font_size` the
-  host already put on the root wins (gogo never clobbers a user theme).
+  font_size behaves exactly as if it declared 15 epx.
 - **`repeat <name> [as $binding] by <key-path> { empty { ... } <template> }`** —
-  N children from a code-set collection (`Gogo.set_items(view, "<name>", items)`),
-  reconciled by KEY on each assignment: kept keys keep their nodes, changed data
-  rebuilds, absent keys free, order follows the collection. Erased at build (a
-  hidden marker anchors the spot; items parent flat into the repeat's parent).
+  N children from a code-set collection (`Runtime::set_items`),
+  reconciled by KEY on each assignment: kept keys keep their rows, changed data
+  re-binds its row, absent keys free theirs, order follows the collection. Erased
+  at build: the rows lay out as children of the repeat's parent.
   `as` defaults to `$item` (defined sugar); `by` is required and must key the
   binding — no index identity, ever. `$binding.field` reads item data as a static
-  value re-applied per assignment. `empty { }` is REQUIRED, first in the body —
-  every list answers the zero-items question visibly (a literal `empty { }` is
-  legal: "considered, show nothing"); it shows at zero items, the initial state
-  included. It holds ONE child (decided 2026-08-31): two would need an
+  value re-applied per assignment. `empty { }`, first in the body, is the
+  zero-items content (a literal `empty { }` is legal: "considered, show
+  nothing"); it shows at zero items, the initial state included. A `List` must
+  have one; a plain repeat may leave it out. It holds ONE child (decided 2026-08-31): two would need an
   arrangement nobody wrote — `empty { Column { … } }` says stacked,
-  `empty { Layers { … } }` says overlaid; more than one is a load error
+  `empty { Layers { … } }` says overlaid; more than one is a build error
   naming that fix. Inside a `List` the empty block sits on the LIST body instead
   (D128, one seat per context — G9016 routes it): richer zero-items views
   beside the statics, and the List's repeat carries none. Bad data (duplicate keys above all) REFUSES the
-  whole assignment loudly; the last good items stay live. Fenced out of widget/
-  control bodies and out of other repeats in v1 (addressability). Full design:
+  whole assignment (`set_items` returns the error); the last good items stay
+  live. Not supported inside widget/control bodies or other repeats in v1
+  (addressability). Full design:
   `docs/design/2026-07-15-spec-repeat-and-list.md`; REFERENCE "Repeat".
 - **`style Name prop=..., prop=...`** — a named property bag. Applied to a node with
   `.Name`; local properties override style properties. Styles have no structure and no
@@ -269,9 +262,7 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
     must be reachable where the style is WRITTEN (`uses`); widgets aren't targets.
     Slot paths are also legal on contract-bearing instance lines
     (`Fader f slot.track.height=2`). Applying a `for=X` style to another type is an
-    error; on a NATIVE built-in, contract features error G5106 with the `render=gogo`
-    opt-in as the confirm-level fix (or "drop the `for=`" when the style needs
-    nothing from the contract). Plain styles keep taking any state name — contract states check at the
+    error; a built-in kind takes a `for=` style directly. Plain styles keep taking any state name — contract states check at the
     APPLICATION site ("Button has no state 'busy' — states here: ..."), and a
     plain custom state landing cleanly on exactly one control type draws the add-for=
     advisory (two-plus distinct clean types = deliberately generic, advisory silent).
@@ -294,10 +285,10 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
     list; nested slot declarations survive fills and draw above them. Bare children at
     an instance whose widget has no default slot = resolver error listing the named
     fills; duplicate slot names error at the declaration.
-  - **`signals`** — a flag on one node inside a widget body marking the signal surface:
-    instance-level `on:` wiring, auto-wiring, and code-behind lookup bind to this node.
+  - **`signals`** — a flag on one node inside a widget body marking the event surface:
+    an `on:` entry written on an instance lands on this node.
     Omitted ⇒ the root is the surface.
-  - Widgets may use other widgets; cycles are a load-time error (cycle path printed).
+  - Widgets may use other widgets; cycles are a build error (cycle path printed).
   - **`for=<Host>` (D276)** — the announced host contract: `widget Name for=Radio, $p=v
     { ... }` says the body fills a stateful host's body (hosts: `Button`, `Radio`,
     `Check` — the button family). `for=` comes first on the line (the style rule, D11).
@@ -334,19 +325,16 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
   `state_builtin <names>` (opt-in to the runtime-maintained set — read,
   never written, by anything but the runtime; `selected` on a behavior
   control derives from the value), `signal <names>` (the names a
-  behavior may raise — `drag_started`/`drag_ended` at a gesture's edges —
-  and auto-wiring binds), `keys <groups>`
-  (FanRust, 2026-09-02: the key groups a focused instance claims for its
+  behavior may raise — `drag_started`/`drag_ended` at a gesture's edges;
+  each reaches code as a `Signal` event), `keys <groups>`
+  (the key groups a focused instance claims for its
   code-behind — `arrows`, `home_end`, `enter`, `space`, semantic words
   only; a claimed key arrives as a `Key` event on the instance root and
-  never moves focus, Tab is never claimable — the built-ins' static-claim
-  law made declarable where the addon's behaviors claimed at runtime via
-  `key_action`), and a bare
+  never moves focus, Tab is never claimable), and a bare
   `transition` rule (the control's default FEEL: it times state flips and
   the fraction glide when no style or node block overrides). `$params` are
-  LIVE props (real properties on the root; code-behind reads/writes them);
-  default content shows one with `live($param)` — a bare `$param` read in
-  the body is an error with the wrap fix-it (G5103). Slots may declare
+  LIVE props (code writes the value with `Runtime::set_value`);
+  default content shows one with `live($param)`. Slots may declare
   an automatic coupling, fully spelled — nothing defaults invisibly
   (D134): `automatic=<kind> by <driver>`. Kinds: `length`/`position`
   (linear), `arc`/`angle` (radial — config REQUIRED in the kind's parens:
@@ -361,55 +349,36 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
   and a timer is code writing a `$param`. A control's own scoped anims
   may target `slot.<name>.<motion word>` — the one place anims address
   slots.
-- **`render=gogo|native`** (contract built-ins only — spec §5.7, D111) — picks the
-  instance's implementation. Unmarked = native pass-through (byte-identical,
-  forever); `render=gogo` swaps in the addon-shipped Gogo composite (same
-  contract `for=` styles check against; near-pixel-identical unstyled; behavior
-  conformance-tested against the native node). `render=native` is the spelled
-  opt-out against a theme entry and a legal, silent defensive pin anywhere else.
-  On a user control `render=gogo` is silently redundant, `render=native` errors.
-  The one sanctioned exception to node-type stability: explicit, instance-local,
-  consequences stated in the diagnostic (D83 carve-out). Composites: Slider
-  (both backends) and Toggle (gogo-ONLY — a new control with no native class:
-  unmarked instances take the composite, `render=native` errors, `render=gogo`
-  is silently redundant; D113). Button deliberately has none (D112): children
-  are free-form content, plain styles cover held/selected, widget slots give
-  named fill points — `for=Button` styles are write-time state checking and
-  apply natively.
+- **The built-in controls draw themselves.** There is one renderer and no
+  `render=` word (it is refused as an unknown property). The built-in
+  `Slider` takes three slot words, from a `for=Slider` style or on its own
+  line: `slot.track.background`, `slot.track.corner_radius`,
+  `slot.fill.background`. The built-in `Toggle` and `Button` have no
+  restylable slots; their states still answer in styles. A control that
+  needs restylable parts is a `control` declaration.
 - **Theme type defaults** (spec §5.8, D111) — a type-keyed entry inside a theme
-  block, `theme { Slider .ThinSlider render=gogo }`, defaults every instance of a
+  block, `theme { Slider .ThinSlider }`, defaults every instance of a
   CONTROL type: an instance-line prototype (no name, no children, no `on:`
-  wiring, no placement props). Nearest scope wins (an instance line beats the
-  entry); the entry's style seats base-most; `render=` is variant-invariant
-  (default block only — variants override the LOOK half wholesale); an
-  instance's `render=native` sheds the entry whole, style included.
+  wiring, no placement props — G3006). Nearest scope wins (an instance line
+  beats the entry); the entry's style seats base-most.
 - **`uses "path.gogo"`** — import (relative to the current file).
-- **`on:<event>=HandlerName`** — explicit wiring property. `on:` speaks two
-  visible registers (D181): bare stems are gogo events (`activate`,
-  `change`, `edit`, `show`, `hide` — see Input vocabulary); snake_case
-  past-tense names are raw Godot signals (`on:drag_ended`). Also takes
-  `play(animName)`; `on:show`/`on:hide` are visibility pseudo-events (see
-  Animations).
-- **Extra properties** beyond the engine's: `opacity` (modulate.a),
+- **`on:<event>=HandlerName`** — wiring property. The events are a closed
+  set of bare stems (D181): `activate`, `press`, `release`, `change`,
+  `edit`, `show`, `hide`, `pointer` (see Input vocabulary); any other word
+  after `on:` is refused (G0049). Also takes `play(animName)`, `go(name)`,
+  `toggle(name)`, `emit(Name)`; `on:show`/`on:hide` are the visibility
+  pair (see Animations).
+- **Look properties**: `opacity` (the whole node's alpha),
   `font_size` (epx), `font_color`, `icon_size` (epx, buttons),
-  `background`/`corner_radius`/`border-*`/`padding` (Panels AND buttons;
-  on buttons the shape keys reshape per-state COPIES of the theme's boxes —
-  the theme's own press/hover/disabled feedback survives — while
-  `background=` recolors one shared box across all state slots, the pigment
-  takeover (D128). On a `Circle`,
-  `border_color`/`border_thickness` drive its ring properties instead).
-  `padding` alone of the family also applies to the free-placement regions
-  (D114) — `Layers`, the plain `View` root, slot lines: no stylebox, the
-  declared air folds into every DECLARED child's placement and adds onto the
-  region's minimum — and to the text leaves (D118 follow-up, user call):
-  `Label`/`Input` inset their own text through the button mechanism (WPF's
-  TextBlock/TextBox Padding, verbatim; their other box keys stay refused).
-  The doctrine: **paint belongs to boxes; padding is air between a node's
-  box and its CONTENT — children or text — and belongs to whoever honestly
-  owns that inside**. Containers (`Column`/`Row`/`Grid`/`Tiles`) refuse the
-  word toward `gap` / a `Layers`/`Panel` wrapper, never leaving it silently
-  dead (Grid/Tiles are gogo-sorted but refuse WITH the family — containers
-  behave alike); drawing leaves (`Rectangle`/`Circle`/`Image`) have nothing
+  `background`/`corner_radius`/`border-*`/`padding` (any box: the plate
+  draws behind the content and covers the padding; a Button starts with
+  its default plate, which `background=` recolors. On a `Circle`,
+  `border_color`/`border_thickness` drive its ring instead).
+  `padding` is air between a node's box and its CONTENT — children or
+  text: on `Layers`, the `View` root, stacks and slot lines it insets
+  every child's placement and adds onto the box's minimum, and
+  `Label`/`Input` inset their own text (WPF's TextBlock/TextBox Padding,
+  verbatim). Drawing leaves (`Rectangle`/`Circle`/`Image`) have nothing
   inside — outer air is `margin`.
   `padding` also comes per side — `padding_left/-top/-right/-bottom` —
   mirroring the `margin-*` family (WPF's per-side Padding thickness).
@@ -421,10 +390,9 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
   wins — the `padding`/`padding_left` layering law. Slots take them too
   (box-family members everywhere the family goes).
   `padding` is air INSIDE the border (D80): content sits
-  `border_thickness + padding` from the node's edge, WPF/CSS stacking —
-  never the raw Godot content margin, which the border would overlap. An empty
+  `border_thickness + padding` from the node's edge, WPF/CSS stacking. An empty
   string on a resource property means null (no load, no error); `style=X` is
-  a load-time error that redirects to `.X`.
+  a build error that redirects to `.X`.
 - **Input (D103)** — one model: interactive controls (Button/Slider/Input/
   Scroll, …) answer input by default, everything else is transparent, and
   **`interactive=true/false`** overrides that — per control, like any bool
@@ -433,29 +401,21 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
   restyling (`disabled` is the restyling one). Region silencing is a catcher:
   an invisible `interactive=true` plate over the region; `interactive=false`
   on an already-passive node is an advisory-lint no-op. Bare `interactive`
-  (no `=`) is a load-time error redirecting to `interactive=true` — it never
-  silently becomes a node name. The raw `mouse_filter` property is RETIRED
-  (a second spelling of the model): its build error branches per value —
-  `stop` → `interactive=true`, `ignore` → delete (transparent is the
-  default), `pass` → delete (unhandled events bubble by default) — the same
-  fence style as the raw `offset_transform_*` props.
-- **Placement** (one vocabulary for both parent regimes — compiled to size
-  flags for container parents AND an anchor preset for plain-Control
-  parents; each regime reads its own encoding):
+  (no `=`) is a build error redirecting to `interactive=true` — it never
+  silently becomes a node name.
+- **Placement** (one vocabulary under every parent):
   - **Default: a child takes the space its parent gives it.** An axis with
     no placement key takes the parent's extent — container slots (cross axis
-    fills) and free parents (Layers/plain Control/buttons: the whole rect)
+    fills) and free parents (Layers/buttons: the whole rect)
     alike. Exempt: the document root (host-placed) and content of the bare
     default `slot` (the inline marker — its children join the widget's own
     layout, explicit placement only; named slot REGIONS fill like any free
     parent). `width=hug, height=hug` is the opt-out for code-behind-owned
-    rects; a ROOT whose box the code sizes declares it outright with
-    `width=host` / `height=host` (below).
+    rects.
   - `halign=left/center/right`, `valign=top/center/bottom` — position ONLY.
   - `width`/`height` — the sizing triad: `<epx number>` = exact (min_size +
     don't-stretch), `hug` = natural size, `fill` = take the leftover,
-    `fill(n)`/`hug(n)` = weighted (one stretch ratio per control — differing
-    per-axis weights are an error). **A box that fills a written box takes
+    `fill(n)`/`hug(n)` = weighted. **A box that fills a written box takes
     that box** (decided 2026-08-30): a box with no size word (or `fill`)
     takes the room it is given; when that room is a number the author wrote
     — an exact size or a cap on the box it fills, or on any filler above it
@@ -467,37 +427,19 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
     content. A hug box is sized by content and passes no written number
     down; a `min_*` floor is a written number and wins; a Label keeps the
     width its text needs (text does not bend to a box; the written box cuts
-    it). The Rust port does this; the Godot addon lets the engine grow the
-    filler to its minimum — a recorded difference. And — on the DOCUMENT
-    ROOT only —
-    `host` = the host's CODE owns the axis (D283). A host axis contributes
-    nothing to the root's minimum (declared `min-*` floors still count),
-    gets no size flag and no anchor, takes no alignment, margin or cap
-    (each is refused — a second writer would fight the code every frame),
-    and so can never be inflated by a child's transient measure: Godot's
-    `set_size` clamps to the combined minimum and BAKES the clamped value
-    into the offsets, and a later minimum drop never shrinks the box back
-    — one frame of a wrap label measured at a stale width (one character
-    per line) grew a code-seated ad strip to the whole screen (D282).
-    `host` off the root is G7004; on a `Panel` root it needs the
-    GogoPanelView host (G7005 — a raw PanelContainer counts its children
-    in C++ and ignores gogo's measure). `min_width`/`min_height`/`min_size`
+    it). (The Godot addon let the engine grow the filler to its minimum —
+    a recorded difference.) `width=host` / `height=host`, the addon's word
+    for an axis the host's code sizes, are gone (G0055): a layout that
+    writes nothing back has no such axis to guard, and the host program
+    sizes a page by the rectangle it lays it out in.
+    `min_width`/`min_height`/`min_size`
     stay minimum-only (stretchy). Hug means natural size EVERYWHERE (D254):
     wrap-capable text measures at its UNWRAPPED single-line extent, capped
     or not — wrapping happens only where a width binds it (a cap, `fill`,
-    or a sized parent). Under an engine container (which grants a
-    non-stretched child exactly its minimum) a hug or aligned-no-size
-    width carries a live natural-width floor in custom_minimum_size.x, so
-    the grant IS the natural size — same meaning as under free parents.
-    An autowrap label whose width provably never binds gets the G1004
+    or a sized parent). A wrapping label whose width provably never binds gets the G1004
     lint (dead under a hug chain; a one-char sliver only where no size
     keyword was written at all — a bare label on a Row's main axis).
-    Pre-layout, an autowrap label measures ONE LINE, not one char per
-    line (D255): the engine computes wrapped min-height at the label's
-    current width, which is ~0 until first layout, so every build's last
-    applier seeds each wrap label's size with its unwrapped extent —
-    hidden or just-built trees (a closed popup, a page on its push
-    frame) report sane minimums without waiting for a layout pass. A min next to an exact `width=`/`height=` on
+    A min next to an exact `width=`/`height=` on
     the same axis is legal and the min still wins (GPAR79 2026-08-31,
     dropping D135's refusal): `size = max(floor, written)` — the WPF
     Min-over-Width order, the same clamp posed sizes obey — so the pair
@@ -512,28 +454,23 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
       plain minimum collapses toward its longest word; the cap is what makes
       "hug a wrapping label" expressible). The box tracks content LIVE —
       code-behind text swaps re-fit it. A cap never shears content: hard
-      minimums win (WPF's own clamp order — Min beats Max), and since D135
-      that clamp is gogo's OWN math (`size = max(floor, min(natural, cap))`
-      in the placement seat), so the baked offsets tell the truth instead
-      of leaning on the engine's grow-direction rescue. A written size or
+      minimums win (WPF's own clamp order — Min beats Max:
+      `size = max(floor, min(natural, cap))`). A written size or
       cap that binds is a hard edge BOTH ways: what pokes past it is
       clipped in the picture and takes no taps — a button's clipped half
-      is neither drawn nor pressable (GPAR37). V1 binds under
-      FREE parents (Layers/plain Control/slot regions); an engine container
-      refuses it at load — it grants children their minimum, which a cap
-      cannot shrink. On `List` the caps keep their D124 meaning (grow with
-      the items, scroll past the cap). Wrap-capable text is `Label` and,
-      since D135, a raw-register `RichTextLabel` (give it
-      `fit_content=true`: its engine minimum counts no content otherwise,
-      and a DETACHED RTL never shapes — engine law — so the shaped minimum
-      lands the box on tree entry through the cap re-assert).
+      is neither drawn nor pressable (GPAR37). The cap holds for any box
+      under any parent: a box never reports more than its cap. One refusal
+      remains (G1002): a cap that reads the parent's space on a stack's OWN
+      stacking axis is circular — cap the stack itself. On `List` the caps
+      keep their D124 meaning (grow with the items, scroll past the cap).
+      Wrap-capable text is `Label`.
       - **The min/max band** (D135): `width=hug, min_width=100,
         max_width=300` clamps the natural size into the pair — the floor
         holds below it, the cap binds above it (wrap-text wraps there),
         and the floor beats the cap (the WPF clamp order above; a runtime
         `$param` floor crossing the cap wins). A literal floor above a
-        literal cap refuses at load — "the pair can never both hold".
-        Floors under `fill` stay legal everywhere (engine-native).
+        literal cap refuses at build — "the pair can never both hold".
+        Floors under `fill` stay legal everywhere.
       - **`max_width=fill`** (and the height twin) caps at what a `fill`
         axis would GET: the parent frame minus region padding minus
         margins — live, so a parent resize re-caps. On a fill-capped axis
@@ -555,10 +492,9 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
         fill axis means nothing (and stays refused); with one, the
         leftover has to go somewhere and the file must say where. WPF's
         Stretch + `MaxWidth` silently centers here — a known trap the
-        required side keeps out of gogo. Free parents only: a capped fill
-        reads its parent's space and places itself in it, which a
-        container child can't do — under a container, wrap it in a
-        `Layers` (the load error says so). Margins inset the measuring
+        required side keeps out of gogo. On a stack's own stacking axis
+        it is refused (G1002: the slot is the frame there) — cap the stack
+        itself. Margins inset the measuring
         space on every side choice, like plain fill. Not on a `Scroll`
         (a filling Scroll axis already scrolls past its frame), and
         `max_*=fill` on a fill axis refuses — a fill axis already takes
@@ -576,17 +512,17 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
       that fits the space the parent offers, centered (WPF Uniform — the
       color-wheel shape). Both axes spelled is an error; `hug` and
       `max-*=` don't combine with it (v1). Numbers solve under free
-      parents; `natural` uses the engine instead — the Image's MINIMUM
+      parents; `natural` follows the picture — the Image's MINIMUM
       follows the bitmap from the driving axis (the WPF UniformToFill
-      measure), container or free parent alike, lazy textures included.
+      measure), under any parent, lazy pictures included.
       Nothing spelled: width drives. An `Image` with no size word and
       no `aspect=` fills what its parent gives it and fits the picture
-      inside; a Column gives it no height, so there (Rust app) it is the
+      inside; a Column gives it no height, so there it is the
       Column's width and the picture's shape sets the height (WPF
       Uniform in a vertical StackPanel) — never 0 tall. `hug` on an
       `Image` side (the written word, not an alignment) is the picture's
       own size on that side: `size=hug` (= `width=hug, height=hug`) = natural size, one
-      picture pixel per layout unit (Rust app).
+      picture pixel per layout unit.
     - **`fit=contain/cover/distort`** (D133, `Image` only): how the bitmap
       maps into the Image's OWN rectangle (in `Column { Image width=96,
       height=48 }`, that 96x48 — never the Column). Orthogonal to how the
@@ -594,7 +530,6 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
       rules. `contain` letterboxes (the default), `cover` fills and clips,
       `distort` stretches — named for what it does; the CSS/WPF word
       `fill` is gogo's sizing word. Slack centers (v1, no alignment knob).
-      The raw `stretch_mode=`/`expand_mode=` consts are retired spellings.
       On non-content nodes `fit=` is refused: children are laid out,
       never scaled.
   - **`visibility=visible/space_only/gone`** (D133) — the three-state
@@ -602,43 +537,33 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
     three states; every variant named, the Android triple). `gone` hides
     and RELEASES the space; `space_only` hides but the node keeps holding
     its layout slot — toggling `visible <-> space_only` never moves a
-    sibling (WPF Hidden). Hidden is hidden either way: hit-inert,
-    unfocusable, a11y-skipped; `on:show`/`on:hide` track the PIXELS, so
-    entering `visible` from either hidden mode plays the show. Space is a
-    measured promise, so `space_only` binds under FREE parents only (an
-    engine container skips hidden children in its own sorting and refuses
-    the spelling, v1). Code-behind: `gogo.set_visibility(node, mode)`;
-    plain `.visible` engine writes keep meaning visible/gone.
-    - **Exact loses to content, loudly** (D126): a control's real box is its
-      COMBINED minimum, so content that needs more (children, native text)
-      beats the declared number — Godot never sizes a control under its
-      minimum. The contradiction between the two authored facts is a build
-      warning naming both (`height=100 but content needs 316`), the Flow
-      overflow rule generalized: silently swallowed overflow is how parity
-      bugs hide. Remedies the lint routes to: put the exact size on a
-      Scroll around it, `hug` the axis, or shrink the content. Buttons
-      instead CLAMP gogo children on an exact axis (WPF explicit-Width; see
-      "Buttons size to their content") — their native text still warns.
+    sibling (WPF Hidden). Hidden is hidden either way: hit-inert and
+    unfocusable; `on:show`/`on:hide` track the PIXELS, so
+    entering `visible` from either hidden mode plays the show.
+    `space_only` holds its slot under any parent. Code flips visible/gone
+    with `Runtime::set_visible`.
+    - **A written size is a hard edge** (GPAR37): a box with an exact size
+      is exactly that size. Content that needs more hangs out and is cut
+      at the edge — neither drawn nor pressable past it. (The Godot addon
+      grew the box to its content and warned, D126 — a recorded
+      difference; the Rust compiler warns only for a 1x1 box that clips
+      its children, G0074.) Remedies: put the exact size on a Scroll
+      around the content, `hug` the axis, or shrink the content. A part
+      that is MEANT to hang off its box is `overlay=true`.
     - **On `Scroll` the axes settle from three sources** (D138; D125's
       triad rule grown up): `allow=vertical|horizontal|both` names the pan
       axes outright and owns BOTH axes when present (listed axes scroll,
       the rest are off — the fill-width page that must not pan sideways).
       Absent, the triad infers: a `hug` axis is content-sized — nothing
-      left to scroll — so it compiles to `SCROLL_MODE_DISABLED` and the
-      engine counts content into that axis' minimum; numbers, `fill` and
-      unkeyed axes scroll (AUTO). `bars=auto|never|always|reserve` paints
+      left to scroll; numbers, `fill` and unkeyed axes scroll. `bars=auto|never|always|reserve` paints
       the scrolling axes' bars (`never` = hidden but panning, the handheld
       look; `reserve` = auto visibility with the bar's space always held).
       A capped hug axis scrolls PAST its cap (D124 generalized): `height=
-      hug, max_height=300` follows content to 300, then scrolls — the
-      minimum stops at the cap, so engine containers grant it honestly
-      (the D132 free-parent refusal excepts Scroll; `max_*=fill` refuses,
-      `fill` already scrolls past the frame). Contradictions refuse at
-      load naming both facts: `allow=` listing a bare hug axis, a capped
-      axis left out of `allow=`, gogo words mixed with the raw props (one
-      spelling per Scroll). Both axes hugged bare warns (nothing scrolls).
-      Raw `*_scroll_mode=` props own their axis (escape hatches keep
-      engine meaning — per-axis bar policy lives there). `Scroll
+      hug, max_height=300` follows content to 300, then scrolls
+      (`max_*=fill` refuses, `fill` already scrolls past the frame).
+      Contradictions refuse at build naming both facts: `allow=` listing a
+      bare hug axis, a capped axis left out of `allow=`. Both axes hugged
+      bare warns (nothing scrolls). `Scroll
       height=100, width=hug` = WPF's default ScrollViewer: content-wide,
       exactly 100 tall, scrolls vertically. On `List`, `bars=` reaches the
       internal scroll (the same word one level up); the axis stays the
@@ -670,67 +595,59 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
     `anchors=` and `offset_*` left the language — placement says it all
     (removed-key errors carry the migration hints).
   - Coherence is validated on the merged style+node+instance state:
-    `halign` with `width=fill` errors (fill leaves nothing to position);
-    placement never mixes with raw `size_flags_*` on one node (`inset=N`
-    was retired — the fill default plus `margin=N` say the same thing;
-    document roots spell the fill: `width=fill, height=fill`).
-    Post-build, margins under a Container parent are load-time errors (they'd
-    be silently dead). "Container" here means the kinds that seat children in
+    `halign` with `width=fill` errors (G1011: fill leaves nothing to
+    position); `inset=N` and `size_flags_*` are gone (G0041 — the fill
+    default plus `margin=N` say the same thing; document roots spell the
+    fill: `width=fill, height=fill`). Margins under a Container parent are
+    build errors (G1014: they'd be silently dead). "Container" here means the kinds that seat children in
     slots — stacks, Flow, Grid, Tiles. A `Scroll` or a `List` is NOT one
     (decided 2026-08-30): each seats one pannable body, and margins on that
     body inset it like margins anywhere free. `padding` is legal on ANY
     container — air inside a Column or a Scroll is as sayable as air inside
     a Panel (the retired addon refused it there; recorded difference).
-  - `Row`/`Column` are plain-English aliases for the H/V box containers.
+  - `Row`/`Column` stack their children on x / y.
     Stacks have NO default gap (D244): children touch unless the file says
-    `spacing=` (or a one-off `gap`) — Godot's theme separation never leaks,
-    the same law as the blank Panel slate. Flow and List rows follow it.
-    `Layers` is script-backed (gogo_layers.gd) — free placement + z-stack:
+    `spacing=` (or a one-off `gap`) — the same law as the blank Panel
+    slate. Flow and List rows follow it.
+    `Layers` is free placement + z-stack:
     children overlap in declaration order and free-place themselves; it
     reports a min size (element-wise max of visible children's minimums
     plus their positive margins, D242)
     and, like all passive structure, is input-transparent (see Input —
-    `interactive=true` declares it a gesture surface). Raw `Control` stays
-    available for the unopinionated version. The full type surface — View,
+    `interactive=true` declares it a gesture surface). The full type surface — View,
     Flow, Panel, Scroll, Label, Input, Circle, Gradient, Radio, Check and
     friends — is the Vocabulary section below (and REFERENCE.md's table).
   - `gap <epx N | fill>` — the stack-space structure word (Row/Column only):
     a one-off break where `spacing=` is uniform. Lowercase = never named
-    (capitalization law); it leaves an anonymous mouse-ignored Control
-    behind (stacks make space with child slots) — being unnameable, that
-    node is unobservable. No name, props or children; one size word; errors
+    (capitalization law). No name, props or children; one size word; errors
     route wrong homes (Flow and Grid → spacing=, Layers → margins).
   - Safe-area insets are a VALUE, not a wrapper (D74): `padding_left=safe` /
     `margin_top=safe` read the host-fed inset for that edge
-    (`gogo.set_safe_insets(l, t, r, b)`, px, re-applied live); `padding=safe`
+    (`Runtime::safe`: left, top, right, bottom, in epx); `padding=safe`
     / `margin=safe` are defined sugar for the four per-edge keys, each edge
     its OWN inset. Only edge keys read it — `safe` on an edge-less key is an
     error routing there. Opt-in per edge: name only the edges the element
     reaches. On scroll CONTENT the inset scrolls (rows clip at the physical
-    edge); framing the viewport it doesn't. `SafeArea` was retired — its
-    opt-out blanket padded edges docked panels never meet; the error routes
-    to the value.
-  - **Buttons size to their content** (WPF parity; closed trap #3 — a Godot
-    BaseButton ignores free children in its minimum, so `Button { Row {...} }`
-    DRAWS right while the hit rect collapses to the stylebox). A button with
-    gogo children derives per axis: `min = max(declared min, content min)`,
+    edge); framing the viewport it doesn't.
+  - **Buttons size to their content** (WPF parity). A button with
+    children derives per axis: `min = max(declared min, content min)`,
     content = the Layers formula (visible children's combined minimums plus
     their positive margins — declared empty space is space the parent
     reserves, so `margin_left=49` widens the derived minimum exactly like
     `padding_left=49`; D242). Negative margins mean "stick out past the
-    edge on purpose": the Godot addon counts them as zero; the Rust port
-    takes the hanging part OFF the claim, clamped at zero (`100 wide,
-    margin_right=-30` claims 70; `150 tall, margin_bottom=-70` claims 80 —
-    WPF/CSS do the same; decided 2026-08-30, a recorded difference the
-    addon keeps). A margin that doesn't bind for the
-    axis' alignment never counts (it is a load error anyway). An exact
+    edge on purpose": the hanging part comes OFF the claim, clamped at
+    zero (`100 wide, margin_right=-30` claims 70; `150 tall,
+    margin_bottom=-70` claims 80 — WPF/CSS do the same; decided
+    2026-08-30. The Godot addon counted them as zero). A margin that doesn't bind for the
+    axis' alignment never counts (it is a build error anyway). An exact
     `width`/`height` clamps its axis like WPF's explicit Width;
     both-axes-exact buttons are exempt (nothing left for content to grow).
     Live: child min/visibility changes re-derive.
 - **Widget body names are per-instance**: nodes named inside a widget body are
-  visible to the widget's scoped anims/styles/states and NOT to the view's
-  named map (a widget used twice would collide otherwise). The instance name
-  itself lands in the view map as usual.
+  visible to the widget's scoped anims/styles/states, and a widget used twice
+  never collides. In the file the instance name means the root; code reaches
+  the body through the instance (a build generates one `<Widget>Names`
+  struct per widget).
 
 ## Scoping for `$refs`
 
@@ -744,105 +661,64 @@ does — active variant first, `$refs` followed. Hidden semantics made
 visible: no hex copied into code, no color read off a node that happens to
 wear the accent.
 
-## Auto-wiring convention
+## Handler names
 
-A named node's events wire automatically to code-behind methods — one
-mechanical rule, no hidden tense-shift (D181):
-`name + event → "On" + PascalCase(name) + PascalCase(event)`
-e.g. `saveButton` + `activate` → `OnSaveButtonActivate()`; `brushSize` +
-`change` → `OnBrushSizeChange(value)`; `nameInput` + `edit` →
-`OnNameInputEdit(text)`. Raw Godot signals follow the same rule
-(`foo` + `drag_ended` → `OnFooDragEnded`), so one grep finds both sides
-of a wire. Explicit `on:<event>=Method` overrides. The resolver verifies
-the target method exists at load time and reports a missing method as an
-error (a typo'd widget name must never silently unwire a handler).
+An event names a handler. With `on:<event>=Name` (or `emit(Name)`) the
+handler is `Name`; with no `on:` line for the event it is the node's own
+name (`saveButton`), so a named control is heard with no wiring at all.
+One name serves all of a node's events: the event's kind (`Activate`,
+`Change`, `Edit`, ...) says which one happened.
 
-Two D181 guards enforce the convention:
+A build generates one `enum Handler` per page, with a variant per handler
+name (`saveButton` becomes `Handler::SaveButton`, `HandleOk` stays
+`Handler::HandleOk`) and `Handler::from_name`. Code that matches on a
+handler the file no longer has stops compiling, so a renamed node can
+never silently lose its handler. The names that get a variant: every name
+an `on:` line writes; every named Button, Check, Toggle or Radio with no
+`on:activate`; every named Slider or Input with no `on:change`; every
+named `choice`.
 
-- **Shadowed raw names never auto-wire**: `pressed`, `toggled`,
-  `changed`, `activated`, `value_changed`, `text_changed`,
-  `text_submitted` are shadowed spellings of gogo events (see Input
-  vocabulary) — the generic signal scan skips them, so one moment can
-  never wire twice under two names.
-- **Stale handlers are load-time errors**: a host method matching
-  `On<Name>Pressed` / `Toggled` / `Changed` / `Activated` /
-  `ValueChanged` / `TextChanged` / `TextSubmitted`, on a node that
-  speaks (or spoke) that signal, errors naming the new spelling —
-  after the rename a leftover `OnSaveButtonPressed()` would otherwise
-  silently unwire, the exact failure the explicit-wiring check exists
-  to prevent.
+(The Godot addon wired events to host methods named `On<Name><Event>` and
+checked at load that they existed. The Rust crate has no such methods.)
 
 ## Error contract (diagnostics, D68)
 
-Every parser/resolver error is a structured **diagnostic**: severity, optional
-stable code, message, one or more source **spans** (the first primary span is
-THE location; secondary spans show the other half of two-place conflicts),
-teaching `note:` lines, a `help:` fix summary, and — when the fix is
-mechanical — behavior-applicable edits the editor offers as *Apply fix*.
-When a closed set is known (widget types, style names, property names, theme
-keys, parameters) the help carries a did-you-mean suggestion with runner-up
-options; with no close candidate it lists the closest available options.
+Every compiler error is a **diagnostic**: a severity (error or warning),
+a stable code, the line, and a message (`gogo_ui::Diagnostic`). When a
+closed set is known (node types, style names, property names, theme
+values, parameters, states) the message carries a did-you-mean
+suggestion; with no close candidate it lists the closest available
+options.
 
-**Message voice** (D84): messages are lowercase sentences. Code fragments in
-prose — property spellings (`` `areas=` ``), values (`` `fill` ``), type
+**Message voice** (D84): messages are lowercase sentences. Code fragments
+in prose — property spellings (`` `areas=` ``), values (`` `fill` ``), type
 words (`` `Panel` ``), keywords, whole example lines — wear `` `backticks` ``
-(rustc's convention). What the USER typed stays in `'single quotes'`
-(`unknown widget type 'Buttn'`): quotes quote, backticks say "type this".
-Plain output keeps the literal backtick; BBCode output renders the fragment
-as a `[code]` span (mono against the pane's proportional prose). An odd
-backtick count renders literally — a rendered hint must never guess.
+(rustc's convention): backticks say "type this".
 
-Two output formats, **frozen once published** (tools regex against them):
+Two output shapes:
 
-- one-liner (status bars, ui-lint, logs — GCC-shaped):
-  `<path>:<line>[:<col>]: <severity>[<code>]: <message>`
-- block (panes, terminal detail — rust-shaped, pure ASCII):
-  line 1 `<severity>[<code>]: <message>`, line 2 `  --> <path>:<line>:<col>`,
-  then per span a numbered source excerpt with `^^^` (primary) / `---`
-  (secondary) underlines and a label, `= note:` lines, `help:` with the
-  suggested source when edits exist. Further spans open with `:::`.
+- from a build (`build_pages`), one line per problem:
+  `<path>:<line>: <severity> <code>: <message>`
+- a diagnostic printed on its own:
+  `<severity> <code> line <line>: <message>`
 
-```
-error[G3001]: `anim=` is not a state response — `when` holds values, it doesn't play
-  --> res://ui/menu.gogo:3:37
-   |
- 3 |     when held background=#FFFFFFff, anim=test
-   |                                     ^^^^^^^^^ belongs on a `transition`
-   |
-   = note: `when held` declares what the held state LOOKS like — standing values
-           that stand while the state holds.
-   = note: `anim=` says how a change FEELS — feel lives on `transition` lines.
-help: move it to a transition into `held`
-   |
- 3 |     when held background=#FFFFFFff
- 4 |     transition any -> held anim=test
-   |
+```text
+ui/menu.gogo:3: error G2001: `anim=` is not a gogo word — timing belongs on a `transition` line (`transition any -> held duration=0.1`); a `when` holds standing values
 ```
 
-**Codes** (`G` + 4 digits) are stable search keys: assigned when an error
-earns a teaching page (`docs/errors/<code>.md`, the editor's *Why?* pane),
-never renumbered, never reused; most sites stay uncoded (`error:` plain).
+**Codes** (`G` + 4 digits) are stable search keys: never renumbered,
+never reused (`diag::RETIRED` holds the numbers that must not come back).
+Every code has a teaching entry in `docs/gogo-errors.md`, and a test holds
+the registry (`diag::REGISTRY`) and that file together both ways.
 Banding: G0xxx lex/parse · G1xxx placement · G2xxx props/values · G3xxx
 styles/when/transition · G4xxx anims · G5xxx widgets/uses · G6xxx
-theme/$refs · G7xxx view root/host. The registry (`gogo_diagnostics.gd`) and
-the docs folder are test-enforced to match both ways.
+theme/$refs · G7xxx view root · G8xxx translations · G9xxx repeat and List
+(G91xx: a write from code that was refused; the code rides the error the
+call returns).
 
-**JSON channel** for tooling (`GogoError.to_dict()`; runtime push via
-`Gogo.add_diagnostics_listener(cb)` — empty array = file clean again):
-
-```json
-{"code": "G3001", "severity": "error", "message": "...",
- "spans": [{"file": "res://ui/menu.gogo", "line": 3, "col": 40, "len": 9,
-            "primary": true, "label": "belongs on a `transition`"}],
- "notes": ["..."],
- "help": {"message": "...", "applicability": "safe",
-          "edits": [{"file": "...", "line": 3, "col": 38, "len": 11, "replace": ""}]}}
-```
-
-Edits are span replacements (`col` = 1-based, `len` chars replaced,
-`replace` may contain `\n`; a whole-line replace is `col=1, len=<line len>`),
-applied in reverse source order. Only `applicability: "safe"` fixes are
-offered mechanically.
+(The Godot addon's diagnostics also carried source spans, notes,
+mechanical fixes and a JSON form for its editor panel. The Rust crate has
+none of those: a diagnostic is the four fields above.)
 
 ## States (`when`), arrangements, transitions
 
@@ -878,62 +754,52 @@ Button dangerRow .GalleryItem { when held background=#B00020 }  // node override
   opposite tween and starts from current values.
 - `focused` is VISIBLE-FOCUS (D129, semantics unchanged by the D181
   respelling) — focused AND an indicator is warranted: focus arrived by
-  key/gamepad, or a key was pressed while focused; a
-  pointer press anywhere turns the indicator off. A tap parks engine focus
-  silently — Godot's click-focus never strands a ring (the D122
+  key, or a key was pressed while focused; a
+  pointer press anywhere turns the indicator off. A tap moves focus
+  without showing it, so no ring is stranded (the D122
   press-residue class, generalized). Caret exception: a focused `Input`
   always indicates. One spelling, one meaning — there is no raw-focus
-  state; code-behind reads `has_focus()`. This is the CSS :focus-visible
+  state; code asks `Input::focused()`. This is the CSS :focus-visible
   model given the short name (a fresh language skips CSS's legacy pair).
-  Buttons ship a default response: the engine's always-on focus ring is
-  retired and re-shown as the injected default `when focused` (the theme's
-  own ring); authoring `when focused` replaces it, per the D122 doctrine.
+  Buttons ship a default response, a ring, as an injected default
+  `when focused`; authoring `when focused` replaces it, per the D122
+  doctrine.
 - `focus_within` (D129) holds while the focus is on the node or any
   DESCENDANT (CSS :focus_within, WPF IsKeyboardFocusWithin) — the
-  container highlight for key/gamepad-driven UIs (a settings row lights
+  container highlight for key-driven UIs (a settings row lights
   while its inner slider is focused). Visible-focus flavored like
   `focused`; the one non-participle spelling, kept on purpose — it names
   a relation, not a condition of the node.
 - `hovered`/`focused`/`focus_within`/`disabled`/`selected` are UNIVERSAL — legal on any node,
   dormant until a provider flips them (`disabled=` on a passive node is a
   styling flag: it greys via `when disabled`, `interactive=` stays the
-  input switch; Slider/Input spell it as not-`editable`; `selected` is
+  input switch; `selected` is
   "this one is chosen" — a toggle-mode button holds its own, choice/Radios
   carry it, a `List` flips it on the chosen row's `ListItem` — D118).
   `held` alone needs a press surface — the Button family (templated
   Radio/Check and toggle mode included), a List row's `ListItem` (the
-  List's press tracking flips it, D121), the native `Slider` (the
-  grabber's drag brackets it), or a composite declaring `state_builtin
-  held` (the ROOT's gesture tracking maintains it — behaviors never flip
-  it; D181) — checked at the
-  site a style is APPLIED, and the load-time error lists what's available.
-  `selected`/`disabled` restyle by PUSH from their write paths
-  (`GogoStates.set_selected`/`set_disabled`; a toggle button's clicks and
-  `button_pressed =` writes arrive through `toggled`). Raw
-  `SetPressedNoSignal`/`disabled = true` writes are caught by a shared
-  0.1 s sweep — restyled a beat late, with a one-time `gogo:` warning
-  naming the instant spelling, mirrored to an on-screen banner (release
-  builds too; `gogo.set_raw_write_banner(false)` disables) — so nothing
-  silently rots, and the old always-on per-control poll stays gone. A mouse
+  List's press tracking flips it, D121), a `Slider` (the drag brackets
+  it), or a `control` declaring `state_builtin held` (the runtime's
+  gesture tracking maintains it — behaviors never flip it; D181). Code
+  flips `selected` and `disabled` with `Runtime::set_state`, and the
+  restyle lands on the next frame. A mouse
   press CAPTURES hover: slipping off the control mid-press keeps the
   hovered look until release.
 - **`disabled` CASCADES** (D133 — the WPF IsEnabled law): effective =
   own flag OR any ancestor's own, and a child cannot re-enable under a
   disabled ancestor — no opt-out. Two layers: re-enabling the ancestor
   restores each descendant's OWN flag (a child disabled in its own right
-  stays disabled); children arriving inside a disabled subtree (repeat/
-  List rebuilds, code-behind adds) inherit on entry. `when disabled`
+  stays disabled); rows arriving inside a disabled subtree (a repeat's
+  or a List's) inherit on entry. `when disabled`
   fires on the EFFECTIVE value, so gray-out styling cascades with it.
   `disabled` is the only state that flows down the tree (`focus_within`
-  is the only one that looks up). `explain()` names the source:
-  `disabled: yes (inherited from 'settingsPanel')`.
+  is the only one that looks up). `Runtime::disabled(&page, node)` asks
+  for the effective value.
 - `ListItem` ships DEFAULT `selected`/`focused`/`held` responses (D122,
   defined sugar — doctrine unchanged by the D181 respelling): a bare row
-  fills with the theme's list-selection color
-  when chosen, a quarter-strength echo under the cursor, a half-strength
-  fill while the press is held — Button doctrine (the theme is the base
-  look, `when`
-  overrides). An authored `when <state>` on the row replaces that state's
+  fills with white at 0.3 when chosen ("Default look"), a
+  quarter-strength echo under the cursor, a half-strength fill while the
+  press is held — the default is the base look, `when` overrides. An authored `when <state>` on the row replaces that state's
   default entirely, per state; `select=off` rows skip only the selected
   default. `hovered` stays opt-in. Two feel rules (D122 follow-ups): the
   default press shade mirrors "release here would tap" (slide-off clears,
@@ -941,12 +807,11 @@ Button dangerRow .GalleryItem { when held background=#B00020 }  // node override
   — since D129 that IS the `focused` state's one meaning (visible-focus),
   so authored `when focused` behaves identically and the row-local
   `kb_only` gate is gone.
-- Friendly response props: `opacity` (modulate.a), `background` (shared
-  StyleBoxFlat — tweenable), `font_color` (all theme slots); dotted engine
-  paths (`modulate.a`) and plain engine props (a `Rectangle`'s/`Circle`'s own
-  `color`) also work. `color` on a node without one is an error routed to
-  `font_color=`/`background=`/`opacity=` — never a silent modulate tint
-  (known dialect words `foreground`/`text_color` route the same way).
+- Friendly response props: `opacity`, `background`, `font_color`; a
+  node's own look words (a `Rectangle`'s/`Circle`'s `color`) work too.
+  `color` on a node without one is an error routed to
+  `font_color=`/`background=`/`opacity=` (known dialect words
+  `foreground`/`text_color` route the same way).
   Bool/enum values apply instantly; floats and colors tween.
 - Motion words are responses too (standing values on the motion channel):
   `when held scale=0.95` holds while the state holds and hands back
@@ -959,7 +824,7 @@ Button dangerRow .GalleryItem { when held background=#B00020 }  // node override
   runtime arms the offset transform while a state holds it off identity
   and releases it on landing back (the anim player's disarm rule). ONE
   WRITER per property: a transition `anim=` in the same scope driving a
-  property a `when` also holds is a load-time error. Static (base-look)
+  property a `when` also holds is a build error. Static (base-look)
   motion words stay errors — declarations carry no transform.
 - Timing keys on a `when` line are an error: how a change feels is a
   `transition`. The retired spellings (`state` directive, bare `pressed`
@@ -975,7 +840,7 @@ and `any` is the transition wildcard (both reserved). Declaration only:
 responses live in top-level `when <name>` blocks (dotted `node.prop=value`
 pairs from the view root), timing in `transition` rules. Placement keys
 (`margin-*`, `width`, `height`, `min_width`, `min_height`) compile per
-arrangement into the target's placement (load-time validated); other props
+arrangement into the target's placement (validated at build); other props
 go through the state machinery.
 
 "Pose" in this spec is defined shorthand, not a keyword: the set of values
@@ -996,10 +861,8 @@ view level only — a recorded difference.)
 Size keys in a pose (D249): a `width`/`height`/`min_width`/`min_height`
 written in a `when` block behaves exactly as if the file had declared it,
 for as long as the block applies — when the block stops applying, the
-declared value comes back. That includes the minimum size the box reports
-to the engine, so a pose CAN shrink a node below its declared size (before
-D249 such a write moved only the anchors and the declared minimum silently
-kept the box at the old size). The values compose like declarations too: a
+declared value comes back. That includes the minimum size the box reports,
+so a pose CAN shrink a node below its declared size. The values compose like declarations too: a
 posed `width` still loses to a declared `min_width` floor (the floor
 clamps every posed value — WPF's MinWidth-over-Width order), a posed
 `min_width`/`min_height` replaces the declared floor, and content still
@@ -1010,25 +873,23 @@ the tween lands, so motion is smooth in both directions. A declared
 (GPAR79 2026-08-31 dropped the dead-pair refusal): the floor is there to
 bound the posed values, and it clamps the declared size by the same
 order.
-Flipped with `gogo.set_arrangement(root, name)`, `on:<signal>=go(name)`, or
-`on:<signal>=toggle(name)` — toggle is one comparison of sugar (D92):
+Flipped with `Runtime::go`, `on:<event>=go(name)`, or
+`on:<event>=toggle(name)` — toggle is one comparison of sugar (D92):
 `go(active == name ? base : name)`, the disclosure button without a handler
 (from a DIFFERENT pose it goes to `name`, checkbox-style). `toggle(base)` is
-a load-time error (base is home — `go(base)` returns there); pairing
-`toggle=true` (button toggle MODE) with `toggle(pose)` draws an advisory
-lint — two separate on/off states that drift once anything else flips the
-pose. The verb set is closed: `play`/`go`/`toggle`/`emit` (cycling through
+a build error (G0050: base is home — `go(base)` returns there). Keep such
+a button momentary: `toggle=true` (button toggle MODE) next to
+`toggle(pose)` is two separate on/off states that drift once anything else
+flips the pose. The verb set is closed: `play`/`go`/`toggle`/`emit` (cycling through
 poses stays code-behind).
-The flip tweens with the matching rule; the ACTIVE pose re-asserts on every
-`units_changed` and hot reload (re-assertable by construction — the
-two-writers cure), and hot reload keeps the active arrangement.
+The flip tweens with the matching rule; the ACTIVE pose holds across
+rotation and hot reload, and hot reload keeps the active arrangement.
 
 ### Screen classes and orientation (`when screen.<class>` M15, `when screen.<orientation>` D265)
 
 Two more pose axes, orthogonal to arrangements: the SCREEN's size class
-and its orientation. The host app names the active values
-(`gogo.set_screen_class`, `gogo.set_screen_orientation`, typically from
-its resize handler); `when screen.landscapeSmall { node.prop=... }` and
+and its orientation. The host program names the active values
+(`Runtime::set_screen`, whenever the screen changes size); `when screen.landscapeSmall { node.prop=... }` and
 `when screen.landscape { node.prop=... }` blocks respond. Both
 vocabularies are CLOSED — classes `portraitSmall` / `portraitMedium` /
 `portraitLarge` / `landscapeSmall` / `lotsOfSpace`; orientations
@@ -1041,7 +902,7 @@ silently catches big PORTRAIT tablets (`lotsOfSpace` covers both shapes).
 
 One vocabulary per target (G3005): a class and an orientation hold AT THE
 SAME TIME, so one property, one node's placement, or one seat move posed
-from BOTH would be decided by a rank the file never states — load error;
+from BOTH would be decided by a rank the file never states — build error;
 the composed `when screen.<orientation> screen.<class>` says the
 intersection as one condition. Arrangements are exempt (a user pose, not
 a screen fact): their contests keep the ladder below.
@@ -1055,23 +916,20 @@ the other pose keeps the rest, so leaving an arrangement lands back on
 the screen's seat, not on base. Placement keys are the arrangement set plus
 `halign`/`valign`: an alignment key RE-DECLARES that axis (base pins and
 size mode drop; the pose's own margins/size stand alone) — alignment
-needs an instant change (G3004): always true here, and true of an
+needs an instant change: always true here, and true of an
 arrangement `when` exactly while no `transition` rule times the
 arrangement. Container children take SIZE poses only: numeric
 `width`/`height`/`min_width`/`min_height` behave exactly as if declared
 for as long as the condition applies (D249 — a posed `width` makes a fill
 child stop taking the leftover; the drop restores the declared axis,
 instant — nothing to tween), while margins/alignment on container
-children stay load errors (the parent seats its children). Same
-re-assert on `units_changed`/hot reload. View-level blocks only.
-The editor panel's Layout dropdown (top toolbar) previews a class without
-a device: it names the app-wide class for the preview build, and with the
-Phone frame on, the frame takes a representative shape for the class.
+children stay build errors (the parent seats its children). The active
+class holds across hot reload. View-level blocks only.
 
 Composed blocks hold only while BOTH their conditions do, for poses
 neither axis owns alone. Three shapes: `when <arrangement>
 screen.<class>`, `when <arrangement> screen.<orientation>` (arrangement
-first — a reversed spelling is a load error naming the fix), and
+first — a reversed spelling is a build error naming the fix), and
 `when screen.<orientation> screen.<class>` (orientation first, class
 second — the sanctioned intersection of the two screen axes). One rule
 decides every contested key, and it reads off the file: **a block that
@@ -1081,8 +939,8 @@ want to win lower). So a pair's keys beat its halves on a contested
 property, two active pairs settle by file order, and either half dropping
 releases the block back to whichever single-axis pose still holds.
 Alignment keys need
-an instant change (G3004): legal in a pair (or a plain arrangement
-`when`) exactly while the arrangement has NO `transition` rule — with no
+an instant change: write them in a pair (or a plain arrangement
+`when`) only while the arrangement has NO `transition` rule — with no
 rule the change is instant, so there is no animation for the re-anchor to
 break; the screen-first pair has no arrangement half and is always
 instant. View-level blocks only, and a named arrangement must be declared
@@ -1095,15 +953,16 @@ sockets and spacers, never painted controls); `x.seat = <name>` in a
 dropping every condition returns it to its declared home — parent AND
 position. Legal from every `when` whose change nothing can animate:
 screen whens, composed blocks, and arrangement whens while no
-`transition` rule times the arrangement — a timed arrangement carrying a
-seat move is a load error pointing at both lines (G3003: a node is in
-one parent or the other, never partway). Contested seats follow the
+`transition` rule times the arrangement — do not put a seat move into a
+timed arrangement: a node is in one parent or the other, never partway.
+(The Godot addon refused it at build, G3003, as it refused the alignment
+keys above, G3004; the Rust compiler does not check either yet.) Contested seats follow the
 placement rule: more conditions win (a composed pair over a single),
 equal count → the later line in the file.
 `x.seat = home` says the return AS a move: sit at the declared
 home while THIS condition holds — for the more specific block that must
 pull a node back out of where a less specific one seated it (`home` is
-reserved; `seat home` as a declaration is a load error). The socket hugs
+reserved; `seat home` as a declaration is a build error). The socket hugs
 to zero alone, to the occupant's minimum when
 occupied (occupant fitted to the seat's full rect). That minimum reads
 wrap-text by the occupant's own DECLARED width mode: a `width=fill` or
@@ -1113,9 +972,9 @@ honor), while a hug occupant measures wrap-text UNWRAPPED like every hug
 axis (D254 — the crop hint's landscape row). A posed width counts as an
 exact width for as long as its block applies. A hug occupant whose
 single-line text is wider than the window is the width-feedback trap —
-the socket can never fit any pane — and warns at runtime (G1005, the fix
-is `width=fill` on the occupant). The rules are all
-load errors when broken: seats are empty and take a name only; seats and
+the socket can never fit any pane (the fix is `width=fill` on the
+occupant). The rules are all
+build errors when broken: seats are empty and take a name only; seats and
 resting homes are containers (free-placed nodes re-pin with placement
 `when` blocks instead); one occupant per seat under conditions that can
 hold together (two different arrangements are exclusive and may share a
@@ -1123,80 +982,27 @@ seat; an arrangement claim and a screen-class claim can co-hold and may
 not); no moves into a node's own subtree.
 
 The smooth-slide primitive: the node's LAYOUT SPACE as a 0..1 fraction.
-`visible` is a bool and bools snap; making the space a float puts it on the
-same rails as every other response — poses flip it, `transition` rules tween
-it, anims may drive it (the one layout channel an anim may own, because the
-reveal proxy is its only writer). Declaring either factor wraps the node in
-proxy → clip window → node (gogo_reveal.gd): the PROXY reports
-`child minimum × factor` to the parent and mirrors the node's size flags
-out (so `halign`/`fill` are unchanged); the WINDOW clips to `factor × the
-extent the node would otherwise have` — natural size when hugged, the
-stretched extent when filled. The clip is deliberately NOT the proxy's
-granted rect: containers stretch children on the cross axis (a Column
-grants its full width), so a grant-sized clip reveals everything the moment
-an ancestor authors extra space (the D93 postmortem). The rules:
+`visibility` is a word and words snap; making the space a float puts it on
+the same rails as every other response — poses flip it, `transition` rules
+tween it, anims may drive it (the one layout channel an anim may own). The
+node's box itself shrinks to the fraction. It is not a clip mask, so a
+Label lays out again in the smaller box. The rules:
 
-- Content pins to the LEADING edge (top/left); the trailing edge clips —
-  drawing and hits both (`clip_contents` feeds Godot's input clipping).
+- Under a container (`Column`/`Row`/`Grid`/...) the node takes only its
+  shown fraction of space, and the siblings close up as it shrinks (a
+  disclosure collapse).
+- A hug axis shows the fraction of its own measure; a `fill` axis shows the
+  fraction of what it was granted, from the edge its alignment names — a
+  Rectangle with `reveal_x=0.3` in a 100-wide `Layers` is 30 wide, at the
+  left.
 - `reveal_y=0` is not `visibility=gone`: a concealed node stays ALIVE (anims
   run, states poll), it just earns no space. `visibility=gone` remains the
   "gone" switch and zeroes the space instantly.
 - The channel exists only where DECLARED: a `when` or anim track driving
-  `x.reveal_y` without `reveal_y=` on `x`'s own line is a load-time error
+  `x.reveal_y` without `reveal_y=` on `x`'s own line is a build error
   (the resting value is visible in the file).
-- Container parents only (`Column`/`Row`/`Grid`/`Panel`/`Scroll`/`Flow`);
-  the root and free parents (`Layers`, plain `Control`) refuse it at load
-  time — nothing reflows around minimums there, so the honest tools are
-  `opacity`/`translate`. Widget instance lines can't add it (v1); it goes on
-  the node inside the widget body.
-- `fill` children: the factor scales the EXTENT — a label stretched to a
-  100-wide column at factor 0.5 shows its first 50 stretched pixels, and
-  the minimum contribution to the parent scales the same way.
-
-### Transitions
-
-`transition [A -> B] duration=, easing= (+params), anim=` (state changes)
-and `transition node.prop[, …] duration=, easing=` (property changes, below)
-— a directive line
-(top level for arrangements; inside a style/node block for built-ins), never
-a block. Bare = the default for every change (`any -> any`); `any` is the
-one-sided wildcard. Specificity: exact pair > entering (`any -> X`) >
-leaving (`X -> any`) > bare; duplicate endpoints in one scope = load-time
-error. Going home with no rule of its own mirrors the entering rule (timing,
-never its anim). At control scope exactly one side is `any` (built-ins
-stack) — EXCEPT an exact POSE pair (both endpoints arrangements, `base`
-included, 2026-08-16): that times THIS node's share of the flip, overriding
-the view rule (a plate sliding slower than the tiles it backs;
-`duration=0` = this node snaps to its new seat while the rest glides).
-Node pose rules time only; `anim=` and one-sided arrangement endpoints
-stay at the view's top level. Untimed = snap — so scoping pair rules to
-one pose pair makes OTHER flips instant declaratively (an on/off switch
-whose Off entry seats instantly needs no code flag). Pose tweens always
-run current value -> new seat, so a mid-flight re-flip retargets from
-wherever the node visually is (WPF To-animation feel).
-
-**Property transitions** (2026-09-27) — the same keyword with property
-targets instead of an arrow: `transition commandBar.opacity duration=0.4,
-easing=expo_in_out`. Top level only, naming the node; a `.{…}` group names
-several properties of one node (`commandBar.{margin_left, margin_top,
-opacity}`; `margin` / `padding` = the four edges), and a comma lists more
-targets. The rule belongs to the PROPERTY: any change of its standing value
-slides there from what shows — a code write (`Runtime::set_prop`), a
-`when` response, a pose — and a change mid-slide turns around from where
-the slide is. Snaps instead: the first value, a node that doesn't show,
-`Runtime::set_prop_instant` (a `set_prop` right after it slides from the
-instant value — fade-in = instant 0, then 1), and the responses of a
-`go_instant` flip. `visibility` never slides (G3007: fade `opacity`). One
-timing per property (G3008): a second property rule, or a timed `A -> B`
-rule over a `when` that sets the property, is a load error naming both
-lines. A slide counts as motion for the frame loop's idle gate.
-
-A rule's endpoint alone SUBSCRIBES the state (D182): `transition any ->
-held anim=nudge` on a Button wires the press with no standing `when held`
-response — the enter plays the anim, the exit reverts what it displaced.
-Naming the flip is interest in the flip; before D182 the rule validated
-and then silently never fired. Endpoints carry the same availability gate
-as `when` (`held` needs a press surface), and retired spellings redirect.
+- Any parent takes it. (The Godot addon wrapped the node in a clipping
+  proxy and allowed it under containers only — a recorded difference.)
 
 ## Input vocabulary (D181 — designed and built 2026-07-26)
 
@@ -1213,59 +1019,40 @@ pair already conformed):
 
 | event | fires | payload |
 |---|---|---|
-| `activate` | the control's OWN trigger gesture completed — Button: a completed tap (slide-off clears, slide-back re-arms) or key/gamepad accept; List: tap or Enter/Space on a row. Never "fires on release" as a universal law; never fires disabled | — (List: the row's key + item) |
-| `change` | the committed value is now different — once per commit, genuine transitions only ("changed means CHANGED": re-pick repairs, never re-reports; programmatic writes report like interaction; a same-value write is no event, which breaks handler→write→event loops) | the new value: Check/Toggle `bool`, Slider `float`, Input `String`, `choice` the picked Radio's name, List the key / Array of keys / `null` |
+| `activate` | the control's OWN trigger gesture completed — Button: a completed tap (slide-off clears, slide-back re-arms) or Enter/Space; List: tap or Enter/Space on a row. Never "fires on release" as a universal law; never fires disabled | — (List: the event's node is the row; `Runtime::item_key` gives its key) |
+| `change` | the committed value is now different — once per commit, genuine transitions only ("changed means CHANGED": re-pick repairs, never re-reports). Events come from input: a write from code reports nothing | the new value: Check/Toggle a bool, Slider a number, Input the text, `choice` the picked Radio's name; for a List read the keys with `Runtime::selected_keys` |
 | `edit` | a live, UNCOMMITTED value moved — Slider per drag tick, Input per keystroke; discrete controls have no edit | the live value |
-| `press` / `release` | the finger landed on a press surface, and that gesture ended — `release` fires exactly once however it ends (lift inside or out, cancel, a Scroll steal, disable/hide under the finger). A Slider brackets its drag with the same pair: `press` on down, `release` on up or cancel, one each (the gogo spelling of Godot's HSlider `drag_started`/`drag_ended`). `activate` stays a press surface's completed tap; a Slider never fires it | — |
+| `press` / `release` | the finger landed on a press surface, and that gesture ended — `release` fires exactly once however it ends (lift inside or out, cancel, a Scroll steal, disable/hide under the finger). A Slider brackets its drag with the same pair: `press` on down, `release` on up or cancel, one each. `activate` stays a press surface's completed tap; a Slider never fires it | — |
 | `show` / `hide` | visibility choreography (unchanged) | — |
+| `pointer` | every touch phase on a box the host draws itself (the node needs `interactive=true`, G0073) | the phase and the position inside the box, epx |
 
 Per control: **Slider** brackets its drag with `press`/`release`
 (exactly one each, cancel included), streams `edit` while dragging
-(`held`) and commits `change` on release; a keyboard/gamepad step commits directly —
-`change` only, no `edit` (a step and a programmatic write are
-indistinguishable at the engine seam, and an `edit` landing in the same
+(`held`) and commits `change` on release; a key step commits directly —
+`change` only, no `edit` (an `edit` landing in the same
 instant as its commit adds nothing). **Input** streams `edit` per
-keystroke; `change` commits on Enter or focus loss; a programmatic
-`text=` is synthesized (Godot emits nothing on set). **Toggle**:
+keystroke; `change` commits on Enter or focus loss. **Toggle**:
 `selected` flips LIVE as the thumb crosses the midpoint (state =
-presentation); `change(bool)` fires on settle, only when the settled
+presentation); `change` fires on settle, only when the settled
 side differs from the pre-gesture side — wiggling across the middle is
-zero changes. **choice**: `change` lives on the GROUP (payload = the
+zero changes. **choice**: `change` lives on the GROUP (the value is the
 picked Radio's name; items refuse `on:change`). **List**:
-`change(selected)` / `activate(key, item)`; `select=off` refuses
-`change` writes, activation still fires.
+`change` on the List, then `activate` on the row; under `select=off`
+there is no selection to change, activation still fires.
 
-**The register law** — `on:` stays OPEN: raw Godot signals remain legal
-for anything gogo has no word for (`on:drag_ended`, `on:resized`,
-`on:mouse_entered`, `on:focus_entered`, `on:button_down`/`on:button_up`,
-...). The register a line speaks is visible at a glance: bare stem =
-gogo word, snake_case past tense = raw signal. Raw spellings that
-duplicate a gogo concept are SHADOWED with a one-keystroke redirect (the
-D83 duplicate-raw law applied to signals):
+**The set is closed.** Any word after `on:` that is not one of the events
+above is refused (G0049), with the list; a few old spellings are answered
+with the new one (`on:pressed` "is spelled `on:activate`"). The Godot addon also took raw
+engine signals there (`on:drag_ended`, `on:mouse_entered`); the Rust crate
+has no such register, and a `control`'s own declared signals
+(`signal drag_started`) reach code as `Signal` events instead of through
+`on:`.
 
-| raw spelling | redirects to |
-|---|---|
-| `on:pressed` | `on:activate` — or the raw `on:button_down`/`on:button_up` |
-| `on:toggled` | `on:change` |
-| `on:changed` / `on:changing` | `on:change` (committed) / `on:edit` (live) |
-| `on:activated` | `on:activate` (retired gogo spelling) |
-| `on:value_changed` | `on:edit` (live) / `on:change` (committed) |
-| `on:text_changed` | `on:edit` |
-| `on:text_submitted` | `on:change` |
-| `on:input` | `on:edit` (this is DOM's `input`) |
-
-Shadowed names also never auto-wire, and stale `On<Name><Retired>` host
-methods are load-time errors — see Auto-wiring convention.
-
-**Retired state spellings** (D83-style, one-keystroke redirects):
-`pressed`→`held`, `hover`→`hovered`, `focus`→`focused`,
-`checked`→`selected`, `dragging`→`held` (the composite Slider/Toggle
-drag state — `held` IS the drag there; no separate word). Code surface
-renames come along: `GogoStates.set_selected`/`is_selected` (were
-`set_checked`/`is_checked`), Toggle's root property `selected` and
-signal `change(bool)` (were `checked`/`toggled`), List's
-`change`/`activate` signals (were `changed`/`activated`),
-`gogo.stranded_conditions` defaults `["held", "hovered"]`.
+**Retired state spellings** are refused with the new word (G0035):
+`pressed` and `dragging` are spelled `held` (the drag state of a Slider or
+Toggle IS `held`), `hover` is `hovered`, `focus` is `focused`, `checked`
+is `selected`. Any other unknown state word is G0036, which lists the
+real ones.
 
 ## Animations
 
@@ -1311,23 +1098,19 @@ anim entrance duration_each=0.2 {              // each: wearers + stagger
 
 - **Motion channel** ("layout is declared, motion is transformed"): the words
   `translate.x/.y` (epx), `scale` (uniform or `.x`/`.y`, center-pivoted),
-  `rotate` (degrees) and `opacity` compile to Godot 4.7 offset transforms
-  (visual-only; `opacity` = modulate.a and doubles as a static prop). The
-  player owns `offset_transform_enabled` — armed while playing, released at
-  identity or hidden (a parked-enabled transform renders a black backing
-  rect). Layout geometry (`position`, `offset_*`, sizes, `rotation`) is not
-  animatable, and raw `offset_transform_*` props are fenced everywhere.
-  FanRust (2026-09-02; the addon predates it): `pivot=` — a 0..1 box
+  `rotate` (degrees) and `opacity` are a transform the renderer applies
+  (visual-only; `opacity` doubles as a static prop). Layout geometry
+  (sizes, margins, alignment) is not animatable.
+  `pivot=` — a 0..1 box
   point (`pivot=0x0`, the Gradient `from=` spelling) — places the fixed
   point `scale` and `rotate` transform about; unset = the center, the
   old behavior verbatim. A look word on every box (`when` responses may
-  restyle it), not itself animatable; a full 0..1 pair or the load
-  refuses. Hits follow every channel there, rotation included — the
+  restyle it), not itself animatable; a full 0..1 pair or the build
+  refuses. Hits follow every channel, rotation included — the
   finger un-rotates about the nearest rotating ancestor-or-self, so
   look and touch agree.
 
-- **Prop lanes and the color-mixing law** (FanRust, 2026-09-02; not in
-  the addon): any word a `transition` rule can move is an anim target
+- **Prop lanes and the color-mixing law**: any word a `transition` rule can move is an anim target
   too — `b.background to=#FF3B30FF`, `card.corner_radius from=4,
   to=12`, the live `stop_N_color`/`stop_N_offset` family — and `.a` on
   any color word moves alpha alone while the hue keeps following its
@@ -1342,8 +1125,8 @@ anim entrance duration_each=0.2 {              // each: wearers + stagger
   tweens and anim lanes, one implementation: premultiplying keeps a
   fade to transparent clean (no dark fringe from a transparent color's
   rgb), Oklab keeps cross-hue midpoints from going muddy (CSS
-  `color-mix()` made the same default). The addon lerped per byte — a
-  recorded divergence.
+  `color-mix()` made the same default). (The Godot addon lerped per byte —
+  a recorded difference.)
 
 - The anim header: `repeat=forever`, `speed=`, plus the honestly-named
   distributing defaults `duration_each=`, `easing=` (+ params),
@@ -1364,12 +1147,12 @@ anim entrance duration_each=0.2 {              // each: wearers + stagger
   autoreverse's way back included. `after=` is the crossing-edge escape
   hatch: only named `group`s can be referenced, names are anim-flat
   (forward references legal, wrappers reachable-into), unknown names and
-  cycles refuse at load. `delay=N` is a PAUSE step, always positive; a
+  cycles refuse at build. `delay=N` is a PAUSE step, always positive; a
   shift is `offset=` (signed; negative overlaps, the final start clamps
   at 0). `play <anim>` inlines another anim as one step at bake (speed
   folded in, internal names private, `repeat=forever` refused — it never
   completes). The old `track` block and the delay ATTRIBUTE retired with
-  this grammar (big bang, no legacy machinery — the addon is pre-release).
+  this grammar (big bang, no legacy machinery).
 - `each <node|.Style> [stagger_by=N]` names wearers (a `.Style` = every
   wearer under the play surface, tree order; `stagger_by` shifts
   successive copies); its body is a step chain in BARE paths (the each
@@ -1380,7 +1163,7 @@ anim entrance duration_each=0.2 {              // each: wearers + stagger
 - **Capture rule**: `to=` alone starts from the LIVE value when the step
   begins; `from=` (or a key at t=0) pins the start and HOLDS it from play
   start (staggered entrances never flash their base). Two pinned steps on
-  one property = load-time error. **`from=current`** pins the live value
+  one property = build error. **`from=current`** pins the live value
   read at PLAY start (the `to=`-alone capture, made spellable and pinned —
   it holds through a delay window where an open start would flash the
   base). `current` is `from=`-only — `to=current` is refused (an open
@@ -1415,41 +1198,34 @@ anim entrance duration_each=0.2 {              // each: wearers + stagger
   parent is hidden holds nothing, so the next show starts at rest. The
   one conflict the compiler can see — a `when` in a scope holding a motion
   word while a `transition … anim=` in the same scope drives that channel
-  on the same target — is refused at load (G4003: "two writers would fight
-  on every flip; the loser flickers"). `modulate.a` is a Godot engine
-  word: the addon still reads it as `opacity`; the Rust port refuses it
-  naming `opacity` (G0075).
+  on the same target — is refused at build (G4003: "two writers would fight
+  on every flip; the loser flickers"). `modulate.a` is refused, naming
+  `opacity` (G0075).
 - Key line: `t=`/`v=`/`easing=`/`jump=true` (snap, no interpolation).
   `duration=0` sets instantly. A keyframed line's duration IS its last key's
-  `t`. Numbers on length properties are epx (`px` opts out).
-- **Easing names** (WPF-exact math; Godot TransitionType is never used):
+  `t`. Numbers on length properties are epx.
+- **Easing names** (WPF-exact math):
   `linear`, `sine`, `quad`, `cubic`, `quart`, `quint`, `circle`, `expo`
   (`exponent=`), `power` (`power=`), `back` (`amplitude=`), `bounce`
   (`bounces=`, `bounciness=`), `elastic` (`oscillations=`, `springiness=`)
   × `_in` / `_out` / `_in_out`. A bare base name means ease-out.
-- Runtime: `gogo.play(view, "appear")` (returns the player node; emits
-  `finished`), `gogo.stop(view, "appear")` (restores pre-play values, like
-  WPF Storyboard.Stop), `gogo.is_playing(...)`. GogoView exposes
-  `play_anim`/`stop_anim`/`is_anim_playing` (C#: `PlayAnim`/`PlayAnimAsync`/
-  `StopAnim`/`IsAnimPlaying`; arrangements: `SetArrangement`/
-  `SetArrangementAsync`/`CurrentArrangement`). `gogo.set_motion_speed(x)`
-  scales all motion — fractions
-  slow-mo, `INF` instant-complete (finishes, never skips; forever-anims hold
-  their base pose).
+- From code: `Runtime::play` (a newer play of the same lane takes it
+  over), `Runtime::stop` (with `restore = true` every property goes back to
+  what the file says, like WPF Storyboard.Stop), `Runtime::is_playing`, and
+  `Runtime::take_finished` for the anims that ended on their own. A build
+  generates an `enum Anim` per page for these calls; the `_id` forms serve
+  a page compiled while the program runs.
 - Declarative triggers: `on:show=play(appear)`, `on:hide=play(disappear)` —
   `on:hide` plays first and hides on finish (deferred hide), then restores the
-  base look; showing during a hide cancels it. A control that lands on screen
-  already visible (first build, hot reload) plays its `on:show` once as an
-  ENTRANCE; initial `visibility=gone` stays state, not a trigger (the show
-  plays on the flip). `gogo.set_entrance_anims(false)` suppresses entrances
-  (the editor preview plays them by default since D90; its "Entrance anims"
-  toolbar toggle opts out, remembered per project). Any real signal also takes
-  `on:<signal>=play(x)`, `on:<signal>=go(arrangementName)` (flips the
-  view's arrangement; `go(base)` returns home) or `on:<signal>=toggle(name)`
-  (flips between the pose and base, D92). Caveat: during a deferred
-  hide the control is still technically visible, so a raw `visible = true`
-  write in that window fires no signal — interrupt a running hide from code
-  via `play` instead.
+  base look; showing during a hide cancels it. A control that is already
+  visible when its page first shows plays its `on:show` once as an
+  ENTRANCE (the host asks for it once per page: `Runtime::play_entrances`);
+  initial `visibility=gone` stays state, not a trigger (the show plays on
+  the flip). Any event also takes `on:<event>=play(x)`,
+  `on:<event>=go(arrangementName)` (flips the view's arrangement;
+  `go(base)` returns home) or `on:<event>=toggle(name)` (flips between the
+  pose and base, D92). From code, `Runtime::show` goes through the
+  `on:show`/`on:hide` pair and `Runtime::set_visible` flips at once.
 
 ## Grid (D82 — designed 2026-07-06, built 2026-07-10)
 
@@ -1506,7 +1282,7 @@ Grid cols=[hug, fill],
   around invisible occupants). Trailing tracks may simply be omitted —
   nothing shifts. In areas, holes are `.`.
 - **Spans are plain cell props** (`col_span=2`, `row_span=2`) — no
-  coordinates, ever. A span past the last column/row is a load error (WPF
+  coordinates, ever. A span past the last column/row is a build error (WPF
   silently clamps; gogo treats it as a miscount). **Grids are partitions**:
   overlapping spans are unrepresentable — overlays are `Layers`' job, and
   every shipped WPF "span everything from (0,0)" case reads better that way
@@ -1586,10 +1362,9 @@ Rules:
   backfill, the tail stays empty. The wrap test carries a 0.01 epsilon so
   float unit sums never push the last column out.
 - **Heights are content truth, not lattice quanta**: a cell is as tall as its
-  own minimum, top-aligned; the row is its tallest cell. Godot has no
-  measure-with-constraint, so bitmap-driven tiles say
-  `aspect=natural` on the Image — the engine derives
-  height from width by the texture's ratio (a box-`aspect=` prop was
+  own minimum, top-aligned; the row is its tallest cell. Bitmap-driven
+  tiles say `aspect=natural` on the Image — the layout derives
+  height from width by the picture's ratio (a box-`aspect=` prop was
   REJECTED: with per-tile padding the shipped height chain is affine, and a
   single declared ratio drifts 1–3 epx across column counts).
 - **An invisible cell reflows away** (wrap semantics; Grid keeps the cell).
@@ -1603,19 +1378,14 @@ Rules:
   twice, every new effect added in two places) and over Flow growing a
   lattice form (Tiles already owns first-fit wrap; Flow keeps its one
   contract).
-- **Width feedback**: minimum height depends on granted width (the autowrap-
-  Label idiom) — a build settles over a frame or two; tests await ~3 frames.
-  Minimum WIDTH is the widest cell's OWN minimum (FlowContainer's rule):
-  a zero minimum would deadlock under hugging parents (user-caught in the
-  editor preview: everything packed at the origin "like Layers"), and a
+- **Width feedback**: minimum height depends on granted width (the
+  wrapping-Label idiom). Minimum WIDTH is the widest cell's OWN minimum:
+  a zero minimum would deadlock under hugging parents, and a
   lattice-scaled claim (content min × cols/span — the first attempt) exploded
   with the column count and pushed content past the viewport (user-caught on
-  device). Oversized cell content never widens the mosaic — and never clips
-  either: the engine never renders a control below its minimum
-  (`Control.set_size` clamps), so it OVERLAPS neighboring cells. Tiles WARNS
-  at sort time (one `push_warning` per offender; `overflow_warnings` readable
-  by tests). The remedy belongs to the content: `clip_text=true` on a Label,
-  a `clip_contents=true` wrapper otherwise, or a wider cell.
+  device). Oversized cell content never widens the mosaic. The remedy
+  belongs to the content: `clip_text=true` on a Label, a
+  `clip_contents=true` wrapper otherwise, or a wider cell.
 - `span=`/`full_row=` are CELL props of direct Tiles children only (styles
   can't place cells; widget instance lines may carry them — they stamp the
   widget root).
@@ -1626,13 +1396,12 @@ form (contradicts *placement is structure*; three placement forms in one
 type multiply cross-form validation); strict WP unit HEIGHTS (`span=2x1` —
 the shipped catalog's rows are bitmap-ratio heights and code-sized squares,
 neither on the height lattice; content-truth heights subsume both);
-`aspect=` cell prop (above — affine drift); per-cell auto-clipping (Godot has
-no rect clip without a generated wrapper node per cell — hidden node levels
-break tree-is-what-you-write and the `set_cell`/`get_parent`/editor-pick
-surfaces, and silently swallowed overflow is how parity bugs hide; the
+`aspect=` cell prop (above — affine drift); per-cell auto-clipping (hidden
+node levels break tree-is-what-you-write, and silently swallowed overflow
+is how parity bugs hide; the
 sort-time warning keeps overflow loud instead).
 
-## Atlases (designed and built 2026-09-27, Rust gogo; FanRust DECISIONS.md D97)
+## Atlases (designed and built 2026-09-27)
 
 An `atlas` line names one picture and how to cut it into **slices**;
 `source=` shows a slice. One keyword, four forms:
@@ -1704,71 +1473,49 @@ Rules:
 
 ## Vocabulary (D83 — designed and built 2026-07-11)
 
-The type surface went **framework-neutral**: the WPF dialect words
-(`TextBlock`, `Border`, `ScrollViewer`, `WrapPanel`, `TextBox`) retired into
-one-keystroke redirects (`Label`, `Panel`, `Scroll`, `Flow`, `Input`), and
-WPF searchability moved into the retired hints and the porting docs — the
-surface itself answers to the goals, not to muscle memory. Full table:
-REFERENCE.md "Vocabulary". The census that triggered it: `Border`(22) and
-`PanelContainer`(12) were two spellings of one class; raw `Control`(20) hid
-three roles (body host / spacer / draw surface); every view opened with the
-same `width=fill, height=fill, background=#00000000` incantation.
+The type surface is **framework-neutral**: one name per concept, answering
+to the goals rather than to muscle memory from WPF or an engine (`Label`,
+`Panel`, `Scroll`, `Flow`, `Input`, not `TextBlock`, `Border`,
+`ScrollViewer`, `WrapPanel`, `TextBox`). Full table: REFERENCE.md
+"Vocabulary". An unknown type word is a build error with a suggestion
+(G7011); there is no alias table.
 
-- **`View`** — the SCREEN root (D104): the host class IS this node, and its
-  children place FREELY. The old boilerplate is its defaults (transparent
-  background, fill both axes), injected only where the file doesn't speak —
+- **`View`** — the SCREEN root (D104): the host program lays it out in the
+  rectangle it passes, and its children place FREELY. Its defaults (no
+  background, fill both axes) apply only where the file doesn't speak —
   anything spelled wins. Root-only (inside the tree: free placement is
   `Layers`, a styled box is `Panel`). A COMPONENT file — a self-contained
   box like a toast or a progress track — opens with `Panel` instead (D105):
-  the root IS the styled box, padding/borders native, host extends
-  `GogoPanelView` — since D283 a plain `Container` that plays
-  PanelContainer through gogo's one panel-host formula (measure, sort,
-  plate), so a `width=host`/`height=host` axis really is left to the
-  host's code; a raw `PanelContainer` host still builds (G7002) but
-  refuses host axes (G7005). A Panel root gets the blank slate too — `background=
-  transparent` injected where the file doesn't speak it, so the ambient
-  theme's gray plate never leaks into a component (anything spelled wins).
-  Any other root type is a load-time error naming both
-  doors. NOT hidden by default: `visibility=gone` is state, never identity.
-- **Exact raw duplicates redirect**: `VBoxContainer`→`Column`,
-  `HBoxContainer`→`Row`, `PanelContainer`→`Panel`, `FlowContainer`→`Flow`,
-  `ColorRect`→`Rectangle`, `HSlider`→`Slider`, `LineEdit`→`Input` — two
-  spellings of one node type would split every grep. The raw register stays
-  for classes gogo has no name for (`Control`, `TextureRect`,
-  `ScrollContainer`, ...); Godot's raw `Panel` class is shadowed by the
-  alias (accepted: a bare gray Panel was never reachable under the blank
-  slate anyway).
-- **`Circle`** (gogo_circle.gd) — discs/rings via `_draw`; radius
-  self-derives from the box. `color=`/`border_color=`/`border_thickness=`
-  are real properties; transparent fill + border = ring. `Ellipse` redirects
-  here; true ellipses stay out of v1.
-- **`Gradient`** (gogo_gradient.gd) — generated GradientTexture2D fills:
+  the root IS the styled box, blank until the file gives it a
+  `background=`. Any other root type is a build error naming both
+  doors (G7003). NOT hidden by default: `visibility=gone` is state, never
+  identity.
+- **`Circle`** — discs and rings; radius self-derives from the box.
+  `color=`/`border_color=`/`border_thickness=` are its words; transparent
+  fill + border = ring. True ellipses stay out of v1.
+- **`Gradient`** — generated gradient fills, drawn per pixel:
   `fill=linear|radial|square|conic` × `repeat=none|repeat|mirror` ×
   `stops=[...]` (REQUIRED — no hidden ramp) × `angle=`/`from=`/`to=` aiming.
   Stop rules: `@positions` are all-or-none, never decrease (equal = hard
-  step), and under mirror stop at 0.5. One stop = G2003 with a behavior fix
-  (a solid is a `Rectangle`). Stops stay live as `stop_N_color`/
-  `stop_N_offset` properties — whens/anims drive them. `Radial` (and its
-  `solid_until=`) retired into `fill=radial, stops=[C@0, C@S, C/0@1]`.
+  step), and under mirror stop at 0.5. One stop = G2003 (a solid is a
+  `Rectangle`). Stops stay live as `stop_N_color`/`stop_N_offset`
+  properties — whens/anims drive them.
 - **`choice` / `Radio` / `Check`** — one-of-N with a lexical home: `choice`
   is erased structure (children parent flat); every `Radio` descendant joins
-  one ButtonGroup (grouped CheckBoxes render radio visuals natively). A
+  one exclusive group. A
   Radio with a BODY is the TEMPLATED form (D142): the body is the whole
-  look — the node builds as a toggle Button in the same group with its
-  chrome STRIPPED (D144: normal/hover/pressed plates blank, the focus ring
-  kept), `selected` + whens carry the selection visual, and `text=` errors
-  (letters live in the body's Labels). `value=` pre-presses by name; a named choice
-  auto-wires `On<Name>Change(radio_name)`, `on:change=` / `emit()` are
-  the explicit forms — and changed means CHANGED: one report per genuine
-  transition (re-tap of the current pick repairs, never re-reports;
-  programmatic `button_pressed = true` reports like a tap, a no-signal
-  seat stays invisible). Radios need names (the name IS the reported value);
+  look on a blank plate (the focus ring kept), `selected` + whens carry
+  the selection visual, and `text=` errors (letters live in the body's
+  Labels). `value=` pre-presses by name; a named choice reports its pick
+  as a `Change` event naming the choice (`on:change=` / `emit()` name
+  another handler) — and changed means CHANGED: one report per genuine
+  transition (re-tap of the current pick repairs, never re-reports).
+  Radios need names (the name IS the reported value);
   duplicates
   error; scopes don't nest; disjoint subtrees can't share a group — by
   design. `Check` is the independent toggle and never joins a group; it
   takes the same BODY spelling (the templated Check is the D142 twin:
-  blank toggle Button, checkbox reader role, no group, `on:change`
-  wiring unchanged).
+  blank plate, no group, `on:change` wiring unchanged).
 - **Deliberately NOT types**: Divider (`Rectangle` is honest), Switch/Card/
   Chip (**types name mechanisms, styles name looks, widgets name
   composites** — the capping principle), lists (`repeat`), dialogs
@@ -1786,10 +1533,9 @@ spooky-action exclusivity; the lexical scope shows the whole set);
 
 ## Default look
 
-A bare control is one picture on every engine. The numbers below ARE the
-default look — they live in the runtime's draw constants, not in an
-engine theme, so a file with no styling renders the same everywhere
-(decided 2026-08-30; an engine's native templates are not consulted).
+A bare control is one picture everywhere. The numbers below ARE the
+default look — they live in the crate's draw constants, so a file with
+no styling renders the same on every host (decided 2026-08-30).
 Anything a file styles (`background=`, a `when held` response, a
 `theme { Kind … }` default) replaces the matching piece and only that
 piece.
@@ -1797,7 +1543,7 @@ piece.
 Sizes are epx. `accent` and `gray` are the palette's words.
 
 - **Button** — plate gray 0.1 at alpha 0.6 (square unless the file says
-  `corner_radius=`); the label centered. No plate under a native mark
+  `corner_radius=`); the label centered. No plate under a mark
   (Check/Radio draw their mark, not a plate). A text-only Button (one
   with no children of its own) puts 12 of air left and right of its
   label and 6 above and below unless the file writes `padding=`; a
@@ -1826,7 +1572,7 @@ Sizes are epx. `accent` and `gray` are the palette's words.
 - **Scroll bars** — a `#737373` grabber in a 4-wide lane on an
   overflowing axis (Scroll and List both), as long as the viewport's
   share of the content; `bars=never` drops lane and grabber.
-- **Rectangle** — colorless is WHITE (an engine ColorRect's reading); a
+- **Rectangle** — colorless is WHITE; a
   colorless Circle draws nothing.
 - **Disabled** — a disabled control draws its whole subtree at
   `theme { disabled_opacity = … }`, default 0.3. The dim is a built-in
@@ -1852,16 +1598,15 @@ lowercase structure words also shadow no widget names) — except `base`
 and `any`, which are reserved everywhere (decided 2026-08-31): they name
 state endpoints, and a node called `base` next to `transition base ->
 held` would read as two things. As in Rust, `match` is never a name.
-`Button base` is a load error naming the rule (G0046). `true`/`false` are
+`Button base` is a build error naming the rule (G0046). `true`/`false` are
 value words in the name position too (`Check true` errors naming
 `selected=true`).
 
 A node name is unique within its page (decided 2026-08-30): a name is an
 address — `when x.prop=`, an anim lane, `x.seat =`, the host's lookups —
 so two nodes answering to it would be a silent retarget; a duplicate is a
-load error. Widget bodies and repeat items are scoped per instance
-(`inst/part`, `x/i/item`), so repeated structure never collides. The Rust
-port enforces this; the addon owes the same check.
+build error. Widget bodies and repeat items are scoped per instance
+(`inst/part`, `x/i/item`), so repeated structure never collides.
 
 ## Explicitly out of scope for v1 (v2 candidates)
 
@@ -1883,7 +1628,7 @@ $accent        = #E51400FF
 $swatchDefault = #EB6428FF
 
 theme dark {
-    $accent = #FF6B4AFF   // active via Gogo.set_theme_variant("dark")
+    $accent = #FF6B4AFF   // active via Runtime::set_theme_variant
 }
 
 style ToolButton min_height=36, tap_pulse=true

@@ -1,8 +1,8 @@
 //! The gogo draw list on wgpu: one instanced draw of UI quads per (clip,
 //! texture) batch. Needed so a whole page costs one buffer write and a
 //! handful of draw calls; the page's rects are epx and are scaled to device
-//! pixels here (`gogo` never sees a device pixel). Text is shaped by the
-//! `text` crate into glyph quads over its coverage atlas (texture 0);
+//! pixels here (`gogo-ui` never sees a device pixel). Text is shaped by
+//! `gogo-text` into glyph quads over its coverage atlas (texture 0);
 //! images are RGBA textures the host's image table writes through
 //! `write_image_texture_only` (the table records the size alongside). A gradient
 //! arrives as one quad per stop pair (its `band`); a `RotatePush` turns
@@ -11,8 +11,8 @@
 //! WP7 turnstile), and a `TextStretch` maps one glyph's ink box onto its
 //! rect.
 
-use crate::perf_stages::{Stage, Timer, note_ms};
-use crate::tex_types::{Tex_Bake_Premul_Srgb_4xU8_RGBA, Tex_Display_Srgb_4xU8_RGBA};
+use crate::textures::{Tex_Image_Straight_Srgb_4xU8_RGBA, Tex_Tile_Premul_Srgb_4xU8_RGBA};
+use crate::timings::{PrepareStage, PrepareTimings};
 use std::time::Instant;
 
 use gogo_ui::draw::{Draw, Fit, GradientKind, Sampling, TextAlign};
@@ -20,7 +20,7 @@ use gogo_ui::layout::Rect;
 use gogo_ui::locale::Locale;
 use gogo_ui::page::{NO_STR, Page};
 use gogo_ui::ImageKey;
-use text::TextEngine;
+use gogo_text::TextEngine;
 
 /// The frame's draw lists, in draw order, each with the page that owns
 /// its strings — handed to `UiRenderer::prepare_pages` as a walk so the
@@ -132,24 +132,9 @@ struct PipelinePair {
     plain: wgpu::RenderPipeline,
 }
 
-/// A measuring build (`scripts\build.ps1 -UiClassLog`) that logs, once per
-/// screen, the quads and the share of the screen per quad class
-/// (`UiRenderer::log_quad_classes`). `scripts\dist.ps1` clears it.
-const UI_CLASS_LOG_BUILD: bool = option_env!("FANRUST_UI_CLASS_LOG").is_some();
-
-/// The quad classes a `UI_CLASS_LOG_BUILD` counts per frame, in this order.
+/// The quad classes `UiRenderer::debug_set_class_log` counts per frame, in
+/// this order.
 const QUAD_CLASSES: [&str; 8] = ["image", "glyph", "plain rect", "rounded rect no border", "bordered rect", "circle", "gradient", "arc"];
-
-/// A measuring build (`scripts\build.ps1 -NoUi`) that draws NO UI: only
-/// the images of externally-owned textures (the canvas, a brush preview)
-/// reach the screen. Taps and swipes still land — only the drawing is
-/// skipped.
-///
-/// Needed to read what a stroke costs with no UI on screen
-/// (docs/todo-perf-smudge.md/PS8): this build against one with the UI, by
-/// `scripts/perf_stroke_video.py` and `scripts/perf_stroke_atrace.py`.
-/// `scripts\dist.ps1` clears it.
-const NO_UI_BUILD: bool = option_env!("FANRUST_NO_UI").is_some();
 
 struct Texture {
     bind_group: wgpu::BindGroup,
@@ -185,9 +170,21 @@ pub struct HostLayer(u32);
 pub struct UiRenderer {
     /// The screen's pipelines.
     pipelines: PipelinePair,
-    /// The quad count per class (`QUAD_CLASSES`) last logged, so a
-    /// `UI_CLASS_LOG_BUILD` logs a screen once, not every frame.
+    /// The quad count per class (`QUAD_CLASSES`) last reported, so the
+    /// class log (`debug_set_class_log`) reports a screen once, not every
+    /// frame.
     classes_logged: [u32; 8],
+    /// The class log is on (`debug_set_class_log`).
+    class_log: bool,
+    /// The class log's line for a screen whose counts changed, until the
+    /// host takes it (`debug_take_quad_classes`).
+    classes_line: Option<String>,
+    /// Only externally-owned images and host layers are drawn
+    /// (`debug_set_no_ui`).
+    no_ui: bool,
+    /// The host's timings (`set_prepare_timings`); `None` = nobody is
+    /// timing, and no clock is read.
+    timings: Option<Box<dyn PrepareTimings>>,
     /// What every pipeline of this renderer shares — the screen's
     /// (`pipelines`) and the offscreen tile's, made on the first
     /// `render_to_texture` (a pipeline is bound to ONE target format).
@@ -222,7 +219,7 @@ pub struct UiRenderer {
     rots: Vec<[f32; 4]>,
     wedges: Vec<[f32; 4]>,
     swings: Vec<([f32; 4], [f32; 4])>,
-    glyphs: Vec<text::GlyphQuad>,
+    glyphs: Vec<gogo_text::GlyphQuad>,
     screen: (u32, u32),
     /// Slot 0 is the atlas (rebuilt when the engine's atlas changes size).
     textures: Vec<Texture>,
@@ -307,14 +304,15 @@ impl UiRenderer {
         let gradients = GradientTable::new(device, GRAD_ROWS_INITIAL);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some("ui"), bind_group_layouts: &[Some(&screen_layout), Some(&tex_layout), Some(&gradients.layout)], immediate_size: 0 });
         let pipelines = Self::make_pipelines(device, &module, &pipeline_layout, target_format);
-        if NO_UI_BUILD {
-            log::info!("FANRUST_UI no-UI build: only externally-owned images (the canvas, a brush preview) are drawn");
-        }
         let quad_capacity = 1024;
         let quad_buffer = Self::make_quad_buffer(device, quad_capacity);
         let mut r = UiRenderer {
             pipelines,
             classes_logged: [0; 8],
+            class_log: false,
+            classes_line: None,
+            no_ui: false,
+            timings: None,
             module,
             pipeline_layout,
             tile_pipelines: None,
@@ -506,10 +504,10 @@ impl UiRenderer {
     /// Shows `texture` as the opened image. Another texture replaces the
     /// slot (the ping-pong renderers swap); the SAME texture again is a
     /// no-op — no bind group per frame. Returns true when it (re)registered.
-    /// Takes the display newtype: the raw texture never leaves this crate
-    /// (the D202 domain guard).
-    pub fn set_external_image(&mut self, device: &wgpu::Device, image: ExternalImage, texture: &Tex_Display_Srgb_4xU8_RGBA) -> bool {
-        let raw: &wgpu::Texture = &texture.RGBA;
+    /// Takes the typed texture: what its texels hold is said once, where
+    /// the host wraps it (`Tex_Image_Straight_Srgb_4xU8_RGBA`).
+    pub fn set_external_image(&mut self, device: &wgpu::Device, image: ExternalImage, texture: Tex_Image_Straight_Srgb_4xU8_RGBA<'_>) -> bool {
+        let raw: &wgpu::Texture = texture.RGBA;
         let external: &External = &self.externals[image.0 as usize];
         if external.texture.as_ref() == Some(raw) {
             return false;
@@ -678,20 +676,20 @@ impl UiRenderer {
         // frame pays nothing. User-seen: a button with no letters ("cancel")
         // until the next redraw (S24, 2026-09-14).
         let generation: u32 = text.generation;
-        let pass_stage = Timer::new(Stage::UiPass);
+        self.stage_begins(PrepareStage::Pass);
         self.prepare_pass(device, pages, epx, screen, text, locale);
         if text.generation != generation {
             self.prepare_pass(device, pages, epx, screen, text, locale);
         }
-        drop(pass_stage);
-        let atlas_stage = Timer::new(Stage::UiAtlas);
+        self.stage_ends(PrepareStage::Pass);
+        self.stage_begins(PrepareStage::Atlas);
         self.sync_atlas(device, queue, text);
         self.gradients.flush(queue);
-        drop(atlas_stage);
-        if UI_CLASS_LOG_BUILD {
-            self.log_quad_classes();
+        self.stage_ends(PrepareStage::Atlas);
+        if self.class_log {
+            self.note_quad_classes();
         }
-        let _upload_stage = Timer::new(Stage::UiUpload);
+        self.stage_begins(PrepareStage::Upload);
 
         if self.quads.len() > self.quad_capacity {
             self.quad_capacity = self.quads.len().next_power_of_two();
@@ -708,6 +706,54 @@ impl UiRenderer {
             queue.write_buffer(&self.screen_buffer, 0, bytemuck::bytes_of(&Screen { size: [screen.0 as f32, screen.1 as f32], _pad: [0.0; 2] }));
             self.screen_written = Some(screen);
         }
+        self.stage_ends(PrepareStage::Upload);
+    }
+
+    fn stage_begins(&mut self, stage: PrepareStage) {
+        if let Some(timings) = self.timings.as_mut() {
+            timings.stage_begins(stage);
+        }
+    }
+
+    fn stage_ends(&mut self, stage: PrepareStage) {
+        if let Some(timings) = self.timings.as_mut() {
+            timings.stage_ends(stage);
+        }
+    }
+
+    /// Installs the host's timings, or removes them (`None`).
+    ///
+    /// Needed so a host can see where a frame's `prepare_pages` time goes
+    /// (the walk, text shaping, the atlas, the upload) with its own clock
+    /// and counters, while a host that does not ask pays nothing.
+    pub fn set_prepare_timings(&mut self, timings: Option<Box<dyn PrepareTimings>>) {
+        self.timings = timings;
+    }
+
+    /// Measuring switch: draws NO UI, only the images of externally-owned
+    /// textures (`set_external_image`) and the host layers. Taps and
+    /// swipes still land, since only the drawing is skipped.
+    ///
+    /// Needed to read what a host's own drawing costs with no UI on
+    /// screen: the same scene with this on and off.
+    pub fn debug_set_no_ui(&mut self, on: bool) {
+        self.no_ui = on;
+    }
+
+    /// Measuring switch: counts, per quad class, the quads of each frame
+    /// and the share of the screen their rects cover
+    /// (`debug_take_quad_classes` hands the line out).
+    ///
+    /// Needed to see WHERE a screen's pixels are before moving a kind of
+    /// quad between the two fragment shaders (`quad_is_plain`).
+    pub fn debug_set_class_log(&mut self, on: bool) {
+        self.class_log = on;
+    }
+
+    /// The class log's line for the screen last prepared, once per screen:
+    /// `None` until a class's quad count changes again.
+    pub fn debug_take_quad_classes(&mut self) -> Option<String> {
+        self.classes_line.take()
     }
 
     /// One pass over the draw lists into `quads` and `batches` — shapes
@@ -730,7 +776,7 @@ impl UiRenderer {
         let mut rots: Vec<[f32; 4]> = std::mem::take(&mut self.rots);
         let mut wedges: Vec<[f32; 4]> = std::mem::take(&mut self.wedges);
         let mut swings: Vec<([f32; 4], [f32; 4])> = std::mem::take(&mut self.swings);
-        let mut glyphs: Vec<text::GlyphQuad> = std::mem::take(&mut self.glyphs);
+        let mut glyphs: Vec<gogo_text::GlyphQuad> = std::mem::take(&mut self.glyphs);
         clips.clear();
         rots.clear();
         wedges.clear();
@@ -744,13 +790,15 @@ impl UiRenderer {
         let mut current_tex: TexId = ATLAS;
         let mut current_pixel: bool = false;
         let mut text_secs: f32 = 0.0;
+        // Text is timed only when a host asked: otherwise no clock is read.
+        let text_is_timed: bool = self.timings.is_some();
         pages.for_each_list(&mut |draws: &[Draw], page: &Page| {
         // Indexed: a Gradient entry owns the stop records after it.
         let mut i: usize = 0;
         while i < draws.len() {
             let d = &draws[i];
             i += 1;
-            if NO_UI_BUILD && !self.drawn_without_ui(d) {
+            if self.no_ui && !self.drawn_without_ui(d) {
                 continue;
             }
             match d {
@@ -800,7 +848,7 @@ impl UiRenderer {
                 // by the draw pass; skipped, not drawn).
                 Draw::GradientStop { .. } => {}
                 Draw::Text { rect, text: text_id, key, font_size, color, halign, valign, wrap, font } => {
-                    let text_start: Instant = Instant::now();
+                    let text_start: Option<Instant> = text_is_timed.then(Instant::now);
                     let s = gogo_ui::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let r = px(rect);
@@ -826,7 +874,9 @@ impl UiRenderer {
                     // outside must not split the batch around it.
                     glyphs.clear();
                     text.shape_into(s, size_px, max_w, font_key, x, y, box_w, h, &mut glyphs);
-                    text_secs += text_start.elapsed().as_secs_f32();
+                    if let Some(start) = text_start {
+                        text_secs += start.elapsed().as_secs_f32();
+                    }
                     for g in &glyphs {
                         let glyph_rect: [f32; 4] = [g.x, g.y, g.w, g.h];
                         if self.cull && Self::quad_is_outside(&glyph_rect, &rot, &swing, current, screen) {
@@ -1032,7 +1082,9 @@ impl UiRenderer {
         self.wedges = wedges;
         self.swings = swings;
         self.glyphs = glyphs;
-        note_ms(Stage::UiText, text_secs * 1000.0);
+        if let Some(timings) = self.timings.as_mut() {
+            timings.text_shaped(text_secs);
+        }
     }
 
     /// Adds `q` to this frame's quads unless it lies outside `clip`
@@ -1086,7 +1138,7 @@ impl UiRenderer {
         *first = end;
     }
 
-    /// Whether a `NO_UI_BUILD` keeps `d`: an image of an externally-owned
+    /// Whether `debug_set_no_ui` keeps `d`: an image of an externally-owned
     /// texture or a host layer, or a clip / rotate / wedge / swing push or pop — the state
     /// such an image is drawn under. A skipped Gradient's stops fall to the
     /// stray-stop arm, which draws nothing.
@@ -1113,13 +1165,14 @@ impl UiRenderer {
         q.wedge[3] < 0.0 && (kind == KIND_IMAGE || kind == KIND_GLYPH || borderless_rect)
     }
 
-    /// Logs, per quad class, the quads of this frame and the share of the
+    /// Notes, per quad class, the quads of this frame and the share of the
     /// screen their rects cover (overlaps count twice; clips are ignored) —
-    /// once per screen: only when a class's quad count changed.
+    /// once per screen: only when a class's quad count changed. The host
+    /// takes the line with `debug_take_quad_classes`.
     ///
     /// Needed to see WHERE a screen's pixels are before moving a kind of
-    /// quad between `fs_main` and `fs_plain` (DECISIONS.md D57).
-    fn log_quad_classes(&mut self) {
+    /// quad between `fs_main` and `fs_plain`.
+    fn note_quad_classes(&mut self) {
         let mut counts: [u32; 8] = [0; 8];
         let mut areas: [f32; 8] = [0.0; 8];
         let (sw, sh) = (self.screen.0 as f32, self.screen.1 as f32);
@@ -1150,7 +1203,7 @@ impl UiRenderer {
         }
         self.classes_logged = counts;
         let line: Vec<String> = (0..8).filter(|&c| counts[c] > 0).map(|c| format!("{} {} quads {:.1} %", QUAD_CLASSES[c], counts[c], 100.0 * areas[c] / (sw * sh))).collect();
-        log::info!("FANRUST_UI classes (quads, share of the screen): {}", line.join("; "));
+        self.classes_line = Some(line.join("; "));
     }
 
     /// One batch per run of plain / not plain quads in `first..end`, in
@@ -1259,7 +1312,7 @@ impl UiRenderer {
     /// `prepare` rewrites both). `locale`: the table the page laid out
     /// with (`prepare_pages`).
     #[allow(clippy::too_many_arguments)]
-    pub fn render_to_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, draws: &[Draw], page: &Page, text: &mut TextEngine, locale: Option<&Locale>, epx: f32, origin_epx: (f32, f32), size_px: (u32, u32)) -> Tex_Bake_Premul_Srgb_4xU8_RGBA {
+    pub fn render_to_texture(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, draws: &[Draw], page: &Page, text: &mut TextEngine, locale: Option<&Locale>, epx: f32, origin_epx: (f32, f32), size_px: (u32, u32)) -> Tex_Tile_Premul_Srgb_4xU8_RGBA {
         let shifted: Vec<Draw> = draws.iter().map(|d| d.posed(-origin_epx.0, -origin_epx.1, 1.0)).collect();
         let size: (u32, u32) = (size_px.0.max(1), size_px.1.max(1));
         self.prepare_pages(device, queue, &[(shifted.as_slice(), page)], epx, size, text, locale);
@@ -1291,7 +1344,7 @@ impl UiRenderer {
         };
         self.draw_calls = calls;
         queue.submit([encoder.finish()]);
-        Tex_Bake_Premul_Srgb_4xU8_RGBA::new(tex)
+        Tex_Tile_Premul_Srgb_4xU8_RGBA::new(tex)
     }
 
     /// Pin probe: gradient table rows in use after the last frame.

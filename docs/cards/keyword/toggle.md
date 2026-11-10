@@ -1,9 +1,9 @@
-`on:<signal>=toggle(arrangementName)` flips between the pose and base —
+`on:<event>=toggle(arrangementName)` flips between the pose and base —
 the disclosure button: press expands, press again collapses (from a
 different pose it goes to the named one). Keep the button MOMENTARY and
 style it through the pose; button `toggle=true` next to `toggle(pose)` is
-two separate on/off states that drift apart (gogo lints it).
-`toggle(base)` is a load-time error — `go(base)` returns home.
+two separate on/off states that drift apart.
+`toggle(base)` is a build error (G0050) — `go(base)` returns home.
 
 ```
 arrangement expanded

@@ -1,6 +1,6 @@
 A Grid cell prop: cover N rows downward. A row_span OWNS the tracks it
 covers below — each covered track is written `skip` in those rows (the
-error walks you through it). Spans past the last row are load errors.
+error walks you through it). Spans past the last row are build errors.
 
 ```
 Grid cols=[60, fill] {

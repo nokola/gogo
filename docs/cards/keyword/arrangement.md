@@ -11,7 +11,8 @@ or `SetArrangement` from code. `base` is the predeclared declarations.
 An arrangement NO `transition` rule times changes instantly — and only
 then its `when` blocks may also re-anchor (`halign`/`valign`) and move
 seats (`x.seat = <seatName>`), like a screen `when`; a timed arrangement
-carrying either is a load error pointing at both lines (G3003/G3004 — an
+carrying either was a build error in the Godot addon (the Rust compiler
+does not check this yet — an
 anchor or a parent has no partway for the animation to show).
 
 ```

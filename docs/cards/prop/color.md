@@ -1,9 +1,7 @@
 The fill of nodes that OWN a plain color — `Rectangle` and `Circle`,
 whose fill IS their color. On anything else it errors and points to the
 right channel: text is `font_color=`, a box fill is `background=`, a
-`Gradient` paints its `stops=`, a whole-control fade is `opacity=`
-(deliberate tinting is the engine's `modulate=`, never a silent
-fallback).
+`Gradient` paints its `stops=`, a whole-control fade is `opacity=`.
 
 ```
 Row spacing=10 {

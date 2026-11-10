@@ -1,4 +1,4 @@
-A Range control's upper bound (`max_value`) — Sliders mostly. Pairs with
+A value control's upper bound — Sliders mostly. Pairs with
 `min=` and `value=`.
 
 ```

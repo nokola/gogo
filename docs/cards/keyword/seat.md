@@ -21,7 +21,7 @@ when screen.landscapeSmall {
 }
 ```
 
-Rules (each one a load error when broken): a seat is EMPTY (its occupant
+Rules (each one a build error when broken): a seat is EMPTY (its occupant
 is declared in its own resting home) and takes a name and nothing else —
 it hugs to zero alone, to the occupant's minimum when occupied, fitting
 the occupant to its full rect. Seats live under containers; the occupant's
@@ -41,7 +41,8 @@ A move is legal from every `when` whose change nothing can animate:
 (`when <arrangement> screen.<class or orientation>`,
 `when screen.<orientation> screen.<class>`), and a plain
 `when <arrangement>` while NO `transition` rule times the arrangement. A
-timed arrangement carrying a seat move is a load error pointing at both
+timed arrangement carrying a seat move was a build error in the Godot
+addon (not checked by the Rust compiler yet), pointing at both
 lines (G3003) — a node is in one parent or the other, never partway, so
 there is nothing for the animation to show. Contested seats follow the
 placement rule: more conditions win (a composed pair over a single),
@@ -89,7 +90,7 @@ Column page {
 }
 ```
 
-`home` can't name a declared seat (a load error says so).
+`home` can't name a declared seat (a build error says so).
 
 Not `slot`: a slot is where a widget's CALLER puts content at build time;
 a seat is where a `when` puts an existing node at runtime.

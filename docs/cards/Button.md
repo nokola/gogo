@@ -1,8 +1,9 @@
 Press / toggle. `activate` is the button's trigger gesture — a completed
-tap (slide-off clears, slide-back re-arms) or key/gamepad accept. A named
-button auto-wires by convention (`okButton` + activate →
-`OnOkButtonActivate()`); `on:activate=` overrides. `toggle=true` gives it
-an on/off value: it holds `selected` while ON and fires `change(bool)`.
+tap (slide-off clears, slide-back re-arms) or Enter/Space while focused.
+It reaches code as an `Activate` event; the handler it names is the
+button's own name (`okButton`) unless `on:activate=` names another.
+`toggle=true` gives it an on/off value: it holds `selected` while ON and
+fires `change(bool)`.
 Content minimums derive from free children, positive margins included
 (an exact size clamps; negative margins count as zero).
 

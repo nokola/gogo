@@ -10,4 +10,4 @@ Scroll page height=120, bars=never {
 
 `bars=` never picks WHICH axes scroll — that is `allow=` or the sizing triad on a `Scroll`, `layout` on a `List` (`List picker bars=never { ... }` paints the internal scroll's bar). On a non-scrolling axis it is inert.
 
-Per-axis bar policy (auto vertical, hidden horizontal) is the one thing the word can't say — the raw `horizontal_scroll_mode=`/`vertical_scroll_mode=` escape hatch keeps engine meaning for that, never mixed with `bars=` on the same Scroll.
+Per-axis bar policy (auto vertical, hidden horizontal) is the one thing the word can't say.

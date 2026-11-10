@@ -6,7 +6,7 @@ Three shapes, one keyword. Top level: `theme { }` holds document defaults,
 ```
 $accent = #E51400
 theme dark {
-    $accent = #FF6B4A     // wins while set_theme_variant("dark") is active
+    $accent = #FF6B4A     // wins while the variant "dark" is active
     red = #FF5C49         // built-in color keywords remap too
 }
 

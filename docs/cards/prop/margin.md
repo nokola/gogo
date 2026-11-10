@@ -1,5 +1,5 @@
-Margins CARVE the box the other keys produce, on a free (`Layers`/plain
-`Control`) child — SIGNED distances from the parent's matching edge:
+Margins CARVE the box the other keys produce, on a free (`Layers`)
+child — SIGNED distances from the parent's matching edge:
 positive sits inside, negative hangs past it. On a filled axis they inset;
 on an aligned axis they offset the near edge; on a hug/exact axis they
 pin. `margin=N` alone is breathing room all around; per-edge keys are

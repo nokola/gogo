@@ -1,6 +1,16 @@
-# gogo crate design (G1, 2026-08-29)
+# gogo-ui crate design (G1, 2026-08-29)
 
-The `gogo` crate is pure Rust: no wgpu, no winit, no OS. Input: `.gogo`
+> This file was written while gogo lived inside the FanRust application
+> (2026-08 to 2026-11), and it keeps that record: dated decisions, ids
+> such as GPAR61 and D97 from FanRust's own logs, and comparisons with the
+> earlier Godot addon ("the addon", "shipped"). Names that are not in this
+> repository belong to FanRust, the first host program: `imaging`,
+> `imaging_wgpu`, `text`, `app`, `shell`, `crates/app/ui`,
+> `fanrust-desktop`, `Platform`, `DECISIONS.md` and the `todo-*.md` files.
+> The crate itself is `gogo-ui` (`crates/gogo-ui`). To use the crate, read
+> REFERENCE.md, "Host API".
+
+The `gogo-ui` crate is pure Rust: no wgpu, no winit, no OS. Input: `.gogo`
 text (at build time) + touches + the current theme/arrangement. Output: a
 draw list. Same language and semantics as the Godot gogo (`gogo-spec.md` is
 the grammar); what changes is the machinery underneath.
@@ -47,7 +57,7 @@ pub struct Node {
   / `[T]` directly (`page.nodes[node]`, `rects[node]`,
   `page.strings[text]`, `image_sizes[image]`), so a node id handed where a
   string id belongs is a rustc error; the raw number is private to the
-  `gogo` crate. An image is `ImageKey`, one id space for the whole build
+  `gogo-ui` crate. An image is `ImageKey`, one id space for the whole build
   (`IMAGES` is dense by it): a draw and the renderer pass the id, never
   the path, and a host picture the pages never named interns into the
   same `Images` table (D13). Props are `(PropKey, Value)`
@@ -378,7 +388,9 @@ Changed:
   picture the host shows, `preview://brush`).
 - Units: epx only; device px never appear in a `.gogo`.
 
-Code-behind values (decided 2026-08-29, built in the code-behind round):
+Code-behind values (decided 2026-08-29; NOT built — as of 2026-11 the
+compiler has no `export` word, and code writes a value with
+`Runtime::set_prop`):
 `export $barWidth = 480` at page scope; reads are plain `$barWidth`; the
 build emits a typed setter per exported value; `live()` is not a FanRust
 word (a `$ref` is dereferenced at resolve, every frame). A code-owned AXIS

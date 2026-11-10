@@ -26,7 +26,7 @@ its content. Free parents only (permanent law): under `Column`/`Row`/`Grid`
 a child holds a seat it can't refuse — wrap the flowed content in `Layers`
 and declare the overlay beside it. The overlay's own inside still checks:
 children inside it validate against ITS box, and a nested overlay is exempt
-only at its own parent boundary. Two contradictions refuse at load:
+only at its own parent boundary. Two contradictions refuse at build:
 `overlay` with `visibility=space_only` (a seat-holder is not an overlay — a
 hidden overlay is `visibility=gone`), and `overlay` with `fill` on an axis
 the parent hugs with no non-overlay child (nothing determines the size).

@@ -1,8 +1,10 @@
 The node's LAYOUT SPACE as a fraction, 0..1 — the smooth-slide primitive.
-`reveal_y=0` conceals (no height earned, trailing edge clips, still alive);
+`reveal_y=0` conceals (no height earned, still alive);
 a pose reveals it and the `transition` rule tweens the slide, parent
-reflowing included. `reveal_x=` is the horizontal twin. Needs a container
-parent; pair with `opacity` for the fade. `visibility=gone` stays the
+reflowing included. `reveal_x=` is the horizontal twin. It works under any
+parent: in a stack the siblings close up, under `Layers` the box shows its
+fraction from the edge its alignment names. Pair with `opacity` for the
+fade. `visibility=gone` stays the
 instant switch.
 
 ```

@@ -23,5 +23,3 @@ Scroll menu width=hug, height=hug, max_height=300, bars=never {
     }
 }
 ```
-
-Raw `horizontal_scroll_mode=`/`vertical_scroll_mode=` props keep engine meaning and own their axis (the escape hatch for per-axis bar policy) — never mixed with `allow=`/`bars=` on the same Scroll.

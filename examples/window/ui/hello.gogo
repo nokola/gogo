@@ -1,0 +1,9 @@
+// The page of the window example. Change something and save: the running
+// window follows.
+View hello background=#1F1F1F {
+    Column menu halign=center, valign=center, spacing=16 {
+        Label title text="Hello from gogo", font_size=28, font_color=#FFFFFF
+        Label counter text="0 taps", font_size=18, font_color=#B0B0B0
+        Button tapButton text="Tap me", min_width=180, min_height=48
+    }
+}

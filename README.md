@@ -13,10 +13,16 @@ View hello {
 }
 ```
 
-gogo does the middle of a UI. It compiles a page (at build time, into
-static data), lays it out for a screen size, takes touches and keys, and
-answers with a list of draw commands. It owns no window and no GPU: the
-program that hosts it measures the text and paints the commands.
+The language crate, `gogo-ui`, does the middle of a UI. It compiles a page
+(at build time, into static data), lays it out for a screen size, takes
+touches and keys, and answers with a list of draw commands. It owns no
+window and no GPU, and it has no dependencies: the program that hosts it
+measures the text and paints the commands.
+
+Two more crates here do those two ends for a host that wants them:
+`gogo-text` measures and shapes text, and `gogo-wgpu` paints the commands
+with wgpu. Neither owns a window either, so the three fit inside an app, a
+game engine or a test alike.
 
 ## Try it
 
@@ -27,6 +33,20 @@ cargo run -p gogo-ui --example first_page
 This compiles the page above, lays it out for a 360 x 640 screen, and prints
 where each control landed and the three draw commands that paint it. The
 source is [crates/gogo-ui/examples/first_page.rs](crates/gogo-ui/examples/first_page.rs).
+
+To see a page on screen:
+
+```text
+cargo run -p gogo-example-window
+```
+
+This opens a window with a title, a counter and a button; a click on the
+button counts. While it runs, open
+[examples/window/ui/hello.gogo](examples/window/ui/hello.gogo), change a
+color or a text and save: the window follows within a quarter of a second,
+and a mistake prints its diagnostics and keeps the last good page. The
+source, [examples/window/src/main.rs](examples/window/src/main.rs), is the
+whole of a host: a window, a GPU device, a frame loop, and what a tap means.
 
 ## Design goals
 
@@ -45,40 +65,65 @@ Every decision about the language is measured against these:
 | Path | What |
 |---|---|
 | `crates/gogo-ui` | the language: lexer, parser, compiler, layout, input, draw list, hot reload. Pure Rust, no dependencies. |
+| `crates/gogo-text` | text for a gogo UI: measures and shapes it and rasterizes glyphs into two atlases (cosmic-text + swash). No GPU, no window. |
+| `crates/gogo-wgpu` | draws a gogo draw list with wgpu, into a render pass the host began. No window. |
+| `examples/window` | a page in a window, reloaded when its file is saved: the three crates together |
+| `assets/Fonts` | Roboto, for the tests and the example. gogo itself ships no font. |
 | `docs/gogo-spec.md` | grammar and design rules |
 | `docs/REFERENCE.md` | everything, organized for lookup |
 | `docs/COOKBOOK.md` | recipes: "How do I ...?" |
 | `docs/cards/` | one short card per control and keyword |
-| `docs/gogo-errors.md` | one teaching entry per diagnostic code |
+| `docs/gogo-errors.md` | one teaching entry per diagnostic code, with a checked wrong-and-fixed example for the common ones |
 | `docs/gogo-design.md` | how the crate works inside |
-| `docs/examples/` | the sample project the docs speak about: a shared theme and a guided tour in one file |
+| `docs/examples/` | the sample project the docs speak about: a shared theme, a guided tour in one file, and `host_tour.rs`, the host program the docs' Rust examples are cut from |
 | `docs/design/` | notes from when the language was designed; history, not reference |
 | `vscode/` | the VS Code extension: syntax colors, comment toggling, brackets |
 
 ## The examples in the docs are compiled
 
 `cargo test` runs every gogo example in this README, the spec, the
-reference, the cookbook and the cards through the compiler
-(`crates/gogo-ui/tests/docs_examples.rs`). A snippet that is not a whole
-page is put inside a `View` first. A word after the code fence's language
-marks an example that is held to a different account:
+reference, the cookbook, the cards and the error entries through the
+compiler (`crates/gogo-ui/tests/docs_examples.rs`). A snippet that is not a
+whole page is put inside a `View` first. A word after the code fence's
+language marks an example that is held to a different account:
 
 - `partial`: the example leans on something outside itself, such as a node
   from an earlier snippet. Only its grammar is checked.
-- `stale`: the example was written for the earlier Godot implementation and
-  is not rewritten yet. Do not copy it.
 - `error=G1234`: the example shows a mistake on purpose, and the compiler
   must refuse it with that code.
+- `warning=G1234`: the example compiles, and the compiler must give that
+  warning.
+
+The Rust examples are checked too. A block tagged `rust` is cut, line for
+line, from `docs/examples/host_tour.rs`, a small host program the tests
+compile and run. `rust partial` marks the few that nothing checks; each
+says so beside it.
 
 ## Status
 
 gogo was taken out of the FanRust application, where it draws every page of
-a shipping Android app. Parts of the docs still describe the earlier Godot
-implementation: the examples marked `stale`, and the sections about a Godot
-host (GDScript, engine nodes, the runtime API). They are being rewritten for
-the Rust crate. A crate that measures text, a wgpu renderer and an example
-app with a window are the next things to land here.
+a shipping Android app. It began as an addon for the Godot engine, and the
+docs were first written for that one. They describe the Rust crate now;
+where the addon behaved differently in a way worth knowing, the text says
+so. `docs/gogo-design.md`, the notes on how the crate works inside, still
+speaks of FanRust's crates in its body.
+
+`gogo-text` and `gogo-wgpu` came out of the same app in November 2026;
+their comments still name that app's notes in places.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally
+submitted for inclusion in this work by you, as defined in the Apache-2.0
+license, shall be dual licensed as above, without any additional terms or
+conditions.
+
+The fonts under `assets/Fonts` are Google's Roboto, under the Apache
+License 2.0.

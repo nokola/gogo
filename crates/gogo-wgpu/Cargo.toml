@@ -1,0 +1,25 @@
+[package]
+name = "gogo-wgpu"
+description = "Draws a gogo UI with wgpu: the draw list of gogo-ui and the glyphs of gogo-text as batches of quads in a render pass the host began. Owns no window and no device."
+keywords = ["ui", "gui", "wgpu", "renderer", "game"]
+categories = ["gui", "rendering", "game-development"]
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+gogo-text = { path = "../gogo-text", version = "0.1.0" }
+gogo-ui = { path = "../gogo-ui", version = "0.1.0" }
+# No GPU backend is switched on here: the host's own wgpu line picks them
+# (Vulkan, Metal, DX12, GL), and a library that named one would force it
+# into every app that uses it.
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl"] }
+
+[dev-dependencies]
+pollster = "1.0.1"
+# The tests open a real device, so they switch wgpu's backends on; a
+# dev-dependency's features stay out of an app that only uses the library.
+wgpu = { version = "30.0.1" }

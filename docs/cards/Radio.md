@@ -11,5 +11,5 @@ Column sizePick spacing=4 {
         Radio large  text="Large"
     }
 }
-// OnSizeChange("large") fires with the picked Radio's name
+// a Change event on `size` carries the picked Radio's name (large)
 ```

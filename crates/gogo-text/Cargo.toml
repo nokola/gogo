@@ -1,14 +1,19 @@
 [package]
-name = "text"
+name = "gogo-text"
+description = "Text for gogo UIs: shapes and measures text and rasterizes glyphs into two atlases (cosmic-text + swash). No GPU, no window."
+keywords = ["ui", "gui", "text", "font", "glyph"]
+categories = ["gui", "text-processing"]
+readme = "../../README.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
 cosmic-text = { version = "0.19.0", default-features = false, features = ["std", "swash"] }
 # The system font scan (`TextEngine::load_system_fonts`): cosmic-text's own
-# fontdb pin, with the file-system features it leaves off — `fs` reads the
+# fontdb pin, with the file-system features it leaves off: `fs` reads the
 # OS font folders, `memmap` maps the files instead of copying a phone's
 # whole /system/fonts into memory.
 fontdb = { version = "0.23.0", default-features = false, features = ["std", "fs", "memmap"] }
-gogo-ui = { workspace = true }
+gogo-ui = { path = "../gogo-ui", version = "0.1.0" }

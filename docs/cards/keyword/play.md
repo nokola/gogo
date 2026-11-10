@@ -1,4 +1,4 @@
-One word, two registers. As a trigger value, `on:<signal>=play(animName)` runs an anim when the signal fires — no host handler needed; `on:show`/`on:hide` are the visibility pair (show also plays when the control LANDS visible, hide plays first and hides on finish); from code it's `play_anim("name")`. As an anim STEP, `play <name>` runs another anim inline — a parallel arm gets internal sequence without nesting blocks. The played anim's internal names stay its own (never reachable from the caller), a `repeat=forever` anim can't be a step (it never completes), and its `speed=` is folded in.
+One word, two registers. As a trigger value, `on:<event>=play(animName)` runs an anim when the event fires — no host handler needed; `on:show`/`on:hide` are the visibility pair (show also plays when the control LANDS visible, hide plays first and hides on finish); from code it's `Runtime::play`. As an anim STEP, `play <name>` runs another anim inline — a parallel arm gets internal sequence without nesting blocks. The played anim's internal names stay its own (never reachable from the caller), a `repeat=forever` anim can't be a step (it never completes), and its `speed=` is folded in.
 
 ```
 anim badgeIntro {
@@ -18,12 +18,12 @@ Layers stage width=240, height=100, on:show=play(panelOpen) {
 }
 ```
 
-**Stopping from code.** `stop_anim("name")` (`gogo.stop(view, "name")`, C#
-`StopAnim("name")`) ends the anim without playing it out — no `finished`
-signal — and puts every property it animated back to what the file says
+**Stopping from code.** `Runtime::stop` ends the anim without playing it
+out — it is not reported as finished (`Runtime::take_finished`) — and
+puts every property it animated back to what the file says
 without the anim: the declared value, or the `when` value holding at the
 time, or a finished anim's end pose the play started from (that is a
-standing value the author chose, so it stays). `is_anim_playing("name")`
+standing value the author chose, so it stays). `Runtime::is_playing`
 asks. One property has one writer: while an anim plays it owns what it
 animates; when it ends its end pose stands until the next writer.
 
@@ -39,8 +39,8 @@ Layers stage2 width=120, height=60 {
         Circle dot width=24, height=24, color=accent, halign=center, valign=center
     }
 }
-// code:  play_anim("pulse")   the dot breathes 1 -> 1.2 -> 1 ...
-//        stop_anim("pulse")   back to scale 1 — declared, nothing held
+// code:  play `pulse`   the dot breathes 1 -> 1.2 -> 1 ...
+//        stop `pulse`   back to scale 1 — declared, nothing held
 //   (with the button held, `when held scale=0.9` is what the file says:
 //   the dot lands on 0.9, not on 1)
 ```

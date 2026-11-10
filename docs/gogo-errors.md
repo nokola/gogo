@@ -6,8 +6,9 @@ file and the registry matched both ways, so a code you see on screen is
 always findable here.
 
 How to read an entry: the first line says what the message means, the
-rest says how to fix it. `Wrong`/`Fix` pairs show the shortest file that
-trips the error and the repaired form.
+rest says how to fix it. Where an entry shows a `Wrong` example, the
+tests compile it and check that the compiler refuses it with exactly that
+code; a `Fix` example must compile.
 
 Codes are grouped in bands: G0xxx language and parsing, G1xxx placement,
 G2xxx color and gradients, G3xxx styles and theme shape, G4xxx
@@ -27,6 +28,23 @@ A `{` was opened and the file ended before its `}`. The caret points at
 the `{` that was never closed — the missing brace belongs to whoever
 opened it. Indentation finds it fast: the `}` almost always goes at the
 first line that dedents past the opener.
+
+Wrong:
+
+```kdl error=G0002
+Column menu {
+    Button a text="One"
+    Button b text="Two"
+```
+
+Fix:
+
+```kdl
+Column menu {
+    Button a text="One"
+    Button b text="Two"
+}
+```
 
 ## G0003 — unterminated string
 
@@ -450,6 +468,22 @@ The row form must square with `cols=`: each `row { }` fills the track
 count (a `skip` covers one), spans reach only declared tracks, weights
 ride tracks not cells, and structure words never come from a style.
 
+Wrong:
+
+```kdl error=G1002
+Grid form cols=[hug, fill] {
+    row { Label a text="Size"; Slider b; Label c text="px" }   // three cells, two tracks
+}
+```
+
+Fix:
+
+```kdl
+Grid form cols=[hug, fill, hug] {
+    row { Label a text="Size"; Slider b; Label c text="px" }
+}
+```
+
 ## G1003 — areas-form rules
 
 `areas=` strings draw the lattice: every row string lists one word per
@@ -457,10 +491,37 @@ track, a name marks a RECTANGLE (no L-shapes), `.` is a hole, `:
 height` after a row string sizes it, and each named area binds one
 child by name. The areas and row forms never mix in one Grid.
 
+Wrong:
+
+```kdl error=G1003
+Grid shell cols=[80, fill],
+     areas=["header header : 60",
+            "nav    header : fill"] {      // `header` is an L, not a rectangle
+    Panel header { }
+    Column nav { }
+}
+```
+
 ## G1004 — `wrap=true` with no width to wrap at (lint)
 
 A wrapping label whose width nothing determines wraps at infinity —
 give it a width or put it in a sized box.
+
+Warns:
+
+```kdl warning=G1004
+Layers {
+    Label note text="a long line of text that should wrap", wrap=true, width=hug
+}
+```
+
+Fix:
+
+```kdl
+Layers {
+    Label note text="a long line of text that should wrap", wrap=true, width=hug, max_width=200
+}
+```
 
 ## G1006 — both margins and an exact size over-constrain the axis
 
@@ -523,21 +584,63 @@ the viewport. A `layout Row` strip runs sideways: its cap is
 
 No kind takes this word. The message suggests the nearest real one.
 
+Wrong:
+
+```kdl error=G2001
+Label title text="Hello", no_such_word=1
+```
+
 ## G2002 — another dialect's or another kind's word
 
 The word exists but not HERE: a Grid cell word off its lattice, a
 XAML/Godot spelling, a `Scroll`-only word on a box. The message names
 where it belongs.
 
+Wrong:
+
+```kdl error=G2002
+Label title text="Hello", color=red        // a Label's text color is font_color=
+```
+
+Fix:
+
+```kdl
+Label title text="Hello", font_color=red
+```
+
 ## G2003 — a one-stop gradient renders as a solid
 
 One color is a `Rectangle color=…` — the message spells the rewrite.
+
+Wrong:
+
+```kdl error=G2003
+Gradient veil stops=[blue]
+```
+
+Fix:
+
+```kdl
+Rectangle veil color=blue
+```
 
 ## G2004 — invisible pigment
 
 A hex color whose ALPHA channel reads zero because an `#AARRGGBB` paste
 put alpha first (gogo is `#RRGGBBAA`, alpha LAST). The box would be
 invisible with no other symptom.
+
+Wrong:
+
+```kdl error=G2004
+Panel scrim background=#FFFFFF00 { Label a text="x" }   // white, alpha 00: nothing shows
+```
+
+Fix:
+
+```kdl
+Panel scrim background=#00FFFFFF { Label a text="x" }   // the XAML paste, alpha moved LAST
+```
 
 ## G2005 — `stops=` takes the gradient's color list
 
@@ -653,7 +756,7 @@ rename one.
 it, and decode it again when one does. It takes only the word `unused`,
 and it goes where the picture is declared:
 
-```
+```kdl partial
 atlas stars source="res://assets/Images/Stickers/Stars.jpg", cell=80x80, release=unused
 Image hero source="res://assets/big.jpg", release=unused
 ```
@@ -677,11 +780,40 @@ any other value. The compile-time switch is
 `automatic=` couples the slot to the control's value — the control
 drives that geometry; writing it by hand would fight the driver.
 
+Wrong:
+
+```kdl error=G3002
+control Progress $value=0, $min=0, $max=100 {
+    Layers {
+        slot track width=fill, height=8 {
+            slot progress automatic=length by $value in $min..$max { Rectangle color=blue }
+        }
+    }
+}
+style Half for=Progress, slot.progress.width=50     // the value drives this width
+Progress download .Half 200x8
+```
+
 ## G3005 — one screen vocabulary per target
 
 A node posed from both a `screen.<class>` and a `screen.<orientation>`
 block: both can hold at once and would fight. Compose them in one
 condition or pick one vocabulary.
+
+Wrong:
+
+```kdl error=G3005
+when screen.landscape { info.opacity = 0.5 }
+when screen.lotsOfSpace { info.opacity = 1 }       // both can hold at once
+Label info text="rotate me"
+```
+
+Fix:
+
+```kdl
+when screen.landscape screen.lotsOfSpace { info.opacity = 0.5 }
+Label info text="rotate me"
+```
 
 ## G3006 — style targeting / theme-entry shape
 
@@ -712,6 +844,27 @@ A `when` holds a property while a `transition … anim=` (or `live()`)
 drives the same one on the same node — they would fight on every flip
 and the loser flickers. The message names both writers; keep one.
 
+Wrong:
+
+```kdl error=G4003
+anim press { newGame.scale to=0.9, duration=0.1 }
+style MenuButton {
+    transition any -> held anim=press
+    when held scale=0.95                 // and the anim drives scale too
+}
+Button newGame .MenuButton text="New Game"
+```
+
+Fix:
+
+```kdl
+style MenuButton {
+    transition any -> held duration=0.1
+    when held scale=0.95
+}
+Button newGame .MenuButton text="New Game"
+```
+
 ## G4004 — unknown anim
 
 `play(x)` / `anim=x` names no declared `anim x`.
@@ -728,6 +881,12 @@ contract breaks — the message names which way.
 
 `.Name` names no declared style. The message suggests the nearest one.
 
+Wrong:
+
+```kdl error=G5002
+Button ok .NoSuchStyle text="OK"
+```
+
 ## G5003 — widget cycle
 
 `A` contains `B` contains `A` — the expansion would never end. The
@@ -740,11 +899,42 @@ A driven slot inside a Column/Row would re-lay out the whole stack on
 every value change; driven layout stays relayout-local — put the slot
 in a free parent (Layers).
 
+Wrong:
+
+```kdl error=G5105
+control Meter $value=0, $min=0, $max=100 {
+    Column { slot progress automatic=length by $value in $min..$max { Rectangle color=blue } }
+}
+Meter m 200x8
+```
+
+Fix:
+
+```kdl
+control Meter $value=0, $min=0, $max=100 {
+    Layers { slot progress automatic=length by $value in $min..$max { Rectangle color=blue } }
+}
+Meter m 200x8
+```
+
 ## G5106 — a position slot takes its width from its content
 
 `width=fill` content inside an unsized `automatic=position` slot has
 nothing to fill and vanishes; size the slot line (`slot thumb
 width=20`) or the content.
+
+Wrong:
+
+```kdl error=G5106
+control Dot $value=0, $min=0, $max=100 {
+    Layers {
+        slot track width=fill, height=8 {
+            slot thumb automatic=position by $value in $min..$max { Rectangle width=fill, color=white }
+        }
+    }
+}
+Dot d 200x8
+```
 
 ## G5107 — `automatic=` driver coupling
 
@@ -756,6 +946,12 @@ each form's message names what is missing or extra.
 
 No theme value or widget parameter of that name is in scope. The
 message lists or suggests what is.
+
+Wrong:
+
+```kdl error=G6001
+Label title text="Hello", font_color=$acent
+```
 
 ## G6002 — `$value` defined twice
 
@@ -786,6 +982,24 @@ already variant-gated.
 One `View` (a screen) or `Panel` (a fragment) at top level; everything
 else lives inside it.
 
+Wrong:
+
+```kdl error=G7003
+Column menu {
+    Button a text="One"
+}
+```
+
+Fix:
+
+```kdl
+View menuPage {
+    Column menu {
+        Button a text="One"
+    }
+}
+```
+
 ## G7011 — unknown node type
 
 No kind, widget or registered code-control wears this word. The message
@@ -809,13 +1023,20 @@ value (`$title = "…"/appTitle`) — keys live on displayed text, where
 the translation actually shows. `/_` is not a key and never counts
 (two `/_` strings may differ; a theme value may say `/_`).
 
+Wrong:
+
+```kdl error=G8001
+Label a text="Save"/save
+Label b text="Save it"/save
+```
+
 ## G8002 — displayed text with no translation key
 
 Only when the host asks for it (`CompileOptions::require_keys`; the
 app's build does). Every string a page shows needs a key, so no
 English-only text ships in a translated app:
 
-```
+```kdl partial
 Label text="Privacy"                    // error[G8002]
 Label text="Privacy"/settingsPrivacy    // a term
 Label text="Leon Shaw"/_                // stays English on purpose
@@ -845,34 +1066,117 @@ key reloads fine.
 keyed repeat with no `capacity=` requires `by` (there is nothing to
 count).
 
+Wrong:
+
+```kdl error=G9002
+Column { repeat tasks as task by $task.id { Label text="x" } }   // `as $task`
+```
+
 ## G9003 — `by` keys the item binding
 
 `by $item.<field>` (or `by $item` for plain values) — a field path on
 the binding, nothing else.
+
+Wrong:
+
+```kdl error=G9003
+Column { repeat tasks as $task by $other.id { Label text="x" } }
+```
 
 ## G9004 — the item binding shadows a `$` value
 
 `as $accent` next to a theme `$accent` would make every use ambiguous;
 rename the binding.
 
+Wrong:
+
+```kdl error=G9004
+$item = 3
+Column { repeat tasks by $item.id { Label text="x" } }
+```
+
+Fix:
+
+```kdl
+$item = 3
+Column { repeat tasks as $task by $task.id { Label text="x" } }
+```
+
 ## G9007 — `empty { }` block rules
 
 The zero-items view holds ONE child (wrap several in a Column or
 Layers) and takes nothing on its own line.
 
+Wrong:
+
+```kdl error=G9007
+Column {
+    repeat tasks by $item.id {
+        empty { Label text="none"; Label text="yet" }
+        Label text="x"
+    }
+}
+```
+
+Fix:
+
+```kdl
+Column {
+    repeat tasks by $item.id {
+        empty { Column { Label text="none"; Label text="yet" } }
+        Label text="x"
+    }
+}
+```
+
 ## G9008 — a dotted `$ref` outside a repeat item binding
 
 `$x.field` reads a repeat item; theme values and params are flat.
+
+Wrong:
+
+```kdl error=G9008
+$brush.size = 3
+Label t text="x"
+```
 
 ## G9010 — a List holds exactly one `repeat`
 
 None: statics alone are a `Column`'s job. Two: the List's selection and
 rows are one roster.
 
+Wrong:
+
+```kdl error=G9010
+List picker {
+    empty { }
+    repeat today by $item.id { ListItem { Label text="x" } }
+    repeat later by $item.id { ListItem { Label text="y" } }
+}
+```
+
 ## G9011 — a List row's root is a `ListItem`
 
 The one tap-and-select surface per row; wrap other content in one
 (`ListItem { Label … }`), and give the row ONE root.
+
+Wrong:
+
+```kdl error=G9011
+List picker {
+    empty { }
+    repeat tasks by $item.id { Label text=$item.title }
+}
+```
+
+Fix:
+
+```kdl
+List picker {
+    empty { }
+    repeat tasks by $item.id { ListItem { Label text=$item.title } }
+}
+```
 
 ## G9013 — `ListItem` belongs at a List repeat's root
 
@@ -880,11 +1184,39 @@ Anywhere else — a static child, a plain repeat, nested in another
 row, inside `empty { }` — a `Panel` is the box you want. A List also
 has no slots.
 
+Wrong:
+
+```kdl error=G9013
+Column { ListItem { Label text="not in a list" } }
+```
+
 ## G9014 — a `when selected` below the row's root never fires (warning)
 
 The List checks the `ListItem`; style the root, or watch it
 (`the row's own state`). A Toggle's own `when selected` inside a row is
 its own business and stays quiet.
+
+Warns:
+
+```kdl warning=G9014
+List picker {
+    empty { }
+    repeat tasks by $item.id {
+        ListItem { Label title text=$item.title { when selected font_color=red } }
+    }
+}
+```
+
+Fix:
+
+```kdl
+List picker {
+    empty { }
+    repeat tasks by $item.id {
+        ListItem { when selected background=accent; Label title text=$item.title }
+    }
+}
+```
 
 ## G9015 — a viewport List its ancestors provably starve (warning)
 
@@ -893,10 +1225,32 @@ minimum — near zero — and the rows vanish. Write `height=` on the List
 (a sized box) or `height=hug` (a content-sized menu; the page then
 scrolls as one).
 
+Warns:
+
+```kdl warning=G9015
+Column menu valign=center {
+    List picker { empty { }; repeat tasks by $item.id { ListItem { Label text=$item.title } } }
+}
+```
+
+Fix:
+
+```kdl
+Column menu valign=center {
+    List picker height=hug { empty { }; repeat tasks by $item.id { ListItem { Label text=$item.title } } }
+}
+```
+
 ## G9016 — a List declares one `empty { }`
 
 The zero-items view lives at the LIST level, once — beside the repeat,
 not inside it. Bare is fine: `empty { }`.
+
+Wrong:
+
+```kdl error=G9016
+List picker { repeat tasks by $item.id { ListItem { Label text=$item.title } } }
+```
 
 ## G9017 — `layout` block rules
 
@@ -904,6 +1258,12 @@ not inside it. Bare is fine: `empty { }`.
 kind set is closed (Row, Flow, Tiles, Column), the block holds the
 rows' `repeat` only (statics stay on the List body), and a Row strip
 caps with `max_width=`, not `max_height=`.
+
+Wrong:
+
+```kdl error=G9017
+Column { layout Flow { Label a text="x" } }
+```
 
 ## G9101 — `set_items` refused whole (runtime)
 

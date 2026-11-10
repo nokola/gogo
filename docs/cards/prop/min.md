@@ -1,4 +1,4 @@
-A Range control's lower bound (`min_value`) — Sliders mostly. Pairs with
+A value control's lower bound — Sliders mostly. Pairs with
 `max=` and `value=`. Not a size — minimum sizing is `min_width=` /
 `min_height=` / `min_size=`.
 

@@ -960,8 +960,9 @@ fn diag_unclosed_brace_is_refused() {
 /// registered code is emitted somewhere, a vacated number never comes
 /// back, and a code shared with the addon's PUBLISHED registry is shared
 /// ON PURPOSE (`diag::SHARED_WITH_ADDON`) — a new Rust code can never
-/// silently land on a published number with a different meaning. Owed:
-/// the per-code teaching pages (docs/errors/) the addon serves.
+/// silently land on a published number with a different meaning. The
+/// per-code teaching entries are `docs/gogo-errors.md`
+/// (`every_diag_code_has_a_teaching_entry_and_no_entry_is_stale` holds the two together).
 #[test]
 fn diag_source_and_registry_match_both_ways() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

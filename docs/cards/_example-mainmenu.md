@@ -1,8 +1,8 @@
 # Main Menu
 
 A centered title-and-buttons column with a staggered entrance — the classic
-entry screen. Copy it, rename the buttons, and the host auto-wires
-`OnNewGameButtonActivate()` and friends by name. The `appear` anim plays every
+entry screen. Copy it and rename the buttons: each tap reaches code as an
+`Activate` event naming its button (`newGameButton`). The `appear` anim plays every
 time the screen shows: each `.MenuButton` slides up with a springy settle
 (`back_out` overshoots home), then gives a little pop.
 

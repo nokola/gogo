@@ -1,7 +1,5 @@
-The on/off switch. Gogo-drawn always (there is no native Godot toggle
-switch), so it is fully restylable from day one: `for=Toggle` styles reach
-its `track` and `thumb` slots, and its states (`selected`, `held`, plus
-the universal hovered/focused/disabled) respond in styles.
+The on/off switch. Its states (`selected`, `held`, plus the universal
+hovered/focused/disabled) respond in styles.
 
 ```
 Toggle mute value=1, on:change=OnMuteChange
@@ -13,15 +11,17 @@ drags (`held` holds through the drag). A tap glides to the other end; a
 drag settles on the side it lands. `change(bool)` fires on settle, and
 only if the value differs from before the gesture — wiggling across the
 middle is zero changes; state is live presentation, `change` is
-commitment. Code-behind reads/writes the `selected` bool (or `value`);
-`change` auto-wires as `On<Name>Change`.
+commitment. The `Change` event carries the new side as a bool; code
+writes the value with `Runtime::set_value`.
 
-```kdl stale
-style BigSwitch for=Toggle, slot.track.corner_radius=4 {
-    when selected slot.track.background=green
+```
+style DimWhenOff for=Toggle {
+    when selected opacity=1
+    when disabled opacity=0.3
 }
-Toggle wifi .BigSwitch
+Toggle wifi .DimWhenOff opacity=0.7
 ```
 
-`render=` means nothing here: `render=gogo` is redundant (and silent),
-`render=native` errors — there is no native backend to opt back into.
+The pill and the knob take no restyle today: a `slot.` path on a Toggle is
+build error G3002. A switch with its own look is a `control` with
+`behavior toggle` over a `slot track` holding a `slot thumb`.

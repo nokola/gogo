@@ -1,7 +1,7 @@
 A ring SEGMENT drawn in the box — the radial cousin of `Circle`'s ring.
 The radius self-derives from the box (min side / 2); `thickness=` strokes
 inward from the rim (`width=` stays the sizing key). Angles are degrees in
-Godot's screen convention: 0° = right, clockwise positive; defaults `from=0,
+the screen's convention: 0° = right, clockwise positive; defaults `from=0,
 sweep=360` draw a full ring.
 
 ```

@@ -8,9 +8,11 @@ A slider is made of pieces:
 
 In gogo, each piece is written with the `slot` keyword, and slots are the parts styles can reach — as `slot.` paths on the style line. A slot region takes placement (`width`/`height`/`halign`/`valign`/margins) and the box family (`background`/`corner_radius`/`border-*`/`padding`):
 
-```kdl stale
-style Chunky for=Slider, slot.thumb.width=32, slot.thumb.height=32
+```kdl partial
+style Chunky for=Fader, slot.thumb.width=32, slot.thumb.height=32
 ```
+
+(`Fader` is the control built just below.)
 
 Size, background, corners — a style can set all of that. But there is one thing about the thumb no style may set: where it sits on the track.
 
@@ -18,7 +20,7 @@ Size, background, corners — a style can set all of that. But there is one thin
 
 The thumb's position isn't decoration — it's how the slider shows you its value. If the value is 30%, the thumb sits 30% of the way along the track.
 
-Now imagine a style could write it. Someone ships a theme with `slot.thumb.margin_left=40` in it. Every slider wearing that theme now has its thumb glued 40 pixels from the track's left edge. The value can be anything — thumb's at 40. You drag it with your mouse, it snaps back to 40. The slider still works inside, but you can't see the value and you can't really change it. The theme author didn't mean to do that, but they just broke every slider in the app.
+Now imagine a style could write it. Someone ships a theme with `slot.thumb.halign=left` in it. Every slider wearing that theme now has its thumb glued to the track's left edge. The value can be anything — the thumb's at the left. You drag it with your mouse, it snaps back. The slider still works inside, but you can't see the value and you can't really change it. The theme author didn't mean to do that, but they just broke every slider in the app.
 
 Same with the progress part: its width *is* the value. Let a style set it, and you have a picture of a slider instead of a slider.
 
@@ -26,11 +28,12 @@ So a control needs a way to say, for each part: styles can change anything about
 
 ## `automatic=` marks the property the control drives
 
-Here is a slider built from scratch — call it Fader. In the `control` declaration, the coupling goes on the slot line, fully spelled (gogo's built-in `Slider` declares exactly these couplings on its own track/progress/thumb):
+Here is a slider built from scratch — call it Fader. In the `control` declaration, the coupling goes on the slot line, fully spelled:
 
-```kdl stale
+```
 control Fader $value=0, $min=0, $max=100 {
-    script "res://ui/fader_behavior.gd"
+    behavior slider by $value in $min..$max
+    state_builtin held
     transition duration=0.12, easing=cubic_out
     Layers {
         slot track width=fill, height=24 {
@@ -54,13 +57,7 @@ First, gogo now updates those parts by itself. Value at zero: the progress part 
 Second, if a style sets one of those properties anyway, it doesn't build:
 
 ```text
-error[G3002]: slot.thumb.margin_left moves by itself —
-        Fader drives it from the value
-  --> res://ui/theme.gogo:1:30
-  = note: you style the thumb's look (size, background, radius…);
-          the control handles where it sits
-          (automatic=position by $value in $min..$max, spec §4.5).
-  help: remove `slot.thumb.margin_left=`
+ui/theme.gogo:1: error G3002: slot 'thumb' moves by itself — `halign=` is the driver's to write
 ```
 
 The theme author from before finds out the moment they build, with a message pointing at the exact line — instead of shipping the theme and getting bug reports about sliders that won't drag.
@@ -69,9 +66,8 @@ The theme author from before finds out the moment they build, with a message poi
 
 A progress bar is the simplest control with an automatic slot — a track, and a progress part that grows with the value:
 
-```kdl stale
+```
 control Progress $value=0, $min=0, $max=100 {
-    script "res://ui/progress_behavior.gd"
     transition duration=0.12, easing=cubic_out
     Layers {
         slot track width=fill, height=8, background=#33333366 {
@@ -84,11 +80,11 @@ control Progress $value=0, $min=0, $max=100 {
 Progress dl 200x8, value=30
 ```
 
-The `script` line names the control's behavior (every control has one — see the `control` card); a progress bar takes no input, so its behavior has nothing to do. And nowhere is there a "when the value changes, set the width" function — `automatic=length` is that code. Set `value` on the node from your code-behind (`dl.set("value", 62)`) and the fill glides over through the `transition` rule.
+A progress bar takes no input, so it has no `behavior` line. And nowhere is there a "when the value changes, set the width" function — `automatic=length` is that code. Set the value from code (`Runtime::set_value`) and the fill glides over through the `transition` rule.
 
 Now style it. Everything except what the value drives is open:
 
-```kdl stale
+```kdl partial
 style Thicc for=Progress, slot.track.height=16
 style Dark for=Progress, slot.track.background=#222222FF
 ```
@@ -97,7 +93,7 @@ Taller, or darker — and it still works, because neither style touched the driv
 
 Recolor the Rectangle inside the progress slot — content isn't the region. Restyling content IS filling, so bring your own node at the use site instead:
 
-```kdl stale
+```kdl partial
 Progress dl 200x8, value=30 {
     slot progress { Rectangle color=#44CC88FF }
 }
@@ -106,14 +102,7 @@ Progress dl 200x8, value=30 {
 And write the driven property:
 
 ```text
-error[G3002]: slot.progress.width moves by itself —
-        Progress drives it from the value
-  --> res://ui/theme.gogo:1:26
-  = note: you style the progress's look
-          (size, background, radius…);
-          the control handles where it sits
-          (automatic=length by $value in $min..$max, spec §4.5).
-  help: remove `slot.progress.width=`
+ui/theme.gogo:1: error G3002: slot 'progress' moves by itself — `width=` is the driver's to write
 ```
 
 Gogo caught it before it could break a single progress bar. That's the whole system: the declaration says who updates what, styles change everything else freely, and the compiler referees.
@@ -135,15 +124,15 @@ slot dot   automatic=angle(from=-225, sweep=270) by $value in $min..$max
 Two grammar rules cover all five: parens after the kind carry the kind's own config (only the radial kinds have any, and `from=`/`sweep=` are required there — nothing defaults invisibly), and `by` carries the driver — a `$param` with its `in` range for the four value kinds, a state name for `presence` (a bool has no range). Each kind takes over specific properties of its slot, which styles then can't touch:
 
 - **`length`** — the part grows and shrinks with the value. That's a progress bar's fill.
-  *Takes over:* its extent along the travel axis (`width`, `size`) and its placement there (`halign`, the side margins). Thickness stays yours — a fatter bar is a style choice (`height`).
+  *Takes over:* its extent along the travel axis (`width`, `size`). Thickness stays yours — a fatter bar is a style choice (`height`).
 - **`position`** — the part slides along with the value. That's the slider thumb.
-  *Takes over:* placement along the travel axis (`halign`, the side margins). Size stays yours — a bigger thumb is a style choice.
+  *Takes over:* placement along the travel axis (`halign`). Size stays yours — a bigger thumb is a style choice.
 - **`presence by selected`** — the part only exists while the named state is on. That's the checkmark in a checkbox: there when `selected`, gone when not. And "gone" still plays your enter/exit transitions, so the mark can fade or pop instead of blinking.
-  *Takes over:* whether the part exists at all — showing and hiding it is the control's job.
+  *Takes over:* whether the part exists at all (`visibility`) — showing and hiding it is the control's job.
 - **`arc(from=…, sweep=…)`** — a pie-slice-shaped window opens wider as the value grows. This one's for round progress: you put a full ring inside the slot, and the window reveals more and more of it.
-  *Takes over:* the window itself — the aperture config, rotation. The ring inside is fully yours (it's content — fill it).
+  *Takes over:* the window itself (`from`, `sweep`). The ring inside is fully yours (it's content — fill it).
 - **`angle(from=…, sweep=…)`** — the part moves around a circle's edge with the value. That's the little dot on a volume knob.
-  *Takes over:* the part's seat on the rim — the aperture config, rotation. Size, color, shape of the dot: still yours.
+  *Takes over:* the part's seat on the rim (`from`, `sweep`). Size, color, shape of the dot: still yours.
 
 ## Loops are animations, not automatic
 
@@ -153,9 +142,8 @@ There is no kind for a spinner going round or a caret blinking, on purpose. The 
 
 The round ones are more fun. A volume knob is a circle with a progress arc and a dot that moves around the rim:
 
-```kdl stale
+```
 control Knob $value=0, $min=0, $max=1, min_size=48x48 {
-    script "res://ui/knob_behavior.gd"
     transition duration=0.15, easing=cubic_out
     Circle color=#333333FF {
         slot track width=fill, height=fill {
@@ -174,7 +162,9 @@ control Knob $value=0, $min=0, $max=1, min_size=48x48 {
 
 (The radial lines run long, so they wrap at a trailing comma — gogo's one line-continuation mechanism; the `by` clause picks up on the next line.)
 
-`from=` and `sweep=` are degrees; 0° points right and positive turns clockwise (Godot's screen convention). Value at min: the dot sits at `-225` — lower-left, the 7:30 mark on a clock face. The value sweeps it 270° clockwise to the 4:30 mark — the classic amp-knob range; at half, the dot points straight up. The arc's wedge opens over the same range, and it clips hits too: taps only land on the revealed part.
+This knob shows a value that code sets. To turn under a finger it needs a `behavior` line: turning is not what the stock `slider` behavior does, so that is a behavior the host program registers (the `behavior` card).
+
+`from=` and `sweep=` are degrees; 0° points right and positive turns clockwise (the screen's convention). Value at min: the dot sits at `-225` — lower-left, the 7:30 mark on a clock face. The value sweeps it 270° clockwise to the 4:30 mark — the classic amp-knob range; at half, the dot points straight up. The arc's wedge opens over the same range, and it clips hits too: taps only land on the revealed part.
 
 ## Two placement rules the compiler holds you to
 
@@ -186,8 +176,7 @@ control Knob $value=0, $min=0, $max=1, min_size=48x48 {
 You might want a seventh kind — some custom formula from value to property. Gogo doesn't allow it:
 
 ```text
-error: unknown automatic kind 'sparkle' — the set is
-       closed: length, position, presence, arc, angle
+ui/knob.gogo:4: error G5107: unknown automatic kind 'sparkle' — the set is closed: length, position, presence, arc, angle
 ```
 
 Because the list is fixed, gogo knows exactly which properties each kind owns, so when it reads a style it can say for certain: "this line touches a property the control drives — error, here's the line." If controls could claim any property through any formula, gogo couldn't tell what's claimed and what's free. Style mistakes would stop being build errors and become weird behavior you debug at runtime — and to know what's safe to style, you'd have to read the control's internals. If a new kind ever earns its place, that's a deliberate language change, made when a real consumer shows up to pin its design.
@@ -197,13 +186,8 @@ Because the list is fixed, gogo knows exactly which properties each kind owns, s
 A plain widget has no value, so there is nothing for the part to follow:
 
 ```text
-error: `automatic` is automatic geometry — it needs a
-       `control` (a value to drive it)
-  help: widgets have no value; declare a `control` to
-        couple slots to one
+ui/card.gogo:2: error G5107: `automatic=` is automatic geometry — it needs a `control` (a value to drive it); widgets have no value
 ```
-
-And a `control` without a `script` line gets the mirror lesson (G5101): a control's script is what turns input into its value — without one, declare a `widget` instead.
 
 ## Recap
 

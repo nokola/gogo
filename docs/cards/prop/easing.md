@@ -1,5 +1,4 @@
-The motion curve — WPF-compatible easing math (never Godot
-TransitionType). Set it on a `group` (shared by its chain), per property
+The motion curve — WPF-compatible easing math. Set it on a `group` (shared by its chain), per property
 line, per `key` (eases INTO that key), or on a `transition` rule.
 
 | base | feel |

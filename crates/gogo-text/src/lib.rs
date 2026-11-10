@@ -1,6 +1,6 @@
-//! `text` — shaping and glyph rasterization for gogo, pure Rust
+//! `gogo-text` — shaping and glyph rasterization for gogo, pure Rust
 //! (`cosmic-text` + `swash`): no GPU, no OS. Needed as its own crate so
-//! `gogo` stays text-engine-free (it measures through `TextMeasure`) and
+//! `gogo-ui` stays text-engine-free (it measures through `TextMeasure`) and
 //! the backend only uploads what this crate rasterizes. Two atlases,
 //! shelf-packed, each doubling when it fills (every glyph of the grown one
 //! is rasterized again on demand): an 8-bit coverage atlas for letters,
@@ -926,8 +926,11 @@ mod tests {
     /// like a Latin one, and `halign` still moves it: centre and end land
     /// where they would for Latin text, not twice as far. Red before the
     /// fix: cosmic put the Arabic word against the right edge of the wrap
-    /// width (the picker's عربي row, S24, 2026-09-28).
+    /// width (the picker's عربي row, S24, 2026-09-28). Ignored unless asked
+    /// for: it needs an OS font with Arabic letters, which a bare test
+    /// machine may not have (see `engine_with_emoji`).
     #[test]
+    #[ignore = "needs an OS font with Arabic letters: run with --include-ignored on Windows"]
     fn a_right_to_left_line_starts_at_the_left_edge_and_halign_still_moves_it() {
         let mut e = engine();
         e.load_system_fonts(); // the desktop's Arabic face (Arial / Segoe UI)
@@ -951,17 +954,17 @@ mod tests {
     }
 
     /// Roboto plus Windows' Segoe UI Emoji as a fallback face (a color
-    /// face: COLRv0 layers swash paints itself); `None` prints SKIPPED
-    /// where the file is absent (a non-Windows box).
-    fn engine_with_emoji() -> Option<TextEngine> {
+    /// face: COLRv0 layers swash paints itself).
+    ///
+    /// Needed by the emoji tests, which are `#[ignore]` for that reason:
+    /// the file exists on Windows only, and a test that returned early
+    /// elsewhere would count as passed without having run. A Windows host
+    /// runs them with `cargo test -p gogo-text -- --include-ignored`.
+    fn engine_with_emoji() -> TextEngine {
         let segoe = Path::new("C:/Windows/Fonts/seguiemj.ttf");
-        if !segoe.exists() {
-            eprintln!("SKIPPED: no {}", segoe.display());
-            return None;
-        }
         let mut e = engine();
-        assert!(e.add_fallback_font_file(segoe));
-        Some(e)
+        assert!(e.add_fallback_font_file(segoe), "this test needs {}", segoe.display());
+        e
     }
 
     /// The color atlas texel at the top-left of `q`'s slot, RGBA.
@@ -978,8 +981,9 @@ mod tests {
     /// D119: the rasterizer dropped every non-mask glyph, and the user saw
     /// a box for each emoji (S24, 2026-09-02).
     #[test]
+    #[ignore = "needs Windows' Segoe UI Emoji font: run with --include-ignored on Windows"]
     fn an_emoji_lands_in_the_color_atlas_beside_the_letters() {
-        let Some(mut e) = engine_with_emoji() else { return };
+        let mut e: TextEngine = engine_with_emoji();
         assert!(!e.take_color_dirty(), "nothing packed yet");
         let quads: Vec<GlyphQuad> = e.shape("a😀", 40.0, None, None, 0.0, 0.0, 0.0, 0);
         assert_eq!(quads.len(), 2, "{quads:?}");
@@ -1004,8 +1008,9 @@ mod tests {
     /// letter still by swash, and a host that declines (`None`) leaves
     /// the emoji to swash. The painter runs once per (cluster, size).
     #[test]
+    #[ignore = "needs Windows' Segoe UI Emoji font: run with --include-ignored on Windows"]
     fn the_host_paints_an_emoji_when_it_has_one() {
-        let Some(mut e) = engine_with_emoji() else { return };
+        let mut e: TextEngine = engine_with_emoji();
         let asked: std::rc::Rc<RefCell<Vec<(String, f32)>>> = std::rc::Rc::new(RefCell::new(Vec::new()));
         let log = asked.clone();
         e.set_host_color_glyphs(Some(Box::new(move |cluster: &str, px: f32| {
@@ -1040,8 +1045,9 @@ mod tests {
     /// shaped whole against the grown one (the coverage atlas's law,
     /// `a_run_that_grows_the_atlas_is_shaped_whole_against_the_grown_one`).
     #[test]
+    #[ignore = "needs Windows' Segoe UI Emoji font: run with --include-ignored on Windows"]
     fn a_host_emoji_that_fills_the_color_atlas_grows_it() {
-        let Some(mut e) = engine_with_emoji() else { return };
+        let mut e: TextEngine = engine_with_emoji();
         e.set_host_color_glyphs(Some(Box::new(|_: &str, _: f32| Some(HostColorGlyph { width: 300, height: 300, left: 0, top: 300, rgba: [255, 0, 0, 255].repeat(300 * 300) }))));
         let before: u32 = e.generation;
         // Four 300-px squares do not fit a 512 atlas: it doubles mid-run.
@@ -1058,15 +1064,13 @@ mod tests {
     /// A fallback file serves the glyphs no page font has: Roboto has no
     /// Arabic, Windows' Arial does. The face gets no key, a missing file
     /// is a false, and the measure cache is dropped so a label measured
-    /// as boxes is measured again. Prints SKIPPED where Arial is absent
-    /// (a non-Windows box) — the phone's check is the language load.
+    /// as boxes is measured again. Ignored unless asked for: Arial is a
+    /// Windows file (see `engine_with_emoji`).
     #[test]
+    #[ignore = "needs Windows' Arial font: run with --include-ignored on Windows"]
     fn a_fallback_file_serves_glyphs_no_page_font_has() {
         let arial = Path::new("C:/Windows/Fonts/arial.ttf");
-        if !arial.exists() {
-            eprintln!("SKIPPED: no {}", arial.display());
-            return;
-        }
+        assert!(arial.exists(), "this test needs {}", arial.display());
         let mut e = engine();
         assert!(!e.has_glyph('س'), "Roboto has no Arabic");
         let boxes_w: f32 = e.measure("سلام", 20.0, None, None).0;
@@ -1135,13 +1139,13 @@ mod tests {
     #[test]
     fn a_face_added_later_shapes_under_its_key() {
         let mut e = engine();
-        assert!(!e.has_face("Angelina"));
-        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/Fonts/angelina.ttf")).expect("font");
-        assert!(e.add_face("Angelina", bytes));
-        assert!(e.has_face("Angelina") && e.has_face("Angelina#bold"));
-        let (roboto, _) = e.measure("Hello", 24.0, None, None);
-        let (angelina, _) = e.measure("Hello", 24.0, None, Some("Angelina"));
-        assert!((roboto - angelina).abs() > 1.0, "a different face measures differently: {roboto} vs {angelina}");
+        assert!(!e.has_face("Heavy"));
+        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/Fonts/Roboto Bold.ttf")).expect("font");
+        assert!(e.add_face("Heavy", bytes));
+        assert!(e.has_face("Heavy") && e.has_face("Heavy#bold"));
+        let (regular, _) = e.measure("The quick brown fox", 24.0, None, None);
+        let (heavy, _) = e.measure("The quick brown fox", 24.0, None, Some("Heavy"));
+        assert!((regular - heavy).abs() > 1.0, "a different face measures differently: {regular} vs {heavy}");
         assert!(!e.add_face("junk", vec![0, 1, 2, 3]), "no face in those bytes");
     }
 
@@ -1169,14 +1173,15 @@ mod tests {
         assert!(w > 0.0);
     }
 
-    /// An ornament glyph reports its ink box — the bubble's stretch source.
+    /// One glyph reports its ink box — what a `TextStretch` maps onto its
+    /// rect (an ornament font's bubble stretched over a callout).
     #[test]
     fn glyph_reports_an_ink_box() {
         let mut e = engine();
-        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/Fonts/ornaments/Alin_Speech_Bubbles_2.ttf")).expect("font");
-        assert!(e.add_face("bubbles", bytes));
-        let g = e.glyph("0", 100.0, Some("bubbles")).expect("ink");
+        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/Fonts/Roboto Bold.ttf")).expect("font");
+        assert!(e.add_face("second", bytes));
+        let g = e.glyph("0", 100.0, Some("second")).expect("ink");
         assert!(g.w > 20.0 && g.h > 20.0, "{g:?}");
-        assert!(e.glyph(" ", 100.0, Some("bubbles")).is_none(), "a space has no ink");
+        assert!(e.glyph(" ", 100.0, Some("second")).is_none(), "a space has no ink");
     }
 }

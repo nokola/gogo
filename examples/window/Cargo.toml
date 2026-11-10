@@ -1,0 +1,17 @@
+[package]
+name = "gogo-example-window"
+description = "A gogo page in a window, reloaded when its file is saved: gogo-ui, gogo-text and gogo-wgpu together."
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gogo-text = { path = "../../crates/gogo-text" }
+gogo-ui = { path = "../../crates/gogo-ui" }
+gogo-wgpu = { path = "../../crates/gogo-wgpu" }
+pollster = "1.0.1"
+# The app is the one that picks wgpu's backends: the default set here.
+wgpu = { version = "30.0.1" }
+winit = "0.30.13"

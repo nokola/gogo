@@ -1,13 +1,13 @@
-`on:<signal>=emit(HostSignalName)` re-emits a node's signal as a signal on
-the HOST (your GogoView / code-behind) — a pure relay, no handler method.
-The host signal must exist (a missing one is a load-time error); source
-arguments are dropped, so use a named handler when the payload matters.
+`on:<event>=emit(Name)` reports the event to the host program under the
+name you chose instead of the node's own: one name can then stand for
+"save was asked for" whichever control asked. The event still carries its
+kind and value.
 
 ```
 Row spacing=8 {
     Button saveButton text="Save", min_width=88, min_height=36,
         on:activate=emit(SaveRequested)
     Button undoButton text="Undo", min_width=88, min_height=36
-    // undoButton auto-wires OnUndoButtonActivate() by convention
+    // undoButton's tap names the handler `undoButton`
 }
 ```

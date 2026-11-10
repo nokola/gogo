@@ -22,15 +22,14 @@ List picker {
 
 - **The row's states live here.** The List flips `selected` on it
   (selection) and `held` while a press holds it (WP press feedback — legal
-  on rows like on buttons); engine focus is the keyboard cursor
+  on rows like on buttons); focus is the keyboard cursor
   (`when focused` styles it).
 - **Default looks, out of the box** (D122): an unstyled row still SHOWS
-  selection, the cursor and the press — `selected` fills the row with the
-  theme's list-selection color (ItemList `selected`, so an app theme
-  restyles it), `focused` with a quarter-strength echo, `held` with a
+  selection, the cursor and the press — `selected` fills the row with a
+  selection color, `focused` with a quarter-strength echo, `held` with a
   half-strength fill while the press is held (an unselected row shades up, a
   selected one dims — `held` outranks `selected`). Same doctrine as
-  Button's engine chrome: the theme is the base look, `when` overrides it —
+  a Button's default plate: the default is the base look, `when` overrides it —
   your `when selected` (or `when focused`/`when held`) replaces that
   state's default entirely, per state. `hovered` stays opt-in. Under
   `select=off` the selected default is skipped (no selection to show);
@@ -39,7 +38,7 @@ List picker {
   moment the pointer slides off the row (or a pan takes over) and returns
   if it slides back — a release anywhere off the row leaves no residue.
 - **The cursor echo obeys focus-visible**: it draws only while the
-  KEYBOARD last moved the cursor. A tap parks engine focus on the row
+  KEYBOARD last moved the cursor. A tap moves focus to the row
   silently — no shade survives a press-and-wander. (Your authored
   `when focused` is never gated — style it and it answers every focus.)
 - **A drawn box like `Panel`**: `background=`, `padding=`, `corner_radius=`,
