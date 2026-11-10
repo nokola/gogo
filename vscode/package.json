@@ -2,7 +2,7 @@
   "name": "gogo-language",
   "displayName": "Gogo UI",
   "description": "Syntax highlighting for .gogo UI files.",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publisher": "nikolamsft",
   "license": "MIT",
   "repository": {

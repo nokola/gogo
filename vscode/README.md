@@ -5,6 +5,8 @@ toggling, bracket matching and auto-closing pairs.
 
 Gogo UI is high performace (~1000fps on phone from 2014.) This is achieved by pre-compiling .gogo files into Rust arrays, that results in low memory allocation and instant display for complex UIs.
 
+Official gogo UI page: https://github.com/nokola/gogo
+
 ## What it colors
 
 * **capitalized** type color 
