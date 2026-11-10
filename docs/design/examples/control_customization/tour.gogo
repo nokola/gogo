@@ -1,0 +1,180 @@
+// tour.gogo — one file, every new concept in the control-customization spec
+// (gogo-control-customization-spec.md), at least one line per concept.
+// Purpose: human overview + acceptance criteria. Everything UNCOMMENTED must
+// build and behave as annotated; the commented-out gallery at the bottom
+// shows the diagnostics (D-numbers) firing where they should.
+//
+// Reference behavior implementation: knob.gd (this folder) — fader.gd /
+// chip.gd below are illustrative names, same interface.
+
+uses "styles/theme.gogo"    // $accent, $surface2, $surface3, $text0, $fontAppBar
+uses "knob.gogo"            // the deep-dive reference control (Knob, BigKnob)
+
+$meterWarn = #FFB300FF      // Tier 0: theme variables — already shipped, unchanged
+
+
+// ===========================================================================
+// §5.8 — THEME-LEVEL TYPE DEFAULTS: app policy, not per-instance ceremony.
+// A type-keyed entry is an instance-line prototype (no name, no children).
+// ===========================================================================
+theme {
+    Slider .ThinSlider render=gogo  // every Slider: ThinSlider look, Gogo backend
+    Button .AppButton               // plain default style — native Buttons keep working
+    // render= is VARIANT-INVARIANT (policy, not look): it may appear only here,
+    // in the defaults block. No on:* wiring in prototypes (no name to wire).
+}
+theme dark {
+    Slider .ThinSliderDark          // variants override the LOOK half only, wholesale
+}
+
+
+// ===========================================================================
+// §2 TIER 1 — for= STYLES: slot paths + write-time state checking.
+// ===========================================================================
+
+// for= must be first; the target is the tree spelling of the type (for=Slider).
+style ThinSlider for=Slider, slot.track.height=2, slot.thumb.size=12 {
+    transition duration=0.15, easing=cubic_out  // style-scoped: times THESE flips
+                                                // and the fraction glide (§2.4 chain)
+    when held slot.thumb.scale=1.2          // contract state; motion word = when-response
+    when focused    slot.thumb.background=$accent // universal state: always styleable
+}
+
+// extends= compatibility (§2.1): for=Slider may extend for=Slider — fully selected.
+style ThinSliderDark for=Slider, extends=ThinSlider, slot.thumb.background=$text0
+
+// Plain style on the button family — shipped machinery, untouched.
+style AppButton background=#00000000 {
+    when held  background=#FFFFFF22          // contract state, inherent on buttons
+    when disabled opacity=0.4                   // universal (NEW: legal on any control)
+}
+
+// Deliberately generic plain style: applied CLEANLY to two distinct control
+// types below (Slider + Fader), so lint D2 stands down by evidence (§2.3).
+style GhostWhileDragging {
+    when held opacity=0.85
+}
+
+
+// ===========================================================================
+// §5 TIER 3 — THE control CONSTRUCT (two more besides knob.gogo's Knob).
+// ===========================================================================
+
+// Fader: the LINEAR kinds — length + position — plus a scoped slot-anim.
+control Fader $value=0, $min=0, $max=100, $step=1 {
+    script "res://controls/fader.gd"            // mandatory (D7); v1 = .gd only
+    state_builtin hovered, focused, disabled        // focused: keyboard needs it (D18)
+    state_builtin held                      // root-maintained from the gesture (D181)
+    signal drag_started, drag_ended             // emit() may raise ONLY these; wiring is selected
+    transition duration=0.12, easing=cubic_out  // default FEEL: an unstyled Fader still glides
+
+    // Scoped anim — the ONLY place anims may address slots (§5.2). A flourish,
+    // so it rides the motion channel; the driven position stays fenced (D3).
+    anim releasePop duration_each=0.2, easing=back_out {
+        slot.thumb.translate.y from=-3, to=0
+    }
+
+    Column spacing=4, on:drag_ended=play(releasePop) {   // contract signals are real
+                                                         // Godot signals on the root
+        // Slot-line props (§3.4): the track is a Panel-like REGION — box look
+        // with no content at all; box props survive fills.
+        slot track width=fill, height=24, background=$surface2, corner_radius=2 {
+            slot progress automatic=length by $value in $min..$max { Rectangle color=$accent }  // extent follows value
+            slot thumb automatic=position by $value in $min..$max { Circle 12x12, color=$text0 } // seat follows value
+        }
+        slot label { Label text=live($value), font_size=12 }  // LIVE read (§5.2);
+    }                                                         // bare $value here = D17
+}
+
+// Chip: presence + the selected runtime flip + Button-like plain children.
+control Chip $selected=false {
+    script "res://controls/chip.gd"
+    state_builtin hovered, focused, selected         // selected (contract): opting in brings the
+                                                // press tracking — a completed press toggles it
+    transition duration=0.12, easing=cubic_out
+
+    Panel corner_radius=9, background=$surface2, padding=8 {
+        Row spacing=6 {
+            // presence: the mark EXISTS iff selected — enter/exit tweened by
+            // the transition rule above.
+            slot mark automatic=presence by selected { Circle 8x8, color=$accent }
+            slot                                  // bare default slot: Chip takes
+        }                                         // plain children, like Button
+    }
+}
+
+
+// ===========================================================================
+// USAGE — tiers composed. Instances live inside widgets (fragment file).
+// ===========================================================================
+widget MixerRow $vol=80 {
+    Column spacing=10 {
+
+        // §5.7/§5.8: composite via the THEME ENTRY — no per-instance ceremony.
+        // Wears ThinSlider; drag_started auto-wires OnSeekSliderDragStarted.
+        Slider seekSlider value=$vol, min=0, max=100, step=5
+
+        // §3.3: one-off tweak — slot paths directly on the instance line.
+        Slider fineSlider slot.thumb.size=10, value=$vol
+
+        // §5.8: the spelled OPT-OUT — discards the theme entry WHOLE (style
+        // included); stays HSlider. `as HSlider` code-behind lives here.
+        Slider legacySlider render=native, value=$vol
+
+        // §5.7: defensive pin — legal and silent even with no Button theme
+        // render entry; protects a cast against a future theme flip.
+        Button pinnedButton render=native { Label text="Legacy", font_size=13 }
+
+        // §3.1 TIER 2 — fills on a composite. Nested slots SURVIVE the track
+        // fill (thumb + progress stay; automatic geometry keeps its targets),
+        // and the fill renders BELOW them: the thumb draws over the ticks.
+        Slider tickSlider .GhostWhileDragging value=$vol {
+            slot track {
+                Row spacing=8 {                       // tick marks in the track —
+                    Rectangle 2x8, color=$surface3    // the case fills exist for
+                    Rectangle 2x8, color=$surface3
+                    Rectangle 2x8, color=$surface3
+                }
+            }
+            slot label { Label text="Volume", font_size=$fontAppBar }  // fills are
+        }                                             // STATIC author content; the live
+                                                      // readout is the control's default
+
+        // Tier 3 in use: Fader + GhostWhileDragging = second CLEAN type for
+        // that style, which is what stands lint D2 down (§2.3).
+        Fader mixFader .GhostWhileDragging value=$vol, max=100
+
+        // Toggle: the third v1 built-in — NEW, no native backend, always
+        // Gogo-implemented; render= never needed, D15 can never fire on it.
+        Toggle muteToggle
+
+        // Chip usage: bare children route to the default slot; press toggles
+        // `selected`, which drives the mark's presence.
+        Chip wifiChip selected=true { Label text="Wi-Fi", font_size=13 }
+
+        // Knob from knob.gogo, restyled — user controls are always composite.
+        Knob gainKnob .BigKnob value=0, min=-60, max=6, step=0.5
+
+        // §4.6: Arc as a plain primitive — static ring segment, no control.
+        Arc gaugeDecoration from=-90, sweep=180, thickness=3, color=$meterWarn
+    }
+}
+
+
+// ===========================================================================
+// DIAGNOSTICS GALLERY — each line, uncommented, fires exactly its D-number.
+// (Commented out so this file builds clean; doubles as the negative tests.)
+// ===========================================================================
+// style Bad1 slot.track.height=2 { }                    // D1  — slot path needs for=
+// style Bad2 for=Slider, slot.thumb.x=10 { }            // D3  — automatic: the slider drives it
+// style Bad3 for=Slider { when draging opacity=0.5 }    // D4  — typo'd state, rename fix-it
+// style Bad4 for=Knob { when held opacity=0.5 }      // D4  — Knob doesn't opt into held
+// Slider bad5 { slot thmb { Circle 4x4 } }              // D5  — unknown slot, rename fix-it
+// control Bad7 $value=0 { Panel { } }                   // D7  — control without script
+// control Bad9 $v=0 { script "x.gd"  state hovered }      // D9  — built-in name: state_builtin
+// Button bad14 .GhostWhileDragging                      // D14 — Button has no state 'held'
+// (with no theme entry, `Slider s .ThinSlider value=1`  // D15 — contract feature on a
+//  would need render=gogo — see the spec's example B)   //       native instance
+// control Bad17 $v=0 { script "x.gd"
+//     Panel { Label text=$v } }                         // D17 — pasted read would freeze;
+//                                                       //       fix-it: live($v)

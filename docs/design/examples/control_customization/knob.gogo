@@ -1,0 +1,80 @@
+// knob.gogo — declaration and usage for the Knob control.
+// Pairs with knob.gd: this file is the contract (slots, states, signals,
+// automatic geometry, default visuals AND default feel); knob.gd is the
+// behavior (input -> value). Together they are the reference example for
+// Advanced Gogo's `control` (gogo-control-customization-spec.md §5, §10 E).
+
+uses "styles/theme.gogo"    // $accent, $surface2, $surface3, $text0, $fontAppBar
+
+// ---------------------------------------------------------------------------
+// The contract. Header $params are the control's public surface, declared
+// with the widget-line grammar ($step=0 = continuous, the Range convention).
+// The body tree IS the default visuals — no separate default-style
+// mechanism; the Tier-1 scaffold fix-it copies from here.
+// ---------------------------------------------------------------------------
+control Knob $value=0, $min=0, $max=1, $step=0, min_size=48x48 {
+    script "res://controls/knob.gd"
+    state_builtin hovered, focused, disabled    // universals: declared for script read-access
+                                            // (focused also opts into the focused system)
+    state_builtin held                  // root-maintained from the gesture (D181)
+    signal drag_started, drag_ended         // declared names — emit() may raise only these
+
+    // Default FEEL (§2.4): the bare rule times every state flip AND the
+    // fraction glide — an unstyled Knob still eases. Styles and node blocks
+    // override by the nearest-wins chain.
+    transition duration=0.15, easing=cubic_out
+
+    Circle color=$surface2 {
+        // The track FILLS the knob (min_size on the decl line carries the
+        // default size), so the seat circle scales with the instance — the
+        // thumb rides the rim at 48x48 and at 96x96 alike.
+        slot track width=fill, height=fill {
+            // The wedge follows the value — automatic. The aperture is the
+            // kind's config, declared ONCE, here; knob.gd reads the same
+            // truth via slot_aperture() for its input mapping (§4.6
+            // single-source). The driver clauses spell the coupling (D134).
+            slot progress automatic=arc(from=-225, sweep=270) by $value in $min..$max {
+                Arc thickness=4, color=$accent      // a full ring; the wedge reveals it
+            }
+            // Angular seat follows the value — automatic; a style picks size
+            // and look, never where it sits.
+            slot thumb automatic=angle(from=-225, sweep=270) by $value in $min..$max {
+                Circle 8x8, color=$text0
+            }
+        }
+        slot label {                                // live read of a contract prop (§5.2 —
+            Label text=live($value), halign=center, valign=center
+        }                                           // bare $value here would be D17
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tier 1: a selected style. Slot names, state names, ownership — all verified
+// as you type. (`slot.thumb.angle=...` here would be a load-time error, D3.)
+// ---------------------------------------------------------------------------
+style BigKnob for=Knob, min_size=64x64 {    // sizes the knob; the fill track follows
+    transition duration=0.1, easing=cubic_out   // style feel — overrides the
+                                                // declaration default (§2.4 chain)
+    when held slot.thumb.scale=1.2          // motion word on a slot: when-response only
+    when focused    slot.track.background=$surface3
+    when disabled opacity=0.3
+}
+
+// ---------------------------------------------------------------------------
+// Usage. Knob is a first-class control: styled with .BigKnob, filled with
+// `slot`, wired like any built-in (gain + drag_started auto-wires
+// OnGainDragStarted). User controls are always Gogo-implemented — no
+// render= needed (§5.7).
+// ---------------------------------------------------------------------------
+widget GainRow $label="", $gain=0 {
+    Row spacing=12 {
+        Label text=$label, font_size=$fontAppBar
+        Knob gain .BigKnob value=$gain, min=-60, max=6, step=0.5 {
+            // Tier 2: author content inside the thumb. Its angular seat stays
+            // automatic — the grip rides wherever the value puts it. (The
+            // LIVE value readout is Knob's own label slot; a widget-param
+            // Label text=$gain here would freeze at the initial value.)
+            slot thumb { Image texture="res://assets/icons/grip.png", 8x8 }
+        }
+    }
+}

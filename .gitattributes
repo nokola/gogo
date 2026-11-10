@@ -1,0 +1,5 @@
+# Text files are LF in the repository and in every checkout, on every OS.
+# Git for Windows would otherwise check them out with CRLF, and the tests
+# embed .gogo fixtures and docs with include_str!, so the bytes they see
+# would differ from one machine to the next.
+* text=auto eol=lf
