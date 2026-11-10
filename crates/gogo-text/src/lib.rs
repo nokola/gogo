@@ -32,8 +32,8 @@ use std::path::Path;
 
 use cosmic_text::fontdb;
 use cosmic_text::{Align, Attrs, Buffer, CacheKey, CacheKeyFlags, Family, FontSystem, Metrics, Shaping, SwashCache, SwashContent, Weight, Wrap};
-use gogo::layout::TextMeasure;
-use gogo::ImageKey;
+use gogo_ui::layout::TextMeasure;
+use gogo_ui::ImageKey;
 
 /// Godot's default `Label` line_spacing (px), added between lines.
 pub const LINE_SPACING_PX: f32 = 3.0;
@@ -52,7 +52,7 @@ pub const BOLD_GROW_PER_PX: f32 = 0.6 / 24.0;
 
 /// The font-key style suffix (`"Angelina#bold"`) is gogo vocabulary: the
 /// app spells it, this engine reads it.
-pub use gogo::font_style::{split_style, styled_key};
+pub use gogo_ui::font_style::{split_style, styled_key};
 
 /// A face's vertical metrics in font units, read from the file at load.
 #[derive(Clone, Copy, Debug)]
@@ -475,7 +475,7 @@ impl TextEngine {
 
     /// The language text is shaped for (a BCP-47 tag: `de`, `bn-IN`). Line
     /// breaking and script fallback follow it, so this moves with the
-    /// string table (`gogo::Locale`) — translated strings alone would break
+    /// string table (`gogo_ui::Locale`) — translated strings alone would break
     /// mid-glyph in a script the old tag never expected. Rebuilds the
     /// font system on the SAME font database (no file re-read) and drops
     /// the measure/shape caches; the atlas and its glyphs stay. A load-time

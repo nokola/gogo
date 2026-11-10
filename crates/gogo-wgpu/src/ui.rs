@@ -15,11 +15,11 @@ use crate::perf_stages::{Stage, Timer, note_ms};
 use crate::tex_types::{Tex_Bake_Premul_Srgb_4xU8_RGBA, Tex_Display_Srgb_4xU8_RGBA};
 use std::time::Instant;
 
-use gogo::draw::{Draw, Fit, GradientKind, Sampling, TextAlign};
-use gogo::layout::Rect;
-use gogo::locale::Locale;
-use gogo::page::{NO_STR, Page};
-use gogo::ImageKey;
+use gogo_ui::draw::{Draw, Fit, GradientKind, Sampling, TextAlign};
+use gogo_ui::layout::Rect;
+use gogo_ui::locale::Locale;
+use gogo_ui::page::{NO_STR, Page};
+use gogo_ui::ImageKey;
 use text::TextEngine;
 
 /// The frame's draw lists, in draw order, each with the page that owns
@@ -801,7 +801,7 @@ impl UiRenderer {
                 Draw::GradientStop { .. } => {}
                 Draw::Text { rect, text: text_id, key, font_size, color, halign, valign, wrap, font } => {
                     let text_start: Instant = Instant::now();
-                    let s = gogo::locale::display(page, locale, *text_id, *key);
+                    let s = gogo_ui::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let r = px(rect);
                     // Truncated like Godot's `int(epx * size)` (see `EpxMeasure`).
@@ -851,7 +851,7 @@ impl UiRenderer {
                         self.culled += 1;
                         continue;
                     }
-                    let s = gogo::locale::display(page, locale, *text_id, *key);
+                    let s = gogo_ui::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let size_px = r[2].max(r[3]).clamp(8.0, STRETCH_RASTER_MAX_PX);
                     if let Some(g) = text.glyph(s, size_px, font_key) {
@@ -872,7 +872,7 @@ impl UiRenderer {
                 Draw::Selection { rect, text: text_id, key, font_size, font, lo, hi, color } => {
                     // The highlight between the two shaped prefixes —
                     // measured here because glyph positions live here.
-                    let s = gogo::locale::display(page, locale, *text_id, *key);
+                    let s = gogo_ui::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let r = px(rect);
                     let size_px = (font_size * epx).floor().max(1.0);
@@ -888,7 +888,7 @@ impl UiRenderer {
                     // measured here like the highlight (glyph positions
                     // live here); the input machine grab-checks the
                     // same `sel_handle_rect` in epx.
-                    let s = gogo::locale::display(page, locale, *text_id, *key);
+                    let s = gogo_ui::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let r = px(rect);
                     let size_px = (font_size * epx).floor().max(1.0);
@@ -897,14 +897,14 @@ impl UiRenderer {
                     let (xhi, _) = text.measure(&s[..byte(*hi)], size_px, None, font_key);
                     let color = color.to_f32();
                     for x in [r[0] + xlo, r[0] + xhi] {
-                        let h = gogo::input::sel_handle_rect(r[1] + r[3], x, gogo::input::SEL_HANDLE_EPX * epx);
+                        let h = gogo_ui::input::sel_handle_rect(r[1] + r[3], x, gogo_ui::input::SEL_HANDLE_EPX * epx);
                         self.push_quad(current, Quad { rect: [h.x, h.y, h.w, h.h], color, border_color: [0.0; 4], params: [0.0, 0.0, KIND_CIRCLE, 0.0], uv: NO_UV, rot, wedge, swing, eye });
                     }
                 }
                 Draw::Caret { rect, text: text_id, key, font_size, font, index, color } => {
                     // A thin solid bar after the shaped prefix — shaping
                     // happens here because glyph positions live here.
-                    let s = gogo::locale::display(page, locale, *text_id, *key);
+                    let s = gogo_ui::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let r = px(rect);
                     let size_px = (font_size * epx).floor().max(1.0);
@@ -1241,7 +1241,7 @@ impl UiRenderer {
     /// that picks the shell's non-sRGB surface format.
     const TILE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-    /// Draws `draws` (page epx — one node's list from `gogo::draw_subtree`)
+    /// Draws `draws` (page epx — one node's list from `gogo_ui::draw_subtree`)
     /// into a NEW texture of `size_px`: `origin_epx` lands on the tile's
     /// top-left, `epx` device px per epx — a text callout's bake tile at
     /// the painting's scale (todo-rust 2.8.3; shipped's SubViewport +
@@ -1498,7 +1498,7 @@ impl GradientTable {
             }
             if let Draw::GradientStop { pos, color } = d {
                 let i: usize = self.positions.len();
-                let lab: [f32; 4] = gogo::color::oklab_pm_from_rgba(*color).0;
+                let lab: [f32; 4] = gogo_ui::color::oklab_pm_from_rgba(*color).0;
                 self.stops[base + 2 * i] = [encode_unit(lab[0]), encode_unit(lab[1]), encode_unit(lab[2]), encode_unit(lab[3])];
                 let (hi, lo) = encode_pos(*pos);
                 self.stops[base + 2 * i + 1] = [hi, lo, 0, 0];
@@ -1662,7 +1662,7 @@ mod gradient_table_tests {
 
     #[test]
     fn the_hash_follows_the_content() {
-        let a = [Draw::GradientStop { pos: 0.0, color: gogo::Color_Straight_Srgb_4xU8_RGBA([1, 2, 3, 4]) }, Draw::GradientStop { pos: 1.0, color: gogo::Color_Straight_Srgb_4xU8_RGBA([5, 6, 7, 8]) }];
+        let a = [Draw::GradientStop { pos: 0.0, color: gogo_ui::Color_Straight_Srgb_4xU8_RGBA([1, 2, 3, 4]) }, Draw::GradientStop { pos: 1.0, color: gogo_ui::Color_Straight_Srgb_4xU8_RGBA([5, 6, 7, 8]) }];
         let mut b = a;
         let h = GradientTable::hash(&a, 10, GradientKind::Linear, (0.0, 0.0));
         assert_eq!(h, GradientTable::hash(&b, 10, GradientKind::Linear, (0.0, 0.0)));
