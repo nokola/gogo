@@ -1,7 +1,7 @@
 # gogo
 
 A declarative UI language for apps and games, written for people and for AI
-assistants. A `.gogo` file describes a page: its controls, how they are laid
+assistants. `.gogo` files describe a view: its controls, how they are laid
 out, how they look in each theme, and how they move.
 
 ```kdl
@@ -15,14 +15,45 @@ View hello {
 
 The language crate, `gogo-ui`, does the middle of a UI. It compiles a page
 (at build time, into static data), lays it out for a screen size, takes
-touches and keys, and answers with a list of draw commands. It owns no
-window and no GPU, and it has no dependencies: the program that hosts it
-measures the text and paints the commands.
+touches and keys, and answers with a list of draw commands. 
 
-Two more crates here do those two ends for a host that wants them:
+It owns no window and no GPU, and it has no dependencies: the program that hosts it
+measures text and paints the commands. Two more crates here do those two ends for a host that wants them:
 `gogo-text` measures and shapes text, and `gogo-wgpu` paints the commands
 with wgpu. Neither owns a window either, so the three fit inside an app, a
-game engine or a test alike.
+game engine or headless test.
+
+## Design goals
+
+Every decision about the language is measured against these:
+
+- **Easy to understand, easy to write, easy to find.** A `.gogo` file read
+  six months later still makes sense. Both for AI and humans.
+- **Rust-inspired.** Every construct is announced by a keyword, one keyword
+  per concept, hidden semantics made visible, shorthand allowed only as
+  defined sugar.
+- **Reliable for AI.** Every mistake is a numbered diagnostic with a
+  teaching entry, and every example in the docs is compiled by the tests.
+
+### Performance
+Performance is achieved by combining an "immediate-like" retained UI - every .gogo file is compiled to high-performance rust code during build. This means startup does not pay any cost for parsing, validation, or allocation since controls live in arena-like memory.
+
+- **Fast rendering**: ~1000 FPS for medium-size UIs on a 2014 phone (OnePlus One)
+- **Fast startup**: UIs are precompiled into an array/arena - reducing startup costs to milliseconds even for heavy UIs with lots of nested controls
+- **Low allocation** and **instant UI switches** on hot paths
+
+### Compatibility
+- **Cross-platform**: Shipped in production apps for Android and Windows. Not yet on iOS, but likely supports it.
+- Wgpu: OpenGL ES 3, Vulkan, Metal, DirectX, or any other renderer that can run typical UIs. 
+- Optimized for low-end and high end devices, through dedicated shaders.
+
+
+### Developer (and AI) Ergonomics
+- **Hot reload** in debug mode - changes in .gogo files reflect on screen in 0.25sec.
+- **Instructive errors** inspired from Rust error messages point not only where, but often how to fix an issue.
+- **Extensive how-to and guides** in `COOKBOOK.md` and sample .gogo colde for every feature in `/docs/cards`
+- Easy animations, portrait/landscape, screen sizes, and common situations solved.
+- Used in shipped production apps.
 
 ## Try it
 
@@ -41,24 +72,15 @@ cargo run -p gogo-example-window
 ```
 
 This opens a window with a title, a counter and a button; a click on the
-button counts. While it runs, open
+button counts. 
+
+While the example above runs, open
 [examples/window/ui/hello.gogo](examples/window/ui/hello.gogo), change a
 color or a text and save: the window follows within a quarter of a second,
-and a mistake prints its diagnostics and keeps the last good page. The
-source, [examples/window/src/main.rs](examples/window/src/main.rs), is the
-whole of a host: a window, a GPU device, a frame loop, and what a tap means.
+and a mistake prints its diagnostics and keeps the last good page. 
 
-## Design goals
+Source, [examples/window/src/main.rs](examples/window/src/main.rs), contains the whole host: a window, a GPU device, frame loop, and tap handling.
 
-Every decision about the language is measured against these:
-
-- **Easy to understand, easy to write, easy to find.** A `.gogo` file read
-  six months later still makes sense.
-- **Rust-inspired.** Every construct is announced by a keyword, one keyword
-  per concept, hidden semantics made visible, shorthand allowed only as
-  defined sugar.
-- **Reliable for AI.** Every mistake is a numbered diagnostic with a
-  teaching entry, and every example in the docs is compiled by the tests.
 
 ## What is here
 
