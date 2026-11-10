@@ -23,19 +23,19 @@
 //! - `state.padded-copies` (6056): per-state theme StyleBox copies.
 //! - `explain.compiled/filter/regime/engine-default/dead-safe`
 //!   (6609-6615): readout prints anchors, grow, mouse_filter, live Control.
-use gogo::draw::{DEFAULT_BUTTON_BACKGROUND, DEFAULT_TEXT_COLOR, Draw, draw, hit};
-use gogo::KeptFrame;
-use gogo::input::{Input, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{Align, PropKey, Color_Straight_Srgb_4xU8_RGBA, State};
-use gogo::runtime::{DISABLED, HELD, HOVERED, Resolved, Runtime, SELECTED, resolve, resolve_animated};
-use gogo::{Compiled, Page, Severity, compile};
+use gogo_ui::draw::{DEFAULT_BUTTON_BACKGROUND, DEFAULT_TEXT_COLOR, Draw, draw, hit};
+use gogo_ui::KeptFrame;
+use gogo_ui::input::{Input, Phase, Touch};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{Align, PropKey, Color_Straight_Srgb_4xU8_RGBA, State};
+use gogo_ui::runtime::{DISABLED, HELD, HOVERED, Resolved, Runtime, SELECTED, resolve, resolve_animated};
+use gogo_ui::{Compiled, Page, Severity, compile};
 
 const FRAME: Rect = Rect { x: 0.0, y: 0.0, w: 400.0, h: 400.0 };
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -44,7 +44,7 @@ fn codes(src: &str) -> Vec<String> {
 }
 
 fn fails(src: &str) -> bool {
-    gogo::has_errors(&compile(src, &|_| None).diags)
+    gogo_ui::has_errors(&compile(src, &|_| None).diags)
 }
 
 fn warnings(src: &str) -> Vec<String> {
@@ -65,7 +65,7 @@ impl Fx {
         let rt = Runtime::new(&c.page);
         Fx { page: c.page, rt, input: Input::new() }
     }
-    fn id(&self, name: &str) -> gogo::NodeId {
+    fn id(&self, name: &str) -> gogo_ui::NodeId {
         self.page.find(name).unwrap_or_else(|| panic!("no node {name:?}"))
     }
     /// The frame's values with tweens applied (the Godot `_process` view).

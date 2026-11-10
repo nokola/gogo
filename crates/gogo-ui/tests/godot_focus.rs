@@ -12,13 +12,13 @@
 //! the key (an Input's caret claims Left/Right). The FOCUSED bit is
 //! D129 VISIBLE focus: a key grant shows the ring, a tap parks focus
 //! with no ring — except on an Input, whose caret always warrants one.
-use gogo::draw::{Draw, draw};
-use gogo::KeptFrame;
-use gogo::input::{Event, EventKind, Input, Key, Mods, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{BUTTON_FOCUS_RING, BUTTON_FOCUS_RING_EPX, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{DISABLED, FOCUS_WITHIN, FOCUSED, HOVERED, Runtime, SELECTED, resolve};
-use gogo::{Page, compile};
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::KeptFrame;
+use gogo_ui::input::{Event, EventKind, Input, Key, Mods, Phase, Touch};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{BUTTON_FOCUS_RING, BUTTON_FOCUS_RING_EPX, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
+use gogo_ui::runtime::{DISABLED, FOCUS_WITHIN, FOCUSED, HOVERED, Runtime, SELECTED, resolve};
+use gogo_ui::{Page, compile};
 
 struct Fx {
     page: Page,
@@ -31,7 +31,7 @@ struct Fx {
 impl Fx {
     fn new(src: &str) -> Fx {
         let c = compile(src, &|_| None);
-        assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+        assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
         let page = c.page;
         let rt = Runtime::new(&page);
         Fx { page, rt, input: Input::new(), now: 0.0 }

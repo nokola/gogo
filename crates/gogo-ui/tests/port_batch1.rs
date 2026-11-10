@@ -4,17 +4,17 @@
 //! headers (`repeat=forever`, `speed=`, `autoreverse=`), `key` timing,
 //! `rotate` in the draw list, `stop` and `take_finished`, entrances
 //! under a gone ancestor.
-use gogo::anim::Finish;
-use gogo::KeptFrame;
-use gogo::draw::{Draw, draw};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{NO_NODE, PropKey, State, Value};
-use gogo::runtime::{Runtime, resolve, resolve_animated};
-use gogo::{Compiled, compile};
+use gogo_ui::anim::Finish;
+use gogo_ui::KeptFrame;
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{NO_NODE, PropKey, State, Value};
+use gogo_ui::runtime::{Runtime, resolve, resolve_animated};
+use gogo_ui::{Compiled, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -30,23 +30,23 @@ fn composed_when_needs_both_halves() {
     let page = c.page;
     let p = page.find("p").unwrap();
     let mut rt = Runtime::new(&page);
-    let width = |page: &gogo::Page, rt: &Runtime| resolve(page, rt).placement[p.index()].width;
-    assert_eq!(width(&page, &rt), gogo::page::Len::Exact(100.0));
-    rt.go_id(gogo::ArrangementId::new(0));
-    assert_eq!(width(&page, &rt), gogo::page::Len::Exact(100.0), "the arrangement alone must not pose");
-    rt.set_screen(&page, gogo::Orientation::Landscape, gogo::ScreenClass::LotsOfSpace);
-    assert_eq!(width(&page, &rt), gogo::page::Len::Exact(300.0));
-    rt.go_id(gogo::BASE);
-    assert_eq!(width(&page, &rt), gogo::page::Len::Exact(100.0), "the class alone must not pose");
+    let width = |page: &gogo_ui::Page, rt: &Runtime| resolve(page, rt).placement[p.index()].width;
+    assert_eq!(width(&page, &rt), gogo_ui::page::Len::Exact(100.0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
+    assert_eq!(width(&page, &rt), gogo_ui::page::Len::Exact(100.0), "the arrangement alone must not pose");
+    rt.set_screen(&page, gogo_ui::Orientation::Landscape, gogo_ui::ScreenClass::LotsOfSpace);
+    assert_eq!(width(&page, &rt), gogo_ui::page::Len::Exact(300.0));
+    rt.go_id(gogo_ui::BASE);
+    assert_eq!(width(&page, &rt), gogo_ui::page::Len::Exact(100.0), "the class alone must not pose");
     assert!(codes("View v { Panel p { when screen.huge { width = 1 } } }").contains(&"G0036".to_string()));
     assert!(codes("View v { Panel p { when screen.landscape screen.portrait { width = 1 } } }").contains(&"G0038".to_string()));
     // A pair (two conditions) outranks every single; the singles rank
     // equal — between them the later line in the file wins (E2 flatten,
     // 2026-08-31; pinned in godot_arrangement.rs).
-    assert!(State::ArrangementScreen(gogo::ArrangementId::new(0), gogo::StrId::new(0)).priority() > State::Arrangement(gogo::ArrangementId::new(0)).priority());
-    assert_eq!(State::ScreenPair(gogo::StrId::new(0), gogo::StrId::new(0)).priority(), State::ArrangementScreen(gogo::ArrangementId::new(0), gogo::StrId::new(0)).priority());
-    assert_eq!(State::Arrangement(gogo::ArrangementId::new(0)).priority(), State::ScreenClass(gogo::StrId::new(0)).priority());
-    assert_eq!(State::ScreenClass(gogo::StrId::new(0)).priority(), State::ScreenOrientation(gogo::StrId::new(0)).priority());
+    assert!(State::ArrangementScreen(gogo_ui::ArrangementId::new(0), gogo_ui::StrId::new(0)).priority() > State::Arrangement(gogo_ui::ArrangementId::new(0)).priority());
+    assert_eq!(State::ScreenPair(gogo_ui::StrId::new(0), gogo_ui::StrId::new(0)).priority(), State::ArrangementScreen(gogo_ui::ArrangementId::new(0), gogo_ui::StrId::new(0)).priority());
+    assert_eq!(State::Arrangement(gogo_ui::ArrangementId::new(0)).priority(), State::ScreenClass(gogo_ui::StrId::new(0)).priority());
+    assert_eq!(State::ScreenClass(gogo_ui::StrId::new(0)).priority(), State::ScreenOrientation(gogo_ui::StrId::new(0)).priority());
 }
 
 /// Each Gradient entry with the stops that follow it: (angle, positions).
@@ -151,7 +151,7 @@ fn rotate_reaches_the_draw_list() {
     let c = ok("arrangement flipped\nView v {\n Rectangle arrow width=20, height=10, halign=left, valign=top\n}\nwhen flipped { arrow.rotate = 180 }\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 100.0, 100.0), &FixedAdvance);
     let draws = draw(&page, f.frame());
     let push = draws.iter().find_map(|d| if let Draw::RotatePush { angle, cx, cy } = d { Some((*angle, *cx, *cy)) } else { None });
@@ -191,7 +191,7 @@ fn stop_restores_and_entrances_respect_gone_ancestors() {
 /// 700×500 window is still small.
 #[test]
 fn screen_classes_grade_view_sizes() {
-    use gogo::{Orientation, ScreenClass};
+    use gogo_ui::{Orientation, ScreenClass};
     assert_eq!(ScreenClass::from_view(320.0, 680.0), ScreenClass::PortraitSmall);
     assert_eq!(ScreenClass::from_view(360.0, 740.0), ScreenClass::PortraitMedium);
     assert_eq!(ScreenClass::from_view(600.0, 900.0), ScreenClass::PortraitLarge);

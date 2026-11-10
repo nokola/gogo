@@ -28,25 +28,25 @@
 //! - `repeat.view-hook-set-items` (12692-12700): `rebuild_into`'s
 //!   `on_built` hook ordering.
 //! - `list.root-class` (12781): the root's GDScript class.
-use gogo::draw::{Draw, draw};
-use gogo::KeptFrame;
-use gogo::input::{Event, EventKind, Input, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::{Action, Kind, NodeId, PropKey, palette_color};
-use gogo::layout::starved;
-use gogo::runtime::{DISABLED, FOCUSED, HELD, Item, ItemKey, ItemValue, Runtime, SELECTED, resolve};
-use gogo::{Page, compile};
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::KeptFrame;
+use gogo_ui::input::{Event, EventKind, Input, Phase, Touch};
+use gogo_ui::layout::{FixedAdvance, Rect, layout};
+use gogo_ui::page::{Action, Kind, NodeId, PropKey, palette_color};
+use gogo_ui::layout::starved;
+use gogo_ui::runtime::{DISABLED, FOCUSED, HELD, Item, ItemKey, ItemValue, Runtime, SELECTED, resolve};
+use gogo_ui::{Page, compile};
 
 const FRAME: Rect = Rect { x: 0.0, y: 0.0, w: 400.0, h: 800.0 };
 
 fn ok(src: &str) -> Page {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{src}\n{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{src}\n{:#?}", c.diags);
     c.page
 }
 
 fn builds(src: &str) -> bool {
-    !gogo::has_errors(&compile(src, &|_| None).diags)
+    !gogo_ui::has_errors(&compile(src, &|_| None).diags)
 }
 
 fn codes(src: &str) -> Vec<String> {
@@ -55,8 +55,8 @@ fn codes(src: &str) -> Vec<String> {
 
 fn warnings(src: &str) -> Vec<String> {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{src}\n{:#?}", c.diags);
-    c.diags.iter().filter(|d| d.severity == gogo::Severity::Warning).map(|d| format!("{} {}", d.code, d.message)).collect()
+    assert!(!gogo_ui::has_errors(&c.diags), "{src}\n{:#?}", c.diags);
+    c.diags.iter().filter(|d| d.severity == gogo_ui::Severity::Warning).map(|d| format!("{} {}", d.code, d.message)).collect()
 }
 
 fn lay(page: &Page, rt: &Runtime) -> Vec<Rect> {

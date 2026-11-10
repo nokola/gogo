@@ -2,15 +2,15 @@
 //! of the app's page + theme; images are not read at compile) and
 //! pins the numbers the shipped file declares: the ok Button is 130×60
 //! centered, its `face` sits 8 in from every edge (114×44).
-use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::runtime::{Runtime, resolve};
+use gogo_ui::layout::{FixedAdvance, Rect, layout};
+use gogo_ui::runtime::{Runtime, resolve};
 use std::path::Path;
 
 #[test]
 fn whats_new_ok_button_and_face() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/whats_new.gogo");
-    let c = gogo::compile_file(&path).unwrap();
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    let c = gogo_ui::compile_file(&path).unwrap();
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let rt = Runtime::new(&page);
     let res = resolve(&page, &rt);

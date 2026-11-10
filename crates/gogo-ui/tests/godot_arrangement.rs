@@ -23,19 +23,19 @@
 //! ENGINE (not ported):
 //! - `arr.reload-ok`, `arr.reload-keeps-pose`, `arr.reload-reseeds-style-when`
 //!   (6856-6865): hot reload re-tracks the scene tree; here the shell swaps pages.
-use gogo::input::{Input, Phase, Touch};
-use gogo::KeptFrame;
-use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::{Len, NO_NODE, NodeId, PropKey};
-use gogo::runtime::{BASE, HELD, Resolved, Runtime, SELECTED, resolve, resolve_animated};
-use gogo::{Compiled, Diagnostic, Orientation, Page, ScreenClass, Severity, compile};
+use gogo_ui::input::{Input, Phase, Touch};
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::{FixedAdvance, Rect, layout};
+use gogo_ui::page::{Len, NO_NODE, NodeId, PropKey};
+use gogo_ui::runtime::{BASE, HELD, Resolved, Runtime, SELECTED, resolve, resolve_animated};
+use gogo_ui::{Compiled, Diagnostic, Orientation, Page, ScreenClass, Severity, compile};
 
 const W: f32 = 400.0;
 const H: f32 = 800.0;
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -48,7 +48,7 @@ fn codes(src: &str) -> Vec<String> {
 }
 
 fn refused(src: &str) -> bool {
-    gogo::has_errors(&diags(src))
+    gogo_ui::has_errors(&diags(src))
 }
 
 fn has_code(src: &str, code: &str) -> bool {
@@ -393,7 +393,7 @@ fn toggle_takes_exactly_one_arrangement() {
 #[ignore = "GP41: not ported: the toggle=true + toggle(arrangement) two-states lint"]
 fn toggle_mode_plus_toggle_action_warns() {
     let ds = diags("arrangement a\nView v { Button b 50x50, toggle=true, on:activate=toggle(a) }");
-    assert!(!gogo::has_errors(&ds));
+    assert!(!gogo_ui::has_errors(&ds));
     assert!(ds.iter().any(|d| d.severity == Severity::Warning && d.message.contains("two separate")), "{ds:#?}");
 }
 
@@ -402,7 +402,7 @@ fn toggle_mode_plus_toggle_action_warns() {
 #[test]
 fn momentary_toggle_wire_is_quiet() {
     let ds = diags("arrangement a\nView v { Button b 50x50, on:activate=toggle(a) }");
-    assert!(!gogo::has_errors(&ds), "{ds:#?}");
+    assert!(!gogo_ui::has_errors(&ds), "{ds:#?}");
     assert!(!ds.iter().any(|d| d.message.contains("two separate")), "{ds:#?}");
 }
 
@@ -424,7 +424,7 @@ fn arrangement_flip_poses_tweens_and_comes_home() {
     let bar = page.find("bar").unwrap();
     let scrim = page.find("scrim").unwrap();
     let dot = page.find("dot").unwrap();
-    let collapsed = gogo::ArrangementId::from_index(page.arrangements.iter().position(|a| page.str(*a) == "collapsed").unwrap());
+    let collapsed = gogo_ui::ArrangementId::from_index(page.arrangements.iter().position(|a| page.str(*a) == "collapsed").unwrap());
     let mut rt = Runtime::new(&page);
     let f = frame(&mut page, &mut rt, 0.0);
     let (_, rects) = (f.look(), f.rects());
@@ -468,7 +468,7 @@ fn go_instant_flips_without_the_motion() {
     let c = ok(STATE_VIEW);
     let mut page = c.page;
     let bar = page.find("bar").unwrap();
-    let collapsed = gogo::ArrangementId::from_index(page.arrangements.iter().position(|a| page.str(*a) == "collapsed").unwrap());
+    let collapsed = gogo_ui::ArrangementId::from_index(page.arrangements.iter().position(|a| page.str(*a) == "collapsed").unwrap());
     let mut rt = Runtime::new(&page);
     frame(&mut page, &mut rt, 0.0);
     rt.go_instant_id(collapsed);
@@ -487,7 +487,7 @@ fn go_instant_flips_without_the_motion() {
 fn arrangement_settled_fires_once_after_the_motion() {
     let c = ok(STATE_VIEW);
     let mut page = c.page;
-    let collapsed = gogo::ArrangementId::from_index(page.arrangements.iter().position(|a| page.str(*a) == "collapsed").unwrap());
+    let collapsed = gogo_ui::ArrangementId::from_index(page.arrangements.iter().position(|a| page.str(*a) == "collapsed").unwrap());
     let mut rt = Runtime::new(&page);
     frame(&mut page, &mut rt, 0.0);
     rt.go_id(collapsed);
@@ -514,7 +514,7 @@ fn go_and_toggle_buttons_flip_the_arrangement() {
     let page = c.page;
     let go_btn = page.find("goBtn").unwrap();
     let toggle_btn = page.find("toggleBtn").unwrap();
-    let idx = |name: &str| gogo::ArrangementId::from_index(page.arrangements.iter().position(|a| page.str(*a) == name).unwrap());
+    let idx = |name: &str| gogo_ui::ArrangementId::from_index(page.arrangements.iter().position(|a| page.str(*a) == name).unwrap());
     let (collapsed, wide) = (idx("collapsed"), idx("wide"));
     let mut rt = Runtime::new(&page);
     let mut input = Input::new();
@@ -538,11 +538,11 @@ fn unknown_arrangement_flip_keeps_the_pose() {
     let page = c.page;
     let bar = page.find("bar").unwrap();
     let mut rt = Runtime::new(&page);
-    rt.go_id(gogo::ArrangementId::new(0));
-    rt.go_id(gogo::ArrangementId::new(99));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(99));
     let f = lay(&page, &rt);
     let (_, rects) = (f.look(), f.rects());
-    assert_eq!(rt.arrangement, gogo::ArrangementId::new(0), "the pose is kept");
+    assert_eq!(rt.arrangement, gogo_ui::ArrangementId::new(0), "the pose is kept");
     assert!(near(rects[bar.index()].h, 90.0), "{:?}", rects[bar.index()]);
 }
 
@@ -650,7 +650,7 @@ fn view_rule_times_the_flip_and_retargets_mid_flight() {
     let tag = (page.find("tag").unwrap()).index();
     let mut rt = Runtime::new(&page);
     frame(&mut page, &mut rt, 0.0);
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     frame(&mut page, &mut rt, 0.0);
     let f = frame(&mut page, &mut rt, 0.25);
     let (_, r) = (f.look(), f.rects());
@@ -667,7 +667,7 @@ fn view_rule_times_the_flip_and_retargets_mid_flight() {
     let f = frame(&mut page, &mut rt, 10.0);
     let (_, r) = (f.look(), f.rects());
     assert!(near(r[slab].y, 0.0) && near(r[plate].y, 0.0) && near(r[tag].y, 0.0), "home: {:?}/{:?}/{:?}", r[slab], r[plate], r[tag]);
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     frame(&mut page, &mut rt, 0.0);
     let f = frame(&mut page, &mut rt, 0.25);
     let (_, r) = (f.look(), f.rects());
@@ -696,7 +696,7 @@ fn node_pose_pair_rules_time_their_own_share() {
     let tag = (page.find("tag").unwrap()).index();
     let mut rt = Runtime::new(&page);
     frame(&mut page, &mut rt, 0.0);
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     let f = frame(&mut page, &mut rt, 0.0);
     let (_, r) = (f.look(), f.rects());
     assert!(near(r[tag].y, 100.0), "duration=0 snaps at flip time: {:?}", r[tag]);
@@ -783,7 +783,7 @@ fn alignment_pose_under_a_timed_arrangement_builds_and_glides() {
     let f = frame(&mut page, &mut rt, 0.0);
     let (_, r) = (f.look(), f.rects());
     assert_eq!(r[bar].w, 80.0, "base spans the margins: {:?}", r[bar]);
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     frame(&mut page, &mut rt, 0.0);
     let f = frame(&mut page, &mut rt, 0.1);
     let (_, r) = (f.look(), f.rects());
@@ -830,7 +830,7 @@ fn screen_class_poses_compose_with_arrangements() {
     let scrim = page.find("scrim").unwrap();
     let pane = page.find("pane").unwrap();
     let chip = page.find("chip").unwrap();
-    let open = gogo::ArrangementId::new(0);
+    let open = gogo_ui::ArrangementId::new(0);
     let mut rt = Runtime::new(&page);
     let f = lay(&page, &rt);
     let (res, r) = (f.look(), f.rects());
@@ -893,7 +893,7 @@ fn pane_axis_redeclare_and_pair_margin() {
     let (_, r) = (f.look(), f.rects());
     let p = r[pane.index()];
     assert!(near(p.x, 20.0) && near(p.right(), 100.0), "axis re-declare: {p:?}");
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     frame(&mut page, &mut rt, 0.0);
     let f = frame(&mut page, &mut rt, 0.3);
     let (res, r) = (f.look(), f.rects());
@@ -1077,7 +1077,7 @@ fn orientation_axis_poses_pairs_and_the_seat_move() {
     let (res, r) = (f.look(), f.rects());
     assert!(near(r[bar.index()].h, 44.0) && near(opacity(&page, &res, chip), 0.5), "pair over the single: {:?} chip={}", r[bar.index()], opacity(&page, &res, chip));
 
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     frame(&mut page, &mut rt, 0.3);
     rt.go_id(BASE);
     frame(&mut page, &mut rt, 0.0);
@@ -1118,7 +1118,7 @@ fn equal_count_pairs_tie_to_the_later_line() {
         let bar = page.find("bar").unwrap();
         let mut rt = Runtime::new(&page);
         rt.set_screen(&page, Orientation::Landscape, ScreenClass::LotsOfSpace);
-        rt.go_id(gogo::ArrangementId::new(0));
+        rt.go_id(gogo_ui::ArrangementId::new(0));
         let f = lay(&page, &rt);
         let (res, _) = (f.look(), f.rects());
         assert_eq!(res.placement[bar.index()].height, Len::Exact(want), "{:?}", res.placement[bar.index()]);
@@ -1168,7 +1168,7 @@ View v {
         let tag = page.find("tag").unwrap();
         let mut rt = Runtime::new(&page);
         rt.set_screen(&page, Orientation::Landscape, ScreenClass::LotsOfSpace);
-        rt.go_id(gogo::ArrangementId::new(0));
+        rt.go_id(gogo_ui::ArrangementId::new(0));
         let f = lay(&page, &rt);
         let (res, _) = (f.look(), f.rects());
         assert_eq!(res.placement[bar.index()].height, Len::Exact(want_h), "{:?}", res.placement[bar.index()]);
@@ -1208,10 +1208,10 @@ fn go_with_an_unknown_arrangement_keeps_the_pose() {
     let c = ok("arrangement wide\nView v { Panel p width=10, height=10 }\nwhen wide { p.width = 20 }\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go_id(gogo::ArrangementId::new(0));
-    assert_eq!(rt.arrangement, gogo::ArrangementId::new(0), "the declared arrangement lands");
-    rt.go_id(gogo::ArrangementId::new(7));
-    assert_eq!(rt.arrangement, gogo::ArrangementId::new(0), "an unknown index is refused and the pose keeps");
-    rt.go_id(gogo::runtime::BASE);
-    assert_eq!(rt.arrangement, gogo::runtime::BASE, "base is always reachable");
+    rt.go_id(gogo_ui::ArrangementId::new(0));
+    assert_eq!(rt.arrangement, gogo_ui::ArrangementId::new(0), "the declared arrangement lands");
+    rt.go_id(gogo_ui::ArrangementId::new(7));
+    assert_eq!(rt.arrangement, gogo_ui::ArrangementId::new(0), "an unknown index is refused and the pose keeps");
+    rt.go_id(gogo_ui::runtime::BASE);
+    assert_eq!(rt.arrangement, gogo_ui::runtime::BASE, "base is always reachable");
 }

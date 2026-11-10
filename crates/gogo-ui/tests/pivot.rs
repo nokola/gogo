@@ -5,15 +5,15 @@
 //! shift, the rotation center AND the hit walk's moved rects — look and
 //! touch agree by construction.
 
-use gogo::compile;
-use gogo::KeptFrame;
-use gogo::draw::{Draw, draw, hit};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{Color_Straight_Srgb_4xU8_RGBA, PropKey, Value};
-use gogo::runtime::{Runtime, resolve};
+use gogo_ui::compile;
+use gogo_ui::KeptFrame;
+use gogo_ui::draw::{Draw, draw, hit};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{Color_Straight_Srgb_4xU8_RGBA, PropKey, Value};
+use gogo_ui::runtime::{Runtime, resolve};
 
 fn fails(src: &str) -> bool {
-    gogo::has_errors(&compile(src, &|_| None).diags)
+    gogo_ui::has_errors(&compile(src, &|_| None).diags)
 }
 
 /// The plate quad drawn for the node filled `color` (the fixture's way to
@@ -35,7 +35,7 @@ fn quad_of(draws: &[Draw], color: Color_Straight_Srgb_4xU8_RGBA) -> Rect {
 #[test]
 fn scale_holds_the_pivot_point_still() {
     let c = compile("View v { Panel p width=100, height=50, halign=left, valign=top, background=#FF0000FF, pivot=0x0 { Rectangle c 10x10, halign=left, valign=top, color=#00FF00FF } }", &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let p = page.find("p").unwrap();
     let mut rt = Runtime::new(&page);
@@ -47,7 +47,7 @@ fn scale_holds_the_pivot_point_still() {
 
     // The same page WITHOUT pivot: the center holds (the old law).
     let c = compile("View v { Panel p width=100, height=50, halign=left, valign=top, background=#FF0000FF }", &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let p = page.find("p").unwrap();
     let mut rt = Runtime::new(&page);
@@ -62,7 +62,7 @@ fn scale_holds_the_pivot_point_still() {
 #[test]
 fn rotate_turns_about_the_pivot() {
     let c = compile("View v { Panel p width=100, height=50, halign=left, valign=top, background=#FF0000FF, pivot=1x1 }", &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let p = page.find("p").unwrap();
     let mut rt = Runtime::new(&page);
@@ -85,7 +85,7 @@ fn rotate_turns_about_the_pivot() {
 #[test]
 fn hit_follows_the_pivot() {
     let c = compile("View v { Button b text=\"x\", width=100, height=50, halign=left, valign=top, pivot=0x0 }", &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let b = page.find("b").unwrap();
     let mut rt = Runtime::new(&page);
@@ -103,7 +103,7 @@ fn hit_follows_the_pivot() {
 #[test]
 fn hit_follows_rotation() {
     let c = compile("View v { Button b text=\"x\", width=100, height=50, halign=left, valign=top }", &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let b = page.find("b").unwrap();
     let mut rt = Runtime::new(&page);
@@ -117,7 +117,7 @@ fn hit_follows_rotation() {
     // A pivoted rotation: the hinge is the top-left, the box swings so
     // its former top edge runs DOWN the y axis.
     let c = compile("View v { Button b text=\"x\", width=100, height=50, halign=left, valign=top, pivot=0x0 }", &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let b = page.find("b").unwrap();
     let mut rt = Runtime::new(&page);

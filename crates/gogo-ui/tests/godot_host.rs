@@ -44,17 +44,17 @@
 //! - reg.create / reg.bad-script-not-registered (11052, 11073): GDScript
 //!   factory door. `_store_guard_tests` (all 3): asset-store packaging
 //!   files (LICENSE, plugin.cfg, host-name scan).
-use gogo::compile::CompileOptions;
-use gogo::KeptFrame;
-use gogo::draw::{Draw, draw};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{Align, Kind, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{Runtime, resolve};
-use gogo::{Compiled, NodeId, Page, compile, compile_with};
+use gogo_ui::compile::CompileOptions;
+use gogo_ui::KeptFrame;
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{Align, Kind, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{Compiled, NodeId, Page, compile, compile_with};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -98,19 +98,19 @@ const WIDTH_FIRST_COMPONENT: &str = "Panel toast width=hug, max_width=fill, hali
 fn view_fixture_builds_with_its_include_and_a_broken_file_does_not() {
     let loader = |rel: &str| if rel == "theme_inc.gogo" { Some(THEME_INC.to_string()) } else { None };
     let c = compile(VIEW_TEST, &loader);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let rt = Runtime::new(&page);
     let f = lay(&page, &rt, 400.0, 800.0);
     let (res, _) = (f.look(), f.rects());
     let swatch = id(&page, "swatch");
     assert_eq!(res.color(&page, swatch, PropKey::Color), Some(Color_Straight_Srgb_4xU8_RGBA([0xEB, 0x64, 0x28, 0xFF])), "the include's $swatchTest reaches the swatch");
-    assert!(res.gone(&page, gogo::NodeId::new(0)), "the root's `visibility=gone` holds");
+    assert!(res.gone(&page, gogo_ui::NodeId::new(0)), "the root's `visibility=gone` holds");
     let root = res.placement[0];
     assert_eq!(root.valign, Align::End, "{root:?}");
     assert_eq!(root.margin[3], Some(72.0), "{root:?}");
     let bad = compile(BROKEN, &loader);
-    assert!(gogo::has_errors(&bad.diags), "an unterminated string must not build: {:#?}", bad.diags);
+    assert!(gogo_ui::has_errors(&bad.diags), "an unterminated string must not build: {:#?}", bad.diags);
 }
 
 /// `_view_and_reload_tests` 10115-10128 (view.panel-root-builds,
@@ -121,11 +121,11 @@ fn view_fixture_builds_with_its_include_and_a_broken_file_does_not() {
 fn panel_root_component_is_the_styled_box() {
     let c = ok(COMPONENT_BOX);
     let page = c.page;
-    assert_eq!(page.find("box"), Some(gogo::NodeId::new(0)), "the root IS the box: no wrapper node");
+    assert_eq!(page.find("box"), Some(gogo_ui::NodeId::new(0)), "the root IS the box: no wrapper node");
     let rt = Runtime::new(&page);
     let f = lay(&page, &rt, 400.0, 300.0);
     let (res, rects) = (f.look(), f.rects());
-    assert_eq!(res.color(&page, gogo::NodeId::new(0), PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([0x11, 0x22, 0x33, 0xFF])));
+    assert_eq!(res.color(&page, gogo_ui::NodeId::new(0), PropKey::Background), Some(Color_Straight_Srgb_4xU8_RGBA([0x11, 0x22, 0x33, 0xFF])));
     assert_eq!(res.placement[0].padding, [8.0, 8.0, 8.0, 8.0], "{:?}", res.placement[0]);
     assert_eq!((rects[0].w, rects[0].h), (120.0, 40.0), "{rects:?}");
 }
@@ -190,9 +190,9 @@ fn hug_box_grows_and_shrinks_back_with_its_text() {
     let back = lay(&page, &rt, 400.0, 300.0).rects()[0];
     assert!((back.w - base.w).abs() < 0.5, "{back:?} vs {base:?}");
     // Written while gone, measured on show.
-    rt.set_visible(&mut page, gogo::NodeId::new(0), false);
+    rt.set_visible(&mut page, gogo_ui::NodeId::new(0), false);
     rt.set_text(&mut page, words, "a considerably longer line of words than before");
-    rt.set_visible(&mut page, gogo::NodeId::new(0), true);
+    rt.set_visible(&mut page, gogo_ui::NodeId::new(0), true);
     let shown = lay(&page, &rt, 400.0, 300.0).rects()[0];
     assert!((shown.w - grown.w).abs() < 0.5, "{shown:?} vs {grown:?}");
     rt.set_text(&mut page, words, "short");
@@ -491,7 +491,7 @@ fn nested_container_serves_the_same_themed_minimum() {
 fn touch_target_lint_agrees_with_the_live_minimum() {
     let c = compile("theme {\n    font_size = 30\n}\nView {\n    Column {\n        Button direct {\n            Label a text=\"hi again\"\n        }\n        Button viaColumn {\n            Column {\n                Label b text=\"hi again\"\n            }\n        }\n        Button viaLayers {\n            Layers {\n                Column {\n                    Label c text=\"hi again\"\n                }\n            }\n        }\n    }\n}\n", &|_| None);
     let mut heights: Vec<(String, i32)> = Vec::new();
-    for d in c.diags.iter().filter(|d| d.severity == gogo::Severity::Warning) {
+    for d in c.diags.iter().filter(|d| d.severity == gogo_ui::Severity::Warning) {
         for n in ["direct", "viaColumn", "viaLayers"] {
             if d.message.contains(&format!("`{n}`")) {
                 let h: i32 = d.message.split("height ").nth(1).and_then(|s| s.split(' ').next()).and_then(|s| s.parse().ok()).unwrap_or(-1);
@@ -542,7 +542,7 @@ fn view_root_minimum_answers_live_and_forgets_a_transient() {
 fn registered_code_control_builds_and_an_unknown_name_is_refused() {
     let options = CompileOptions { code_controls: &["TestCustomControl"], ..CompileOptions::default() };
     let c = compile_with("View v {\n    TestCustomControl demo width=200\n}\n", &|_| None, options);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let demo = id(&page, "demo");
     assert_eq!(page.nodes[demo.index()].kind, Kind::Custom);
@@ -552,5 +552,5 @@ fn registered_code_control_builds_and_an_unknown_name_is_refused() {
     assert_eq!(r[demo.index()].w, 200.0, "{r:?}");
     let unknown = compile_with("View v {\n    NoSuchControl demo width=200\n}\n", &|_| None, options);
     assert!(unknown.diags.iter().any(|d| d.code == "G7011"), "{:#?}", unknown.diags);
-    assert!(gogo::has_errors(&unknown.diags));
+    assert!(gogo_ui::has_errors(&unknown.diags));
 }

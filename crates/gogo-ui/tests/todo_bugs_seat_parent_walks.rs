@@ -12,17 +12,17 @@
 //!   dirtied or clamped. `Runtime::set_scroll` dirties and asks the input
 //!   tick to clamp once the node is idle; `reset_view_state` forgets the
 //!   engine-held view state on a page reuse.
-use gogo::draw::hit;
-use gogo::KeptFrame;
-use gogo::input::{Input, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::NodeId;
-use gogo::runtime::{Runtime, resolve};
-use gogo::{ArrangementId, Compiled, Page, compile};
+use gogo_ui::draw::hit;
+use gogo_ui::KeptFrame;
+use gogo_ui::input::{Input, Phase, Touch};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::NodeId;
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{ArrangementId, Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -233,7 +233,7 @@ fn reset_view_state_forgets_scroll_focus_and_caret() {
     assert_eq!(fx.rt.scroll_of(sv), [0.0, 0.0], "scroll back at 0");
     assert_eq!(fx.rt.caret, None);
     assert_eq!(fx.rt.selection, None);
-    assert!(!fx.rt.has(b, gogo::runtime::FOCUSED), "the focus bit is cleared");
+    assert!(!fx.rt.has(b, gogo_ui::runtime::FOCUSED), "the focus bit is cleared");
     fx.tick(0.016);
     assert_eq!(fx.input.focused(), None, "the input machine forgot its focus owner on the tick");
     assert_eq!(fx.rt.scroll_of(sv), [0.0, 0.0], "still 0 after the clamp tick");

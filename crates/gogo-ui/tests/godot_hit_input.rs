@@ -18,16 +18,16 @@
 //! - `ihint.once-per-node` (8757): press-miss hint session bookkeeping (GP42 LATER).
 //! - `ioverlay.added/active/banner-gated/removed` (8767-8774): input overlay child node (GP43 CUT dev overlays).
 //! - `ioverlay.empty-banner/-top/-inside` (8791-8796): overlay banner plate rect (GP43 CUT dev overlays).
-use gogo::draw::hit;
-use gogo::KeptFrame;
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{Page, PropKey};
-use gogo::runtime::{Runtime, resolve};
-use gogo::{Compiled, Input, Phase, Severity, Touch, compile};
+use gogo_ui::draw::hit;
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{Page, PropKey};
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{Compiled, Input, Phase, Severity, Touch, compile};
 
 fn build(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -60,7 +60,7 @@ impl Fx {
         KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), self.frame, &FixedAdvance)
     }
 
-    fn id(&self, name: &str) -> gogo::NodeId {
+    fn id(&self, name: &str) -> gogo_ui::NodeId {
         self.page.find(name).unwrap_or_else(|| panic!("no node named `{name}`"))
     }
 
@@ -68,7 +68,7 @@ impl Fx {
         self.lay().rects()[self.id(name)]
     }
 
-    fn name_of(&self, id: gogo::NodeId) -> String {
+    fn name_of(&self, id: gogo_ui::NodeId) -> String {
         self.page.str(self.page.nodes[id].name).to_string()
     }
 
@@ -215,7 +215,7 @@ fn mouse_filter_spellings_are_refused() {
         "View v { Button b text=\"x\" {\n    when held mouse_filter=ignore\n} }",
     ] {
         let c = compile(src, &|_| None);
-        assert!(gogo::has_errors(&c.diags), "must not build: {src}\n{:#?}", c.diags);
+        assert!(gogo_ui::has_errors(&c.diags), "must not build: {src}\n{:#?}", c.diags);
     }
 }
 
@@ -227,7 +227,7 @@ fn mouse_filter_spellings_are_refused() {
 fn mouse_filter_in_a_child_target_when_is_refused() {
     let c = compile("View v { Button b text=\"x\" {\n    when held flash.mouse_filter=stop\n}\n Rectangle flash 8x8 }", &|_| None);
     assert!(!c.diags.is_empty(), "a retired word inside a when must be diagnosed");
-    assert!(gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
 }
 
 /// `_mouse_filter_retirement_tests` 8610-8611 (retire.bare-word): a bare
@@ -237,7 +237,7 @@ fn mouse_filter_in_a_child_target_when_is_refused() {
 #[test]
 fn bare_interactive_word_is_refused() {
     let c = compile("View v { Button b interactive }", &|_| None);
-    assert!(gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     assert!(codes("View v { Button b interactive }").contains(&"G0046".to_string()));
 }
 
@@ -247,7 +247,7 @@ fn bare_interactive_word_is_refused() {
 #[test]
 fn bare_interactive_as_name_is_refused() {
     let c = compile("View v { Button interactive }", &|_| None);
-    assert!(gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
 }
 
 /// `_mouse_filter_retirement_tests` 8614-8615 (retire.type-check):
@@ -256,7 +256,7 @@ fn bare_interactive_as_name_is_refused() {
 #[test]
 fn interactive_wants_a_bool() {
     let c = compile("View v { Button b interactive=maybe }", &|_| None);
-    assert!(gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
 }
 
 // ----- _interactive_when_tests 8619-8667 -------------------------------------
@@ -366,7 +366,7 @@ fn sized_or_opted_out_surfaces_pass_the_touch_lint() {
 fn pointer_wire_on_a_passive_node_is_refused() {
     let src = "View v { Column c {\nLabel deadLabel text=\"x\", on:pointer=OnDeadLabelGuiInput\nLayers liveRow interactive=true, touch_target=off, height=40, on:pointer=OnLiveRowGuiInput\nButton ok text=\"ok\", min_width=44, min_height=44, on:activate=OnOkActivate\n} }";
     let c = compile(src, &|_| None);
-    let errors: Vec<&gogo::Diagnostic> = c.diags.iter().filter(|d| d.severity == Severity::Error).collect();
+    let errors: Vec<&gogo_ui::Diagnostic> = c.diags.iter().filter(|d| d.severity == Severity::Error).collect();
     assert_eq!(errors.len(), 1, "{:#?}", c.diags);
     assert_eq!(errors[0].code, "G0073");
     assert_eq!(errors[0].line, 2, "the dead Label's line");
@@ -502,7 +502,7 @@ fn safe_margin_on_a_fill_axis_is_the_fed_inset_unconverted() {
 #[test]
 fn safe_on_a_key_that_names_no_edge_is_refused() {
     let c = compile("View v { Column c spacing=safe }", &|_| None);
-    assert!(gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
 }
 
 /// `_safe_inset_tests` 8913-8914 (safe.retired-wrapper): the `SafeArea`

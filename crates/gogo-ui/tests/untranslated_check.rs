@@ -4,8 +4,8 @@
 //! untranslated`. The app's build turns it on so no English-only text
 //! ships by accident (2026-09-29: the audit found ~190 page strings and
 //! ~75 code strings with no key).
-use gogo::page::{NO_KEY, PropKey, Value};
-use gogo::{CompileOptions, Compiled, compile_with};
+use gogo_ui::page::{NO_KEY, PropKey, Value};
+use gogo_ui::{CompileOptions, Compiled, compile_with};
 
 fn build(src: &str, files: &[(&str, &str)], require_keys: bool) -> Compiled {
     let loader = |path: &str| files.iter().find(|(p, _)| *p == path).map(|(_, text)| text.to_string());

@@ -36,13 +36,13 @@
 //! fixture is inlined WITHOUT its `anim releasePop { slot.thumb.… }` block
 //! (the `slot.` anim lane is GP32-owed and fails G0063; no check in this
 //! batch reads it).
-use gogo::draw::{Draw, SLIDER_FILL, SLIDER_TRACK, TOGGLE_OFF, draw};
-use gogo::KeptFrame;
-use gogo::input::{Event, EventKind, Input, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect, TOGGLE_PILL};
-use gogo::page::{Action, Kind, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{DISABLED, HELD, Runtime, SELECTED, resolve};
-use gogo::{Compiled, Diagnostic, Page, compile};
+use gogo_ui::draw::{Draw, SLIDER_FILL, SLIDER_TRACK, TOGGLE_OFF, draw};
+use gogo_ui::KeptFrame;
+use gogo_ui::input::{Event, EventKind, Input, Phase, Touch};
+use gogo_ui::layout::{FixedAdvance, Rect, TOGGLE_PILL};
+use gogo_ui::page::{Action, Kind, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
+use gogo_ui::runtime::{DISABLED, HELD, Runtime, SELECTED, resolve};
+use gogo_ui::{Compiled, Diagnostic, Page, compile};
 
 /// The Godot suite's `FADER_SRC` (run_tests.gd:3385) in the Rust dialect,
 /// minus the `anim releasePop` block (see the module doc).
@@ -68,7 +68,7 @@ fn build(src: &str) -> Compiled {
 
 fn ok(src: &str) -> Compiled {
     let c = build(src);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -105,7 +105,7 @@ impl Fx {
         let (_, rects) = (f.look(), f.rects());
         rects[(self.node(name)).index()]
     }
-    fn node(&self, name: &str) -> gogo::NodeId {
+    fn node(&self, name: &str) -> gogo_ui::NodeId {
         self.page.find(name).unwrap_or_else(|| panic!("no node {name:?}"))
     }
     fn touch(&mut self, phase: Phase, x: f32, y: f32, t: f64) -> Vec<Event> {
@@ -332,7 +332,7 @@ fn render_autowire_by_name_and_code_writes_stay_silent() {
 #[test]
 fn render_word_is_gone() {
     assert!(has_code(&diags("View v { Slider s render=gogo, value=30 }"), "G2001"));
-    assert!(gogo::has_errors(&diags("theme { Slider render=native }\nView v { Label l text=\"x\" }")));
+    assert!(gogo_ui::has_errors(&diags("theme { Slider render=native }\nView v { Label l text=\"x\" }")));
 }
 
 /// `_render_tests` 4232-4237 (`render.button-for-applies-natively`): a
@@ -354,8 +354,8 @@ fn render_button_for_style_applies() {
 /// slots. Rust refuses it too (the areas/for= round's checked styles).
 #[test]
 fn render_button_slot_paths_are_refused() {
-    assert!(gogo::has_errors(&diags("style Bad for=Button, slot.leading.size=20\nView v { Button b .Bad text=\"x\" }")));
-    assert!(gogo::has_errors(&diags("View v { Button b text=\"x\", slot.leading.size=20 }")));
+    assert!(gogo_ui::has_errors(&diags("style Bad for=Button, slot.leading.size=20\nView v { Button b .Bad text=\"x\" }")));
+    assert!(gogo_ui::has_errors(&diags("View v { Button b text=\"x\", slot.leading.size=20 }")));
 }
 
 /// `_render_tests` 4242 (`render.err-button-fill`): a `slot leading { … }`
@@ -364,7 +364,7 @@ fn render_button_slot_paths_are_refused() {
 #[test]
 #[ignore = "GP41: not ported: slot-fill diagnostics (Godot: `has no slots`; Rust: builds, the Label draws inside the Button)"]
 fn render_button_slot_fill_is_refused() {
-    assert!(gogo::has_errors(&diags("View v { Button b text=\"x\" { slot leading { Label text=\"i\" } } }")));
+    assert!(gogo_ui::has_errors(&diags("View v { Button b text=\"x\" { slot leading { Label text=\"i\" } } }")));
 }
 
 /// `_render_tests` 4249-4254, 4325-4327 (`render.button-entry-for-legal`,
@@ -387,7 +387,7 @@ fn render_theme_entry_style_applies() {
 #[test]
 fn render_shadowing_a_builtin_kind_is_refused() {
     let c = build("control Slider $value=0 {\n Layers { slot track { } }\n}\nView v { Slider s value=1 }");
-    assert!(gogo::has_errors(&c.diags), "shadowing a built-in is an error; got kind {:?}", c.page.nodes[(c.page.find("s").unwrap()).index()].kind);
+    assert!(gogo_ui::has_errors(&c.diags), "shadowing a built-in is an error; got kind {:?}", c.page.nodes[(c.page.find("s").unwrap()).index()].kind);
 }
 
 /// `_render_tests` 4283-4284 (`render.err-nativelook-in-user-tree`):
@@ -442,7 +442,7 @@ fn render_theme_variant_entry_look() {
 fn render_theme_entry_defaults_a_user_control() {
     let src = format!("{FADER_SRC}style Chunky for=Fader, slot.track.corner_radius=5\ntheme {{ Fader .Chunky }}\nView v {{ Fader f 100x24 }}");
     let c = build(&src);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
 }
 
 /// `_render_tests` 4398-4405, 4432-4435 (`render.err-entry-unknown-type`,
@@ -468,11 +468,11 @@ fn render_theme_entry_needs_a_control_kind() {
 /// entries wins.
 #[test]
 fn render_theme_entry_name_wiring_placement_size_and_dup_are_refused() {
-    assert!(gogo::has_errors(&diags("theme { Slider vol value=1 }\nView v { Label l text=\"x\" }")), "has no name");
-    assert!(gogo::has_errors(&diags("theme { Slider on:change=OnX }\nView v { Label l text=\"x\" }")), "no name to wire");
-    assert!(gogo::has_errors(&diags("theme { Slider width=200 }\nView v { Label l text=\"x\" }")), "is placement");
-    assert!(gogo::has_errors(&diags("theme { Slider 200x20 }\nView v { Label l text=\"x\" }")), "placement");
-    assert!(gogo::has_errors(&diags("theme { Slider step=5 }\ntheme { Slider step=9 }\nView v { Label l text=\"x\" }")), "duplicate theme entry");
+    assert!(gogo_ui::has_errors(&diags("theme { Slider vol value=1 }\nView v { Label l text=\"x\" }")), "has no name");
+    assert!(gogo_ui::has_errors(&diags("theme { Slider on:change=OnX }\nView v { Label l text=\"x\" }")), "no name to wire");
+    assert!(gogo_ui::has_errors(&diags("theme { Slider width=200 }\nView v { Label l text=\"x\" }")), "is placement");
+    assert!(gogo_ui::has_errors(&diags("theme { Slider 200x20 }\nView v { Label l text=\"x\" }")), "placement");
+    assert!(gogo_ui::has_errors(&diags("theme { Slider step=5 }\ntheme { Slider step=9 }\nView v { Label l text=\"x\" }")), "duplicate theme entry");
 }
 
 /// `_render_tests` 4426-4431 (`render.err-entry-style-mismatch`): a style
@@ -482,7 +482,7 @@ fn render_theme_entry_name_wiring_placement_size_and_dup_are_refused() {
 #[test]
 fn render_theme_entry_style_kind_must_match() {
     let src = format!("{FADER_SRC}style Chunky for=Fader, slot.track.corner_radius=5\ntheme {{ Slider .Chunky }}\nView v {{ Fader f 100x24 }}");
-    assert!(gogo::has_errors(&diags(&src)));
+    assert!(gogo_ui::has_errors(&diags(&src)));
 }
 
 /// `_render_tests` 4262-4264 (`render.user-control-redundant-true`):
@@ -491,7 +491,7 @@ fn render_theme_entry_style_kind_must_match() {
 /// property.
 #[test]
 fn render_word_is_gone_on_user_controls_too() {
-    assert!(gogo::has_errors(&diags(&format!("{FADER_SRC}View v {{ Fader f 100x24, render=gogo }}"))));
+    assert!(gogo_ui::has_errors(&diags(&format!("{FADER_SRC}View v {{ Fader f 100x24, render=gogo }}"))));
 }
 
 // ------------------------------------------------- _slider_conformance_tests
@@ -728,7 +728,7 @@ fn wiring_auto_by_name_and_explicit() {
 #[test]
 fn wiring_unknown_handler_name_is_the_hosts_rustc_error() {
     let c = build("View v { Button b on:activate=OnPaintButtonPresed }");
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let b = c.page.find("b").unwrap();
     let h = c.page.handlers[c.page.nodes[b.index()].handlers.0 as usize];
     assert!(matches!(h.action, Action::Named(id) if c.page.str(id) == "OnPaintButtonPresed"));
@@ -777,7 +777,7 @@ fn wiring_emit_relays_from_button_widget_and_slider() {
 #[test]
 fn wiring_unknown_emit_name_is_the_hosts_rustc_error() {
     let c = build("View v { Button b on:activate=emit(relayd) }");
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     assert!(matches!(c.page.handlers[0].action, Action::Emit(id) if c.page.str(id) == "relayd"));
 }
 
@@ -786,7 +786,7 @@ fn wiring_unknown_emit_name_is_the_hosts_rustc_error() {
 /// argument and drops the rest silently.
 #[test]
 fn wiring_emit_takes_exactly_one_name() {
-    assert!(gogo::has_errors(&diags("View v { Button b on:activate=emit(relayed, 2) }")));
+    assert!(gogo_ui::has_errors(&diags("View v { Button b on:activate=emit(relayed, 2) }")));
 }
 
 /// `wire.emit-ok` (run_tests.gd:4759): `Button signals text=$label` — a
@@ -796,9 +796,9 @@ fn wiring_emit_takes_exactly_one_name() {
 #[test]
 fn signals_flag_before_a_key_member_needs_no_comma() {
     let d = diags("widget RelayRow $label=\"\" {\n    Button signals text=$label\n}\nView v { RelayRow row label=\"r\" }");
-    assert!(!gogo::has_errors(&d), "{d:#?}");
+    assert!(!gogo_ui::has_errors(&d), "{d:#?}");
     let d = diags("widget RelayRow $label=\"\" {\n    Button signals, text=$label\n}\nView v { RelayRow row label=\"r\" }");
-    assert!(!gogo::has_errors(&d), "the comma stays legal: {d:#?}");
+    assert!(!gogo_ui::has_errors(&d), "the comma stays legal: {d:#?}");
 }
 
 // ----------------------------------------------------------------- _error_tests
@@ -831,11 +831,11 @@ fn errors_suggest_the_nearest_word() {
 #[test]
 fn errors_unknown_property_is_refused_with_a_signpost() {
     let d = diags("View v { Button b textt=\"x\" }");
-    assert!(gogo::has_errors(&d) && d.iter().any(|x| x.message.contains("text")), "{d:#?}");
+    assert!(gogo_ui::has_errors(&d) && d.iter().any(|x| x.message.contains("text")), "{d:#?}");
     let d = diags("View v { Button b foreground=#FF0000FF }");
-    assert!(gogo::has_errors(&d) && d.iter().any(|x| x.message.contains("font_color=")), "{d:#?}");
+    assert!(gogo_ui::has_errors(&d) && d.iter().any(|x| x.message.contains("font_color=")), "{d:#?}");
     let d = diags("View v { Button b text_color=#FF0000FF }");
-    assert!(gogo::has_errors(&d) && d.iter().any(|x| x.message.contains("font_color=")), "{d:#?}");
+    assert!(gogo_ui::has_errors(&d) && d.iter().any(|x| x.message.contains("font_color=")), "{d:#?}");
 }
 
 /// `_error_tests` 4799-4803 (`err.signpost-color-static`,
@@ -845,9 +845,9 @@ fn errors_unknown_property_is_refused_with_a_signpost() {
 #[test]
 fn errors_color_on_a_non_owner_is_refused() {
     let d = diags("View v { Button b color=#FF0000FF }");
-    assert!(gogo::has_errors(&d) && d.iter().any(|x| x.message.contains("font_color=") && x.message.contains("background=")), "{d:#?}");
+    assert!(gogo_ui::has_errors(&d) && d.iter().any(|x| x.message.contains("font_color=") && x.message.contains("background=")), "{d:#?}");
     let d = diags("View v { Button b {\n    when held color=#FF0000FF\n} }");
-    assert!(gogo::has_errors(&d) && d.iter().any(|x| x.message.contains("font_color=")), "{d:#?}");
+    assert!(gogo_ui::has_errors(&d) && d.iter().any(|x| x.message.contains("font_color=")), "{d:#?}");
 }
 
 /// `_error_tests` 4804-4805 (`err.color-on-owner-ok`): a node that OWNS a
@@ -866,7 +866,7 @@ fn errors_color_on_an_owner_is_fine() {
 #[test]
 fn errors_dup_name_reserved_word_and_line_number() {
     assert!(has_code(&diags("View v { Column c { Button x\n Button x } }"), "G0044"));
-    assert!(gogo::has_errors(&diags("slot")));
+    assert!(gogo_ui::has_errors(&diags("slot")));
     let d = diags("View v {\n\tButton ok\n\tBogus b\n}");
     let bad = d.iter().find(|x| x.code == "G7011").unwrap_or_else(|| panic!("{d:#?}"));
     assert_eq!(bad.line, 3, "{d:#?}");
@@ -884,9 +884,9 @@ fn errors_dup_name_reserved_word_and_line_number() {
 #[test]
 fn diag_anim_on_a_when_line_is_refused() {
     let d = diags("style MenuButton width=220, height=48 {\n    when held background=#FFFFFFff, anim=test\n}\nanim test {\n    b.scale to=5, duration=0.8\n}\nView v { Button b .MenuButton text=\"X\" }");
-    assert!(gogo::has_errors(&d) && d.iter().any(|x| x.message.contains("anim")), "{d:#?}");
+    assert!(gogo_ui::has_errors(&d) && d.iter().any(|x| x.message.contains("anim")), "{d:#?}");
     let d = diags("anim t2 {\n    b.scale to=0.9, duration=0.1\n}\nView v { Button b {\n    when held anim=t2\n} }");
-    assert!(gogo::has_errors(&d), "{d:#?}");
+    assert!(gogo_ui::has_errors(&d), "{d:#?}");
 }
 
 /// `_diagnostic_tests` 4923-4936 (`diag.g4003-fires`): one property with
@@ -895,7 +895,7 @@ fn diag_anim_on_a_when_line_is_refused() {
 #[test]
 fn diag_two_writers_on_one_property_is_refused() {
     let d = diags("style MB width=100, height=48 {\n    when held background=#FFFFFFff\n    transition any -> held anim=t\n}\nanim t {\n    b.scale to=5, duration=0.8\n}\nView root {\n    Button b .MB text=\"X\" {\n        when held scale=0.96\n    }\n}");
-    assert!(gogo::has_errors(&d), "{d:#?}");
+    assert!(gogo_ui::has_errors(&d), "{d:#?}");
 }
 
 /// `_diagnostic_tests` 4945-4955 (`diag.g7003-fires`, `diag.g7003-help`):
@@ -983,16 +983,16 @@ fn diag_source_and_registry_match_both_ways() {
         }
     }
     assert!(!codes.is_empty());
-    let registered: Vec<&str> = gogo::diag::REGISTRY.iter().map(|(c, _)| *c).collect();
+    let registered: Vec<&str> = gogo_ui::diag::REGISTRY.iter().map(|(c, _)| *c).collect();
     let unregistered: Vec<&String> = codes.iter().filter(|c| !registered.contains(&c.as_str())).collect();
     assert!(unregistered.is_empty(), "codes emitted but not in diag::REGISTRY: {unregistered:?}");
     let unemitted: Vec<&&str> = registered.iter().filter(|c| !codes.contains(&c.to_string())).collect();
     assert!(unemitted.is_empty(), "codes in diag::REGISTRY that nothing emits: {unemitted:?}");
-    let revived: Vec<&String> = codes.iter().filter(|c| gogo::diag::RETIRED.contains(&c.as_str())).collect();
+    let revived: Vec<&String> = codes.iter().filter(|c| gogo_ui::diag::RETIRED.contains(&c.as_str())).collect();
     assert!(revived.is_empty(), "retired code numbers came back: {revived:?}");
     // The addon's published registry, when this checkout has it beside
     // the crate: the shared set is exactly the deliberate one.
-    let addon = root.join("../../../FantasiaGodot/addons/gogo/gogo_diagnostics.gd");
+    let addon = root.join("tests/fixtures/godot/gogo_diagnostics.gd");
     let Ok(text) = std::fs::read_to_string(&addon) else { return };
     let mut published: Vec<String> = Vec::new();
     for line in text.lines() {
@@ -1006,7 +1006,7 @@ fn diag_source_and_registry_match_both_ways() {
     assert!(published.len() >= 50, "the addon registry parse broke: {} codes", published.len());
     let mut shared: Vec<&str> = registered.iter().copied().filter(|c| published.iter().any(|p| p == c)).collect();
     shared.sort_unstable();
-    let mut declared: Vec<&str> = gogo::diag::SHARED_WITH_ADDON.to_vec();
+    let mut declared: Vec<&str> = gogo_ui::diag::SHARED_WITH_ADDON.to_vec();
     declared.sort_unstable();
     assert_eq!(shared, declared, "a code shared with the published registry is shared on purpose only — same meaning, listed in diag::SHARED_WITH_ADDON");
 }
@@ -1070,12 +1070,12 @@ View v { Column c halign=left, valign=top { Spinner sp; Spinner sp2 { when busy 
 fn every_diag_code_has_a_teaching_entry_and_no_entry_is_stale() {
     let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/gogo-errors.md")).expect("docs/gogo-errors.md");
     let headings: Vec<&str> = doc.lines().filter_map(|l| l.strip_prefix("## ")).filter_map(|l| l.split_whitespace().next()).collect();
-    for (code, _) in gogo::diag::REGISTRY {
+    for (code, _) in gogo_ui::diag::REGISTRY {
         assert!(headings.contains(code), "`{code}` is registered but has no `## {code}` entry in docs/gogo-errors.md");
     }
     for h in &headings {
-        assert!(gogo::diag::REGISTRY.iter().any(|(c, _)| c == h), "docs/gogo-errors.md teaches `{h}`, which is not a registered code");
-        assert!(!gogo::diag::RETIRED.contains(h), "docs/gogo-errors.md teaches retired `{h}`");
+        assert!(gogo_ui::diag::REGISTRY.iter().any(|(c, _)| c == h), "docs/gogo-errors.md teaches `{h}`, which is not a registered code");
+        assert!(!gogo_ui::diag::RETIRED.contains(h), "docs/gogo-errors.md teaches retired `{h}`");
     }
 }
 
@@ -1102,7 +1102,7 @@ fn slot_paths_restyle_a_controls_regions() {
 #[test]
 fn a_for_style_wears_on_its_control_only() {
     ok(&format!("{FADER_SRC}style T for=Fader, slot.track.height=4\nView v {{ Fader f .T 100x24 }}"));
-    assert!(gogo::has_errors(&diags(&format!("{FADER_SRC}style T for=Fader, slot.track.height=4\nView v {{ Button b .T text=\"x\" }}"))));
+    assert!(gogo_ui::has_errors(&diags(&format!("{FADER_SRC}style T for=Fader, slot.track.height=4\nView v {{ Button b .T text=\"x\" }}"))));
 }
 
 /// A `when` response through a slot path moves and tints — and rides
@@ -1136,13 +1136,13 @@ fn slot_path_fences() {
     let d = diags(&format!("{FADER_SRC}style X for=Fader, slot.label.font_size=12\nView v {{ Fader f .X 100x24 }}"));
     assert!(d.iter().any(|g| g.message.contains("fill it")), "{d:#?}");
     // motion is `when` vocabulary, not a base look
-    assert!(gogo::has_errors(&diags(&format!("{FADER_SRC}style X for=Fader, slot.thumb.scale=1.2\nView v {{ Fader f .X 100x24 }}"))));
+    assert!(gogo_ui::has_errors(&diags(&format!("{FADER_SRC}style X for=Fader, slot.thumb.scale=1.2\nView v {{ Fader f .X 100x24 }}"))));
     // a plain style has no contract to check against
-    assert!(gogo::has_errors(&diags("style X slot.track.height=4\nView v { Panel p .X }")));
+    assert!(gogo_ui::has_errors(&diags("style X slot.track.height=4\nView v { Panel p .X }")));
     // nor does a plain node
-    assert!(gogo::has_errors(&diags("View v { Rectangle r 10x10, slot.track.height=4, color=red }")));
+    assert!(gogo_ui::has_errors(&diags("View v { Rectangle r 10x10, slot.track.height=4, color=red }")));
     // a `when` response holds motion and tint, not geometry
-    assert!(gogo::has_errors(&diags(&format!("{FADER_SRC}style X for=Fader {{ when dragging slot.track.height=2 }}\nView v {{ Fader f .X 100x24 }}"))));
+    assert!(gogo_ui::has_errors(&diags(&format!("{FADER_SRC}style X for=Fader {{ when dragging slot.track.height=2 }}\nView v {{ Fader f .X 100x24 }}"))));
 }
 
 /// `extends=` carries slot writes down the chain like props — the
@@ -1182,7 +1182,7 @@ View v {{ Label l text=\"x\" }}"));
 
 style X for=Fader {{ when compact slot.thumb.opacity=0.5 }}
 View v {{ Fader f .X 100x24 }}"));
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
 }
 
 /// A PLAIN style's contract states check where the style is APPLIED —
@@ -1197,7 +1197,7 @@ View v {{ Fader f .X 100x24 }}"));
     // declared: builds, and the D2 advisory names the for= fix
     let c = build(&format!("{FADER_SRC}style X {{ when dragging opacity=0.5 }}
 View v {{ Fader f .X 100x24 }}"));
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     assert!(c.diags.iter().any(|g| g.message.contains("for=Fader")), "the D2 advisory: {:#?}", c.diags);
     // a custom word on a built-in wearer refuses — it raises universals
     let d = diags("style X { when busy opacity=0.5 }
@@ -1231,9 +1231,9 @@ fn theme_entry_tiers_and_v1_fences() {
     let fx = Fx::new("style S for=Slider, step=10\ntheme { Slider .S step=25 }\nView v { Slider a value=30, width=200 }");
     assert_eq!(fx.value("a"), 25.0, "the entry line wins over its style");
     // a user-control entry takes a style, not prop defaults
-    assert!(gogo::has_errors(&diags(&format!("{FADER_SRC}theme {{ Fader step=5 }}\nView v {{ Fader f 100x24 }}"))));
+    assert!(gogo_ui::has_errors(&diags(&format!("{FADER_SRC}theme {{ Fader step=5 }}\nView v {{ Fader f 100x24 }}"))));
     // a variant entry can't restyle a user control yet
-    assert!(gogo::has_errors(&diags(&format!("{FADER_SRC}style C for=Fader, slot.track.height=4\ntheme dark {{ Fader .C }}\nView v {{ Fader f 100x24 }}"))));
+    assert!(gogo_ui::has_errors(&diags(&format!("{FADER_SRC}style C for=Fader, slot.track.height=4\ntheme dark {{ Fader .C }}\nView v {{ Fader f 100x24 }}"))));
     // a variant entry's style is base-look only — whens don't switch yet
-    assert!(gogo::has_errors(&diags("style H for=Button { when held opacity=0.8 }\ntheme dark { Button .H }\nView v { Button b text=\"x\" }")));
+    assert!(gogo_ui::has_errors(&diags("style H for=Button { when held opacity=0.8 }\ntheme dark { Button .H }\nView v { Button b text=\"x\" }")));
 }

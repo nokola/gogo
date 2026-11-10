@@ -4,15 +4,15 @@
 //! units) and the stops in 0..1 of the period. Without a span the run is
 //! the box as before (`repeat=mirror` folds once, `repeat=none` clamps).
 //! Since D21 a gradient is ONE entry followed by its stop records.
-use gogo::draw::{Draw, draw};
-use gogo::KeptFrame;
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::runtime::{Runtime, resolve};
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::runtime::{Runtime, resolve};
 
 /// Each gradient's (stop positions, period, angle).
 fn gradients(src: &str) -> Vec<(Vec<f32>, (f32, f32), f32)> {
-    let c = gogo::compile(src, &|_: &str| None::<String>);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    let c = gogo_ui::compile(src, &|_: &str| None::<String>);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let rt = Runtime::new(&page);
     let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 340.0, 14.0), &FixedAdvance);

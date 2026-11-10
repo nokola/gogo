@@ -4,17 +4,17 @@
 //! draw pass, `scale` shrinks glyphs/corners/borders with the box, and a
 //! player whose channels a newer one took keeps its clock and hands over
 //! the true base.
-use gogo::anim::Finish;
-use gogo::KeptFrame;
-use gogo::draw::{Draw, draw, hit};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::DISABLED_OPACITY;
-use gogo::runtime::{HELD, Runtime, resolve, resolve_animated};
-use gogo::{Compiled, Page, compile};
+use gogo_ui::anim::Finish;
+use gogo_ui::KeptFrame;
+use gogo_ui::draw::{Draw, draw, hit};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::DISABLED_OPACITY;
+use gogo_ui::runtime::{HELD, Runtime, resolve, resolve_animated};
+use gogo_ui::{Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -254,7 +254,7 @@ fn offscreen_names_shoved_nodes_not_parked_ones() {
     let rt = Runtime::new(page);
     let f = KeptFrame::fresh(page, resolve(page, &rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
     let rects = f.rects();
-    let names: Vec<&str> = gogo::layout::offscreen(page, f.frame(), Rect::new(0.0, 0.0, 400.0, 400.0)).iter().map(|id| page.str(page.nodes[id.index()].name)).collect();
+    let names: Vec<&str> = gogo_ui::layout::offscreen(page, f.frame(), Rect::new(0.0, 0.0, 400.0, 400.0)).iter().map(|id| page.str(page.nodes[id.index()].name)).collect();
     assert_eq!(names, vec!["low"], "{rects:?}");
 }
 
@@ -289,7 +289,7 @@ fn margins_never_stretch_a_hug_box() {
 fn scale_shrinks_glyphs_corners_and_borders_with_the_box() {
     let c = ok("arrangement small\nView v {\n Button b text=\"OK\", width=100, height=40, halign=left, valign=top, corner_radius=8, border_thickness=2, border_color=#FF0000FF, font_size=20\n}\nwhen small { b.scale = 0.5 }\n");
     let mut rt = Runtime::new(&c.page);
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     let list = draws(&c.page, &rt);
     // The plate: half the box (about its center), half the corner, half the border.
     let plate = list

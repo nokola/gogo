@@ -4,12 +4,12 @@
 //! `swing` motion channel and the draw walk wraps the node in a
 //! `SwingPush` with the WP7 camera (`swing_focal`); an anim can drive the
 //! same lane by name.
-use gogo::draw::{Draw, draw, swing_focal};
-use gogo::KeptFrame;
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::NO_STR;
-use gogo::runtime::{Runtime, resolve, TAP_PULSE_ANGLE_DEG, TAP_PULSE_BACK_SEC, TAP_PULSE_OUT_SEC};
-use gogo::{Finish, Page, compile, has_errors};
+use gogo_ui::draw::{Draw, draw, swing_focal};
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::NO_STR;
+use gogo_ui::runtime::{Runtime, resolve, TAP_PULSE_ANGLE_DEG, TAP_PULSE_BACK_SEC, TAP_PULSE_OUT_SEC};
+use gogo_ui::{Finish, Page, compile, has_errors};
 
 fn ok(src: &str) -> Page {
     let c = compile(src, &|_| None);

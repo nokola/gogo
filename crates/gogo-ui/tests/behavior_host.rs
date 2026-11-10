@@ -5,12 +5,12 @@
 //! runtime keeps the gesture law (`held`, `edit`/`change`, restore on
 //! cancel, the declared edges); the behavior is the pointer math.
 
-use gogo::input::{Event, EventKind, Input, Key, Mods, Phase, Touch};
-use gogo::KeptFrame;
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{NodeId, Page, PropKey, Value};
-use gogo::runtime::{HELD, Runtime, resolve};
-use gogo::{Behavior, BehaviorSpec, Claim, CompileOptions, Cx, KEYS_ARROWS, KeyAction, Payload, compile_with};
+use gogo_ui::input::{Event, EventKind, Input, Key, Mods, Phase, Touch};
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{NodeId, Page, PropKey, Value};
+use gogo_ui::runtime::{HELD, Runtime, resolve};
+use gogo_ui::{Behavior, BehaviorSpec, Claim, CompileOptions, Cx, KEYS_ARROWS, KeyAction, Payload, compile_with};
 
 /// A vertical fader: the value follows y over the track, bottom = min.
 /// Arrows step; Home/End are NOT its (left to the contract's `keys`).
@@ -88,7 +88,7 @@ struct Fx {
 impl Fx {
     fn new(src: &str) -> Fx {
         let c = compile_with(src, &|_| None, CompileOptions { behaviors: &[FADER_SPEC, EDGE_SPEC], ..CompileOptions::default() });
-        assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+        assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
         let page = c.page;
         let rt = Runtime::new(&page);
         let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
@@ -123,7 +123,7 @@ fn changes(ev: &[Event]) -> Vec<f32> {
 }
 
 fn signals(page: &Page, ev: &[Event]) -> Vec<String> {
-    ev.iter().filter_map(|e| match (&e.kind, &e.action) { (EventKind::Signal, Some(gogo::page::Action::Emit(id))) => Some(page.str(*id).to_string()), _ => None }).collect()
+    ev.iter().filter_map(|e| match (&e.kind, &e.action) { (EventKind::Signal, Some(gogo_ui::page::Action::Emit(id))) => Some(page.str(*id).to_string()), _ => None }).collect()
 }
 
 /// The host behavior's math drives the value; the runtime's law wraps

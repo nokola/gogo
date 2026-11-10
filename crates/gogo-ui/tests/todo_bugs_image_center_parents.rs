@@ -7,14 +7,14 @@
 //! at the top of its row. `layout::is_container` names the split;
 //! `godot_lang.rs` `resolver_basics_image_semantics` keeps the Column
 //! case.
-use gogo::layout::{FixedAdvance, Rect, is_container, layout};
-use gogo::page::Kind;
-use gogo::runtime::{Runtime, resolve};
-use gogo::{Compiled, Page, compile};
+use gogo_ui::layout::{FixedAdvance, Rect, is_container, layout};
+use gogo_ui::page::Kind;
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 

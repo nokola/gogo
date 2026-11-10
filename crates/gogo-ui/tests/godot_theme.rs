@@ -18,15 +18,15 @@
 //!   `radial.real-input-claims` / `real-input-releases` (4095-4105): the
 //!   fixture script `knob_behavior.gd` drives the gesture (script-backed
 //!   control input, `_gui_input` / viewport `push_input`).
-use gogo::draw::{Draw, draw};
-use gogo::KeptFrame;
-use gogo::layout::{FixedAdvance, Rect};
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::{FixedAdvance, Rect};
 use std::sync::Arc;
 
-use gogo::locale::{Keys, Locale, display};
-use gogo::page::{NO_KEY, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{Runtime, deref, resolve};
-use gogo::{Compiled, Diagnostic, Page, Severity, compile};
+use gogo_ui::locale::{Keys, Locale, display};
+use gogo_ui::page::{NO_KEY, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
+use gogo_ui::runtime::{Runtime, deref, resolve};
+use gogo_ui::{Compiled, Diagnostic, Page, Severity, compile};
 
 fn build(src: &str) -> Compiled {
     compile(src, &|_| None)
@@ -34,7 +34,7 @@ fn build(src: &str) -> Compiled {
 
 fn ok(src: &str) -> Compiled {
     let c = build(src);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -279,7 +279,7 @@ fn missing_font_file_fails_the_build() {
     let dir = std::env::temp_dir().join(format!("gogo_theme_missing_font_{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("scratch dir");
     std::fs::write(dir.join("page.gogo"), "View v { Label l text=\"x\", font=\"res://fonts/missing.ttf\" }\n").expect("write page");
-    let result = gogo::build_pages(&dir, &dir.join("out.rs"), gogo::BuildOptions::new(&dir));
+    let result = gogo_ui::build_pages(&dir, &dir.join("out.rs"), gogo_ui::BuildOptions::new(&dir));
     let _ = std::fs::remove_dir_all(&dir);
     let err = result.expect_err("a missing font must fail the build");
     assert!(err.contains("missing.ttf") && err.contains("not found"), "{err}");
@@ -583,14 +583,14 @@ fn literal_shows_and_the_key_rides_with_the_text() {
 /// show the table's text, a key the table lacks falls back to its literal,
 /// clearing the locale shows the literals again, and a code-side lookup
 /// follows the same fallback rule (key → literal → the key itself).
-/// Rust: `Runtime::set_locale` with a `gogo::Locale`; the code-side
+/// Rust: `Runtime::set_locale` with a `gogo_ui::Locale`; the code-side
 /// lookup is `locale::display` (key → table → literal; Godot's third step,
 /// the key's own name, has no caller here).
 #[test]
 fn locale_table_translates_and_falls_back() {
     static XX: &[(&str, &str)] = &[("trGreet", "hello"), ("trBye", "goodbye"), ("4by3", "4:3")];
     let src = "View v { Column c {\n    Label a text=\"hello\"/trGreet\n    Label b text=\"goodbye\"/trBye\n    Label d text=\"4:3\"/4by3\n} }\n";
-    let mut fx = Fx::with_locale(src, Locale::build(XX, &[(gogo::KeyId::new(0), "bonjour"), (gogo::KeyId::new(2), "4:3-XX")]));
+    let mut fx = Fx::with_locale(src, Locale::build(XX, &[(gogo_ui::KeyId::new(0), "bonjour"), (gogo_ui::KeyId::new(2), "4:3-XX")]));
     assert_eq!(fx.keys.names, ["trGreet", "trBye", "4by3"], "the ids the table above indexes");
     assert_eq!(fx.drawn_text("bonjour"), ("bonjour".to_string(), "trGreet".to_string()), "trGreet translated");
     assert_eq!(fx.drawn_text("goodbye").0, "goodbye", "a key the table lacks falls back to the literal");
@@ -642,7 +642,7 @@ fn cross_file_key_drift_is_refused() {
     std::fs::create_dir_all(&dir).expect("scratch dir");
     std::fs::write(dir.join("a.gogo"), "View v { Label t text=\"one\"/trCross }\n").expect("write a");
     std::fs::write(dir.join("b.gogo"), "View v { Label t text=\"two\"/trCross }\n").expect("write b");
-    let result = gogo::build_pages(&dir, &dir.join("out.rs"), gogo::BuildOptions::new(&dir));
+    let result = gogo_ui::build_pages(&dir, &dir.join("out.rs"), gogo_ui::BuildOptions::new(&dir));
     let _ = std::fs::remove_dir_all(&dir);
     let err = result.expect_err("the second file must fail the build");
     assert!(err.contains("G8001") && err.contains("a.gogo"), "{err}");
@@ -676,7 +676,7 @@ fn key_suffix_misuse_is_refused() {
 fn uses_path_never_carries_a_key() {
     let loader = |path: &str| if path == "styles/theme.gogo" { Some("$pad = 4\n".to_string()) } else { None };
     let c = compile("uses \"styles/theme.gogo\"/trPath\nView v { Button b text=\"x\" }\n", &loader);
-    assert!(gogo::has_errors(&c.diags), "a keyed uses path must not build: {:#?}", c.diags);
+    assert!(gogo_ui::has_errors(&c.diags), "a keyed uses path must not build: {:#?}", c.diags);
 }
 
 /// `_translation_tests` 2971-2975 (`tr.opacity-suffix-intact`): the color
@@ -780,12 +780,12 @@ fn for_style_restyles_slots_by_path() {
 #[ignore = "GP40: `for=` checked styles and their lints not ported (the Fader fixture's slot. anim lane is G0063 first — GP32 owes it)"]
 fn for_style_lints() {
     let d16 = build("control Chip2 $value=0 {\n    state marked\n    Layers {\n        slot mark height=6 { }\n    }\n}\nstyle ChipHover for=Chip2 { when hovered opacity=0.9 }\nView v { Chip2 c .ChipHover }\n");
-    assert!(!gogo::has_errors(&d16.diags), "{:#?}", d16.diags);
+    assert!(!gogo_ui::has_errors(&d16.diags), "{:#?}", d16.diags);
     assert!(d16.diags.iter().any(|d| d.severity == Severity::Warning && d.message.contains("doesn't declare 'hovered'")), "{:#?}", d16.diags);
     let one = build(&with_fader("style Ghosty { when dragging opacity=0.8 }\nFader a .Ghosty 100x24"));
     assert!(one.diags.iter().any(|d| d.severity == Severity::Warning && d.message.contains("add `for=Fader`")), "{:#?}", one.diags);
     let two = build(&format!("{FADER_SRC}control Mini $value=0 {{\n    state dragging\n    Layers {{\n        slot track height=8 {{ }}\n    }}\n}}\nstyle Ghosty {{ when dragging opacity=0.8 }}\nView v {{\n Fader a .Ghosty 100x24\n Mini b .Ghosty 100x8\n}}\n"));
-    assert!(!gogo::has_errors(&two.diags), "{:#?}", two.diags);
+    assert!(!gogo_ui::has_errors(&two.diags), "{:#?}", two.diags);
     assert!(!two.diags.iter().any(|d| d.message.contains("add `for=")), "{:#?}", two.diags);
 }
 
@@ -940,7 +940,7 @@ fn wedge_formula_serves_draw_and_hit() {
 fn knob_at_zero_reveals_nothing() {
     let fx = Fx::new(&with_knob("Knob z 48x48, value=0, halign=left, valign=top"));
     let progress = fx.id("z/progress");
-    assert_ne!(gogo::draw::hit(&fx.page, fx.kept.frame(), 24.0, 4.0, true), Some(progress), "the empty wedge hits nothing");
+    assert_ne!(gogo_ui::draw::hit(&fx.page, fx.kept.frame(), 24.0, 4.0, true), Some(progress), "the empty wedge hits nothing");
 }
 
 /// `_radial_tests` 4017-4056 (`radial.knob-ok`, `radial.aperture`,

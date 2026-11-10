@@ -1,33 +1,33 @@
 //! GP40 color/non-motion anim lanes: any word a `transition` rule can
 //! move, `play(anim)` can drive too — one list, two doors. Colors mix
-//! under the one law (premultiplied Oklab, `gogo::color`); `.a` on a
+//! under the one law (premultiplied Oklab, `gogo_ui::color`); `.a` on a
 //! color word moves alpha alone while the hue keeps following its
 //! ladder; and one ownership law covers motion and prop lanes alike
 //! (a playing anim owns its lane, newer players take over, `stop`
 //! restores, a finished anim holds its end pose).
 
-use gogo::Compiled;
-use gogo::anim::Finish;
-use gogo::color::mix_rgba;
-use gogo::compile;
-use gogo::page::{PropKey, Color_Straight_Srgb_4xU8_RGBA, StrId, Value};
-use gogo::runtime::{HELD, Runtime, resolve, resolve_animated};
+use gogo_ui::Compiled;
+use gogo_ui::anim::Finish;
+use gogo_ui::color::mix_rgba;
+use gogo_ui::compile;
+use gogo_ui::page::{PropKey, Color_Straight_Srgb_4xU8_RGBA, StrId, Value};
+use gogo_ui::runtime::{HELD, Runtime, resolve, resolve_animated};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
 fn fails(src: &str) -> bool {
-    gogo::has_errors(&compile(src, &|_| None).diags)
+    gogo_ui::has_errors(&compile(src, &|_| None).diags)
 }
 
 fn messages(src: &str) -> String {
     compile(src, &|_| None).diags.iter().map(|d| format!("{}: {}\n", d.code, d.message)).collect()
 }
 
-fn anim_id(page: &gogo::Page, name: &str) -> StrId {
+fn anim_id(page: &gogo_ui::Page, name: &str) -> StrId {
     page.intern_lookup(name)
 }
 

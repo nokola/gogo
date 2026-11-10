@@ -19,18 +19,18 @@
 //! - `fvis.authored-replaces-ring` 9668, `fring.default-injected` .. `fring.shape-composes`
 //!   9689-9716: the engine focus StyleBox ring.
 //! - `input.twin-first` 9830-9859: engine touch-emulation dispatch order.
-use gogo::input::{Event, EventKind, FLING_BOOST, Input, Phase, SCROLL_DEADZONE, Touch};
-use gogo::KeptFrame;
-use gogo::layout::{FixedAdvance, Rect, SCROLL_BAR_EPX, scroll_axes_of};
-use gogo::page::{Kind, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{FOCUSED, HELD, HOVERED, Runtime, SELECTED, resolve, resolve_animated};
-use gogo::{Compiled, Page, compile};
+use gogo_ui::input::{Event, EventKind, FLING_BOOST, Input, Phase, SCROLL_DEADZONE, Touch};
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::{FixedAdvance, Rect, SCROLL_BAR_EPX, scroll_axes_of};
+use gogo_ui::page::{Kind, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
+use gogo_ui::runtime::{FOCUSED, HELD, HOVERED, Runtime, SELECTED, resolve, resolve_animated};
+use gogo_ui::{Compiled, Page, compile};
 
 const GREEN: [u8; 4] = [0, 255, 0, 255];
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -39,11 +39,11 @@ fn codes(src: &str) -> Vec<String> {
 }
 
 fn warnings(c: &Compiled) -> Vec<String> {
-    c.diags.iter().filter(|d| d.severity == gogo::Severity::Warning).map(|d| format!("{} {}", d.code, d.message)).collect()
+    c.diags.iter().filter(|d| d.severity == gogo_ui::Severity::Warning).map(|d| format!("{} {}", d.code, d.message)).collect()
 }
 
 fn errors(src: &str) -> Vec<String> {
-    compile(src, &|_| None).diags.iter().filter(|d| d.severity == gogo::Severity::Error).map(|d| format!("{} {}", d.code, d.message)).collect()
+    compile(src, &|_| None).diags.iter().filter(|d| d.severity == gogo_ui::Severity::Error).map(|d| format!("{} {}", d.code, d.message)).collect()
 }
 
 /// One page, one runtime, one input machine: compile → resolve → layout →
@@ -207,7 +207,7 @@ fn a_both_hug_scroll_warns_that_nothing_scrolls() {
 fn a_raw_scroll_mode_word_is_refused_and_the_hug_decides() {
     let raw = "View v { Scroll s width=hug, height=100, horizontal_scroll_mode=1 { Column c { Rectangle r 40x40, color=red } } }";
     let c = compile(raw, &|_| None);
-    assert!(gogo::has_errors(&c.diags) && c.diags.iter().any(|d| d.code == "G2001" && d.message.contains("allow=")), "{:#?}", c.diags);
+    assert!(gogo_ui::has_errors(&c.diags) && c.diags.iter().any(|d| d.code == "G2001" && d.message.contains("allow=")), "{:#?}", c.diags);
     let fx = Fx::new("View v { Scroll s width=hug, height=100 { Column c { Rectangle r 40x40, color=red } } }");
     assert_eq!(fx.axes("s"), (false, true));
 }
@@ -319,7 +319,7 @@ fn a_capped_hug_axis_scrolls_past_its_cap() {
 #[test]
 fn list_takes_bars_and_redirects_allow_to_layout() {
     let c = compile("View v { List picker bars=never { empty { } repeat rows by $item.id { ListItem { Label text=$item.title } } } }", &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     // Godot reads the internal GogoListScroll's modes (vertical SHOW_NEVER,
     // horizontal DISABLED); there is no such node to read here.
     let allow = errors("View v { List picker allow=vertical { empty { } repeat rows by $item.id { ListItem { Label text=$item.title } } } }");
@@ -507,7 +507,7 @@ fn accessibility_fixtures_build() {
 #[test]
 fn a_list_with_keyed_repeat_rows_builds() {
     let c = compile("View v { List picker spacing=2 { empty { Label text=\"none\" } repeat tasks by $item.id { ListItem { Label text=$item.title } } } }", &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
 }
 
 /// `_accessibility_tests` 9568-9593 (`a11y.reduce-effective`,
@@ -540,9 +540,9 @@ fn accessibility_name_translates_by_its_key() {
     assert_eq!(c.keys.names, ["undoA11y"]);
     let tb = c.page.find("tb").unwrap();
     let v = c.page.prop(tb, PropKey::AccessibilityName);
-    let locale = gogo::Locale::build(XX, &[(gogo::KeyId::new(0), "Undo-XX")]);
+    let locale = gogo_ui::Locale::build(XX, &[(gogo_ui::KeyId::new(0), "Undo-XX")]);
     let shown = match v {
-        Some(Value::VText { text, key }) => gogo::locale::display(&c.page, Some(&locale), text, key),
+        Some(Value::VText { text, key }) => gogo_ui::locale::display(&c.page, Some(&locale), text, key),
         other => panic!("{other:?}"),
     };
     assert_eq!(shown, "Undo-XX");
@@ -708,7 +708,7 @@ fn motion_pumps_run_exactly_while_something_moves() {
     let mut fx = Fx::new(STATE_VIEW);
     assert!(!fx.rt.animating() && !fx.input.is_gliding());
     let _ = resolve_animated(&fx.page, &mut fx.rt);
-    fx.rt.go_id(gogo::ArrangementId::new(0));
+    fx.rt.go_id(gogo_ui::ArrangementId::new(0));
     let _ = resolve_animated(&fx.page, &mut fx.rt);
     assert!(fx.rt.animating(), "a timed arrangement flip pumps while gliding");
     fx.rt.tick(&mut fx.page, 0.5);

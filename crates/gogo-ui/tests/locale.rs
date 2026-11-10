@@ -7,12 +7,12 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use gogo::draw::{Draw, draw};
-use gogo::KeptFrame;
-use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::locale::{KeyName, Keys, Locale, display};
-use gogo::runtime::{Runtime, resolve};
-use gogo::{CompileOptions, Compiled, NO_KEY, Page, PropKey, Value, compile, compile_with};
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::{FixedAdvance, Rect, layout};
+use gogo_ui::locale::{KeyName, Keys, Locale, display};
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{CompileOptions, Compiled, NO_KEY, Page, PropKey, Value, compile, compile_with};
 
 static TABLE: &[(&str, &str)] = &[("ok", "OK"), ("size", "Size")];
 
@@ -20,14 +20,14 @@ static TABLE: &[(&str, &str)] = &[("ok", "OK"), ("size", "Size")];
 #[derive(Clone, Copy)]
 struct K(u32);
 impl KeyName for K {
-    fn id(self) -> gogo::KeyId {
-        gogo::KeyId::new(self.0)
+    fn id(self) -> gogo_ui::KeyId {
+        gogo_ui::KeyId::new(self.0)
     }
 }
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -54,7 +54,7 @@ fn a_keyed_label_is_measured_at_its_translated_width() {
     let a = (page.find("a").unwrap()).index();
     let mut rt = Runtime::new(&page);
     assert_eq!(rects(&page, &rt)[a].w, 11.0, "no locale: the literal's width");
-    rt.set_locale(Some(Arc::new(Locale::build(TABLE, &[(gogo::KeyId::new(0), "Bestätigen")]))));
+    rt.set_locale(Some(Arc::new(Locale::build(TABLE, &[(gogo_ui::KeyId::new(0), "Bestätigen")]))));
     assert_eq!(rects(&page, &rt)[a].w, 55.0, "with a locale: the translation's width, not the English one");
     assert_eq!(shown(&page, &rt, "a"), "Bestätigen");
     // The draw command still carries the ids; the renderer resolves them
@@ -73,7 +73,7 @@ fn a_key_the_locale_lacks_shows_english_and_a_literal_ignores_the_locale() {
     let c = ok("View v { Label a text=\"OK\"/ok; Label b text=\"plain\" }");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.set_locale(Some(Arc::new(Locale::build(TABLE, &[(gogo::KeyId::new(1), "Größe")]))));
+    rt.set_locale(Some(Arc::new(Locale::build(TABLE, &[(gogo_ui::KeyId::new(1), "Größe")]))));
     assert_eq!(shown(&page, &rt, "a"), "OK", "key 0 untranslated: English");
     assert_eq!(shown(&page, &rt, "b"), "plain", "no key: the literal, whatever the locale");
 }
@@ -89,7 +89,7 @@ fn set_key_follows_the_locale_and_set_text_is_a_literal() {
     assert_eq!(shown(&page, &rt, "a"), "", "a code-set key with no locale has no string to show");
     rt.set_locale(Some(Arc::new(Locale::english(TABLE))));
     assert_eq!(shown(&page, &rt, "a"), "Size", "English-only locale: the table's English");
-    rt.set_locale(Some(Arc::new(Locale::build(TABLE, &[(gogo::KeyId::new(1), "Größe"), (gogo::KeyId::new(0), "Okay")]))));
+    rt.set_locale(Some(Arc::new(Locale::build(TABLE, &[(gogo_ui::KeyId::new(1), "Größe"), (gogo_ui::KeyId::new(0), "Okay")]))));
     assert_eq!(shown(&page, &rt, "a"), "Größe");
     assert_eq!(shown(&page, &rt, "b"), "Okay");
     // `set_text` = a literal: the key is gone, the locale does not apply.
@@ -121,19 +121,19 @@ fn keys_are_global_across_files_and_g8001_crosses_files() {
     let options = CompileOptions { keys: Some(&keys), ..CompileOptions::default() };
     let a = compile_with("View v { Label x text=\"Size\"/size; Label y text=\"OK\"/ok }", &|_| None, options);
     let b = compile_with("View w { Label z text=\"OK\"/ok }", &|_| None, options);
-    assert!(!gogo::has_errors(&a.diags) && !gogo::has_errors(&b.diags), "{:#?} {:#?}", a.diags, b.diags);
+    assert!(!gogo_ui::has_errors(&a.diags) && !gogo_ui::has_errors(&b.diags), "{:#?} {:#?}", a.diags, b.diags);
     let key_of = |c: &Compiled, name: &str| match c.page.prop(c.page.find(name).unwrap(), PropKey::Text) {
         Some(Value::VText { key, .. }) => key,
         other => panic!("{other:?}"),
     };
-    assert_eq!(key_of(&a, "x"), gogo::KeyId::new(0));
-    assert_eq!(key_of(&a, "y"), gogo::KeyId::new(1));
-    assert_eq!(key_of(&b, "z"), gogo::KeyId::new(1), "`/ok` in the second file is the same id");
+    assert_eq!(key_of(&a, "x"), gogo_ui::KeyId::new(0));
+    assert_eq!(key_of(&a, "y"), gogo_ui::KeyId::new(1));
+    assert_eq!(key_of(&b, "z"), gogo_ui::KeyId::new(1), "`/ok` in the second file is the same id");
     assert_eq!(keys.borrow().names, vec!["size".to_string(), "ok".to_string()]);
     let drift = compile_with("View u { Label q text=\"Okay\"/ok }", &|_| None, options);
     assert!(drift.diags.iter().any(|d| d.code == "G8001" && d.message.contains("carries \"OK\" elsewhere")), "{:#?}", drift.diags);
     // A table seeded from a build's KEYS gives a runtime compile the same ids.
     let seeded = RefCell::new(Keys::from_table(&[("size", "Size"), ("ok", "OK")]));
     let hot = compile_with("View h { Label z text=\"OK\"/ok }", &|_| None, CompileOptions { keys: Some(&seeded), ..CompileOptions::default() });
-    assert_eq!(key_of(&hot, "z"), gogo::KeyId::new(1));
+    assert_eq!(key_of(&hot, "z"), gogo_ui::KeyId::new(1));
 }

@@ -3,9 +3,9 @@
 //! cannot read `KIND_WORDS`. This keeps the two equal, so a kind added to
 //! `page.rs` cannot stay highlighted as an unknown widget: the test fails
 //! with the list to paste.
-use gogo::page::KIND_WORDS;
+use gogo_ui::page::KIND_WORDS;
 
-const GRAMMAR: &str = include_str!("../vscode/syntaxes/gogo.tmLanguage.json");
+const GRAMMAR: &str = include_str!("../../../vscode/syntaxes/gogo.tmLanguage.json");
 
 /// The `(a|b|c)` word list of the named repository rule: the first group
 /// after `\s*` in its `match`. The grammar writes every head rule as
@@ -33,7 +33,7 @@ fn the_grammar_names_every_builtin_kind_and_only_those() {
 
 #[test]
 fn the_extension_declares_the_gogo_extension_and_the_grammar_file() {
-    let manifest = include_str!("../vscode/package.json");
+    let manifest = include_str!("../../../vscode/package.json");
     assert!(manifest.contains("\".gogo\""), "package.json registers .gogo");
     assert!(manifest.contains("./syntaxes/gogo.tmLanguage.json") && manifest.contains("\"source.gogo\""));
     assert!(GRAMMAR.contains("\"scopeName\": \"source.gogo\""));

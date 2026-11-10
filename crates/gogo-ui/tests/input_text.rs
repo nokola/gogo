@@ -3,13 +3,13 @@
 //! `change` ONCE per genuine change (gogo_value_events.gd's
 //! changed-means-CHANGED law), arrows move the caret. The soft-keyboard
 //! raising is the device half and stays open (the tracker row).
-use gogo::draw::{Draw, draw};
-use gogo::KeptFrame;
-use gogo::input::{Event, EventKind, Input, Key, MOUSE_ID, Mods, Phase, SEL_HANDLE_EPX, Touch, sel_handle_rect};
-use gogo::layout::{DEFAULT_FONT_SIZE, FixedAdvance, Rect};
-use gogo::page::{NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{FOCUSED, Runtime, resolve};
-use gogo::{Page, compile};
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::KeptFrame;
+use gogo_ui::input::{Event, EventKind, Input, Key, MOUSE_ID, Mods, Phase, SEL_HANDLE_EPX, Touch, sel_handle_rect};
+use gogo_ui::layout::{DEFAULT_FONT_SIZE, FixedAdvance, Rect};
+use gogo_ui::page::{NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
+use gogo_ui::runtime::{FOCUSED, Runtime, resolve};
+use gogo_ui::{Page, compile};
 
 const SRC: &str = "View v { Column c halign=left, valign=top { Input field width=200, height=36, on:change=FieldChange, on:edit=FieldEdit; Button b text=\"ok\", width=80, height=30 } }";
 
@@ -24,7 +24,7 @@ struct Fx {
 impl Fx {
     fn new() -> Fx {
         let c = compile(SRC, &|_| None);
-        assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+        assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
         let page = c.page;
         let rt = Runtime::new(&page);
         Fx { page, rt, input: Input::new(), mods: Mods::NONE }
@@ -113,7 +113,7 @@ fn the_caret_moves_and_rides_the_draw_list() {
 #[test]
 fn placeholder_shows_while_empty_and_max_length_caps_typing() {
     let c = compile("View v { Input field width=200, height=36, placeholder_text=\"Search\", max_length=3, on:edit=FieldEdit }", &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
     let mut input = Input::new();
@@ -339,7 +339,7 @@ fn blur_clears_the_selection() {
 fn paste_replaces_the_selection_and_max_length_caps_the_result() {
     let src = "View v { Input f width=200, height=36, max_length=5, on:edit=FEdit }";
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
     let mut input = Input::new();
@@ -351,8 +351,8 @@ fn paste_replaces_the_selection_and_max_length_caps_the_result() {
     input.touch(&page, &mut rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Up, x: r.x + 5.0, y: r.y + 5.0, t: 0.1, id: 1 });
     let ev = input.paste(&mut page, &mut rt, "hello world");
     assert_eq!(ev.iter().filter(|e| matches!(e.kind, EventKind::Edit(_))).count(), 1, "{ev:?}");
-    let text = |page: &Page, rt: &Runtime| match resolve(page, rt).prop(page, field, gogo::page::PropKey::Text) {
-        Some(gogo::page::Value::VText { text, .. }) => page.str(text).to_string(),
+    let text = |page: &Page, rt: &Runtime| match resolve(page, rt).prop(page, field, gogo_ui::page::PropKey::Text) {
+        Some(gogo_ui::page::Value::VText { text, .. }) => page.str(text).to_string(),
         _ => String::new(),
     };
     assert_eq!(text(&page, &rt), "hello", "max_length trims the paste to fit");

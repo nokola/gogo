@@ -8,14 +8,14 @@
 //! instead of 60 on an Adreno 330. If the skip goes away nothing LOOKS
 //! wrong — only old phones get slow again — so these count the commands.
 //! The taps must not care: a transparent Button is still a Button.
-use gogo::draw::{Draw, draw, hit};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::runtime::{Runtime, resolve};
-use gogo::{Color_Straight_Srgb_4xU8_RGBA, KeptFrame};
+use gogo_ui::draw::{Draw, draw, hit};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{Color_Straight_Srgb_4xU8_RGBA, KeptFrame};
 
 fn draws(src: &str) -> Vec<Draw> {
-    let c = gogo::compile(src, &|_: &str| None::<String>);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    let c = gogo_ui::compile(src, &|_: &str| None::<String>);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let rt = Runtime::new(&page);
     let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
@@ -72,8 +72,8 @@ fn a_transparent_fill_with_a_border_that_shows_still_draws() {
 
 #[test]
 fn a_transparent_button_still_takes_the_tap() {
-    let c = gogo::compile("View v { Button b 100x100, halign=left, valign=top, background=#00000000 }", &|_: &str| None::<String>);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    let c = gogo_ui::compile("View v { Button b 100x100, halign=left, valign=top, background=#00000000 }", &|_: &str| None::<String>);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let rt = Runtime::new(&page);
     let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);

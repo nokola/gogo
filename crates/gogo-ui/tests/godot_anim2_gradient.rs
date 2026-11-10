@@ -28,13 +28,13 @@
 //!   FILL_CONIC.
 use std::path::PathBuf;
 
-use gogo::anim::Finish;
-use gogo::KeptFrame;
-use gogo::draw::{Draw, GradientKind, draw};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{HOVERED, Runtime, resolve};
-use gogo::{BuildOptions, Compiled, Diagnostic, Page, build_pages, compile, has_errors};
+use gogo_ui::anim::Finish;
+use gogo_ui::KeptFrame;
+use gogo_ui::draw::{Draw, GradientKind, draw};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
+use gogo_ui::runtime::{HOVERED, Runtime, resolve};
+use gogo_ui::{BuildOptions, Compiled, Diagnostic, Page, build_pages, compile, has_errors};
 
 // ------------------------------------------------------------------ helpers
 
@@ -86,7 +86,7 @@ fn lanes(page: &Page, anim: &str) -> Vec<Lane> {
         .map(|t| Lane {
             node: page.str(page.nodes[t.node.index()].name).to_string(),
             channel: page.str(t.channel).to_string(),
-            from: t.from.and_then(gogo::page::Value::as_num),
+            from: t.from.and_then(gogo_ui::page::Value::as_num),
             to: t.to.as_num().unwrap_or(f32::NAN),
             start: t.start,
             duration: t.duration,

@@ -21,18 +21,18 @@
 //!
 //! Dialect: Godot's bare-root snippets (`Check c …`) sit under a `View`
 //! here (the Rust root rule, G7003); `res://` and `on:` words unchanged.
-use gogo::compile;
-use gogo::KeptFrame;
-use gogo::draw::{Draw, draw};
-use gogo::input::{Event, EventKind, Input, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{Action, Kind, NO_CHOICE, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{HELD, Runtime, SELECTED, resolve};
-use gogo::{Compiled, Page};
+use gogo_ui::compile;
+use gogo_ui::KeptFrame;
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::input::{Event, EventKind, Input, Phase, Touch};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{Action, Kind, NO_CHOICE, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
+use gogo_ui::runtime::{HELD, Runtime, SELECTED, resolve};
+use gogo_ui::{Compiled, Page};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -41,7 +41,7 @@ fn codes(src: &str) -> Vec<String> {
 }
 
 fn builds(src: &str) -> bool {
-    !gogo::has_errors(&compile(src, &|_| None).diags)
+    !gogo_ui::has_errors(&compile(src, &|_| None).diags)
 }
 
 /// A compiled page with a Runtime and an Input: tap by node name, read
@@ -61,7 +61,7 @@ impl Fx {
     fn lay(&self) -> KeptFrame {
         KeptFrame::fresh(&self.page, resolve(&self.page, &self.rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance)
     }
-    fn id(&self, name: &str) -> gogo::NodeId {
+    fn id(&self, name: &str) -> gogo_ui::NodeId {
         self.page.find(name).unwrap_or_else(|| panic!("no node {name:?}"))
     }
     fn selected(&self, name: &str) -> bool {

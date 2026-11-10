@@ -7,12 +7,12 @@
 //! runtime `_gui_input` claim; gogo declares it, so the file says which
 //! keys a control eats.)
 
-use gogo::compile;
-use gogo::KeptFrame;
-use gogo::input::{Event, EventKind, Input, Key, Mods};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{NodeId, Page};
-use gogo::runtime::{FOCUSED, Runtime, resolve};
+use gogo_ui::compile;
+use gogo_ui::KeptFrame;
+use gogo_ui::input::{Event, EventKind, Input, Key, Mods};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{NodeId, Page};
+use gogo_ui::runtime::{FOCUSED, Runtime, resolve};
 
 const STEPPER: &str = "control Stepper $value=0 {\n    state_builtin focused, disabled\n    keys arrows, home_end\n    Layers { Rectangle r 10x10, color=#FF0000FF }\n}\n";
 
@@ -27,7 +27,7 @@ struct Fx {
 impl Fx {
     fn new(src: &str) -> Fx {
         let c = compile(src, &|_| None);
-        assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+        assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
         let page = c.page;
         let rt = Runtime::new(&page);
         let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
@@ -93,7 +93,7 @@ fn a_disabled_instance_claims_nothing() {
     let a = fx.page.find("a").unwrap();
     fx.key(Key::Tab);
     assert_eq!(fx.focused(), Some(a));
-    fx.rt.set_state(a, gogo::runtime::DISABLED, true);
+    fx.rt.set_state(a, gogo_ui::runtime::DISABLED, true);
     let ev = fx.key(Key::Right);
     assert!(!ev.iter().any(|e| matches!(e.kind, EventKind::Key { .. })), "{ev:?}");
 }
@@ -102,7 +102,7 @@ fn a_disabled_instance_claims_nothing() {
 /// `keys` on a `widget` (no script to answer) all refuse.
 #[test]
 fn keys_fences() {
-    let fails = |src: &str| gogo::has_errors(&compile(src, &|_| None).diags);
+    let fails = |src: &str| gogo_ui::has_errors(&compile(src, &|_| None).diags);
     assert!(fails("control C $v=0 { keys frobnicate\n Layers { Rectangle r 10x10 } }\nView v { C c }"), "unknown group");
     assert!(fails("control C $v=0 { keys tab\n Layers { Rectangle r 10x10 } }\nView v { C c }"), "tab is never claimable");
     assert!(fails("control C $v=0 { keys\n Layers { Rectangle r 10x10 } }\nView v { C c }"), "an empty claim");

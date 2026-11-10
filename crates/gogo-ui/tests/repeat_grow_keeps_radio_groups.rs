@@ -7,15 +7,15 @@
 //! panel picked its mode — the radio-group table had stayed at the
 //! build-time length.
 
-use gogo::compile;
-use gogo::runtime::{Runtime, SELECTED};
+use gogo_ui::compile;
+use gogo_ui::runtime::{Runtime, SELECTED};
 
 const SRC: &str = "View v {\n    choice mode value=a {\n        Radio a\n        Radio b\n    }\n    Column {\n        repeat rows capacity=1 { Label cell text=\"x\" }\n    }\n}\n";
 
 #[test]
 fn a_code_pick_after_a_repeat_grew_clears_its_group() {
     let c = compile(SRC, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
     let rows = page.find("rows").unwrap();

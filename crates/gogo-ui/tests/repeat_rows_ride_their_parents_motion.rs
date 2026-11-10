@@ -7,17 +7,17 @@
 //! the placed tree as a transform, so whatever hangs under a mover moves
 //! — rows, seated nodes, anything cloned after the build.
 
-use gogo::anim::Finish;
-use gogo::KeptFrame;
-use gogo::draw::{Draw, draw};
-use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::NodeId;
-use gogo::runtime::{Runtime, resolve, resolve_animated};
-use gogo::{Compiled, compile};
+use gogo_ui::anim::Finish;
+use gogo_ui::KeptFrame;
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::layout::{FixedAdvance, Rect, layout};
+use gogo_ui::page::NodeId;
+use gogo_ui::runtime::{Runtime, resolve, resolve_animated};
+use gogo_ui::{Compiled, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 

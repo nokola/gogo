@@ -135,7 +135,7 @@ fn emit_theme(page: &Page, out: &mut String) {
         out.push_str(&format!("        {} = {},\n", key_variant(page.str(*n)), n.index()));
     }
     out.push_str("    }\n\n");
-    out.push_str("    impl gogo::ThemeName for Theme {\n        fn id(self) -> gogo::StrId {\n            gogo::StrId::from_index(self as usize)\n        }\n    }\n\n");
+    out.push_str("    impl gogo_ui::ThemeName for Theme {\n        fn id(self) -> gogo_ui::StrId {\n            gogo_ui::StrId::from_index(self as usize)\n        }\n    }\n\n");
 }
 
 /// The page's arrangements as code: `enum Arrangement` (one variant per
@@ -153,7 +153,7 @@ fn emit_arrangements(page: &Page, out: &mut String) {
     }
     out.push_str(&format!("        Base = {},\n", u32::MAX));
     out.push_str("    }\n\n");
-    out.push_str("    impl gogo::ArrangementName for Arrangement {\n        fn id(self) -> gogo::ArrangementId {\n            gogo::ArrangementId::new(self as u32)\n        }\n    }\n\n");
+    out.push_str("    impl gogo_ui::ArrangementName for Arrangement {\n        fn id(self) -> gogo_ui::ArrangementId {\n            gogo_ui::ArrangementId::new(self as u32)\n        }\n    }\n\n");
 }
 
 /// The page's own anims as code: `enum Anim` (one variant per `anim` the
@@ -188,7 +188,7 @@ fn emit_anims(page: &Page, out: &mut String) -> Result<(), String> {
         out.push_str(&format!("        {v} = {},\n", id.index()));
     }
     out.push_str("    }\n\n");
-    out.push_str("    impl gogo::AnimName for Anim {\n        fn id(self) -> gogo::StrId {\n            gogo::StrId::new(self as u32)\n        }\n    }\n\n");
+    out.push_str("    impl gogo_ui::AnimName for Anim {\n        fn id(self) -> gogo_ui::StrId {\n            gogo_ui::StrId::new(self as u32)\n        }\n    }\n\n");
     Ok(())
 }
 
@@ -348,7 +348,7 @@ pub fn emit_widget_names(pages: &[(&str, &Page)]) -> Result<String, String> {
         out.push_str(&names_impl(&widget_struct(widget), rows, ""));
     }
     if !shapes.is_empty() {
-        out = format!("use gogo::NodeId;\n\n{out}");
+        out = format!("use gogo_ui::NodeId;\n\n{out}");
     }
     Ok(out)
 }
@@ -367,7 +367,7 @@ fn plain_type(ty: &str) -> &str {
 /// to a cloned subtree (a repeat slot) — a node field by `NodeId::rebase`,
 /// an instance field by its own `rebase`. `indent` is the module nesting.
 fn names_impl(struct_name: &str, rows: &[WidgetRow], indent: &str) -> String {
-    let mut s = format!("{indent}impl {struct_name} {{\n{indent}    /// The same names over the instance `instance` of a page compiled at run time (a test's host page); `None` when a body node is missing.\n{indent}    pub fn bind(page: &gogo::Page, instance: &str) -> Option<{struct_name}> {{\n{indent}        Some({struct_name} {{\n");
+    let mut s = format!("{indent}impl {struct_name} {{\n{indent}    /// The same names over the instance `instance` of a page compiled at run time (a test's host page); `None` when a body node is missing.\n{indent}    pub fn bind(page: &gogo_ui::Page, instance: &str) -> Option<{struct_name}> {{\n{indent}        Some({struct_name} {{\n");
     for r in rows {
         if r.field == "root" {
             s.push_str(&format!("{indent}            root: page.find(instance)?,\n"));
@@ -409,7 +409,7 @@ fn repeat_templates(page: &Page) -> Vec<(NodeId, String)> {
 pub fn emit_rust(page: &Page, module: &str) -> Result<String, String> {
     let mut out = String::new();
     out.push_str(&format!("#[allow(unused_imports, clippy::all)]\npub mod {module} {{\n"));
-    out.push_str("    use gogo::page::*;\n    use gogo::page::{Kind::*, Len::*, Align::*, PropKey::*, Value::*, State::*, Action::*, Auto::*, Payload::*};\n\n");
+    out.push_str("    use gogo_ui::page::*;\n    use gogo_ui::page::{Kind::*, Len::*, Align::*, PropKey::*, Value::*, State::*, Action::*, Auto::*, Payload::*};\n\n");
     emit_arrangements(page, &mut out);
     emit_theme(page, &mut out);
     emit_anims(page, &mut out).map_err(|e| format!("{module}: {e}"))?;
@@ -521,7 +521,7 @@ pub fn key_variant(name: &str) -> String {
 /// The build's translation keys as code, at the `ui` module's top level:
 /// `KEYS: &[(name, English)]` by `KeyId`, `enum Key` (one variant per key,
 /// `key_variant` spelling, `#[repr(u32)]` = the id), `Key::from_name` for
-/// loading a translation file, and the `gogo::KeyName` impl that lets
+/// loading a translation file, and the `gogo_ui::KeyName` impl that lets
 /// `Runtime::set_key` take a `Key` and nothing else. `Err` when two names
 /// spell the same variant (`fxColor` and `fx_color`) — a build error, not a
 /// silent merge.
@@ -564,8 +564,8 @@ pub fn emit_keys(keys: &Keys) -> Result<String, String> {
     for (name, v) in keys.names.iter().zip(&variants) {
         out.push_str(&format!("            {name:?} => Some(Key::{v}),\n"));
     }
-    out.push_str("            _ => None,\n        }\n    }\n\n    pub const fn id(self) -> gogo::KeyId {\n        gogo::KeyId::new(self as u32)\n    }\n}\n\n");
-    out.push_str("impl gogo::KeyName for Key {\n    fn id(self) -> gogo::KeyId {\n        gogo::KeyId::new(self as u32)\n    }\n}\n\n");
+    out.push_str("            _ => None,\n        }\n    }\n\n    pub const fn id(self) -> gogo_ui::KeyId {\n        gogo_ui::KeyId::new(self as u32)\n    }\n}\n\n");
+    out.push_str("impl gogo_ui::KeyName for Key {\n    fn id(self) -> gogo_ui::KeyId {\n        gogo_ui::KeyId::new(self as u32)\n    }\n}\n\n");
     Ok(out)
 }
 
@@ -573,9 +573,9 @@ pub fn emit_keys(keys: &Keys) -> Result<String, String> {
 /// `ImageKey::slice_index`. Every page's `slices` points here, so the
 /// table exists once in the program and no page copies it.
 pub fn emit_slices(slices: &[ImageSlice]) -> String {
-    let mut out = format!("/// Every atlas slice (`atlas` lines), by `ImageKey::slice_index`: the picture it is cut from and where. Every page points here.\npub static SLICES: [gogo::page::ImageSlice; {}] = [\n", slices.len());
+    let mut out = format!("/// Every atlas slice (`atlas` lines), by `ImageKey::slice_index`: the picture it is cut from and where. Every page points here.\npub static SLICES: [gogo_ui::page::ImageSlice; {}] = [\n", slices.len());
     for s in slices {
-        out.push_str(&format!("    gogo::page::ImageSlice {{ picture: gogo::ImageKey::new({}), rect: {:?}, edge: {:?}, untrimmed: {:?} }},\n", s.picture.index(), s.rect, s.edge, s.untrimmed));
+        out.push_str(&format!("    gogo_ui::page::ImageSlice {{ picture: gogo_ui::ImageKey::new({}), rect: {:?}, edge: {:?}, untrimmed: {:?} }},\n", s.picture.index(), s.rect, s.edge, s.untrimmed));
     }
     out.push_str("];\n\n");
     out
@@ -591,7 +591,7 @@ pub fn emit_slices(slices: &[ImageSlice]) -> String {
 /// from a table), and a typed constant is found by grep and checked by
 /// the compiler, where a string lookup would fail at run time.
 pub fn emit_atlases(atlases: &[AtlasDecl]) -> Result<String, String> {
-    let mut out = String::from("/// The build's atlases (`atlas` lines), named as the `.gogo` files name them.\n#[allow(dead_code, unused_imports)]\npub mod atlas {\n    use gogo::ImageKey;\n\n");
+    let mut out = String::from("/// The build's atlases (`atlas` lines), named as the `.gogo` files name them.\n#[allow(dead_code, unused_imports)]\npub mod atlas {\n    use gogo_ui::ImageKey;\n\n");
     let mut taken: Vec<(String, &str)> = Vec::new();
     let key = |k: &ImageKey| format!("ImageKey::new({})", k.index());
     for a in atlases {
@@ -614,7 +614,7 @@ pub fn emit_atlases(atlases: &[AtlasDecl]) -> Result<String, String> {
                 out.push_str(&format!("    pub const {rust_name}: ImageKey = {};\n\n", key(k)));
             }
             AtlasShape::Named(list) => {
-                out.push_str(&format!("    /// `atlas {}`{from}: `{}.<slice>` in a `.gogo` file.\n    pub mod {rust_name} {{\n        use gogo::ImageKey;\n", a.name, a.name));
+                out.push_str(&format!("    /// `atlas {}`{from}: `{}.<slice>` in a `.gogo` file.\n    pub mod {rust_name} {{\n        use gogo_ui::ImageKey;\n", a.name, a.name));
                 let mut consts: Vec<String> = Vec::new();
                 for (sname, k) in list {
                     let c = snake_case(sname).to_ascii_uppercase();
@@ -647,7 +647,7 @@ mod tests {
         assert!(src.contains("pub static KEYS: &[(&str, &str)] = &[\n    (\"ok\", \"OK\"),\n    (\"16by9\", \"16:9\"),\n    (\"pickColorHint\", \"Pick a color\"),\n];"), "{src}");
         assert!(src.contains("pub enum Key {\n    Ok = 0,\n    N16by9 = 1,\n    PickColorHint = 2,\n}"), "{src}");
         assert!(src.contains("\"16by9\" => Some(Key::N16by9),"), "{src}");
-        assert!(src.contains("impl gogo::KeyName for Key"), "{src}");
+        assert!(src.contains("impl gogo_ui::KeyName for Key"), "{src}");
     }
 
     /// GPAR27: a page with arrangements emits their typed handle —
@@ -659,7 +659,7 @@ mod tests {
         let src = emit_rust(&c.page, "t").unwrap();
         assert!(src.contains("pub enum Arrangement"), "{src}");
         assert!(src.contains("Wide = 0"), "{src}");
-        assert!(src.contains("impl gogo::ArrangementName for Arrangement"), "{src}");
+        assert!(src.contains("impl gogo_ui::ArrangementName for Arrangement"), "{src}");
         let c = compile("View v { Panel p width=10 }", &|_| None);
         assert!(!emit_rust(&c.page, "t").unwrap().contains("enum Arrangement"), "no arrangements, no enum");
         let mut clash = Keys::default();
@@ -689,7 +689,7 @@ mod tests {
         let src = emit_rust(&c.page, "t").unwrap();
         let appear = c.page.intern_lookup("appear");
         assert!(src.contains(&format!("pub enum Anim {{\n        Appear = {},\n        SlideOut = {},\n    }}", appear.index(), c.page.intern_lookup("slideOut").index())), "{src}");
-        assert!(src.contains("impl gogo::AnimName for Anim"), "{src}");
+        assert!(src.contains("impl gogo_ui::AnimName for Anim"), "{src}");
         assert!(!emit_rust(&compile("View v { Panel p width=10 }", &|_| None).page, "t").unwrap().contains("enum Anim"), "no anims, no enum");
     }
 

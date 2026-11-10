@@ -12,12 +12,12 @@
 //! CONTINUOUS slider (the stock 1.0-when-step-0 unit would jump a 0..1
 //! effect slider end to end); a stepped instance steps by `step=`.
 
-use gogo::compile;
-use gogo::KeptFrame;
-use gogo::input::{Event, EventKind, Input, Key, Mods, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{NodeId, Page, PropKey, Value};
-use gogo::runtime::{DISABLED, Resolved, Runtime, resolve};
+use gogo_ui::compile;
+use gogo_ui::KeptFrame;
+use gogo_ui::input::{Event, EventKind, Input, Key, Mods, Phase, Touch};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{NodeId, Page, PropKey, Value};
+use gogo_ui::runtime::{DISABLED, Resolved, Runtime, resolve};
 
 const SLIDER_PHONE: &str = "control SliderPhone $value=3, $min=0, $max=10, $step=0 {\n    behavior slider by $value in $min..$max, step=$step, key_unit=5%\n    state_builtin hovered, focused, disabled, held\n    signal drag_started, drag_ended\n    Layers width=fill, height=60 {\n        slot track height=11, valign=bottom, margin_left=18, margin_right=18, margin_bottom=16 {\n            Rectangle width=fill, height=fill, color=#FFFFFF33\n            slot progress automatic=length by $value in $min..$max { Rectangle width=fill, height=fill, color=#1BA1E2FF }\n        }\n        Label lab text=live($value)\n    }\n}\n";
 
@@ -32,7 +32,7 @@ struct Fx {
 impl Fx {
     fn new(src: &str) -> Fx {
         let c = compile(src, &|_| None);
-        assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+        assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
         let page = c.page;
         let rt = Runtime::new(&page);
         let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
@@ -68,7 +68,7 @@ fn changes(ev: &[Event]) -> Vec<f32> {
 }
 
 fn signals(page: &Page, ev: &[Event]) -> Vec<String> {
-    ev.iter().filter_map(|e| match (&e.kind, &e.action) { (EventKind::Signal, Some(gogo::page::Action::Emit(id))) => Some(page.str(*id).to_string()), _ => None }).collect()
+    ev.iter().filter_map(|e| match (&e.kind, &e.action) { (EventKind::Signal, Some(gogo_ui::page::Action::Emit(id))) => Some(page.str(*id).to_string()), _ => None }).collect()
 }
 
 /// The whole 60-epx row is the gesture surface (shipped rootGrid
@@ -185,7 +185,7 @@ fn the_fill_and_the_live_label_follow() {
     fx.rt.tick(&mut fx.page, 0.016);
     let lab = fx.page.find("s/lab").unwrap();
     let shown = fx.rt.owned_text[lab.index()];
-    assert_ne!(shown, gogo::page::NO_STR, "the label rewrote");
+    assert_ne!(shown, gogo_ui::page::NO_STR, "the label rewrote");
     assert_eq!(fx.page.str(shown), "10");
 }
 
@@ -209,7 +209,7 @@ fn a_disabled_instance_answers_nothing() {
 /// second `behavior` line, and missing wiring all refuse at compile.
 #[test]
 fn behavior_fences() {
-    let fails = |src: &str| gogo::has_errors(&compile(src, &|_| None).diags);
+    let fails = |src: &str| gogo_ui::has_errors(&compile(src, &|_| None).diags);
     let body = "state_builtin focused\n    Layers { slot track width=fill, height=10 { Rectangle width=fill, height=fill, color=#FF0000FF } }";
     assert!(fails(&format!("control C $value=0, $min=0, $max=10, $step=0 {{\n    behavior slider by $value in $min..$max\n    keys arrows\n    {body}\n}}\nView v {{ C c }}")), "keys on the behavior's groups");
     assert!(!fails(&format!("control C $value=0, $min=0, $max=10, $step=0 {{\n    behavior slider by $value in $min..$max\n    keys enter\n    {body}\n}}\nView v {{ C c }}")), "enter stays claimable");

@@ -7,15 +7,15 @@
 //! A Circle (2026-09-06, user) dashes its ring along the centerline,
 //! clockwise from the top — ONE masked arc draw per dash/gap pair, never a
 //! draw per dash; an Arc's `dash=` is the same mask along its sweep.
-use gogo::draw::{Draw, draw};
-use gogo::KeptFrame;
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::runtime::{Runtime, resolve};
-use gogo::Color_Straight_Srgb_4xU8_RGBA;
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::Color_Straight_Srgb_4xU8_RGBA;
 
 fn draws(src: &str) -> Vec<Draw> {
-    let c = gogo::compile(src, &|_: &str| None::<String>);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    let c = gogo_ui::compile(src, &|_: &str| None::<String>);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let rt = Runtime::new(&page);
     let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 100.0, 100.0), &FixedAdvance);
@@ -67,14 +67,14 @@ fn thickness_scales_the_pattern_and_an_odd_list_repeats() {
 
 #[test]
 fn bad_spellings_are_refused() {
-    let c = gogo::compile("View v { Rectangle r 24x24, border_thickness=1, border_dash=[] }", &|_: &str| None::<String>);
+    let c = gogo_ui::compile("View v { Rectangle r 24x24, border_thickness=1, border_dash=[] }", &|_: &str| None::<String>);
     assert!(c.diags.iter().any(|d| d.code == "G2009"), "{:#?}", c.diags);
-    let c = gogo::compile("View v { Rectangle r 24x24, border_thickness=1, border_dash=[4, -1] }", &|_: &str| None::<String>);
+    let c = gogo_ui::compile("View v { Rectangle r 24x24, border_thickness=1, border_dash=[4, -1] }", &|_: &str| None::<String>);
     assert!(c.diags.iter().any(|d| d.code == "G2009"), "{:#?}", c.diags);
-    let c = gogo::compile("View v { Rectangle r 24x24, border_thickness=1, border_dash=4 }", &|_: &str| None::<String>);
+    let c = gogo_ui::compile("View v { Rectangle r 24x24, border_thickness=1, border_dash=4 }", &|_: &str| None::<String>);
     assert!(c.diags.iter().any(|d| d.code == "G2009"), "{:#?}", c.diags);
-    let c = gogo::compile("View v { Label l text=\"x\", border_thickness=1, border_dash=[4, 1] }", &|_: &str| None::<String>);
-    assert!(!gogo::has_errors(&c.diags), "any box has a plate — a dashed one too: {:#?}", c.diags);
+    let c = gogo_ui::compile("View v { Label l text=\"x\", border_thickness=1, border_dash=[4, 1] }", &|_: &str| None::<String>);
+    assert!(!gogo_ui::has_errors(&c.diags), "any box has a plate — a dashed one too: {:#?}", c.diags);
 }
 
 #[test]
@@ -114,10 +114,10 @@ fn an_arc_dashes_its_own_stroke() {
     assert!((dash - 6.0 * per_epx).abs() < 0.01 && (period - 8.0 * per_epx).abs() < 0.01, "{arcs:?}");
     // A solid Arc carries no mask.
     let solid = draws("View v { Arc a 40x40, color=#000000FF, thickness=2 }");
-    assert!(solid.iter().any(|x| matches!(x, Draw::Arc { dash, .. } if *dash == gogo::draw::SOLID)));
+    assert!(solid.iter().any(|x| matches!(x, Draw::Arc { dash, .. } if *dash == gogo_ui::draw::SOLID)));
     // The word is the Arc's; a plate dashes with `border_dash=`.
-    let c = gogo::compile("View v { Rectangle r 24x24, border_thickness=1, dash=[4, 1] }", &|_: &str| None::<String>);
+    let c = gogo_ui::compile("View v { Rectangle r 24x24, border_thickness=1, dash=[4, 1] }", &|_: &str| None::<String>);
     assert!(c.diags.iter().any(|d| d.code == "G2002"), "{:#?}", c.diags);
-    let c = gogo::compile("View v { Arc a 40x40, thickness=2, dash=4 }", &|_: &str| None::<String>);
+    let c = gogo_ui::compile("View v { Arc a 40x40, thickness=2, dash=4 }", &|_: &str| None::<String>);
     assert!(c.diags.iter().any(|d| d.code == "G2009"), "{:#?}", c.diags);
 }

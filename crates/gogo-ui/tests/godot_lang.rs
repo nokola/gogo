@@ -21,20 +21,20 @@
 //! - `parse.node-path` (231): AST carries no source path.
 //! - `cookbook.border-padding-float`'s `border_width_left == 1` clause
 //!   (2318): Godot stylebox paints whole-px borders; Rust keeps the float.
-use gogo::ast::{AstItem, AstNode, AstValue, Document};
-use gogo::KeptFrame;
-use gogo::draw::{Draw, Fit, draw, hit};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{Kind, NO_STR, PropKey, Color_Straight_Srgb_4xU8_RGBA, State, Value};
-use gogo::parser::parse;
-use gogo::runtime::{Runtime, SELECTED, resolve};
-use gogo::{Compiled, Page, compile};
+use gogo_ui::ast::{AstItem, AstNode, AstValue, Document};
+use gogo_ui::KeptFrame;
+use gogo_ui::draw::{Draw, Fit, draw, hit};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{Kind, NO_STR, PropKey, Color_Straight_Srgb_4xU8_RGBA, State, Value};
+use gogo_ui::parser::parse;
+use gogo_ui::runtime::{Runtime, SELECTED, resolve};
+use gogo_ui::{Compiled, Page, compile};
 
 const VIEW: Rect = Rect { x: 0.0, y: 0.0, w: 400.0, h: 400.0 };
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -61,13 +61,13 @@ impl Laid {
     fn rect(&self, name: &str) -> Rect {
         self.kept.rects()[(self.id(name)).index()]
     }
-    fn id(&self, name: &str) -> gogo::NodeId {
+    fn id(&self, name: &str) -> gogo_ui::NodeId {
         self.page.find(name).unwrap_or_else(|| panic!("no node {name:?}"))
     }
     fn draws(&self) -> Vec<Draw> {
         draw(&self.page, self.kept.frame())
     }
-    fn hit(&self, x: f32, y: f32) -> Option<gogo::NodeId> {
+    fn hit(&self, x: f32, y: f32) -> Option<gogo_ui::NodeId> {
         hit(&self.page, self.kept.frame(), x, y, false)
     }
     fn center(&self, name: &str) -> (f32, f32) {
@@ -317,8 +317,8 @@ fn pin_matrix_margin_shorthand_binds_touched_edges() {
 /// them as insets — so both forms build and mean what they say.
 #[test]
 fn pin_matrix_margins_against_alignment_build_here() {
-    assert!(!gogo::has_errors(&compile("Panel b 40x30, halign=center, margin_left=4", &|_| None).diags));
-    assert!(!gogo::has_errors(&compile("Panel b 40x30, halign=left, margin_right=4", &|_| None).diags));
+    assert!(!gogo_ui::has_errors(&compile("Panel b 40x30, halign=center, margin_left=4", &|_| None).diags));
+    assert!(!gogo_ui::has_errors(&compile("Panel b 40x30, halign=left, margin_right=4", &|_| None).diags));
 }
 
 /// `_pin_matrix_tests` 2116-2117 (pinmx.err-span-overconstrained): both
@@ -677,9 +677,9 @@ fn extends_three_level_chain_with_whens() {
 /// load errors.
 #[test]
 fn extends_errors() {
-    assert!(gogo::has_errors(&compile("style A extends=B\nstyle B extends=A\nView v { Button x .A }", &|_| None).diags), "cycle");
-    assert!(gogo::has_errors(&compile("style A extends=Nope\nView v { Button x .A }", &|_| None).diags), "unknown parent");
-    assert!(gogo::has_errors(&compile("style A extends=12\nView v { Button x .A }", &|_| None).diags), "not a name");
+    assert!(gogo_ui::has_errors(&compile("style A extends=B\nstyle B extends=A\nView v { Button x .A }", &|_| None).diags), "cycle");
+    assert!(gogo_ui::has_errors(&compile("style A extends=Nope\nView v { Button x .A }", &|_| None).diags), "unknown parent");
+    assert!(gogo_ui::has_errors(&compile("style A extends=12\nView v { Button x .A }", &|_| None).diags), "not a name");
 }
 
 /// `_extends_tests` 3031-3038 (extends.across-uses): a local style extends
@@ -688,7 +688,7 @@ fn extends_errors() {
 fn extends_across_uses() {
     let loader = |path: &str| if path == "fixtures/theme_inc.gogo" { Some("// Shared include for view_test.gogo (exercises `uses` + theme + style merge).\n$swatchTest = #EB6428FF\nstyle TestPanel spacing=8\n".to_string()) } else { None };
     let c = compile("uses \"fixtures/theme_inc.gogo\"\nstyle Local extends=TestPanel, min_height=99\nView v { Column c .Local }\n", &loader);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let col = c.page.find("c").unwrap();
     assert_eq!(c.page.nodes[col.index()].placement.min_height, 99.0);
     assert_eq!(c.page.prop(col, PropKey::Spacing), Some(Value::VNum(8.0)), "inherited across uses");
@@ -722,7 +722,7 @@ fn epx_scalar_props_are_raw() {
 /// ("not supported").
 #[test]
 fn epx_percent_is_refused() {
-    assert!(gogo::has_errors(&compile("View v { Button b min_height=50% }", &|_| None).diags));
+    assert!(gogo_ui::has_errors(&compile("View v { Button b min_height=50% }", &|_| None).diags));
 }
 
 // -------------------------------------------------------------- _vocab_tests
@@ -801,7 +801,7 @@ fn vocab_view_is_root_only() {
 /// not be a `View`.
 #[test]
 fn vocab_view_is_not_a_widget_body() {
-    assert!(gogo::has_errors(&compile("widget W { View v { } }\nW w", &|_| None).diags));
+    assert!(gogo_ui::has_errors(&compile("widget W { View v { } }\nW w", &|_| None).diags));
 }
 
 /// `_vocab_tests` 12413-12420 (vocab.gap-builds, gap-node, gap-min-y,
@@ -872,21 +872,21 @@ fn vocab_gap_takes_one_size_word() {
 #[test]
 fn vocab_gap_refuses_both_forms() {
     let c = compile("View v { Column c { gap fill 8 } }", &|_| None);
-    assert!(gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
 }
 
 /// `_vocab_tests` 12447 (vocab.gap-no-children): a gap IS the space — it
 /// takes no children.
 #[test]
 fn vocab_gap_refuses_children() {
-    assert!(gogo::has_errors(&compile("View v { Column c { gap 8 { Label x text=\"x\" } } }", &|_| None).diags));
+    assert!(gogo_ui::has_errors(&compile("View v { Column c { gap 8 { Label x text=\"x\" } } }", &|_| None).diags));
 }
 
 /// `_vocab_tests` 12448 (vocab.gap-reserved-widget): `gap` is a built-in
 /// word — a widget may not take the name.
 #[test]
 fn vocab_gap_is_reserved_as_a_widget_name() {
-    assert!(gogo::has_errors(&compile("widget gap { Panel p }\nView c", &|_| None).diags));
+    assert!(gogo_ui::has_errors(&compile("widget gap { Panel p }\nView c", &|_| None).diags));
 }
 
 /// GPAR35 (round 5, 2026-08-31): a nested `uses` resolves against the
@@ -902,7 +902,7 @@ fn nested_uses_resolve_against_the_including_files_dir() {
         _ => None,
     };
     let c = compile("uses \"sub/widgets.gogo\"\nView v { Label l text=\"x\" }", &loader);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     assert!(c.page.theme.iter().any(|t| c.page.str(t.name) == "fromInner"), "the nested include's value landed");
     // `..` climbs out of the include's directory
     let loader2 = |path: &str| match path {
@@ -911,7 +911,7 @@ fn nested_uses_resolve_against_the_including_files_dir() {
         _ => None,
     };
     let c = compile("uses \"sub/widgets.gogo\"\nView v { Label l text=\"x\" }", &loader2);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     assert!(c.page.theme.iter().any(|t| c.page.str(t.name) == "fromTop"), "`..` climbed to the top directory");
     // a miss reports the RESOLVED path
     let c = compile("uses \"sub/widgets.gogo\"\nView v { }", &|path: &str| if path == "sub/widgets.gogo" { Some("uses \"gone.gogo\"\n".to_string()) } else { None });

@@ -10,9 +10,9 @@
 //! a panning finger) moves by margins every frame, and the walk used to
 //! lay the whole page out again whenever it reached the root: 341 boxes
 //! and 182 measures a frame on the OnePlus for one callout drag.
-use gogo::layout::LayoutStats;
-use gogo::runtime::{Resolved, Runtime, resolve_animated};
-use gogo::{FixedAdvance, NodeId, Page, PropKey, Rect, Value, compile, has_errors, layout};
+use gogo_ui::layout::LayoutStats;
+use gogo_ui::runtime::{Resolved, Runtime, resolve_animated};
+use gogo_ui::{FixedAdvance, NodeId, Page, PropKey, Rect, Value, compile, has_errors, layout};
 
 const VIEWPORT: Rect = Rect { x: 0.0, y: 0.0, w: 400.0, h: 800.0 };
 

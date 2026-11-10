@@ -3,7 +3,7 @@
 //! one the build did not embed is the `unembedded_image` lint (a debug
 //! panic naming the path), while host pictures (`face://3`) stay welcome
 //! and a build-time table interns anything.
-use gogo::{Images, NO_IMAGE};
+use gogo_ui::{Images, NO_IMAGE};
 
 #[test]
 fn a_sealed_table_takes_host_pictures_and_known_files() {

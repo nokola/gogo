@@ -3,22 +3,22 @@
 //! transform (`rotate=90` turns the picture, a `when` still overrides
 //! it), and a node that had NO box does not glide out of the origin when
 //! a timed arrangement shows it — it appears at its laid-out rect.
-use gogo::draw::{Draw, draw};
-use gogo::KeptFrame;
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::runtime::{Runtime, resolve, resolve_animated};
-use gogo::{Compiled, compile};
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::runtime::{Runtime, resolve, resolve_animated};
+use gogo_ui::{Compiled, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
 const W: f32 = 400.0;
 const H: f32 = 400.0;
 
-fn frame(page: &mut gogo::Page, rt: &mut Runtime, dt: f32) -> KeptFrame {
+fn frame(page: &mut gogo_ui::Page, rt: &mut Runtime, dt: f32) -> KeptFrame {
     rt.tick(page, dt);
     let mut f = KeptFrame::fresh(page, resolve_animated(page, rt), Rect::new(0.0, 0.0, W, H), &FixedAdvance);
     f.glide(rt);
@@ -37,7 +37,7 @@ fn a_declared_rotate_turns_the_picture_and_a_when_overrides_it() {
     assert_eq!(res.motion[pic.index()].translate[0], 5.0, "so is a declared translate");
     let list: Vec<Draw> = draw(&page, f.frame());
     assert!(list.iter().any(|d| matches!(d, Draw::RotatePush { angle, .. } if (*angle - 90.0).abs() < 1e-3)), "the draw walk turns it: {list:?}");
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     let f = frame(&mut page, &mut rt, 0.0);
     let (res, _) = (f.look(), f.rects());
     assert_eq!(res.motion[pic.index()].rotate, 0.0, "a `when` response overrides the declared word");
@@ -53,7 +53,7 @@ fn a_node_that_had_no_box_appears_in_place_under_a_timed_flip() {
     let f = frame(&mut page, &mut rt, 0.0);
     let (_, r) = (f.look(), f.rects());
     assert_eq!(r[plate], Rect::ZERO, "gone: no box");
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     let f = frame(&mut page, &mut rt, 0.0);
     let (_, r) = (f.look(), f.rects());
     let f = frame(&mut page, &mut rt, 0.1);

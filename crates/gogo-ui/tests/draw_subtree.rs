@@ -2,16 +2,16 @@
 //! of entries `draw` gives it — so a text callout's bake draws through the
 //! screen's walk — starting at full opacity (an ancestor's `opacity=` is
 //! the screen's, not the subtree's), and empty for a node with no rect.
-use gogo::draw::{Draw, draw, draw_subtree};
-use gogo::KeptFrame;
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{PropKey, Value};
-use gogo::runtime::{Runtime, resolve_animated};
-use gogo::{Compiled, NodeId, compile};
+use gogo_ui::draw::{Draw, draw, draw_subtree};
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{PropKey, Value};
+use gogo_ui::runtime::{Runtime, resolve_animated};
+use gogo_ui::{Compiled, NodeId, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 

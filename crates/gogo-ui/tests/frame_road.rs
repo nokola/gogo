@@ -6,16 +6,16 @@
 //! and the sheet drew at its seat for one frame, then jumped below the
 //! screen and slid (B38, user: "the animation looks like it runs twice").
 
-use gogo::anim::Finish;
-use gogo::draw::{Draw, draw};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::NodeId;
-use gogo::runtime::{Runtime, resolve};
-use gogo::{Compiled, KeptFrame, compile};
+use gogo_ui::anim::Finish;
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::NodeId;
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{Compiled, KeptFrame, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -39,7 +39,7 @@ fn view() -> Rect {
 /// glide — the one true answer, however the steps are ordered inside.
 /// (The fresh frame glides too: the same frame's glide again is the
 /// same rects, so it stands in for the road's.)
-fn same_as_fresh(page: &gogo::Page, rt: &mut Runtime, rects: &[Rect], draws: &[Draw]) {
+fn same_as_fresh(page: &gogo_ui::Page, rt: &mut Runtime, rects: &[Rect], draws: &[Draw]) {
     let mut fresh = KeptFrame::fresh(page, resolve(page, rt), view(), &FixedAdvance);
     fresh.glide(rt);
     assert_eq!(fresh.rects(), rects, "the road's rects are the fresh frame's, glided");

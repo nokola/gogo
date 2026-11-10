@@ -4,12 +4,12 @@
 //! under it. The Godot-suite ports in `godot_*.rs` cover the fences that
 //! match Godot; these pins cover what E8 decides differently or adds.
 
-use gogo::draw::{Draw, draw};
-use gogo::KeptFrame;
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{Kind, PropKey, Color_Straight_Srgb_4xU8_RGBA, legal};
-use gogo::runtime::{Runtime, resolve};
-use gogo::{CompileOptions, Compiled, Diagnostic, Page, compile, compile_with};
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{Kind, PropKey, Color_Straight_Srgb_4xU8_RGBA, legal};
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{CompileOptions, Compiled, Diagnostic, Page, compile, compile_with};
 
 fn diags(src: &str) -> Vec<Diagnostic> {
     compile(src, &|_| None).diags
@@ -17,14 +17,14 @@ fn diags(src: &str) -> Vec<Diagnostic> {
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
 /// The first error's (code, message), or a panic naming the diags.
 fn error(src: &str) -> (String, String) {
     let d = diags(src);
-    let e = d.iter().find(|d| d.severity == gogo::Severity::Error).unwrap_or_else(|| panic!("expected an error: {d:#?}"));
+    let e = d.iter().find(|d| d.severity == gogo_ui::Severity::Error).unwrap_or_else(|| panic!("expected an error: {d:#?}"));
     (e.code.clone(), e.message.clone())
 }
 
@@ -133,9 +133,9 @@ fn a_child_aimed_when_response_is_checked_against_the_childs_kind() {
 fn a_code_control_takes_the_shared_row() {
     let options = CompileOptions { code_controls: &["GradientEdit"], ..Default::default() };
     let c = compile_with("View v { GradientEdit g width=100, height=40, background=red, padding=4 }", &|_| None, options);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let c = compile_with("View v { GradientEdit g width=100, stops=[red, blue] }", &|_| None, options);
-    assert!(gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     assert!(c.diags.iter().any(|d| d.code == "G2002" && d.message.contains("code control")), "{:#?}", c.diags);
     let c = compile_with("View v { GradientEdit g width=100, foo=1 }", &|_| None, options);
     assert!(c.diags.iter().any(|d| d.code == "G2001"), "{:#?}", c.diags);

@@ -9,10 +9,10 @@
 //! frame loop's idle gate asks it AFTER the layout pass, where glides
 //! are armed.
 
-use gogo::compile;
-use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::{NodeId, Page, PropKey, Value};
-use gogo::runtime::{Runtime, resolve_animated};
+use gogo_ui::compile;
+use gogo_ui::layout::{FixedAdvance, Rect, layout};
+use gogo_ui::page::{NodeId, Page, PropKey, Value};
+use gogo_ui::runtime::{Runtime, resolve_animated};
 
 const BARS: &str = "control Bar $value=0, $min=0, $max=10 {\n    behavior slider by $value in $min..$max\n    state_builtin focused, held\n    transition duration=0.2\n    Layers width=fill, height=20 {\n        slot track width=fill, height=fill {\n            slot progress automatic=length by $value in $min..$max { Rectangle width=fill, height=fill, color=#FF0000FF }\n        }\n        Label lab text=live($value)\n    }\n}\nView v {\n    Column width=fill {\n        repeat rows capacity=2 { Bar b width=fill }\n    }\n}\n";
 
@@ -24,7 +24,7 @@ struct Fx {
 impl Fx {
     fn new() -> Fx {
         let c = compile(BARS, &|_| None);
-        assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+        assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
         let page = c.page;
         let mut rt = Runtime::new(&page);
         let mut page = page;
@@ -76,9 +76,9 @@ fn a_cloned_rows_live_label_follows() {
     let lab0 = fx.page.find("rows/0/b/lab").unwrap();
     fx.rt.set_value(&mut fx.page, root1, 7.0);
     let shown = fx.rt.owned_text[lab1.index()];
-    assert_ne!(shown, gogo::page::NO_STR, "the clone's label rewrote");
+    assert_ne!(shown, gogo_ui::page::NO_STR, "the clone's label rewrote");
     assert_eq!(fx.page.str(shown), "7");
-    assert_eq!(fx.rt.owned_text[lab0.index()], gogo::page::NO_STR, "row 0's label is untouched");
+    assert_eq!(fx.rt.owned_text[lab0.index()], gogo_ui::page::NO_STR, "row 0's label is untouched");
 }
 
 /// A code write of `min=`/`max=` on a row's root re-scales its fill: the

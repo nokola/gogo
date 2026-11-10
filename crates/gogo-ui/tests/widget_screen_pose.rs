@@ -2,9 +2,9 @@
 //! `when screen.landscapeSmall { card.width = 420 }` beside the body — and
 //! the pose compiles once per instance as a DEFAULT: a page's pose on the
 //! same instance wins, and the two never clash as two writers.
-use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::runtime::{Runtime, resolve};
-use gogo::{Orientation, Page, ScreenClass, compile};
+use gogo_ui::layout::{FixedAdvance, Rect, layout};
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{Orientation, Page, ScreenClass, compile};
 
 fn cards() -> Page {
     let src = "widget Card {
@@ -16,7 +16,7 @@ fn cards() -> Page {
 }
 View v { Column { Card a; Card b { when screen.landscapeSmall width=300 } } }";
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c.page
 }
 

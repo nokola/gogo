@@ -4,16 +4,16 @@
 //! sampling word rides the draw, bad spellings are refused, and a
 //! `translate.x from=-100%` lane starts one node-width to the left,
 //! measured from the last glide.
-use gogo::anim::Finish;
-use gogo::KeptFrame;
-use gogo::draw::{Draw, Fit, Sampling, draw};
-use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::runtime::{Runtime, resolve, resolve_animated};
-use gogo::{Compiled, compile};
+use gogo_ui::anim::Finish;
+use gogo_ui::KeptFrame;
+use gogo_ui::draw::{Draw, Fit, Sampling, draw};
+use gogo_ui::layout::{FixedAdvance, Rect, layout};
+use gogo_ui::runtime::{Runtime, resolve, resolve_animated};
+use gogo_ui::{Compiled, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -47,10 +47,10 @@ fn a_bad_window_or_sampling_word_is_refused() {
         let src = format!("View v {{ Image i 40x20, source=\"res://t.png\", {bad} }}");
         assert!(codes(&src).contains(&"G2010".to_string()), "{bad}: {:?}", codes(&src));
     }
-    assert!(gogo::has_errors(&compile("View v { Image i 40x20, source=\"res://t.png\", sampling=blurry }", &|_| None).diags), "sampling is a closed set");
+    assert!(gogo_ui::has_errors(&compile("View v { Image i 40x20, source=\"res://t.png\", sampling=blurry }", &|_| None).diags), "sampling is a closed set");
     // The words are an Image's alone.
-    assert!(gogo::has_errors(&compile("View v { Panel p 40x20, window=[0, 0, 4, 4] }", &|_| None).diags));
-    assert!(gogo::has_errors(&compile("View v { Rectangle r 40x20, sampling=pixel }", &|_| None).diags));
+    assert!(gogo_ui::has_errors(&compile("View v { Panel p 40x20, window=[0, 0, 4, 4] }", &|_| None).diags));
+    assert!(gogo_ui::has_errors(&compile("View v { Rectangle r 40x20, sampling=pixel }", &|_| None).diags));
 }
 
 #[test]

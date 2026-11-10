@@ -1,9 +1,9 @@
 //! `Runtime::theme_color` and the generated `enum Theme`: code reads the
 //! file's `$name` colors by a typed handle, following the active theme
 //! variant (gogo-spec.md "Theme").
-use gogo::emit::emit_rust;
-use gogo::page::{Color_Straight_Srgb_4xU8_RGBA, StrId};
-use gogo::{Runtime, ThemeName, compile};
+use gogo_ui::emit::emit_rust;
+use gogo_ui::page::{Color_Straight_Srgb_4xU8_RGBA, StrId};
+use gogo_ui::{Runtime, ThemeName, compile};
 
 const SRC: &str = "$accent = #E51400FF\n$gap = 4\n$link = $accent\ntheme dark {\n    $accent = #00FF00FF\n}\nView v { Rectangle swatch color=$accent }\n";
 
@@ -20,7 +20,7 @@ impl ThemeName for Name {
 #[test]
 fn theme_color_follows_the_variant_and_refs() {
     let c = compile(SRC, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let page = c.page;
     let accent = Name(page.intern_lookup("accent"));
     let link = Name(page.intern_lookup("link"));
@@ -45,7 +45,7 @@ fn the_build_emits_a_theme_enum() {
     assert!(src.contains(&format!("        Accent = {accent},")), "{src}");
     assert_eq!(src.matches("        Accent = ").count(), 1, "the dark block's entry is the same name");
     assert!(src.contains("        Gap = ") && src.contains("        Link = "), "{src}");
-    assert!(src.contains("impl gogo::ThemeName for Theme"), "{src}");
+    assert!(src.contains("impl gogo_ui::ThemeName for Theme"), "{src}");
     let bare = compile("View v { Panel p width=10 }", &|_| None);
     assert!(!emit_rust(&bare.page, "t").unwrap().contains("enum Theme"), "no theme values, no enum");
 }

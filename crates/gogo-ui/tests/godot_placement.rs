@@ -25,16 +25,16 @@
 //!   stylebox copies.
 //! - `fpad.button-bg-still-themed`, `fpad.button-slot-parity`
 //!   (1996-2001): theme stylebox ownership, `hover_pressed` slot.
-use gogo::draw::{Draw, draw, hit};
-use gogo::KeptFrame;
-use gogo::layout::{DEFAULT_FONT_SIZE, FixedAdvance, Rect};
-use gogo::page::{Align, Kind, Len, Color_Straight_Srgb_4xU8_RGBA};
-use gogo::runtime::{HELD, Runtime, resolve};
-use gogo::{Compiled, NodeId, Page, compile};
+use gogo_ui::draw::{Draw, draw, hit};
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::{DEFAULT_FONT_SIZE, FixedAdvance, Rect};
+use gogo_ui::page::{Align, Kind, Len, Color_Straight_Srgb_4xU8_RGBA};
+use gogo_ui::runtime::{HELD, Runtime, resolve};
+use gogo_ui::{Compiled, NodeId, Page, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -43,7 +43,7 @@ fn codes(src: &str) -> Vec<String> {
 }
 
 fn refused(src: &str) -> bool {
-    gogo::has_errors(&compile(src, &|_| None).diags)
+    gogo_ui::has_errors(&compile(src, &|_| None).diags)
 }
 
 fn messages(src: &str) -> String {
@@ -74,7 +74,7 @@ impl Built {
     fn rect(&self, name: &str) -> Rect {
         self.kept.rects()[(self.id(name)).index()]
     }
-    fn placement(&self, name: &str) -> gogo::page::Placement {
+    fn placement(&self, name: &str) -> gogo_ui::page::Placement {
         self.kept.look().placement[(self.id(name)).index()]
     }
     /// Lays the page out again after a runtime change (a state, a pose).
@@ -193,9 +193,9 @@ fn a_hugging_flow_is_as_wide_as_its_widest_packed_row() {
 /// rhythm, a `gap N` line for one divergent break).
 #[test]
 fn margins_under_a_container_are_refused() {
-    let c = gogo::compile::compile("View v { Column c { Rectangle r 40x10, margin_left=8 } }", &|_| None);
+    let c = gogo_ui::compile::compile("View v { Column c { Rectangle r 40x10, margin_left=8 } }", &|_| None);
     assert!(c.diags.iter().any(|d| d.message.contains("margins only apply under a plain box")), "{:#?}", c.diags);
-    let free = gogo::compile::compile("View v { Layers l { Rectangle r 40x10, margin_left=8 } }", &|_| None);
+    let free = gogo_ui::compile::compile("View v { Layers l { Rectangle r 40x10, margin_left=8 } }", &|_| None);
     assert!(free.diags.is_empty(), "a free parent keeps margins: {:#?}", free.diags);
 }
 
@@ -294,7 +294,7 @@ fn bare_slot_content_gets_no_fill_default() {
 fn default_fill_survives_an_arrangement_pose() {
     let mut b = build("arrangement lifted\nwhen lifted { bar.margin_bottom = 0 }\nView screen2 {\n Layers bar valign=bottom, height=80, margin_bottom=-30\n}\n", 400.0, 400.0);
     assert_eq!(b.rect("bar"), Rect::new(0.0, 350.0, 400.0, 80.0));
-    b.rt.go_id(gogo::ArrangementId::new(0));
+    b.rt.go_id(gogo_ui::ArrangementId::new(0));
     b.relayout();
     assert_eq!(b.rect("bar"), Rect::new(0.0, 320.0, 400.0, 80.0), "the pose moved the pin, the width stayed full");
 }
@@ -649,7 +649,7 @@ fn button_padding_and_radius_keep_press_feedback() {
     let pad = b.rect("pad");
     let text = b.text_rect("fails").unwrap();
     assert!(close(text.x, pad.x + 10.0) && close(text.y, pad.y + 10.0) && close(text.right(), pad.right() - 10.0), "{text:?} in {pad:?}");
-    assert_eq!(b.plate("pad").map(|p| p.0), Some(gogo::draw::DEFAULT_BUTTON_BACKGROUND));
+    assert_eq!(b.plate("pad").map(|p| p.0), Some(gogo_ui::draw::DEFAULT_BUTTON_BACKGROUND));
     assert_eq!(b.plate("rad").map(|p| p.1), Some(8.0));
     b.rt.set_state(b.id("pad"), HELD, true);
     b.rt.set_state(b.id("rad"), HELD, true);

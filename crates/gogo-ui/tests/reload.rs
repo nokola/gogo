@@ -1,13 +1,13 @@
-//! Hot reload, the gogo half (`gogo::reload`): a page recompiled against a
+//! Hot reload, the gogo half (`gogo_ui::reload`): a page recompiled against a
 //! build's tables indexes them the way the baked page does; a key or a
 //! picture not in the build is refused AT ITS LINE; a changed node list is
 //! refused naming the node; the runtime's state carries into the new
 //! page. The host's folder watch and toast are the host's tests.
 use std::cell::RefCell;
 
-use gogo::reload::{BuildTables, ShapeChange, recompile, same_shape};
-use gogo::runtime::{Runtime, SELECTED, resolve};
-use gogo::{ArrangementId, CompileOptions, Images, Keys, Kind, Page, PropKey, Value, compile_with};
+use gogo_ui::reload::{BuildTables, ShapeChange, recompile, same_shape};
+use gogo_ui::runtime::{Runtime, SELECTED, resolve};
+use gogo_ui::{ArrangementId, CompileOptions, Images, Keys, Kind, Page, PropKey, Value, compile_with};
 
 const THEME: &str = "$accent = #FF0000FF\n";
 
@@ -42,13 +42,13 @@ impl Build {
         let keys = RefCell::new(Keys::default());
         let images = RefCell::new(Images::default());
         let compiled = compile_with(PAGE, &loader, CompileOptions { keys: Some(&keys), images: Some(&images), require_keys: true, source_name: "page.gogo", ..CompileOptions::default() });
-        assert!(!gogo::has_errors(&compiled.diags), "{:#?}", compiled.diags);
+        assert!(!gogo_ui::has_errors(&compiled.diags), "{:#?}", compiled.diags);
         let keys = keys.into_inner();
         let key_pairs = keys.names.iter().cloned().zip(keys.english.iter().cloned()).collect();
         Build { page: compiled.page, keys: key_pairs, images: images.into_inner().names }
     }
 
-    fn recompile(&self, source: &str) -> Result<Page, Vec<gogo::Diagnostic>> {
+    fn recompile(&self, source: &str) -> Result<Page, Vec<gogo_ui::Diagnostic>> {
         let keys: Vec<(&str, &str)> = self.keys.iter().map(|(n, e)| (n.as_str(), e.as_str())).collect();
         let images: Vec<&str> = self.images.iter().map(String::as_str).collect();
         let baked = BuildTables { keys: &keys, images: &images, code_controls: &[], require_keys: true };
@@ -77,7 +77,7 @@ fn a_recompiled_page_has_the_baked_shape_and_indexes_the_builds_tables() {
     }
     // A reload that only changes a value is the point: no error, new value.
     let fresh = build.recompile(&PAGE.replace("font_color=$accent", "font_color=#00FF00FF")).unwrap();
-    assert_eq!(prop(&fresh, "title", PropKey::FontColor), Value::VColor(gogo::Color_Straight_Srgb_4xU8_RGBA([0, 255, 0, 255])));
+    assert_eq!(prop(&fresh, "title", PropKey::FontColor), Value::VColor(gogo_ui::Color_Straight_Srgb_4xU8_RGBA([0, 255, 0, 255])));
 }
 
 #[test]
@@ -94,7 +94,7 @@ fn a_new_key_a_new_picture_and_a_typo_are_refused_at_their_line() {
     assert!(errs[0].message.contains("not_in_this_build.png") && errs[0].message.contains("rebuild"), "{}", errs[0]);
 
     let errs = build.recompile(&PAGE.replace("font_color=$accent", "font_colour=$accent")).unwrap_err();
-    assert!(errs.iter().all(|d| d.severity == gogo::Severity::Error), "{errs:#?}");
+    assert!(errs.iter().all(|d| d.severity == gogo_ui::Severity::Error), "{errs:#?}");
     assert_eq!(errs[0].line, 5, "a compile error keeps its line: {}", errs[0]);
     assert!(errs[0].code.starts_with('G'), "{}", errs[0]);
 }
@@ -142,5 +142,5 @@ fn the_runtimes_state_carries_over_a_reload() {
     assert_eq!(rt.arrangement, ArrangementId::new(0), "the arrangement carries");
     assert_eq!(rt.safe, [1.0, 2.0, 3.0, 4.0]);
     assert!(rt.dirty, "the next frame lays out");
-    assert_eq!(look.prop(&fresh, title, PropKey::FontColor), Some(Value::VColor(gogo::Color_Straight_Srgb_4xU8_RGBA([0, 255, 0, 255]))), "the edit shows");
+    assert_eq!(look.prop(&fresh, title, PropKey::FontColor), Some(Value::VColor(gogo_ui::Color_Straight_Srgb_4xU8_RGBA([0, 255, 0, 255]))), "the edit shows");
 }

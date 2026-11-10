@@ -5,13 +5,13 @@
 //! of the per-rule pins (`godot_*.rs`, un-ignored with E4); these cover
 //! the rest and the two design calls (one hex form, one child in
 //! `empty { }`).
-use gogo::page::{Len, PropKey, Color_Straight_Srgb_4xU8_RGBA, State, Value};
-use gogo::runtime::{BASE, HELD, Runtime, resolve_animated};
-use gogo::{Compiled, compile};
+use gogo_ui::page::{Len, PropKey, Color_Straight_Srgb_4xU8_RGBA, State, Value};
+use gogo_ui::runtime::{BASE, HELD, Runtime, resolve_animated};
+use gogo_ui::{Compiled, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -52,7 +52,7 @@ fn base_is_the_rest_end_of_a_builtin_flip_and_home_mirrors_it() {
     let bar = page.find("bar").unwrap();
     let mut rt = Runtime::new(&page);
     resolve_animated(&page, &mut rt);
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     resolve_animated(&page, &mut rt);
     rt.tick(&mut page, 1.0);
     let r = resolve_animated(&page, &mut rt);
@@ -161,7 +161,7 @@ fn a_transition_rule_has_one_arrow_and_names_its_from_end() {
     assert!(codes("arrangement a\narrangement b\ntransition a b -> base duration=0.1\nView v { Rectangle r }").contains(&"G0034".to_string()));
     assert!(codes("View v { Button b text=\"x\" { transition -> held duration=0.1 } }").contains(&"G0034".to_string()));
     let c = ok("arrangement wide\ntransition wide -> any duration=0.2\nView v { Rectangle r }");
-    assert_eq!(c.page.transitions[0].from, Some(State::Arrangement(gogo::ArrangementId::new(0))));
+    assert_eq!(c.page.transitions[0].from, Some(State::Arrangement(gogo_ui::ArrangementId::new(0))));
     assert_eq!(c.page.transitions[0].to, None);
 }
 

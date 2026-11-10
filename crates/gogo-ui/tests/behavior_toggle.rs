@@ -8,12 +8,12 @@
 //! live; a write while the finger holds the control lands DIRECT, the
 //! release's settle glides by the control's feel.
 
-use gogo::compile;
-use gogo::KeptFrame;
-use gogo::input::{Event, EventKind, Input, Key, Mods, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{NodeId, Page, PropKey, Value};
-use gogo::runtime::{Resolved, Runtime, SELECTED, resolve, resolve_animated};
+use gogo_ui::compile;
+use gogo_ui::KeptFrame;
+use gogo_ui::input::{Event, EventKind, Input, Key, Mods, Phase, Touch};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{NodeId, Page, PropKey, Value};
+use gogo_ui::runtime::{Resolved, Runtime, SELECTED, resolve, resolve_animated};
 
 /// The shipped HorizontalSwitch's shape: a 120x60 surface, the plate a
 /// 60-wide thumb riding the full-width track, a 0.3 s feel.
@@ -30,7 +30,7 @@ struct Fx {
 impl Fx {
     fn new(src: &str) -> Fx {
         let c = compile(src, &|_| None);
-        assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+        assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
         let page = c.page;
         let rt = Runtime::new(&page);
         let f = KeptFrame::fresh(&page, resolve(&page, &rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
@@ -74,7 +74,7 @@ fn changes(ev: &[Event]) -> Vec<bool> {
 }
 
 fn signals(page: &Page, ev: &[Event]) -> Vec<String> {
-    ev.iter().filter_map(|e| match (&e.kind, &e.action) { (EventKind::Signal, Some(gogo::page::Action::Emit(id))) => Some(page.str(*id).to_string()), _ => None }).collect()
+    ev.iter().filter_map(|e| match (&e.kind, &e.action) { (EventKind::Signal, Some(gogo_ui::page::Action::Emit(id))) => Some(page.str(*id).to_string()), _ => None }).collect()
 }
 
 /// A tap anywhere on the switch flips it to the other end (shipped
@@ -208,14 +208,14 @@ fn a_held_write_lands_direct_and_the_settle_glides() {
 /// contract without `selected` derives nothing.
 #[test]
 fn toggle_fences_and_the_script_refusal() {
-    let fails = |src: &str| gogo::has_errors(&compile(src, &|_| None).diags);
+    let fails = |src: &str| gogo_ui::has_errors(&compile(src, &|_| None).diags);
     let no_thumb = "control C $value=0, $min=0, $max=1 {\n    behavior toggle by $value in $min..$max\n    state_builtin focused\n    Layers width=120, height=60 { slot track width=fill, height=fill { Rectangle width=60, height=fill, color=#FF0000FF } }\n}\nView v { C c }";
     assert!(fails(no_thumb), "no thumb slot");
     let keys = format!("{}", SWITCH.replace("state_builtin", "keys enter\n    state_builtin"));
     assert!(fails(&format!("{keys}View v {{ Switch s }}")), "the toggle behavior owns enter");
     let script = SWITCH.replace("behavior toggle by $value in $min..$max", "script \"res://addons/gogo/controls/toggle_behavior.gd\"");
     let c = compile(&format!("{script}View v {{ Switch s }}"), &|_| None);
-    assert!(gogo::has_errors(&c.diags), "`script` is the addon's word — refused, not dropped");
+    assert!(gogo_ui::has_errors(&c.diags), "`script` is the addon's word — refused, not dropped");
     assert!(c.diags.iter().any(|d| d.code == "G0082" && d.message.contains("`behavior <name>")), "{:#?}", c.diags);
     // No `selected` in the contract: the value flips, no state does.
     let plain = SWITCH.replace("state_builtin hovered, focused, disabled, selected, held", "state_builtin focused");

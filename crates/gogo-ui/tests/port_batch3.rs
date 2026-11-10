@@ -3,13 +3,13 @@
 //! line, a seat fits its occupant, Tiles abut and keep content heights, a
 //! `clip_text` label claims no width, and a timed arrangement flip glides
 //! every re-posed box to its new rect.
-use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::runtime::{Runtime, resolve, resolve_animated};
-use gogo::{Compiled, Page, compile};
+use gogo_ui::layout::{FixedAdvance, Rect, layout};
+use gogo_ui::runtime::{Runtime, resolve, resolve_animated};
+use gogo_ui::{Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -79,7 +79,7 @@ fn seat_fits_its_occupant_to_the_socket() {
     let c = ok("arrangement side\nView v {\n Layers host halign=left, valign=top {\n  seat socket width=200, height=100\n  Panel pane width=fill, height=fill, halign=left, margin=10 { Rectangle x width=fill, height=fill }\n }\n}\nwhen side { pane.seat = socket }\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     let res = resolve(&page, &rt);
     let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
     let socket = rect(&page, &rects, "socket");
@@ -89,7 +89,7 @@ fn seat_fits_its_occupant_to_the_socket() {
     let c = ok("arrangement side\nView v {\n Column col halign=left, valign=top {\n  seat socket\n  Layers free { Rectangle box 50x30, margin_left=10, margin_top=10 }\n }\n}\nwhen side { box.seat = socket }\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     let res = resolve(&page, &rt);
     let rects = layout(&page, &res, Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
     let socket = rect(&page, &rects, "socket");
@@ -129,7 +129,7 @@ fn timed_arrangement_glides_every_reposed_box() {
         rt.glide(rects)[b]
     };
     assert_eq!(frame(&mut rt, &mut page, 0.0).x, 0.0);
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     let start = frame(&mut rt, &mut page, 0.0);
     assert_eq!(start.x, 0.0, "the glide starts where the box was");
     let mid = frame(&mut rt, &mut page, 0.5);
@@ -143,6 +143,6 @@ fn timed_arrangement_glides_every_reposed_box() {
     let mut page = c.page;
     let mut rt = Runtime::new(&page);
     frame(&mut rt, &mut page, 0.0);
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     assert_eq!(frame(&mut rt, &mut page, 0.0).x, 300.0);
 }

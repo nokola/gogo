@@ -6,12 +6,12 @@
 //! slices set by code, the errors, and that no hot type grew.
 use std::collections::HashMap;
 
-use gogo::KeptFrame;
-use gogo::draw::{Draw, Fit, Sampling, draw};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{ImageKey, ImageSlice, NO_IMAGE, PropKey, Value};
-use gogo::runtime::{Runtime, resolve};
-use gogo::{Compiled, CompileOptions, compile_with};
+use gogo_ui::KeptFrame;
+use gogo_ui::draw::{Draw, Fit, Sampling, draw};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{ImageKey, ImageSlice, NO_IMAGE, PropKey, Value};
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{Compiled, CompileOptions, compile_with};
 
 /// A PNG's first 24 bytes: all `picture_size` reads.
 fn png(w: u32, h: u32) -> Vec<u8> {
@@ -58,7 +58,7 @@ fn build(src: &str) -> Compiled {
 
 fn ok(src: &str) -> Compiled {
     let c = build(src);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -208,12 +208,12 @@ fn one_atlas_twice_keeps_its_ids_and_a_different_one_is_refused() {
     // declares the same atlas twice.
     let f = files();
     let read = |p: &str| f.get(p).cloned().ok_or_else(|| "no such file".to_string());
-    let shared = std::cell::RefCell::new(gogo::Images::default());
+    let shared = std::cell::RefCell::new(gogo_ui::Images::default());
     let opts = CompileOptions { assets: Some(&read), images: Some(&shared), ..CompileOptions::default() };
     let line = "atlas animals source=\"res://s/animals.png\", cell=80x80\n";
     let a = compile_with(&format!("{line}View v {{ Image i 4x4, source=animals[3] }}"), &|_| None, opts);
     let b = compile_with(&format!("{line}View v {{ Image i 4x4, source=animals[3] }}"), &|_| None, opts);
-    assert!(!gogo::has_errors(&a.diags) && !gogo::has_errors(&b.diags));
+    assert!(!gogo_ui::has_errors(&a.diags) && !gogo_ui::has_errors(&b.diags));
     assert_eq!(shared.borrow().slices.len(), 54, "no second copy of the slices");
     let other = compile_with("atlas animals source=\"res://s/animals.png\", cell=40x40\nView v { }", &|_| None, opts);
     assert!(other.diags.iter().any(|d| d.code == "G2019"), "{:?}", other.diags);
@@ -222,12 +222,12 @@ fn one_atlas_twice_keeps_its_ids_and_a_different_one_is_refused() {
 #[test]
 fn the_atlas_code_module_spells_what_the_files_spell() {
     let c = ok("atlas bubble source=\"res://s/bubble.png\"\natlas animals source=\"res://s/animals.png\", cell=240x720\natlas toolbar source=\"res://s/toolbar.png\" {\n slice playNow x=0, y=0, size=48x48\n}\nView v { }");
-    let code = gogo::emit::emit_atlases(&c.images.atlases).unwrap();
+    let code = gogo_ui::emit::emit_atlases(&c.images.atlases).unwrap();
     assert!(code.contains("pub const BUBBLE: ImageKey = ImageKey::new(0);"), "{code}");
     assert!(code.contains("pub const ANIMALS: [ImageKey; 2] = [ImageKey::new(2147483648), ImageKey::new(2147483649)];"), "{code}");
     assert!(code.contains("pub mod toolbar {") && code.contains("pub const PLAY_NOW: ImageKey = ImageKey::new(2147483650);"), "{code}");
-    let slices = gogo::emit::emit_slices(&c.images.slices);
-    assert!(slices.starts_with("/// Every atlas slice") && slices.contains("pub static SLICES: [gogo::page::ImageSlice; 3]"), "{slices}");
+    let slices = gogo_ui::emit::emit_slices(&c.images.slices);
+    assert!(slices.starts_with("/// Every atlas slice") && slices.contains("pub static SLICES: [gogo_ui::page::ImageSlice; 3]"), "{slices}");
 }
 
 #[test]

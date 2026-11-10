@@ -12,10 +12,10 @@
 //! `Runtime::set_prop` here; `x.visible = false` is `Runtime::set_visible`
 //! (gone). Godot sized a detached container with `g.size = …`; here the
 //! grid gets `width=`/`height=` at the top-left of a View.
-use gogo::layout::{FixedAdvance, Rect, TextMeasure, layout};
-use gogo::page::{PropKey, Value};
-use gogo::runtime::{Runtime, resolve};
-use gogo::{Compiled, Page, compile};
+use gogo_ui::layout::{FixedAdvance, Rect, TextMeasure, layout};
+use gogo_ui::page::{PropKey, Value};
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{Compiled, Page, compile};
 
 fn build(src: &str) -> Compiled {
     compile(src, &|_| None)
@@ -23,12 +23,12 @@ fn build(src: &str) -> Compiled {
 
 fn ok(src: &str) -> Compiled {
     let c = build(src);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
 fn fails(src: &str) -> bool {
-    gogo::has_errors(&build(src).diags)
+    gogo_ui::has_errors(&build(src).diags)
 }
 
 /// Godot built snippets detached (any root); Rust needs a `View`/`Panel`
@@ -44,7 +44,7 @@ fn codes(src: &str) -> Vec<String> {
 
 fn warnings(src: &str) -> Vec<String> {
     let c = ok(src);
-    c.diags.iter().filter(|d| d.severity == gogo::Severity::Warning).map(|d| d.message.clone()).collect()
+    c.diags.iter().filter(|d| d.severity == gogo_ui::Severity::Warning).map(|d| d.message.clone()).collect()
 }
 
 fn lay(src: &str, w: f32, h: f32) -> (Page, Vec<Rect>) {
@@ -71,7 +71,7 @@ impl TextMeasure for Pic {
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> (f32, f32) {
         FixedAdvance.measure(text, font_size, max_width, font)
     }
-    fn image_size(&self, _key: gogo::ImageKey) -> Option<(f32, f32)> {
+    fn image_size(&self, _key: gogo_ui::ImageKey) -> Option<(f32, f32)> {
         Some((100.0, 50.0))
     }
 }
@@ -384,7 +384,7 @@ fn an_empty_grid_is_legal() {
 #[test]
 fn areas_errors_point_at_the_row_strings_line() {
     // `in_view` puts the snippet on line 2, so every Godot line is + 1.
-    let line_of = |src: &str| -> Vec<u32> { build(src).diags.iter().filter(|d| d.severity == gogo::Severity::Error).map(|d| d.line).collect() };
+    let line_of = |src: &str| -> Vec<u32> { build(src).diags.iter().filter(|d| d.severity == gogo_ui::Severity::Error).map(|d| d.line).collect() };
     let name = in_view("Grid g cols=[hug, hug],\n        areas=[\"a  a : hug\",\n               \"a 9bad : hug\"] { Rectangle a }");
     assert_eq!(line_of(&name), vec![4], "{:?}", build(&name).diags);
     let height = in_view("Grid g cols=[hug], areas=[\"a : wat\"] { Rectangle a }");

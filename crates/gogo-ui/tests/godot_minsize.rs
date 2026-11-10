@@ -32,16 +32,16 @@
 //! pitch): at the 15-epx default a char is 8.25 wide and a line 18.75
 //! tall; at `font_size=16` 8.8 and 20. Godot measured Roboto, so pixel
 //! numbers below are the FixedAdvance ones, relations are kept as written.
-use gogo::draw::{Draw, draw};
-use gogo::KeptFrame;
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{Len, Page};
-use gogo::runtime::{Runtime, resolve};
-use gogo::{Compiled, Orientation, ScreenClass, compile};
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{Len, Page};
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{Compiled, Orientation, ScreenClass, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -50,7 +50,7 @@ fn codes(src: &str) -> Vec<String> {
 }
 
 fn errs(src: &str) -> bool {
-    gogo::has_errors(&compile(src, &|_| None).diags)
+    gogo_ui::has_errors(&compile(src, &|_| None).diags)
 }
 
 fn lay(page: &Page, rt: &Runtime, w: f32, h: f32) -> KeptFrame {
@@ -152,7 +152,7 @@ fn seat_measures_its_occupant_by_declared_width_intent() {
     let c = ok("arrangement seated\nView v {\n Column col halign=left, valign=top, width=100 {\n  Row hugRow height=30 { seat hugSeat }\n  Row hugnRow height=30 { seat hugnSeat }\n  seat fillSeat\n }\n Panel hugOcc { Label hugLbl text=\"a reseated line with room to wrap\", wrap=true }\n Panel hugnOcc width=hug(2) { Label hugnLbl text=\"a reseated line with room to wrap\", wrap=true }\n Panel fillOcc width=fill { Label fillLbl text=\"a reseated line with room to wrap\", wrap=true }\n}\nwhen seated {\n hugOcc.seat = hugSeat\n hugnOcc.seat = hugnSeat\n fillOcc.seat = fillSeat\n}\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     let f = lay(&page, &rt, 400.0, 400.0);
     let (_, rects) = (f.look(), f.rects());
     // 33 chars × 8.25 = 272.25 unwrapped.
@@ -182,7 +182,7 @@ fn a_fill_occupant_in_a_row_seat_reports_wrapped() {
     let c = ok("arrangement seated\nView v {\n Column col halign=left, valign=top, width=100 {\n  Row fillRow height=30 { seat fillSeat }\n }\n Panel fillOcc width=fill { Label fillLbl text=\"a reseated line with room to wrap\", wrap=true }\n}\nwhen seated { fillOcc.seat = fillSeat }\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     let f = lay(&page, &rt, 400.0, 400.0);
     let (_, rects) = (f.look(), f.rects());
     let fill_seat = rect(&page, &rects, "fillSeat");
@@ -514,7 +514,7 @@ fn per_corner_radius_keys_are_known() {
     assert!(!c.diags.iter().any(|d| d.code == "G2001"), "{:#?}", c.diags);
     let slot = "widget Fader {\n Layers {\n  slot track width=fill, height=24 { Rectangle color=#4488FFFF }\n }\n}\nView v { Fader f 200x24, slot.track.corner_radius_top_left=3 }\n";
     let c = compile(slot, &|_| None);
-    assert!(!gogo::has_errors(&c.diags) && !c.diags.iter().any(|d| d.code == "G2001"), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags) && !c.diags.iter().any(|d| d.code == "G2001"), "{:#?}", c.diags);
 }
 
 /// `_corner_radius_tests` 1082-1083 (corner.circle-refused): a Circle
@@ -541,7 +541,7 @@ fn aspect_contract_fences() {
     assert!(g1017("View v { Column c { Rectangle r width=100, aspect=1 } }"), "container parent");
     assert!(g1017("View v { Layers l { Rectangle r aspect=natural } }"), "natural off an Image");
     assert!(g1017("View v { Layers l { Rectangle r aspect=-2 } }"), "negative ratio");
-    assert!(!gogo::has_errors(&compile("View v { Layers l { Rectangle r width=200, aspect=2, halign=left, valign=top } }", &|_| None).diags), "the legal one-driven-axis form builds");
+    assert!(!gogo_ui::has_errors(&compile("View v { Layers l { Rectangle r width=200, aspect=2, halign=left, valign=top } }", &|_| None).diags), "the legal one-driven-axis form builds");
 }
 
 /// `_aspect_fit_tests` 12233-12262 (aspect.derives-fixed,
@@ -837,13 +837,13 @@ fn a_capped_layers_under_a_column_follows_content_between_floor_and_cap() {
     };
     let (h, y) = row_and_below(&rt);
     assert!(near(h, 30.0) && near(y, 30.0), "floor: row={h} below={y}");
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     let (h, y) = row_and_below(&rt);
     assert!(near(h, 45.0) && near(y, 45.0), "follows: row={h} below={y}");
-    rt.go_id(gogo::ArrangementId::new(1));
+    rt.go_id(gogo_ui::ArrangementId::new(1));
     let (h, y) = row_and_below(&rt);
     assert!(near(h, 60.0) && near(y, 60.0), "cap binds: row={h} below={y}");
-    rt.go_id(gogo::BASE);
+    rt.go_id(gogo_ui::BASE);
     let (h, y) = row_and_below(&rt);
     assert!(near(h, 30.0) && near(y, 30.0), "shrinks back: row={h} below={y}");
 }
@@ -857,7 +857,7 @@ fn content_past_a_container_cap_is_clipped_not_overdrawn() {
     let c = ok(CCAP_SRC);
     let page = c.page;
     let mut rt = Runtime::new(&page);
-    rt.go_id(gogo::ArrangementId::new(1));
+    rt.go_id(gogo_ui::ArrangementId::new(1));
     let f = lay(&page, &rt, 40.0, 120.0);
     let rects = f.rects();
     let row = rect(&page, &rects, "ccRow");
@@ -902,7 +902,7 @@ fn a_seated_glyph_stays_put_when_its_minimum_changes() {
     let (_, rects) = (f.look(), f.rects());
     let glyph = rect(&page, &rects, "seatGlyph");
     assert!(near(glyph.x, 17.0) && near(glyph.y, 43.0), "{glyph:?}");
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     let f = lay(&page, &rt, 200.0, 200.0);
     let (_, rects) = (f.look(), f.rects());
     let glyph = rect(&page, &rects, "seatGlyph");

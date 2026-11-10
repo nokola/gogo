@@ -3,17 +3,17 @@
 //! `play()`), `repeat x capacity=N` builds N addressable items that code shows
 //! by count and that lay out as their parent's children, and `on:pointer=`
 //! hands the raw finger to the host in the node's own space.
-use gogo::anim::Finish;
-use gogo::KeptFrame;
-use gogo::input::{EventKind, Input, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect, layout};
-use gogo::page::{Action, PropKey, Value};
-use gogo::runtime::{Runtime, resolve};
-use gogo::{Compiled, compile};
+use gogo_ui::anim::Finish;
+use gogo_ui::KeptFrame;
+use gogo_ui::input::{EventKind, Input, Phase, Touch};
+use gogo_ui::layout::{FixedAdvance, Rect, layout};
+use gogo_ui::page::{Action, PropKey, Value};
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{Compiled, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -34,7 +34,7 @@ fn widget_anims_play_per_instance() {
     let mut rt = Runtime::new(&page);
     let a_delete = page.intern_lookup("a/delete");
     let b_delete = page.intern_lookup("b/delete");
-    assert!(a_delete != gogo::page::NO_STR && b_delete != gogo::page::NO_STR, "one anim per instance");
+    assert!(a_delete != gogo_ui::page::NO_STR && b_delete != gogo_ui::page::NO_STR, "one anim per instance");
     rt.play_id(&page, a_delete, Finish::Nothing);
     rt.tick(&mut page, 0.5);
     assert_eq!(rt.motion[a_rope].scale[1], 0.5);
@@ -55,7 +55,7 @@ fn repeat_items_show_by_count_and_lay_out_in_the_stack() {
     let mut page = c.page;
     let marks = page.find("marks").expect("the repeat node");
     let mut rt = Runtime::new(&page);
-    let lay = |page: &gogo::Page, rt: &Runtime| {
+    let lay = |page: &gogo_ui::Page, rt: &Runtime| {
         let res = resolve(page, rt);
         layout(page, &res, Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance)
     };
@@ -98,7 +98,7 @@ fn pointer_reports_every_phase_in_node_space() {
     assert_eq!(ev[0].node, pad);
     assert_eq!(ev[0].kind, EventKind::Pointer { phase: Phase::Down, x: 5.0, y: 5.0 });
     assert!(matches!(ev[0].action, Some(Action::Named(id)) if page.str(id) == "pad_touch"));
-    assert!(!rt.has(pad, gogo::runtime::HELD));
+    assert!(!rt.has(pad, gogo_ui::runtime::HELD));
     // Moving off the node still reports (captured), in node space.
     let ev = touch(Phase::Move, 150.0, 100.0, 0.1, &mut rt);
     assert_eq!(ev[0].kind, EventKind::Pointer { phase: Phase::Move, x: 130.0, y: 90.0 });
@@ -125,19 +125,19 @@ fn raise_reorders_paint_and_hit() {
     let a = page.find("a").unwrap();
     let b = page.find("b").unwrap();
     let mut rt = Runtime::new(&page);
-    let order = |page: &gogo::Page, rt: &Runtime| -> Vec<gogo::page::NodeId> {
+    let order = |page: &gogo_ui::Page, rt: &Runtime| -> Vec<gogo_ui::page::NodeId> {
         let f = KeptFrame::fresh(page, resolve(page, rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-        gogo::draw(page, f.frame())
+        gogo_ui::draw(page, f.frame())
             .iter()
-            .filter_map(|d| if let gogo::Draw::Quad { rect, .. } = d { Some(rect.x as i32) } else { None })
+            .filter_map(|d| if let gogo_ui::Draw::Quad { rect, .. } = d { Some(rect.x as i32) } else { None })
             .collect::<Vec<i32>>()
             .iter()
             .map(|x| if *x == 0 { a } else { b })
             .collect()
     };
-    let hit_at = |page: &gogo::Page, rt: &Runtime, x: f32| {
+    let hit_at = |page: &gogo_ui::Page, rt: &Runtime, x: f32| {
         let f = KeptFrame::fresh(page, resolve(page, rt), Rect::new(0.0, 0.0, 200.0, 200.0), &FixedAdvance);
-        gogo::draw::hit(page, f.frame(), x, 10.0, false)
+        gogo_ui::draw::hit(page, f.frame(), x, 10.0, false)
     };
     assert_eq!(order(&page, &rt), vec![a, b], "file order: b paints over a");
     assert_eq!(hit_at(&page, &rt, 30.0), Some(b), "the overlap belongs to b");
@@ -222,7 +222,7 @@ fn slot_lanes_move_the_region_in_a_controls_own_anim() {
     let mut page = c.page;
     let thumb = (page.find("f/thumb").expect("f/thumb")).index();
     let pop = page.intern_lookup("f/pop");
-    assert!(pop != gogo::page::NO_STR, "the instance's own anim");
+    assert!(pop != gogo_ui::page::NO_STR, "the instance's own anim");
     let mut rt = Runtime::new(&page);
     rt.play_id(&page, pop, Finish::Nothing);
     rt.tick(&mut page, 0.25);

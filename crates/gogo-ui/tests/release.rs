@@ -6,8 +6,8 @@
 //! way one eager line makes a picture eager everywhere.
 use std::collections::HashMap;
 
-use gogo::page::ImageKey;
-use gogo::{Compiled, CompileOptions, compile_with};
+use gogo_ui::page::ImageKey;
+use gogo_ui::{Compiled, CompileOptions, compile_with};
 
 /// A PNG's first 24 bytes: all the atlas reads.
 fn png(w: u32, h: u32) -> Vec<u8> {
@@ -28,7 +28,7 @@ fn build(src: &str) -> Compiled {
 
 fn ok(src: &str) -> Compiled {
     let c = build(src);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 

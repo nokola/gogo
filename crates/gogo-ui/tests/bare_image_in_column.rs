@@ -13,13 +13,13 @@
 //! content is its picture.
 //!
 //! The picture is 80x40 everywhere here (ratio 2).
-use gogo::layout::{FixedAdvance, Rect, TextMeasure, layout};
-use gogo::runtime::{Runtime, resolve};
-use gogo::{Compiled, Page, compile};
+use gogo_ui::layout::{FixedAdvance, Rect, TextMeasure, layout};
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -30,7 +30,7 @@ impl TextMeasure for Wide {
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> (f32, f32) {
         FixedAdvance.measure(text, font_size, max_width, font)
     }
-    fn image_size(&self, _key: gogo::ImageKey) -> Option<(f32, f32)> {
+    fn image_size(&self, _key: gogo_ui::ImageKey) -> Option<(f32, f32)> {
         Some((80.0, 40.0))
     }
 }

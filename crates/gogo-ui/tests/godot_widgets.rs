@@ -30,18 +30,18 @@
 //!   (pointer routing, contract signals, `set_fraction`, the `script`
 //!   line itself). Rust controls have no attached script — code-behind is
 //!   Rust code (gogo-design.md §7 "Names become code").
-use gogo::diag::Diagnostic;
-use gogo::KeptFrame;
-use gogo::draw::{Draw, draw, hit};
-use gogo::input::{Input, Phase, Touch};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{Auto, Kind, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{DISABLED, Runtime, resolve, resolve_animated};
-use gogo::{Compiled, Page, compile};
+use gogo_ui::diag::Diagnostic;
+use gogo_ui::KeptFrame;
+use gogo_ui::draw::{Draw, draw, hit};
+use gogo_ui::input::{Input, Phase, Touch};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{Auto, Kind, NodeId, PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
+use gogo_ui::runtime::{DISABLED, Runtime, resolve, resolve_animated};
+use gogo_ui::{Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -59,7 +59,7 @@ fn err_text(src: &str) -> String {
 }
 
 fn builds(src: &str) -> bool {
-    !gogo::has_errors(&diags(src))
+    !gogo_ui::has_errors(&diags(src))
 }
 
 fn lay(page: &Page, rt: &Runtime) -> KeptFrame {
@@ -180,7 +180,7 @@ fn widget_instance_params_passthrough_and_bare_slot() {
     let p = &c.page;
     let slider = kids(p, find(p, "sizeSlider"))[1];
     let handlers = &p.handlers[p.nodes[slider.index()].handlers.0 as usize..(p.nodes[slider.index()].handlers.0 + p.nodes[slider.index()].handlers.1) as usize];
-    assert!(handlers.iter().any(|h| p.str(h.event) == "change" && matches!(h.action, gogo::page::Action::Named(n) if p.str(n) == "sizeChanged")), "{handlers:?}");
+    assert!(handlers.iter().any(|h| p.str(h.event) == "change" && matches!(h.action, gogo_ui::page::Action::Named(n) if p.str(n) == "sizeChanged")), "{handlers:?}");
 
     let c = ok("widget Card $title=\"?\" {\n Column {\n  Label text=$title\n  slot\n }\n}\nCard c title=\"Box\" { Button inner text=\"In the slot\" }\n");
     let p = &c.page;
@@ -211,7 +211,7 @@ fn signals_node_change_auto_wires_under_the_instance_name() {
     let s = rects[slider.index()];
     input.touch(p, &mut rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Down, x: s.x + s.w * 0.5, y: s.y + s.h * 0.5, t: 0.0, id: 1 });
     let ev = input.touch(p, &mut rt, f.frame(), &FixedAdvance, Touch { phase: Phase::Up, x: s.x + s.w * 0.5, y: s.y + s.h * 0.5, t: 0.1, id: 1 });
-    let change = ev.iter().find(|e| matches!(e.kind, gogo::EventKind::Change(_))).unwrap_or_else(|| panic!("{ev:?}"));
+    let change = ev.iter().find(|e| matches!(e.kind, gogo_ui::EventKind::Change(_))).unwrap_or_else(|| panic!("{ev:?}"));
     let routable = change.action.is_some() || p.str(p.nodes[change.node.index()].name) == "sizeSlider";
     assert!(routable, "the change must reach a handler named after the instance: {change:?}, node name {:?}", p.str(p.nodes[change.node.index()].name));
 }
@@ -368,7 +368,7 @@ fn slot_line_box_props_land_on_the_region() {
     assert_eq!(p.prop(track, PropKey::CornerRadius), Some(Value::VNum(2.0)), "{:?}", p.node_props(track));
     let pl = p.nodes[track.index()].placement;
     assert_eq!(pl.padding, [3.0; 4], "{pl:?}");
-    assert_eq!(pl.height, gogo::page::Len::Exact(4.0), "{pl:?}");
+    assert_eq!(pl.height, gogo_ui::page::Len::Exact(4.0), "{pl:?}");
 }
 
 /// `slotn.content-prop-routed` 3247-3253: a CONTENT prop on a slot line
@@ -844,7 +844,7 @@ fn coupling_clauses_continue_after_a_trailing_comma() {
     let p = &c.page;
     let slot = find(p, "c/p");
     assert_eq!(p.nodes[slot.index()].auto, Auto::Position(0.0));
-    assert_eq!(p.nodes[slot.index()].placement.width, gogo::page::Len::Exact(20.0));
+    assert_eq!(p.nodes[slot.index()].placement.width, gogo_ui::page::Len::Exact(20.0));
 }
 
 /// `d134.g3002-note-quotes` 3715-3716: a `style … for=Fader,

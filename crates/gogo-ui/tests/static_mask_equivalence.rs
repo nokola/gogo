@@ -21,12 +21,12 @@
 //! and List, a label rewritten in place, a viewport change (the full
 //! road, asserted). The effect page's Button flip must lay out nothing
 //! and re-emit under a hundred commands.
-use gogo::draw::DrawStats;
-use gogo::KeptFrame;
-use gogo::layout::LayoutStats;
-use gogo::page::State;
-use gogo::runtime::{DISABLED, FOCUSED, FOCUS_WITHIN, HELD, HOVERED, Item, ItemValue, Resolved, Runtime, SELECTED, resolve_animated};
-use gogo::{ArrangementId, BASE, CompileOptions, Draw, Finish, FixedAdvance, Kind, NO_NODE, NO_STR, NodeId, Page, PropKey, Rect, Value, compile, compile_file_with, draw, has_errors, layout};
+use gogo_ui::draw::DrawStats;
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::LayoutStats;
+use gogo_ui::page::State;
+use gogo_ui::runtime::{DISABLED, FOCUSED, FOCUS_WITHIN, HELD, HOVERED, Item, ItemValue, Resolved, Runtime, SELECTED, resolve_animated};
+use gogo_ui::{ArrangementId, BASE, CompileOptions, Draw, Finish, FixedAdvance, Kind, NO_NODE, NO_STR, NodeId, Page, PropKey, Rect, Value, compile, compile_file_with, draw, has_errors, layout};
 use std::path::{Path, PathBuf};
 
 /// The box every fixture lays out in; `WIDER` is the viewport-change step.
@@ -586,7 +586,7 @@ fn run_script(name: &str, page: Page) -> (usize, usize) {
     let first_static: Option<NodeId> = (0..n).map(NodeId::from_index).find(|id| roads.rt_ret.is_static(*id));
     if let Some(s) = first_static {
         roads.step("write opacity on a static node", |_, rt| rt.set_prop(s, PropKey::Opacity, Value::VNum(0.5)));
-        roads.step("write a color on the same node", |_, rt| rt.set_prop(s, PropKey::Color, Value::VColor(gogo::Color_Straight_Srgb_4xU8_RGBA([1, 2, 3, 128]))));
+        roads.step("write a color on the same node", |_, rt| rt.set_prop(s, PropKey::Color, Value::VColor(gogo_ui::Color_Straight_Srgb_4xU8_RGBA([1, 2, 3, 128]))));
         roads.step("take the opacity write back", |_, rt| rt.clear_prop(s, PropKey::Opacity));
         roads.step("take the color write back", |_, rt| rt.clear_prop(s, PropKey::Color));
         assert!(roads.rt_ret.is_static(s), "{name}: the node is static again once its writes are gone");
@@ -623,7 +623,7 @@ fn run_script(name: &str, page: Page) -> (usize, usize) {
     roads.set_viewport(VIEWPORT);
     roads.resolve("the viewport back");
     // Anims: play the first few, tick three frames each.
-    let anims: Vec<gogo::StrId> = roads.page().anim_heads.iter().take(3).map(|h| h.anim).collect();
+    let anims: Vec<gogo_ui::StrId> = roads.page().anim_heads.iter().take(3).map(|h| h.anim).collect();
     for a in &anims {
         roads.step("play an anim", |page, rt| rt.play_id(page, *a, Finish::Nothing));
         for _ in 0..3 {
@@ -632,7 +632,7 @@ fn run_script(name: &str, page: Page) -> (usize, usize) {
         roads.tick("tick the anim to its end", 2.0);
     }
     // Repeats: keyed rows in, reordered, out; counted rows up and down.
-    let repeats: Vec<gogo::page::RepeatInfo> = roads.page().repeats.clone();
+    let repeats: Vec<gogo_ui::page::RepeatInfo> = roads.page().repeats.clone();
     for info in &repeats {
         let repeat = info.node;
         if info.keyed {
@@ -745,27 +745,52 @@ fn the_rule_sorts_the_mixed_fixture_as_documented() {
 #[test]
 fn whats_new_fixture_resolves_the_same_and_the_mask_is_not_trivial() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/whats_new.gogo");
-    let c = gogo::compile_file(&path).unwrap();
+    let c = gogo_ui::compile_file(&path).unwrap();
     assert!(!has_errors(&c.diags), "{:#?}", c.diags);
     let (s, d) = run_script("whats_new.gogo", c.page);
     assert!(s > 0 && d > 0, "whats_new.gogo: the mask is trivial ({s} static, {d} dynamic)");
 }
 
-/// Every page under crates/app/ui, compiled the way the app's build does
-/// (its one code control named; keys and images per page instead of the
-/// build-wide tables, which resolve does not read).
+/// The big real-world fixtures: a host application's folder of `.gogo`
+/// pages, named by the `GOGO_APP_UI` environment variable. This
+/// repository has no application pages, so the two tests that need them
+/// are `#[ignore]`d: a plain `cargo test` counts them as ignored, never
+/// as passed. A host (FanRust: its `crates/app/ui`) runs them with
+/// `GOGO_APP_UI=<pages folder> cargo test --test static_mask_equivalence -- --ignored`.
+/// Asked for without the variable, they fail and say so.
+fn app_ui_dir() -> PathBuf {
+    let Some(dir) = std::env::var_os("GOGO_APP_UI") else {
+        panic!("GOGO_APP_UI is not set — it names the host application's folder of .gogo pages this test runs against");
+    };
+    PathBuf::from(dir)
+}
+
+/// Where a page's `res://` paths read from: `GOGO_RES_ROOT`, or the
+/// folder three levels up from the pages (FanRust's `crates/app/ui` sits
+/// three levels under its root, where `assets/` lives).
+fn res_root(app_ui: &Path) -> PathBuf {
+    match std::env::var_os("GOGO_RES_ROOT") {
+        Some(root) => PathBuf::from(root),
+        None => app_ui.join("../../.."),
+    }
+}
+
+/// Every page of the host application, compiled the way the app's build
+/// does (its one code control named; keys and images per page instead of
+/// the build-wide tables, which resolve does not read).
 #[test]
+#[ignore = "needs a host application's pages: set GOGO_APP_UI and pass --ignored"]
 fn app_pages_resolve_the_same_with_the_mask_on_and_off() {
-    let dir: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app/ui");
+    let dir: PathBuf = app_ui_dir();
     let Ok(rd) = std::fs::read_dir(&dir) else {
         panic!("{} is not there — the app's pages are the big fixtures this pin needs", dir.display());
     };
     let mut paths: Vec<PathBuf> = rd.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "gogo")).collect();
     paths.sort();
     let is_page = |source: &str| source.lines().any(|l| l.starts_with("View ") || l.starts_with("View{") || l == "View" || l.starts_with("Panel ") || l.starts_with("Panel{") || l == "Panel");
-    // `res://` read from the FanRust root, as `build_pages` does: an
+    // `res://` read from the host's root, as `build_pages` does: an
     // `atlas … cell=` needs its picture's size (the stickers page).
-    let res_root: PathBuf = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let res_root: PathBuf = res_root(&dir);
     let read_res = |path: &str| -> Result<Vec<u8>, String> {
         let rel: &str = path.strip_prefix("res://").ok_or_else(|| format!("not a res:// path: {path}"))?;
         std::fs::read(res_root.join(rel)).map_err(|e| format!("{path}: {e}"))
@@ -815,8 +840,10 @@ fn frame(page: &Page, rt: &mut Runtime, draws: &mut Vec<Draw>) -> (u32, LayoutSt
 /// commands and its ancestors' own, under a hundred, the rest copied.
 /// The counts are printed so a run shows them (`--nocapture`).
 #[test]
+#[ignore = "needs a host application's pages: set GOGO_APP_UI and pass --ignored"]
 fn a_button_flip_on_the_effect_page_stays_local() {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app/ui/effect_page.gogo");
+    let dir: PathBuf = app_ui_dir();
+    let path = dir.join("effect_page.gogo");
     let options = CompileOptions { code_controls: &["GradientEdit"], ..CompileOptions::default() };
     let c = compile_file_with(&path, options).unwrap();
     assert!(!has_errors(&c.diags), "{:#?}", c.diags);

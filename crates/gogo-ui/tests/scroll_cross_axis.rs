@@ -3,14 +3,14 @@
 //! everything that fills the width, and the Scroll clipped all of it
 //! (USER SAW a settings page in Bulgarian cut off on the right, every
 //! full-width row running past the screen edge, 2026-09-29).
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::runtime::{Runtime, resolve};
-use gogo::{KeptFrame, compile};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{KeptFrame, compile};
 
 /// Lays the page out in a `w` x `h` window and returns `names`' rects.
 fn rects(src: &str, w: f32, h: f32, names: &[&str]) -> Vec<Rect> {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let rt = Runtime::new(&c.page);
     let kept = KeptFrame::fresh(&c.page, resolve(&c.page, &rt), Rect::new(0.0, 0.0, w, h), &FixedAdvance);
     names.iter().map(|n| kept.rects()[c.page.find(n).unwrap_or_else(|| panic!("no node {n}")).index()]).collect()

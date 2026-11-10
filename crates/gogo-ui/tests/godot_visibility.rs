@@ -14,16 +14,16 @@
 //!   cap.host-quiet: script-backed host measure gate (ENGINE_MEASURE_META).
 //! - `_component_host_seat_tests` (all 6): root anchors vs container size
 //!   flags; the shell seats a page root here.
-use gogo::draw::{Draw, draw, hit};
-use gogo::KeptFrame;
-use gogo::layout::{FixedAdvance, Rect, TextMeasure, layout};
-use gogo::page::{PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
-use gogo::runtime::{DISABLED, Runtime, resolve};
-use gogo::{Compiled, Page, compile};
+use gogo_ui::draw::{Draw, draw, hit};
+use gogo_ui::KeptFrame;
+use gogo_ui::layout::{FixedAdvance, Rect, TextMeasure, layout};
+use gogo_ui::page::{PropKey, Color_Straight_Srgb_4xU8_RGBA, Value};
+use gogo_ui::runtime::{DISABLED, Runtime, resolve};
+use gogo_ui::{Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -32,7 +32,7 @@ fn codes(src: &str) -> Vec<String> {
 }
 
 fn fails(src: &str) -> bool {
-    gogo::has_errors(&compile(src, &|_| None).diags)
+    gogo_ui::has_errors(&compile(src, &|_| None).diags)
 }
 
 /// resolve + layout at `w`×`h` epx with the fixed-advance text ruler.
@@ -384,9 +384,9 @@ fn fit_words_reach_the_draw_list_with_contain_as_default() {
             })
             .unwrap_or_else(|| panic!("no image at {r:?} in {list:#?}"))
     };
-    assert_eq!(fit_at("cimg"), gogo::Fit::Cover);
-    assert_eq!(fit_at("dimg"), gogo::Fit::Distort);
-    assert_eq!(fit_at("plain_img"), gogo::Fit::Contain);
+    assert_eq!(fit_at("cimg"), gogo_ui::Fit::Cover);
+    assert_eq!(fit_at("dimg"), gogo_ui::Fit::Distort);
+    assert_eq!(fit_at("plain_img"), gogo_ui::Fit::Contain);
 }
 
 /// `_aspect_fit_tests` 12122-12127 (aspect.derives-fixed, aspect.derives-
@@ -424,13 +424,13 @@ fn both_fill_aspect_is_the_largest_fitting_box_centered_and_live() {
 
 /// A text ruler that also knows one square bitmap (Godot's icon.svg is
 /// square), for `aspect=natural` — the bitmap by its compiled id.
-struct SquareIcon(gogo::ImageKey);
+struct SquareIcon(gogo_ui::ImageKey);
 
 impl TextMeasure for SquareIcon {
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> (f32, f32) {
         FixedAdvance.measure(text, font_size, max_width, font)
     }
-    fn image_size(&self, key: gogo::ImageKey) -> Option<(f32, f32)> {
+    fn image_size(&self, key: gogo_ui::ImageKey) -> Option<(f32, f32)> {
         (key == self.0).then_some((128.0, 128.0))
     }
 }

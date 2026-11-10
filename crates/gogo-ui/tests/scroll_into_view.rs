@@ -4,9 +4,9 @@
 //! before the near edge → that edge, each plus the margin of air; clamped
 //! at 0. Before, the brush list and the face strip each spelled their own
 //! rule, and the list's moved the row to the bottom edge on every show.
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::runtime::{Runtime, resolve};
-use gogo::{KeptFrame, NodeId, Page, compile};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::runtime::{Runtime, resolve};
+use gogo_ui::{KeptFrame, NodeId, Page, compile};
 
 /// A 100-tall vertical Scroll over ten 40-tall rows.
 const COLUMN: &str = "View v {\n Scroll s width=100, height=100, allow=vertical, bars=never {\n  Column c {\n   Rectangle r0 width=100, height=40, color=#FF0000FF\n   Rectangle r1 width=100, height=40, color=#FF0000FF\n   Rectangle r2 width=100, height=40, color=#FF0000FF\n   Rectangle r3 width=100, height=40, color=#FF0000FF\n   Rectangle r4 width=100, height=40, color=#FF0000FF\n   Rectangle r5 width=100, height=40, color=#FF0000FF\n   Rectangle r6 width=100, height=40, color=#FF0000FF\n   Rectangle r7 width=100, height=40, color=#FF0000FF\n   Rectangle r8 width=100, height=40, color=#FF0000FF\n   Rectangle r9 width=100, height=40, color=#FF0000FF\n  }\n }\n}\n";
@@ -16,7 +16,7 @@ const STRIP: &str = "View v {\n Scroll s width=100, height=40, allow=horizontal,
 
 fn open(src: &str) -> (Page, Runtime) {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     let rt = Runtime::new(&c.page);
     (c.page, rt)
 }

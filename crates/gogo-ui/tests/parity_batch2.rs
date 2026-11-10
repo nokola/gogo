@@ -5,17 +5,17 @@
 //! an anim outranks a `when` while it plays and its end pose stands until
 //! the next writer, the D63 one-writer guard (G4003) refuses the static
 //! conflict at build, and `modulate.a` is not a gogo word.
-use gogo::anim::{Channel, Finish};
-use gogo::KeptFrame;
-use gogo::draw::{Draw, draw};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{PropKey, Value};
-use gogo::runtime::{HELD, Runtime, resolve, resolve_animated};
-use gogo::{Compiled, Page, compile};
+use gogo_ui::anim::{Channel, Finish};
+use gogo_ui::KeptFrame;
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{PropKey, Value};
+use gogo_ui::runtime::{HELD, Runtime, resolve, resolve_animated};
+use gogo_ui::{Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -23,7 +23,7 @@ fn codes(src: &str) -> Vec<String> {
     compile(src, &|_| None).diags.iter().map(|d| d.code.clone()).collect()
 }
 
-fn anim_id(page: &Page, name: &str) -> gogo::page::StrId {
+fn anim_id(page: &Page, name: &str) -> gogo_ui::page::StrId {
     page.anim_heads.iter().map(|h| h.anim).find(|a| page.str(*a) == name).unwrap_or_else(|| panic!("no anim {name}"))
 }
 

@@ -3,13 +3,13 @@
 //! `when` response, a pose — slides there from what shows; the rules that
 //! make it snap instead (the first value, a hidden node, `set_prop_instant`,
 //! `go_instant`); and the load checks (gogo-spec.md "Transitions").
-use gogo::page::{ArrangementId, NodeId, PropKey, Value};
-use gogo::runtime::{Resolved, Runtime, resolve_animated};
-use gogo::{Compiled, Page, compile};
+use gogo_ui::page::{ArrangementId, NodeId, PropKey, Value};
+use gogo_ui::runtime::{Resolved, Runtime, resolve_animated};
+use gogo_ui::{Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -158,7 +158,7 @@ fn a_pose_change_slides_and_go_instant_snaps() {
     assert!(near(num(&page, &r, bar, PropKey::Opacity), 0.5));
     rt.tick(&mut page, 0.6);
     resolve_animated(&page, &mut rt);
-    rt.go_instant_id(gogo::BASE);
+    rt.go_instant_id(gogo_ui::BASE);
     let r = resolve_animated(&page, &mut rt);
     assert_eq!(r.prop(&page, bar, PropKey::Opacity), None, "go_instant times nothing: the base look (no opacity word) at once");
     assert!(!rt.is_moving());
@@ -178,7 +178,7 @@ fn a_property_also_timed_by_a_state_change_rule_is_a_load_error() {
     assert!(e.iter().any(|(code, line, msg)| code == "G3008" && *line == 4 && msg.contains("line 2") && msg.contains("line 3")), "{e:#?}");
     // Untimed state changes (no rule) leave the property rule the one timing.
     let c = compile("arrangement edit\nwhen edit { bar.opacity = 0 }\ntransition bar.opacity duration=1\nView v { Panel bar width=10 }", &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
 }
 
 #[test]

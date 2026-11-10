@@ -22,17 +22,17 @@
 //! - Dialect (decided 2026-08-31, E1): the fixtures' `modulate.a` lanes are
 //!   spelled `opacity` — `modulate.a` is a Godot engine word and G0075 in
 //!   Rust; the anim writes the same opacity a declaration or `when` writes.
-use gogo::anim::{Easing, Finish, Mode, Motion};
-use gogo::KeptFrame;
-use gogo::draw::{Draw, draw};
-use gogo::layout::{FixedAdvance, Rect};
-use gogo::page::{Action, AnimTrack, NO_STR, PropKey, Color_Straight_Srgb_4xU8_RGBA, StrId, Value};
-use gogo::runtime::{DISABLED, HELD, Runtime, resolve, resolve_animated};
-use gogo::{Compiled, Page, compile};
+use gogo_ui::anim::{Easing, Finish, Mode, Motion};
+use gogo_ui::KeptFrame;
+use gogo_ui::draw::{Draw, draw};
+use gogo_ui::layout::{FixedAdvance, Rect};
+use gogo_ui::page::{Action, AnimTrack, NO_STR, PropKey, Color_Straight_Srgb_4xU8_RGBA, StrId, Value};
+use gogo_ui::runtime::{DISABLED, HELD, Runtime, resolve, resolve_animated};
+use gogo_ui::{Compiled, Page, compile};
 
 fn ok(src: &str) -> Compiled {
     let c = compile(src, &|_| None);
-    assert!(!gogo::has_errors(&c.diags), "{:#?}", c.diags);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
     c
 }
 
@@ -41,7 +41,7 @@ fn codes(src: &str) -> Vec<String> {
 }
 
 fn fails(src: &str) -> bool {
-    gogo::has_errors(&compile(src, &|_| None).diags)
+    gogo_ui::has_errors(&compile(src, &|_| None).diags)
 }
 
 fn messages(src: &str) -> String {
@@ -110,7 +110,7 @@ fn dotted_path_is_node_plus_channel_and_play_call_wires() {
     assert_eq!(page.str(t[0].channel), "translate.x");
     let p = &page.nodes[(page.find("p").unwrap()).index()];
     let show = page.intern_lookup("show");
-    let handlers: Vec<&gogo::page::OnHandler> = page.handlers[p.handlers.0 as usize..(p.handlers.0 + p.handlers.1) as usize].iter().collect();
+    let handlers: Vec<&gogo_ui::page::OnHandler> = page.handlers[p.handlers.0 as usize..(p.handlers.0 + p.handlers.1) as usize].iter().collect();
     let play = handlers.iter().find(|h| h.event == show).map(|h| h.action);
     assert!(matches!(play, Some(Action::Play(id)) if page.str(id) == "appear"), "{handlers:#?}");
 }
@@ -201,11 +201,11 @@ fn baked_tracks_carry_from_duration_easing_and_keys() {
     let channels: Vec<&str> = t.iter().map(|t| page.str(t.channel)).collect();
     assert_eq!(channels, ["translate.x", "rotate", "rotate"], "{t:#?}");
     let tx = t[0];
-    assert_eq!(tx.from, Some(gogo::page::Value::VNum(-60.0)), "pinned from");
+    assert_eq!(tx.from, Some(gogo_ui::page::Value::VNum(-60.0)), "pinned from");
     assert_eq!(tx.duration, 0.5);
     assert_eq!(page.str(tx.easing), "cubic_out");
     // The keyed lane: key 1 pins 14 at once, key 2 glides 0..0.8 to 0.
-    use gogo::page::Value::VNum;
+    use gogo_ui::page::Value::VNum;
     assert_eq!((t[1].from, t[1].to, t[1].start, t[1].duration), (Some(VNum(14.0)), VNum(14.0), 0.0, 0.0), "{t:#?}");
     assert_eq!((t[2].from, t[2].to, t[2].start, t[2].duration), (None, VNum(0.0), 0.0, 0.8), "{t:#?}");
     assert_eq!(page.str(t[2].easing), "cubic_out");
@@ -711,7 +711,7 @@ fn an_arrangement_can_hold_motion() {
     let page = c.page;
     let menu = (page.find("menu").unwrap()).index();
     let mut rt = Runtime::new(&page);
-    rt.go_id(gogo::ArrangementId::new(0));
+    rt.go_id(gogo_ui::ArrangementId::new(0));
     let r = resolve(&page, &rt);
     assert_eq!(r.motion[menu].scale, [0.9, 0.9], "{:?}", r.motion[menu]);
 }
@@ -849,7 +849,7 @@ fn a_child_of_a_hidden_parent_keeps_no_held_pose_in_either_order() {
         assert!(!rt.is_playing_id(squash));
         assert!(!rt.held.iter().any(|h| h.0 == rope), "hide before the end {hide_before_the_end}: nothing held under a hidden parent: {:?}", rt.held);
         rt.set_visible(&mut page, item, true);
-        let res = gogo::runtime::resolve(&page, &rt);
+        let res = gogo_ui::runtime::resolve(&page, &rt);
         assert!(near(res.motion[rope.index()].scale[1], 1.0, 0.001), "hide before the end {hide_before_the_end}: the re-shown child is at rest: {:?}", res.motion[rope.index()]);
     }
 }
