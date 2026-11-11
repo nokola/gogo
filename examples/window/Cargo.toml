@@ -9,7 +9,9 @@ repository.workspace = true
 
 [dependencies]
 gogo-text = { path = "../../crates/gogo-text" }
-gogo-ui = { path = "../../crates/gogo-ui" }
+# `hot-reload`: the page follows its file while the window is open. A
+# program you ship leaves the feature off; the same code then reloads nothing.
+gogo-ui = { path = "../../crates/gogo-ui", features = ["hot-reload"] }
 gogo-wgpu = { path = "../../crates/gogo-wgpu" }
 pollster = "1.0.1"
 # The app is the one that picks wgpu's backends: the default set here.

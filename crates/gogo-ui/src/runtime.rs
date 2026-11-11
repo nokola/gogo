@@ -10,6 +10,7 @@ use crate::draw::{Draw, DrawCache, DrawStats};
 use crate::layout::{LayoutCache, LayoutStats, Rect, TextMeasure};
 use crate::locale::{KeyName, Locale};
 use crate::page::*;
+use crate::reload::{ShapeChange, Why, first_changed_node};
 use crate::tree::{Children, PlacedTree};
 
 /// What the last resolve tells the retained layout and draw list
@@ -275,6 +276,42 @@ fn item_fits(key: PropKey, field: &str, v: &ItemValue) -> Result<(), String> {
         return Ok(());
     };
     if fits { Ok(()) } else { Err(format!("field `{field}` is {is} where `{}=` takes {takes}", key.word())) }
+}
+
+/// Why `item` cannot fill a row of `info`'s repeat, if it cannot: a field
+/// the row binds that the item lacks, or one of another type than its
+/// property takes.
+///
+/// Needed in two places that must agree: `set_items`, which refuses the
+/// whole call, and a hot reload, which fills the rows on screen again
+/// through the file's new row (`Runtime::carried_to`).
+///
+/// Returns the reason, naming the field and the property.
+fn item_refusal(page: &Page, info: &RepeatInfo, item: &Item) -> Option<String> {
+    let (s0, sc) = info.sites;
+    for si in s0..s0 + sc {
+        let site: BindSite = page.bind_sites[si as usize];
+        let fname: &str = page.str(site.field);
+        let has_field: bool = match item {
+            Item::Record(r) => !fname.is_empty() && r.iter().any(|(k, _)| *k == fname),
+            Item::Value(_) => fname.is_empty(),
+        };
+        if !has_field {
+            return Some(if fname.is_empty() { "structures don't bind whole — bind a field (`$item.<field>`)".to_string() } else { format!("no field `{fname}`") });
+        }
+        // The field is of the type its property takes. Checked when the
+        // items arrive, because the build cannot know an item's types.
+        let node: NodeId = info.template.offset(site.node_off);
+        let key: PropKey = page.props[(page.nodes[node].props.0 + site.prop_off) as usize].key;
+        let value: &ItemValue = match item {
+            Item::Record(r) => &r.iter().find(|(k, _)| *k == fname).expect("the field is there, checked above").1,
+            Item::Value(v) => v,
+        };
+        if let Err(why) = item_fits(key, fname, value) {
+            return Some(why);
+        }
+    }
+    None
 }
 
 fn assign_value(d: &mut ItemValue, s: &ItemValue) {
@@ -619,19 +656,34 @@ impl Runtime {
     }
 
     /// A runtime for `new_page` — a fresh compile of this page's source
-    /// with the same node list (`reload::same_shape`) — carrying THIS
-    /// runtime's state, so a hot reload lands on the same screen in the
-    /// same state: the locale and safe insets, every scroll offset, every
-    /// node's state bits, the theme variant and screen words, the
-    /// arrangement, every raised control state, and every code write
-    /// (`writes`). Strings those carry index the OLD page's pool and are
+    /// that declares the same node list (`reload::same_shape`) — carrying
+    /// THIS runtime's state, so a hot reload lands on the same screen in
+    /// the same state: the locale and safe insets, every scroll offset,
+    /// every node's state bits, the theme variant and screen words, the
+    /// arrangement, every raised control state, every code write
+    /// (`writes`), and the rows of every repeat with a List's selection.
+    ///
+    /// The rows are made again on `new_page` in the order they were first
+    /// made, so every row node keeps its number: a row node the code
+    /// remembered, and what it wrote on one, still lands on that row. A
+    /// keyed row is filled again from the item it held, through the
+    /// file's new row, so an edit of the row shows at once; what the
+    /// item wrote on the row before is not carried.
+    ///
+    /// Strings the carried values hold index the OLD page's pool and are
     /// re-interned into the new one; a write whose value indexes the old
     /// page's value pool (`VList`, `VCall`) cannot move and is dropped.
     ///
     /// Every field is named below on purpose: a field added to `Runtime`
     /// does not compile until it is listed as carried or as reset, so a
     /// reload never silently forgets a new piece of state.
-    pub fn carried_to(&self, old_page: &Page, new_page: &mut Page) -> Runtime {
+    ///
+    /// Returns `Err` when the rows cannot be carried: the file's row
+    /// holds other nodes than the rows on screen, its repeat keys rows
+    /// another way, or an item on screen cannot fill the new row (a field
+    /// it lacks, or one of another type). `new_page` is then half made
+    /// and the caller drops it; this runtime is untouched.
+    pub fn carried_to(&self, old_page: &Page, new_page: &mut Page) -> Result<Runtime, Why> {
         let Runtime {
             // Carried: what the user and the code-behind put here.
             arrangement,
@@ -643,6 +695,8 @@ impl Runtime {
             safe,
             writes,
             customs,
+            pools,
+            list_sel,
             // Reset — rebuilt from the new page by `new`.
             arrangement_count: _,
             radio_choice: _,
@@ -692,29 +746,47 @@ impl Runtime {
             focus_reset_pending: _,
             auto_glides: _,
             raised: _,
-            // Reset — not carried yet (the D113 limits): repeat rows code
-            // set (`set_items` — the page shows its template until the code
-            // sets them again), List selections, the focused Input's caret,
-            // selection and edit bar.
-            pools: _,
-            list_sel: _,
+            // Reset — not carried (the D113 limits): the focused Input's
+            // caret, selection and edit bar.
             caret: _,
             selection: _,
             sel_handles: _,
             edit_bar: _,
         } = self;
         let mut rt = Runtime::new(new_page);
+        // The rows first: the tables below are as long as the node list,
+        // rows included.
+        rt.remake_rows(old_page, new_page, pools)?;
         rt.set_locale(locale.clone());
         rt.safe = *safe;
         rt.scroll = scroll.clone();
         rt.states = states.clone();
+        // After the states: an item may set one (`selected=$item.done`).
+        rt.refill_rows(new_page, pools)?;
         rt.variant = reintern(old_page, new_page, *variant);
         rt.screen = screen.iter().map(|s| reintern(old_page, new_page, *s)).collect();
         rt.customs = customs.iter().map(|(node, state)| (*node, reintern(old_page, new_page, *state))).collect();
         if arrangement.index() < new_page.arrangements.len() {
             rt.go_instant_id(*arrangement);
         }
+        // What the items wrote on the old rows: `refill_rows` wrote it
+        // again through the new file's row, so the old copy stays behind.
+        let mut from_items: std::collections::HashSet<(NodeId, PropKey)> = std::collections::HashSet::new();
+        for pool in pools {
+            let Some(info) = old_page.repeats.iter().find(|r| r.node == pool.repeat).filter(|r| r.keyed) else { continue };
+            let (s0, sc) = info.sites;
+            for root in &pool.slots {
+                for si in s0..s0 + sc {
+                    let site: BindSite = old_page.bind_sites[si as usize];
+                    let node: NodeId = root.offset(site.node_off);
+                    from_items.insert((node, old_page.props[(old_page.nodes[node].props.0 + site.prop_off) as usize].key));
+                }
+            }
+        }
         for (node, prop) in writes {
+            if from_items.contains(&(*node, prop.key)) {
+                continue;
+            }
             let value = match prop.value {
                 Value::VText { text, key } => Value::VText { text: reintern(old_page, new_page, text), key },
                 Value::VIdent(s) => Value::VIdent(reintern(old_page, new_page, s)),
@@ -724,8 +796,86 @@ impl Runtime {
             };
             rt.set_prop_instant(*node, prop.key, value);
         }
+        rt.list_sel = list_sel.clone();
         rt.dirty = true;
-        rt
+        Ok(rt)
+    }
+
+    /// Makes the rows of `pools` (another runtime's, over `old_page`) again
+    /// on `new_page`, in the order they were first made.
+    ///
+    /// Needed because a row is a copy of its repeat's row node, appended
+    /// to the node list when the row was first shown: made again in the
+    /// same order from a row of the same size, every row lands on the
+    /// number it had, and the host's code may go on using the row nodes
+    /// it knows.
+    ///
+    /// Returns `Err` when that does not hold: a repeat keys its rows
+    /// another way, or its row holds other nodes than before.
+    fn remake_rows(&mut self, old_page: &Page, new_page: &mut Page, pools: &[Pool]) -> Result<(), Why> {
+        let name_of = |repeat: NodeId| -> String { old_page.str(old_page.nodes[repeat].name).to_string() };
+        let by = |page: &Page, info: &RepeatInfo| -> Option<String> { (info.by != NO_STR).then(|| page.str(info.by).to_string()) };
+        let mut made: Vec<(NodeId, usize)> = Vec::new();
+        for (pi, pool) in pools.iter().enumerate() {
+            let (Some(was), Some(is)) = (old_page.repeats.iter().find(|r| r.node == pool.repeat), new_page.repeats.iter().find(|r| r.node == pool.repeat)) else {
+                return Err(Why::Shape(ShapeChange::Row { repeat: name_of(pool.repeat) }));
+            };
+            if was.keyed != is.keyed || by(old_page, was) != by(new_page, is) {
+                return Err(Why::Shape(ShapeChange::RowKey { repeat: name_of(pool.repeat) }));
+            }
+            // The same order of repeats as before: the rows of a List
+            // with several repeats are listed in it (`list_rows`).
+            let at: usize = self.pool_of(new_page, pool.repeat);
+            debug_assert_eq!(at, pi, "a repeat's rows are kept at the place they had");
+            made.extend(pool.slots.iter().map(|root| (*root, pi)));
+        }
+        made.sort_unstable();
+        for (root, pi) in made {
+            let repeat: NodeId = pools[pi].repeat;
+            let info: RepeatInfo = *new_page.repeats.iter().find(|r| r.node == repeat).expect("found above");
+            self.grow_pool(new_page, pi, &info);
+            if self.pools[pi].slots.last() != Some(&root) {
+                return Err(Why::Shape(ShapeChange::Row { repeat: name_of(repeat) }));
+            }
+        }
+        if new_page.nodes.len() != old_page.nodes.len() {
+            return Err(Why::Shape(ShapeChange::Count { old: old_page.nodes.len(), new: new_page.nodes.len() }));
+        }
+        match first_changed_node(old_page, new_page, new_page.file_node_count(), new_page.nodes.len()) {
+            Some(change) => Err(Why::Shape(change)),
+            None => Ok(()),
+        }
+    }
+
+    /// Shows the rows `pools` showed and fills every keyed row again from
+    /// the item it held, through `new_page`'s row.
+    ///
+    /// Needed so an edit of a row's bindings (`text=$item.title` changed
+    /// to `text=$item.note`) shows on the rows already on screen, without
+    /// the host handing its items over again.
+    ///
+    /// Returns `Err` with the message `set_items` gives when an item
+    /// cannot fill the new row.
+    fn refill_rows(&mut self, new_page: &mut Page, pools: &[Pool]) -> Result<(), Why> {
+        for (pi, pool) in pools.iter().enumerate() {
+            self.pools[pi].live.clone_from(&pool.live);
+            let info: RepeatInfo = *new_page.repeats.iter().find(|r| r.node == pool.repeat).expect("found by `remake_rows`");
+            for (slot, kept) in pool.keyed.iter().enumerate() {
+                let Some((_, item)) = kept else { continue };
+                if let Some(why) = item_refusal(new_page, &info, item) {
+                    let shown: usize = pool.live.iter().position(|s| *s as usize == slot).unwrap_or(slot);
+                    return Err(Why::Items(format!("G9101: repeat `{}` cannot show its rows through the file's new row — the item template failed for item {shown}: {why}", new_page.str(new_page.nodes[pool.repeat].name))));
+                }
+                self.bind_slot(new_page, pi, slot as u32, &info, item);
+            }
+        }
+        // What the items wrote lands at once, like the code's own writes
+        // (`set_prop_instant`): a reload slides nothing.
+        for i in 0..self.writes.len() {
+            let (node, prop) = self.writes[i];
+            self.instant_props.push((node, prop.key, prop.value));
+        }
+        Ok(())
     }
 
     /// Something is moving: keep redrawing.
@@ -1150,33 +1300,11 @@ impl Runtime {
         if let Some((_, why)) = stop {
             return Err(why);
         }
-        // Every bound field must resolve on every item — the shipped
-        // detached build: one failed item refuses the assignment whole.
-        let (s0, sc) = info.sites;
+        // Every bound field must resolve on every item, with the type its
+        // property takes: one failed item refuses the assignment whole.
         for (i, item) in items.iter().enumerate() {
-            for si in s0..s0 + sc {
-                let fname = page.str(page.bind_sites[si as usize].field);
-                let ok = match item {
-                    Item::Record(r) => !fname.is_empty() && r.iter().any(|(k, _)| *k == fname),
-                    Item::Value(_) => fname.is_empty(),
-                };
-                if !ok {
-                    let why = if fname.is_empty() { "structures don't bind whole — bind a field (`$item.<field>`)".to_string() } else { format!("no field `{fname}`") };
-                    return Err(format!("G9101: repeat `{}` refused items — the item template failed for item {i}: {why}", page.str(page.nodes[repeat].name)));
-                }
-                // The field is of the type its property takes. Checked
-                // here, the one place every bound field of every item
-                // passes, because the build cannot know an item's types.
-                let site: BindSite = page.bind_sites[si as usize];
-                let node: NodeId = info.template.offset(site.node_off);
-                let key: PropKey = page.props[(page.nodes[node].props.0 + site.prop_off) as usize].key;
-                let value: &ItemValue = match item {
-                    Item::Record(r) => &r.iter().find(|(k, _)| *k == fname).expect("the field is there, checked above").1,
-                    Item::Value(v) => v,
-                };
-                if let Err(why) = item_fits(key, fname, value) {
-                    return Err(format!("G9101: repeat `{}` refused items — the item template failed for item {i}: {why}", page.str(page.nodes[repeat].name)));
-                }
+            if let Some(why) = item_refusal(page, &info, item) {
+                return Err(format!("G9101: repeat `{}` refused items — the item template failed for item {i}: {why}", page.str(page.nodes[repeat].name)));
             }
         }
         // Commit — cannot fail. A row follows its KEY: an item whose key

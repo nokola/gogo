@@ -244,6 +244,10 @@ pub struct AtlasDecl {
     pub shape: AtlasShape,
     /// The file that declared it, for the "declared twice" error.
     pub origin: String,
+    /// What each line that declared it said, as a number
+    /// (`compile::atlas_stamp`). A hot reload takes an atlas as built, so
+    /// its line must still say one of these (G2022).
+    pub said: Vec<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1954,6 +1958,13 @@ pub struct Page {
     /// See `StaticPage::slices`. Borrowed from the build (no copy per
     /// page); owned only by a standalone compile.
     pub slices: std::borrow::Cow<'static, [ImageSlice]>,
+    /// How many of `nodes` the FILE declared: the first so many. The rest
+    /// are list rows the runtime added (`clone_subtree`). 0 on a page put
+    /// together by hand, where every node counts as the file's
+    /// (`file_node_count`).
+    pub file_nodes: u32,
+    /// Which file the page follows in a hot reload (`reload::Reloader`).
+    pub follows: crate::reload::Follows,
 }
 
 /// The claimable key GROUPS of a `control`'s `keys` line (GP26) —
@@ -2056,7 +2067,18 @@ impl Page {
             behaviors: s.behaviors.to_vec(),
             value_follows: s.value_follows.to_vec(),
             slices: std::borrow::Cow::Borrowed(s.slices),
+            file_nodes: s.nodes.len() as u32,
+            follows: crate::reload::Follows::of_built(s),
         }
+    }
+
+    /// How many of `nodes` the page's file declared; the rows a running
+    /// page added come after them.
+    ///
+    /// Needed by a hot reload: the file's nodes are what a fresh compile
+    /// is compared with (`reload::same_shape`), and where the rows start.
+    pub fn file_node_count(&self) -> usize {
+        if self.file_nodes == 0 { self.nodes.len() } else { self.file_nodes as usize }
     }
 
     /// The atlas slice `key` names, if it names one this page knows.

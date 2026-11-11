@@ -165,6 +165,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G2019", "one atlas name declared twice with different slices"),
     ("G2020", "`release=` with a value other than `unused`, or on a picture it cannot free"),
     ("G2021", "a picture not in this build (hot reload, `CompileOptions::refuse_new_keys_and_pictures`)"),
+    ("G2022", "an `atlas` line that is not the build's (hot reload)"),
     ("G3002", "an automatic (value-driven) slot property assigned — the control drives it"),
     ("G3005", "one target posed from both screen vocabularies — a class and an orientation can hold at once; compose or pick one"),
     ("G3006", "style targeting / theme-entry shape — `for=`/`extends=` misuse, `theme` in a node, a named/wired/placed/duplicate entry"),

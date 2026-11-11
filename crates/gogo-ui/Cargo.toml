@@ -14,4 +14,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# Pages follow their `.gogo` files while the app runs (`gogo_ui::reload`).
+# Off by default: without it the reload calls are empty and an app does not
+# link the compiler. Turn it on for development builds only.
+hot-reload = []
+
 [dependencies]

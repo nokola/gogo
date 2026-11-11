@@ -946,6 +946,16 @@ that line. Rebuild the app once; from then on the picture reloads like
 any other value. The compile-time switch is
 `CompileOptions::refuse_new_keys_and_pictures` (`gogo_ui::reload`).
 
+## G2022 — an `atlas` line that is not the build's (hot reload)
+
+An atlas is cut when the app is built: the build reads the picture's
+size, numbers the slices and writes those numbers into the code
+(`atlas::STARS[3]`). A reload cannot number them again, so it takes every
+atlas as built. An `atlas` line that says something else than it did at
+build time, or one the build never saw, is refused at its line. Rebuild
+once; from then on the page reloads again. The rest of a page with
+atlases reloads like any other.
+
 ## G3002 — an automatic slot property assigned
 
 `automatic=` couples the slot to the control's value — the control

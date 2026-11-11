@@ -62,8 +62,9 @@ pub struct CompileOptions<'a> {
     /// reload, `reload::recompile`): a `/key` or a picture not already in
     /// them is an error at its line (G8004, G2021), never a new id — the
     /// binary has no string and no pixels for it, so the file needs a
-    /// rebuild. Off at build time, where the tables grow as pages name
-    /// things.
+    /// rebuild. An `atlas` line is taken as built the same way: it must
+    /// say what the build's line said (G2022). Off at build time, where
+    /// the tables grow as pages name things.
     pub refuse_new_keys_and_pictures: bool,
 }
 
@@ -633,6 +634,8 @@ pub struct Compiler<'a> {
     names: std::collections::HashSet<String>,
     /// `uses` paths already brought in (a diamond import is one import).
     used: std::collections::HashSet<String>,
+    /// The same paths in the order met (`Compiled::uses`).
+    uses_read: Vec<String>,
     /// Depth of `choice { }` scopes around the node being compiled — the
     /// Check/unnamed-Radio fences fire anywhere inside one.
     choice_depth: u32,
@@ -754,6 +757,11 @@ pub struct Compiled {
     /// The image table this compile filled, the same way: `images.name(k)`
     /// spells a `VImage` when the compile stood alone.
     pub images: Images,
+    /// The files this compile read through `uses`, in the order met, each
+    /// as the loader was asked for it (`styles/theme.gogo`). A file that
+    /// was not found is listed too. A hot reload watches these beside the
+    /// page's own file.
+    pub uses: Vec<String>,
 }
 
 /// `compile` with no host options (no code controls).
@@ -796,6 +804,7 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         root_seen: false,
         names: std::collections::HashSet::new(),
         used: std::collections::HashSet::new(),
+        uses_read: Vec::new(),
         prefix: Vec::new(),
         unnamed_instances: 0,
         widget_stack: Vec::new(),
@@ -833,7 +842,47 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         None => c.local_images.slices.clone(),
     };
     c.page.slices = std::borrow::Cow::Owned(slices);
-    Compiled { page: c.page, diags: c.diags, keys: c.local_keys, images: c.local_images }
+    c.page.file_nodes = c.page.nodes.len() as u32;
+    Compiled { page: c.page, diags: c.diags, keys: c.local_keys, images: c.local_images, uses: c.uses_read }
+}
+
+/// A number for what an `atlas` line says: its name, its words and the
+/// `slice` lines of its block, in the order written.
+///
+/// Needed because a hot reload takes an atlas as the app was built with
+/// it (G2022): the build keeps this number, and a reload compares the
+/// line it reads with it. Spaces, comments and the line's place in the
+/// file do not count; the order of the words does.
+fn atlas_stamp(n: &AstNode) -> u64 {
+    fn value(v: &AstValue, out: &mut String) {
+        match v {
+            AstValue::Str { text, .. } => out.push_str(&format!("{text:?}")),
+            AstValue::Size { w, h } => out.push_str(&format!("{w:?}x{h:?}")),
+            AstValue::Num { value, unit } => out.push_str(&format!("{value}{unit}")),
+            AstValue::Ident { word, .. } => out.push_str(word),
+            other => out.push_str(&format!("{other:?}")),
+        }
+    }
+    fn line(n: &AstNode, out: &mut String) {
+        out.push_str(&n.type_word);
+        out.push(' ');
+        out.push_str(n.name.as_deref().unwrap_or(""));
+        for p in &n.props {
+            out.push(' ');
+            out.push_str(&p.key);
+            out.push('=');
+            value(&p.value, out);
+        }
+        out.push('\n');
+    }
+    let mut text = String::new();
+    line(n, &mut text);
+    for item in &n.children {
+        if let AstItem::Node(s) = item {
+            line(s, &mut text);
+        }
+    }
+    crate::reload::TextStamp::of(&text).finish()
 }
 
 /// The strings a file item shows with no translation key (G8002's
@@ -1075,6 +1124,18 @@ impl<'a> Compiler<'a> {
             self.error("G2011", line, format!("`atlas {name}`: an atlas line is `atlas <name> source=\"res://…\"` — one plain name, then its words"));
             return;
         }
+        let said: u64 = atlas_stamp(n);
+        if self.options.refuse_new_keys_and_pictures {
+            // A hot reload takes an atlas as the app was built with it:
+            // the code's slice ids (`atlas::STARS[3]`) were generated from
+            // the line the build read, so the line must still say that.
+            match self.with_images(|im| im.atlas(&name).map(|a| a.said.contains(&said))) {
+                Some(true) => {}
+                Some(false) => self.error("G2022", line, format!("atlas `{name}` is not written as it was when this app was built — an atlas is cut at build time; rebuild to change it")),
+                None => self.error("G2022", line, format!("atlas `{name}` — an atlas not in this build; rebuild to add it")),
+            }
+            return;
+        }
         let mut source: Option<String> = None;
         let mut from: Option<String> = None;
         let mut cell: Option<(u32, u32)> = None;
@@ -1172,7 +1233,7 @@ impl<'a> Compiler<'a> {
                 } else if edges.is_empty() {
                     // The whole picture under a name: no slice at all,
                     // `source={name}` IS the picture.
-                    return self.register_atlas(&name, AtlasShape::Whole(picture), line);
+                    return self.register_atlas(&name, AtlasShape::Whole(picture), line, said);
                 } else {
                     form = AtlasForm::Whole;
                     let Some((w, h)) = self.picture_size_of(&src, line, "`edge=`") else { return };
@@ -1285,6 +1346,8 @@ impl<'a> Compiler<'a> {
             let same = prev_form == form && prev_names == names && prev_slices.len() == slices.len() && prev_slices.iter().zip(&slices).all(|(a, (_, b))| *a == Some(*b));
             if !same {
                 self.atlas_twice(&name, &prev, line);
+            } else {
+                self.atlas_said(&name, said);
             }
             return;
         }
@@ -1294,7 +1357,20 @@ impl<'a> Compiler<'a> {
             AtlasForm::Whole => AtlasShape::Whole(keys[0]),
             AtlasForm::Named => AtlasShape::Named(slices.into_iter().map(|(k, _)| k).zip(keys).collect()),
         };
-        self.register_atlas(&name, shape, line);
+        self.register_atlas(&name, shape, line, said);
+    }
+
+    /// Notes that one more line declared atlas `name`, saying `said`
+    /// (`AtlasDecl::said`): the same atlas written a second time, in a
+    /// file two pages use or with its words in another order.
+    fn atlas_said(&mut self, name: &str, said: u64) {
+        self.with_images(|im| {
+            if let Some(a) = im.atlases.iter_mut().find(|a| a.name == name) {
+                if !a.said.contains(&said) {
+                    a.said.push(said);
+                }
+            }
+        });
     }
 
     /// G2019: `name` was declared before with other slices.
@@ -1306,16 +1382,18 @@ impl<'a> Compiler<'a> {
     /// Records atlas `name`. A whole picture with no `edge=` comes here
     /// straight from `atlas` (it has no slice to compare), so a second
     /// declaration is checked here too.
-    fn register_atlas(&mut self, name: &str, shape: AtlasShape, line: u32) {
+    fn register_atlas(&mut self, name: &str, shape: AtlasShape, line: u32, said: u64) {
         let origin: String = self.options.source_name.to_string();
         let existing: Option<AtlasDecl> = self.with_images(|im| im.atlas(name).cloned());
         if let Some(prev) = existing {
             if prev.shape != shape {
                 self.atlas_twice(name, &prev, line);
+            } else {
+                self.atlas_said(name, said);
             }
             return;
         }
-        self.with_images(|im| im.atlases.push(AtlasDecl { name: name.to_string(), shape, origin }));
+        self.with_images(|im| im.atlases.push(AtlasDecl { name: name.to_string(), shape, origin, said: vec![said] }));
     }
 
     /// One `slice <name> x=…, y=…, size=WxH[, edge=…]` line of a named
@@ -1549,6 +1627,7 @@ impl<'a> Compiler<'a> {
         if !self.used.insert(full.clone()) {
             return;
         }
+        self.uses_read.push(full.clone());
         let Some(text) = (self.loader)(&full) else {
             let looked = if full == path { String::new() } else { format!(" (looked for `{full}`, from the including file's directory)") };
             self.error("G0024", n.line, format!("`uses \"{path}\"`: file not found{looked}"));

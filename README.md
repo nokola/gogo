@@ -49,7 +49,7 @@ Performance is achieved by combining an "immediate-like" retained UI - every .go
 
 
 ### Developer (and AI) Ergonomics
-- **Hot reload** in debug mode - changes in .gogo files reflect on screen in 0.25sec.
+- **Hot reload** gogo files in dev builds using `hot-reload` cargo feature.
 - **Instructive errors** inspired from Rust error messages point not only where, but often how to fix an issue.
 - **Extensive how-to and guides** in `docs/COOKBOOK.md` and sample .gogo code for every feature in `docs/cards/`
 - Easy animations, portrait/landscape, screen sizes, and common situations solved.

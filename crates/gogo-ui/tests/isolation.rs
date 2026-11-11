@@ -1,5 +1,7 @@
 //! gogo-ui's isolation rules as red-checks: it names no OS or GPU crate,
-//! and its runtime reads no disk and no environment.
+//! and its runtime reads no disk and no environment — unless a host turns
+//! the `hot-reload` feature on, which reads the host's page folder in a
+//! development build.
 //!
 //! Needed because gogo has to run wherever a host can draw rectangles and
 //! text (a phone, a browser, a test with no GPU), and a new dependency or
@@ -20,6 +22,14 @@ const OS_OR_GPU: &[&str] = &["wgpu", "winit", "android", "jni", "image", "egui",
 /// compiler's front door (`compile_file`, `build_pages`), which a host's
 /// build script calls at BUILD time. A running app never calls it.
 const FS_ALLOWED: &[&str] = &["lib.rs"];
+
+/// Source files whose disk reads sit behind a cargo feature, each with
+/// the lines that open the feature's module: `reload.rs` reads a host's
+/// page folder inside `mod live`, compiled only with `hot-reload` (off by
+/// default; a development build turns it on). The scan covers the file up
+/// to that module, which must be the file's last item so that nothing
+/// after it goes unscanned.
+const FS_BEHIND_FEATURE: &[(&str, &str)] = &[("reload.rs", "#[cfg(feature = \"hot-reload\")]\nmod live {\n")];
 
 /// Every dependency name in a manifest's text, in order: the keys of each
 /// `[...dependencies]` table, and the name in each
@@ -92,6 +102,22 @@ fn os_uses(name: &str, source: &str) -> Vec<String> {
     hits
 }
 
+/// The part of `source` every build compiles: the text before `opens`,
+/// the lines that open a module compiled only with a cargo feature.
+///
+/// Returns `Err` when the module is not there, or is not the file's last
+/// item (code after it would be compiled in every build and not scanned).
+fn part_in_every_build<'a>(name: &str, source: &'a str, opens: &str) -> Result<&'a str, String> {
+    let Some(at) = source.find(opens) else { return Err(format!("{name} no longer holds the lines that open its feature's module: {opens:?}")) };
+    let module: &str = &source[at + opens.len()..];
+    // The module's own closing brace is the first `}` that starts a line.
+    let Some(close) = module.find("\n}\n") else { return Err(format!("{name}: the feature's module does not close")) };
+    if !module[close + 3..].trim().is_empty() {
+        return Err(format!("{name}: code follows the feature's module and would go unscanned"));
+    }
+    Ok(&source[..at])
+}
+
 #[test]
 fn gogo_ui_names_no_os_or_gpu_crate() {
     let manifest: String = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")).expect("Cargo.toml");
@@ -112,9 +138,14 @@ fn gogo_ui_touches_no_disk_outside_tests() {
         if FS_ALLOWED.contains(&rel.as_str()) {
             continue;
         }
-        bad.extend(os_uses(&rel, &fs::read_to_string(file).expect("source")));
+        let source: String = fs::read_to_string(file).expect("source");
+        let scanned: &str = match FS_BEHIND_FEATURE.iter().find(|(name, _)| *name == rel) {
+            Some((_, opens)) => part_in_every_build(&rel, &source, opens).unwrap_or_else(|why| panic!("{why}")),
+            None => &source,
+        };
+        bad.extend(os_uses(&rel, scanned));
     }
-    assert!(bad.is_empty(), "gogo-ui reads no disk and no environment at runtime:\n{}", bad.join("\n"));
+    assert!(bad.is_empty(), "gogo-ui reads no disk and no environment at runtime (outside a feature's module):\n{}", bad.join("\n"));
 }
 
 /// The two scans are run on inputs that break the rules.
@@ -135,6 +166,16 @@ fn the_scans_see_what_they_forbid() {
     let source: &str = "use std::path::Path;\n// std::fs in a comment is fine\nlet v = env!(\"CARGO_PKG_VERSION\");\nlet t = std::fs::read_to_string(p);\nlet home = std::env::var(\"HOME\");\n#[cfg(test)]\nmod tests { fn f() { std::fs::read(\"x\").unwrap(); } }\n";
     let hits: Vec<String> = os_uses("x.rs", source);
     assert_eq!(hits, ["x.rs:4: let t = std::fs::read_to_string(p);", "x.rs:5: let home = std::env::var(\"HOME\");"]);
+
+    // A file with a feature's module: a read before the module is seen,
+    // a read inside it is not, and code after the module is refused.
+    let opens: &str = "#[cfg(feature = \"x\")]\nmod live {\n";
+    let gated: String = format!("fn a() {{ std::fs::read(\"a\"); }}\n{opens}    fn b() {{ std::fs::read(\"b\"); }}\n}}\n");
+    assert_eq!(os_uses("g.rs", part_in_every_build("g.rs", &gated, opens).unwrap()), ["g.rs:1: fn a() { std::fs::read(\"a\"); }"]);
+    assert!(part_in_every_build("g.rs", &format!("{gated}fn c() {{ std::fs::read(\"c\"); }}\n"), opens).unwrap_err().contains("follows"));
+    assert!(part_in_every_build("g.rs", "fn a() {}\n", opens).unwrap_err().contains("no longer holds"));
+    let reload: String = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("reload.rs")).expect("reload.rs");
+    assert!(!os_uses("reload.rs", &reload).is_empty(), "reload.rs is listed because its feature's module reads the disk; if it no longer does, drop it from FS_BEHIND_FEATURE");
 
     let lib: String = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src").join("lib.rs")).expect("lib.rs");
     assert!(!os_uses("lib.rs", &lib).is_empty(), "lib.rs is exempt because it reads the disk; if it no longer does, drop it from FS_ALLOWED");

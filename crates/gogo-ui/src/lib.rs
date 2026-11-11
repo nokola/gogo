@@ -1,6 +1,8 @@
-//! `gogo` — the UI language, pure Rust: no wgpu, no winit, no OS.
+//! `gogo` — the UI language, pure Rust: no wgpu, no winit, no OS (the one
+//! exception is a host's choice: the `hot-reload` feature reads the
+//! host's page folder and starts a thread to watch it).
 //! In: `.gogo` text (at build time through `build_pages`, or at runtime
-//! for hot reload), touches, the current theme/arrangement. Out: a draw
+//! for hot reload, `reload`), touches, the current theme/arrangement. Out: a draw
 //! list. The host program supplies what gogo cannot know (`CompileOptions`,
 //! `BuildOptions`). Design: `docs/gogo-design.md`.
 
@@ -194,6 +196,9 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
     let mut fonts: Vec<String> = Vec::new();
     // Every compiled page, for the build-wide `<Widget>Names` structs.
     let mut compiled_pages: Vec<(String, Page)> = Vec::new();
+    // Every page with its file, the files it `uses` and what they all say:
+    // the `BUILD` table a hot reload compares the files with.
+    let mut built: Vec<emit::BuiltPageRow> = Vec::new();
     for path in &entries {
         let module = path.file_stem().and_then(|s| s.to_str()).unwrap_or("page").replace('-', "_");
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -207,6 +212,14 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
             continue;
         }
         let compiled = compile_file_with(path, compile_options)?;
+        {
+            let mut stamp = reload::TextStamp::of(&text);
+            for used in &compiled.uses {
+                stamp.used(used, std::fs::read_to_string(dir.join(used)).ok().as_deref());
+            }
+            let file: String = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            built.push(emit::BuiltPageRow { module: module.clone(), file, uses: compiled.uses.clone(), text: stamp.finish() });
+        }
         // Fonts: every `res://` string naming one (G0071 makes the scheme
         // mandatory, so a label whose TEXT ends in ".ttf" never reaches
         // the embed table). Images come from the shared `Images` table —
@@ -251,6 +264,8 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
             }
         }
         modules.push(EDIT_BAR_MODULE.to_string());
+        // The edit bar's text is inside gogo: it has no file to follow.
+        built.push(emit::BuiltPageRow { module: EDIT_BAR_MODULE.to_string(), file: String::new(), uses: Vec::new(), text: 0 });
         match emit::emit_rust(&compiled.page, EDIT_BAR_MODULE) {
             Ok(code) => source.push_str(&code),
             Err(e) => errors.push_str(&e),
@@ -367,6 +382,7 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
             Ok(code) => source.push_str(&code),
             Err(e) => errors.push_str(&e),
         }
+        source.push_str(&emit::emit_build(&built, &images.atlases, options.compile.code_controls, options.compile.behaviors, options.compile.require_keys));
     }
     if !errors.is_empty() {
         return Err(errors);

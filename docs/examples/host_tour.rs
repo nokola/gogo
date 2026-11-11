@@ -11,12 +11,12 @@
 //! (`build_pages`) and gets its names as generated code; the docs show
 //! that form beside these.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use gogo_ui::layout::{FixedAdvance, Rect};
 use gogo_ui::locale::Keys;
 use gogo_ui::page::Action;
-use gogo_ui::reload::{BuildTables, recompile, same_shape};
+use gogo_ui::reload::{Reloader, Sources};
 use gogo_ui::runtime::{Item, ItemKey, ItemValue};
 use gogo_ui::{ArrangementId, Behavior, BehaviorSpec, Claim, Compiled, CompileOptions, Cx, Draw, Event, EventKind, Finish, Input, KEYS_ARROWS, KeptFrame, KeyAction, KeyId, Locale, NO_NODE, NO_STR, NodeId, Orientation, Page, Payload, Phase, PropKey, Runtime, ScreenClass, StrId, Touch, Value, compile, compile_with, has_errors};
 
@@ -309,27 +309,35 @@ fn list_tour() {
 }
 
 fn reload_tour(host: &mut Hosted) {
-    // What the running program was built with. A build passes its
-    // generated `KEYS` and the names of its `IMAGES`.
-    let baked = BuildTables { keys: MENU_KEYS, images: &[], code_controls: &[], require_keys: false };
-    let edited: String = MENU.replace("spacing=12", "spacing=20");
-    match recompile(&edited, "menu.gogo", &|_| None, &baked) {
-        Err(errors) => {
-            for d in &errors {
-                eprintln!("menu.gogo: {d}"); // the page on screen stays
-            }
+    // Where the program reads its page files while it runs. A real host
+    // names a folder (`Sources::dir("ui")`), which is watched for saves.
+    let file: Arc<Mutex<String>> = Arc::new(Mutex::new(MENU.to_string()));
+    let read: Arc<Mutex<String>> = file.clone();
+    let sources = Sources::read_with(move |name: &str| (name == "menu.gogo").then(|| read.lock().unwrap().clone()));
+    // This host compiled its page itself: the reloader takes it over.
+    let mut reload = Reloader::files(sources);
+    reload.follow(&mut host.page, "menu.gogo");
+
+    // The file is saved with another spacing.
+    *file.lock().unwrap() = MENU.replace("spacing=12", "spacing=20");
+    reload.mark_changed(); // a watched folder marks its own saves
+
+    // Before the page's next frame:
+    match reload.refresh(&mut host.page, &mut host.rt) {
+        // The page shows its file again: lay it out anew.
+        Ok(true) => {
+            host.frame(0.0);
         }
-        Ok(mut new_page) => match same_shape(&host.page, &new_page) {
-            Err(change) => eprintln!("menu.gogo: {change}"), // a node came or went: rebuild
-            Ok(()) => {
-                host.rt = host.rt.carried_to(&host.page, &mut new_page);
-                host.page = new_page;
-                host.frame(0.0);
-            }
-        },
+        // Nothing was saved, or the `hot-reload` feature is off.
+        Ok(false) => {}
+        // The save cannot be shown: the page on screen stays.
+        Err(why) => eprintln!("{why}"),
     }
-    let menu: NodeId = host.page.find("menu").expect("menu");
-    assert_eq!(host.kept.look().num(&host.page, menu, PropKey::Spacing), Some(20.0));
+    // With the feature off the calls above did nothing.
+    if reload.is_on() {
+        let menu: NodeId = host.page.find("menu").expect("menu");
+        assert_eq!(host.kept.look().num(&host.page, menu, PropKey::Spacing), Some(20.0));
+    }
 }
 
 const SAFE: &str = r#"

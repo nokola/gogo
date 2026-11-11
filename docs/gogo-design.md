@@ -509,6 +509,25 @@ List holds its bar's lane as a Scroll does, from one function. A repeat
 nobody could fill (no name, or inside another repeat's row) and an
 `empty { }` nothing could hide are build errors.
 
+Hot reload (decided 2026-11-11). One entry point for every host
+(`reload::Reloader`: `open`, `refresh`), switched by the cargo feature
+`hot-reload`. A runtime flag would leave the compiler linked into the
+program a host ships; with the feature off the calls are empty, the host
+writes the same code for both builds, and nothing reaches the compiler.
+The build writes ONE constant, `BUILD`, with every table a reload needs,
+so a table added later changes no host code. A page carries which file
+it follows and a number for the text it shows (`reload::TextStamp`); the
+build writes the same number, so a page whose files did not change is
+never compiled, and a page opened after an edit shows the edit. The
+folder watch reads file times on a thread, with the standard library
+alone. Rows carry over: a page remembers how many nodes its file
+declared (`Page::file_nodes`), the comparison reads those, and the rows
+are made again in the order they were first made, so each keeps its
+number; a keyed row is filled again from the item it held. An atlas is
+taken as built: the build keeps a number for what each `atlas` line said
+and a reload compares, reading no picture. Still a rebuild: a changed
+node list (the code's `NAMES` are numbers into it).
+
 Kept: `arrangement` (user's call — a `state` unification was proposed and
 declined), snake_case keys, `#RRGGBBAA`, `text="x"/key`, `when` /
 `transition` / `anim`, widgets + `$params`, `uses`, styles, Grid/Tiles,

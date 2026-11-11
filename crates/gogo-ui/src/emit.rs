@@ -581,6 +581,48 @@ pub fn emit_slices(slices: &[ImageSlice]) -> String {
     out
 }
 
+/// One page of a build, as `build_pages` met it: its module, its file
+/// (empty for a page with no file), the files it read through `uses` and
+/// the `reload::TextStamp` of all of them.
+pub struct BuiltPageRow {
+    pub module: String,
+    pub file: String,
+    pub uses: Vec<String>,
+    pub text: u64,
+}
+
+/// `pub static BUILD`: everything a hot reload needs to know about the
+/// build (`reload::BuildTables`), pointing at the tables emitted above it
+/// (`KEYS`, `IMAGES`, `SLICES`, every page's `PAGE`).
+///
+/// Needed so a host hands a reload ONE thing: a table added to a build
+/// later reaches every host through this constant, with no host code
+/// changed. A program that never reloads does not reference it, so the
+/// linker leaves it out.
+pub fn emit_build(pages: &[BuiltPageRow], atlases: &[AtlasDecl], code_controls: &[&str], behaviors: &[BehaviorSpec], require_keys: bool) -> String {
+    let key = |k: &ImageKey| format!("gogo_ui::ImageKey::new({})", k.index());
+    let mut out = String::from("/// Everything a hot reload needs to know about this build: hand it whole to `gogo_ui::reload::Reloader::new`.\npub static BUILD: gogo_ui::reload::BuildTables<'static> = gogo_ui::reload::BuildTables {\n    keys: KEYS,\n    images: IMAGES,\n    slices: &SLICES,\n    atlases: &[\n");
+    for a in atlases {
+        let shape: String = match &a.shape {
+            AtlasShape::Grid(keys) => format!("gogo_ui::reload::BuiltShape::Grid(&[{}])", keys.iter().map(key).collect::<Vec<_>>().join(", ")),
+            AtlasShape::Named(list) => format!("gogo_ui::reload::BuiltShape::Named(&[{}])", list.iter().map(|(n, k)| format!("({n:?}, {})", key(k))).collect::<Vec<_>>().join(", ")),
+            AtlasShape::Whole(k) => format!("gogo_ui::reload::BuiltShape::Whole({})", key(k)),
+        };
+        out.push_str(&format!("        gogo_ui::reload::BuiltAtlas {{ name: {:?}, said: &[{}], shape: {shape} }},\n", a.name, a.said.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")));
+    }
+    out.push_str("    ],\n");
+    out.push_str(&format!("    code_controls: &{code_controls:?},\n    behaviors: &[\n"));
+    for b in behaviors {
+        out.push_str(&format!("        gogo_ui::page::BehaviorSpec {{ name: {:?}, slots: &{:?}, keys: {}, payload: gogo_ui::Payload::{:?} }},\n", b.name, b.slots, b.keys, b.payload));
+    }
+    out.push_str(&format!("    ],\n    require_keys: {require_keys},\n    pages: &[\n"));
+    for p in pages {
+        out.push_str(&format!("        gogo_ui::reload::BuiltPage {{ file: {:?}, page: &{}::PAGE, uses: &{:?}, text: {} }},\n", p.file, p.module, p.uses, p.text));
+    }
+    out.push_str("    ],\n};\n\n");
+    out
+}
+
 /// `pub mod atlas`: the build's atlases as code, spelled the way the
 /// `.gogo` files spell them — a grid is an array (`ANIMALS[12]` is
 /// `animals[12]`), named slices a module (`toolbar::PLAY` is

@@ -35,9 +35,11 @@ painting) is in REFERENCE.md, "Host API".
 
 1. **Declarative UI** with XAML lineage (panels, styles, themes, includes) but
    none of YAML's fragility (significant whitespace, `children:` ceremony, quoting rules).
-2. **Hot reload**: a host can compile a changed file again inside the running
-   program. Errors never blank the running UI — the previous good page stays
-   and the errors come back with their line, code and fix hint.
+2. **Hot reload**: a page follows its file inside the running program
+   (`gogo_ui::reload::Reloader`, the cargo feature `hot-reload`). Errors
+   never blank the running UI — the previous good page stays and the errors
+   come back with their line, code and fix hint. A build without the
+   feature carries none of it.
 3. **Minimal ceremony**: the node name *is* the widget type; braces *are* the children;
    bare numbers *are* epx.
 4. **Dumb parser, smart resolver**: the parser knows only the grammar. `theme`, `style`,

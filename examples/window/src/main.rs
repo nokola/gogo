@@ -9,8 +9,9 @@
 //! the last page that compiled.
 //!
 //! Who does what:
-//! - `gogo-ui` compiles the page, keeps its state (`Runtime`), lays it out
-//!   and turns the mouse into events (`Input`);
+//! - `gogo-ui` compiles the page, keeps its state (`Runtime`), lays it out,
+//!   turns the mouse into events (`Input`) and keeps the page in step with
+//!   its file (`Reloader`, the `hot-reload` feature in Cargo.toml);
 //! - `gogo-text` measures and shapes the text (`TextEngine`);
 //! - `gogo-wgpu` draws the frame's draw list (`UiRenderer`);
 //! - this file owns the window, the GPU device and the frame loop, and
@@ -19,27 +20,32 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::Instant;
 
 use gogo_text::{EpxMeasure, TextEngine};
 use gogo_ui::page::NodeId;
-use gogo_ui::reload::same_shape;
+use gogo_ui::reload::{Reloader, Sources};
 use gogo_ui::{Draw, Event, EventKind, Input, KeptFrame, MOUSE_ID, Page, Phase, Rect, Runtime, Touch, compile_file, has_errors};
 use gogo_wgpu::UiRenderer;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
-
-/// How often the page file's save time is looked at.
-const RELOAD_CHECK: Duration = Duration::from_millis(250);
 
 const FONT_KEY: &str = "assets/Fonts/Roboto Regular.ttf";
 
-/// The page file, read at run time so that an edit shows without a build.
+/// The page's file in the `ui` folder.
+const PAGE_FILE: &str = "hello.gogo";
+
+/// The folder the page file is in, read at run time so that an edit
+/// shows without a build.
+fn ui_dir() -> PathBuf {
+    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/ui"))
+}
+
 fn page_path() -> PathBuf {
-    PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/ui/hello.gogo"))
+    ui_dir().join(PAGE_FILE)
 }
 
 /// One page and everything that lives as long as it does.
@@ -49,8 +55,8 @@ struct Ui {
     input: Input,
     kept: KeptFrame,
     draws: Vec<Draw>,
-    /// The page file's save time when it was last compiled.
-    saved_at: Option<SystemTime>,
+    /// Keeps `page` in step with its file: it watches the `ui` folder.
+    reload: Reloader,
     /// What the app itself knows: how often the button was tapped.
     taps: u32,
 }
@@ -66,46 +72,40 @@ impl Ui {
         Ok(compiled.page)
     }
 
-    fn saved_at() -> Option<SystemTime> {
-        std::fs::metadata(page_path()).and_then(|m| m.modified()).ok()
-    }
-
     fn new() -> Ui {
-        let page: Page = Ui::compile().unwrap_or_else(|why| panic!("{} does not compile:\n{why}", page_path().display()));
+        let mut page: Page = Ui::compile().unwrap_or_else(|why| panic!("{} does not compile:\n{why}", page_path().display()));
         let runtime: Runtime = Runtime::new(&page);
-        let mut ui = Ui { page, runtime, input: Input::new(), kept: KeptFrame::default(), draws: Vec::new(), saved_at: Ui::saved_at(), taps: 0 };
+        // This program has no build step: it compiled the page itself and
+        // finds its nodes by name, so the reloader takes the page over
+        // (`follow`) and may change anything in it.
+        let mut reload = Reloader::files(Sources::dir(ui_dir()));
+        reload.follow(&mut page, PAGE_FILE);
+        let mut ui = Ui { page, runtime, input: Input::new(), kept: KeptFrame::default(), draws: Vec::new(), reload, taps: 0 };
         ui.show_taps();
         ui
     }
 
-    /// Compiles the file again when it was saved since the last look.
+    /// Brings the page in step with its file when the file was saved.
     /// Returns whether a new page is in.
     fn reload_if_saved(&mut self) -> bool {
-        let saved_at: Option<SystemTime> = Ui::saved_at();
-        if saved_at == self.saved_at {
-            return false;
-        }
-        self.saved_at = saved_at;
-        let mut page: Page = match Ui::compile() {
-            Ok(page) => page,
-            Err(why) => {
-                eprintln!("the saved page does not compile, keeping the last one:\n{why}");
-                return false;
+        match self.reload.refresh(&mut self.page, &mut self.runtime) {
+            // The runtime's state (a scroll offset, the code's writes)
+            // carried over when the nodes are the same; another node list
+            // started fresh. Either way: lay out again, and write the
+            // count again.
+            Ok(true) => {
+                self.input = Input::new();
+                self.kept = KeptFrame::default();
+                self.show_taps();
+                println!("reloaded {}", page_path().display());
+                true
             }
-        };
-        // The same nodes in the same order: the runtime's state (a held
-        // button, a scroll offset, a running animation) carries over.
-        // Another node list starts fresh.
-        self.runtime = match same_shape(&self.page, &page) {
-            Ok(()) => self.runtime.carried_to(&self.page, &mut page),
-            Err(_) => Runtime::new(&page),
-        };
-        self.page = page;
-        self.input = Input::new();
-        self.kept = KeptFrame::default();
-        self.show_taps();
-        println!("reloaded {}", page_path().display());
-        true
+            Ok(false) => false,
+            Err(why) => {
+                eprintln!("the saved page cannot be shown, keeping the last one:\n{why}");
+                false
+            }
+        }
     }
 
     /// Writes the tap count into the label named `counter`, if the page
@@ -309,22 +309,25 @@ impl ApplicationHandler for App {
         }
     }
 
-    /// Between events: look whether the page file was saved, then sleep
-    /// until the next look. Frames come from `request_redraw`, so a still
-    /// page draws nothing and uses no CPU.
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+    /// The reloader's wake (`main`): a file in the `ui` folder was saved.
+    /// The loop sleeps between events, so a still page draws nothing and
+    /// uses no CPU; this is what brings it back for a saved file.
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
         if self.ui.reload_if_saved() {
             if let Some(gfx) = &self.gfx {
                 gfx.window.request_redraw();
             }
         }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(Instant::now() + RELOAD_CHECK));
     }
 }
 
 fn main() {
     let event_loop = EventLoop::new().expect("an event loop");
     let mut app = App::new();
+    let proxy = event_loop.create_proxy();
+    app.ui.reload.on_change(move || {
+        let _ = proxy.send_event(());
+    });
     event_loop.run_app(&mut app).expect("the event loop runs");
 }
 
