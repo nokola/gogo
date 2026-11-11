@@ -1267,7 +1267,8 @@ eats.
 ## How do I disable a control (and style it)?
 
 Write `disabled=true` in the file, or flip it from code with
-`rt.set_state(node, DISABLED, true)`; style the look in the shared style:
+`rt.set_state(node, DISABLED, true)` (a `set_prop` of `PropKey::Disabled`
+sets the same state); style the look in the shared style:
 
 ```kdl
 style ToolButton background=$chrome {

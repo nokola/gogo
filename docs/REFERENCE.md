@@ -146,8 +146,11 @@ named colors — see Named colors below.
 **Control defaults** (`prop = value` entries) apply to the whole page:
 every node that shows text takes them unless it overrides them — the
 analog of WPF's inherited `FontFamily`/`FontSize`.
-An active variant's entries win over the default block's. Supported: `font`
-(a font path), `font_size` (epx), `color` (the page's text color) and
+An active variant's entries win over the default block's, and between two
+blocks that set the same default the later one wins: the page's over an
+included file's. Supported: `font`
+(a font path), `font_size` (epx), `font_color` (the page's text color;
+`color` here is refused, G3006) and
 `disabled_opacity` (0–1, default 0.3: how far a `disabled`
 control's subtree dims — spec "Default look", Disabled). Layout props like `width` can't go on a theme — that's what styles
 are for.
@@ -1978,7 +1981,9 @@ Button dangerRow .GalleryItem { when held background=#B00020 }  // node-level ov
   a `control` that does not declare it, G0036). From code,
   `rt.set_state(node, DISABLED, true)`
   and `rt.set_state(node, SELECTED, true)` flip a state at once and
-  `rt.has(node, SELECTED)` reads one.
+  `rt.has(node, SELECTED)` reads one. A write of the file's word does the
+  same: `rt.set_prop(node, PropKey::Disabled, Value::VBool(true))` sets
+  the disabled state, and `PropKey::SelectedProp` the selected one.
 - **`disabled` cascades** (D133 — the WPF IsEnabled law): effective = own
   OR any ancestor's own, no opt-out; re-enabling the ancestor restores each
   descendant's OWN flag, and `when disabled` fires on the effective value,
@@ -2012,7 +2017,8 @@ Button dangerRow .GalleryItem { when held background=#B00020 }  // node-level ov
 - `when` props layer over the base look and restore when the state ends.
   Merge order: in the base look a node prop wins over the style's; the
   responses sit over the base look, and for one state and property a node
-  `when` wins over the style's. A plain prop on the node never switches a
+  `when` wins over the style's (between two styles, the one worn later on
+  the node's line). A plain prop on the node never switches a
   style's response
   off; opt a node out by writing the same state on it (`when held opacity=1`
   over a style's `when held opacity=0.5`). Priority when several states hold:

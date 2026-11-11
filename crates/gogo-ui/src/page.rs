@@ -1483,8 +1483,10 @@ impl State {
     /// Rank when several `when` blocks pose the same key. Placement poses
     /// rank by how many conditions must hold: a composed pair (two) beats
     /// any single (arrangement, screen class or orientation — all one).
-    /// Equal rank → the later line in the file wins (`When::line`), so the
-    /// winner can be read off the file, CSS-style. Above the poses the
+    /// Equal rank → a node's own `when` beats one its style carries,
+    /// between two styles the one worn later wins, and between a node's
+    /// own two the later line in the file (CSS-style). The compiler stores
+    /// each node's `when`s in that order. Above the poses the
     /// built-in input states stack: focus_within < focused < hovered <
     /// selected < held < disabled.
     pub fn priority(self) -> u8 {
@@ -2210,10 +2212,12 @@ impl Page {
     }
 
     /// A kind's default for `key`: an entry gated on the ACTIVE variant
-    /// wins over an always-on one (GPAR88).
+    /// wins over an always-on one (GPAR88), and between two entries the
+    /// LATER one wins — the page's theme over an included file's, the rule
+    /// styles and widgets follow.
     pub fn kind_default(&self, kind: Kind, key: PropKey, variant: StrId) -> Option<Value> {
         let find = |want: StrId| {
-            self.kind_defaults.iter().filter(|d| d.kind == kind && d.variant == want).find_map(|d| {
+            self.kind_defaults.iter().rev().filter(|d| d.kind == kind && d.variant == want).find_map(|d| {
                 self.props[d.props.0 as usize..(d.props.0 + d.props.1) as usize].iter().rev().find(|p| p.key == key).map(|p| p.value)
             })
         };

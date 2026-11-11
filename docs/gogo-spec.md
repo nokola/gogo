@@ -231,8 +231,12 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
     modes.
   Exact values: REFERENCE.md "Named colors".
 - **Control defaults in `theme { }`** — `prop = value` entries (`font`,
-  `font_size`, and `color` — the document's text ink, decided 2026-08-30)
-  apply to every node of the page without its own override (REFERENCE
+  `font_size` and `font_color`, the page's text color)
+  apply to every node of the page without its own override, and between
+  two blocks that set the same default the later one wins: the page's
+  over an included file's. The text color was `color` here until
+  2026-11-11 (decided 2026-08-30) and did nothing; `color` in a `theme`
+  block is refused now (G3006), so text color has one word (REFERENCE
   "Themes"). Inside
   a node's body, a one-line `theme font=… / font_size=… / font_color=…`
   carries those text words down that subtree only; any other word on a
@@ -283,8 +287,10 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
     cross-target chains error.
 - **`widget Name $param=default, ..., rootProp=... { <single root node> }`** — a
   reusable component. On the declaration line: `$x=v` declares a parameter (defaults
-  required in v1); bare `k=v` bakes a property onto the root; `.Style` applies to the
-  root. Instantiated exactly like a built-in: `Name instName param=..., other=...`.
+  required in v1); bare `k=v` bakes a property onto the root. A `.Style` on this
+  line is refused (G3006): the line declares a name, it is not a node. A style goes
+  on the first node of the body (every instance wears it) or on an instance line
+  (that one does). Instantiated exactly like a built-in: `Name instName param=..., other=...`.
   - Instance name and any instance property that is **not** a declared parameter pass
     through to the widget's root node.
   - **`slot`** — where a widget takes content (control-customization spec §3). Bare
@@ -779,7 +785,9 @@ Button dangerRow .GalleryItem { when held background=#B00020 }  // node override
   Responses layer over the base look and restore when the state ends.
   Merge order: at rest the node's own props beat the style's props; while
   a state holds, its `when` beats every base prop, and the node's `when`
-  for that state beats the style's. A plain prop on the node never
+  for that state beats the style's, whichever file the style is in.
+  Between two styles the one worn later on the node's line wins, the
+  rule their plain props follow. A plain prop on the node never
   switches a style's response
   off — to opt one node out of a style's `when held opacity=0.5`, write the
   same state on the node: `when held opacity=1` (node beats style at equal

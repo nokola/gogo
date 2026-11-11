@@ -732,7 +732,14 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
             if native_mark {
                 let selected = state & SELECTED != 0;
                 let white = mul_alpha(DEFAULT_TEXT_COLOR, opacity);
-                let accent = mul_alpha(palette_color("accent").unwrap_or(DEFAULT_TEXT_COLOR), opacity);
+                // The mark's fill is the PAGE's accent: the compiler keeps
+                // it as this kind's default `color` when the page's theme
+                // changes `accent` (`Compiler::finish`), and the look
+                // answers it here. With the built-in palette asked
+                // directly, a Check kept the default blue under `theme {
+                // accent = purple }` while every other use of the word
+                // followed.
+                let accent = mul_alpha(res.color(page, id, PropKey::Color).or_else(|| palette_color("accent")).unwrap_or(DEFAULT_TEXT_COLOR), opacity);
                 let (mw, mh) = if node.kind == Kind::Toggle { TOGGLE_PILL } else { (CHECK_BOX_EPX, CHECK_BOX_EPX) };
                 let mark = Rect::new(text_rect.x, text_rect.y + (text_rect.h - mh) / 2.0, mw, mh);
                 match node.kind {

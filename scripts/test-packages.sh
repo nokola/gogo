@@ -36,6 +36,13 @@ for name in $names; do
     tar -xzf "target/package/$name-$version.crate" -C "$out"
     echo "$name = { path = \"$name-$version\" }" >> "$out/.cargo/config.toml"
 done
+# Every unpacked file gets the time of this run.
+#
+# Needed because the files of a package carry one fixed time, whatever
+# their content: cargo decides by that time whether to build again, so a
+# second run at the same version tested the library built from the first
+# run's sources against the new tests.
+find "$out" -type f -exec touch {} +
 
 CARGO_TARGET_DIR="$(pwd)/target/package-tests-build"
 export CARGO_TARGET_DIR

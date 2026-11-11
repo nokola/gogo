@@ -462,6 +462,23 @@ shifts any step that starts something. Every word on an anim line is
 known or refused (G0066), and a `transition` rule that could never time
 or play anything is refused (G0034, G4003, G4004).
 
+Who wins (decided 2026-11-11). Between `when`s of one rank a node's own
+beats one its style carries, in whatever file the style sits, and
+between two styles the one worn later on the node's line wins: the
+order a reader sees on that line, and the rule plain props follow. The
+compiler stores each node's `when`s in the winning order and the runtime
+applies them as stored; it used to collect and sort them on every
+resolve, by line numbers that came from different files. A theme default
+written later replaces an earlier one, the page's over an included
+file's. The page's text color is `theme { font_color = … }`: `color` in
+that block (decided 2026-08-30) did nothing and is refused, so text
+color has one word everywhere. A style on a `widget` line is refused:
+the line is not a node, and the two places that are (the first node of
+the body, the instance line) already say both things. `theme { accent =
+… }` reaches the marks gogo draws itself. `Button padding=0` is 0: the
+12/6 default is given at build to a text-only Button that wrote no
+padding. A `disabled` or `selected` written from code sets the state.
+
 Kept: `arrangement` (user's call — a `state` unification was proposed and
 declined), snake_case keys, `#RRGGBBAA`, `text="x"/key`, `when` /
 `transition` / `anim`, widgets + `$params`, `uses`, styles, Grid/Tiles,

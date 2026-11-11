@@ -1645,9 +1645,22 @@ impl<'a> Compiler<'a> {
                             self.page.kind_defaults.push(KindDefault { kind: Kind::View, props: (first, 1), variant });
                             continue;
                         }
-                        if matches!(pk, PropKey::Font | PropKey::FontSize | PropKey::Color) {
+                        // Text color has ONE word, `font_color`: on a node, in
+                        // a subtree's `theme font_color=…` and here. `color`
+                        // is a shape's fill; in this block it was stored and
+                        // read by nothing.
+                        if pk == PropKey::Color {
+                            self.error("G3006", *line, "`color` in a `theme` block is not the text color — the page's text color is `font_color = …` (`color` is a shape's fill)");
+                            continue;
+                        }
+                        if matches!(pk, PropKey::Font | PropKey::FontSize | PropKey::FontColor) {
                             let v = self.value(value, *line, Some(pk));
                             for kind in [Kind::Label, Kind::Button, Kind::Input, Kind::Check, Kind::Toggle, Kind::Radio, Kind::View, Kind::Panel] {
+                                // A later default replaces an earlier one
+                                // (the page's over an included file's), so
+                                // the table keeps one row per kind and word.
+                                let Page { props, kind_defaults, .. } = &mut self.page;
+                                kind_defaults.retain(|d| !(d.kind == kind && d.variant == variant && d.props.1 == 1 && props[d.props.0 as usize].key == pk));
                                 let first = self.page.props.len() as u32;
                                 self.page.props.push(Prop { key: pk, value: v });
                                 self.page.kind_defaults.push(KindDefault { kind, props: (first, 1), variant });
@@ -2662,6 +2675,12 @@ impl<'a> Compiler<'a> {
         if Kind::from_word(&name).is_some() || matches!(name.as_str(), "when" | "transition" | "theme" | "style" | "anim" | "widget" | "control" | "uses" | "allow" | "layout" | "gap" | "choice" | "slot" | "empty" | "repeat") {
             self.error("G5001", n.line, format!("widget name `{name}` shadows a built-in — pick another name"));
             return;
+        }
+        // The `widget` line declares a name and its `$params`; it is not a
+        // node, so nothing on it can wear a style. A style written here
+        // was dropped without a word.
+        if let Some(style) = n.styles.first() {
+            self.error("G3006", n.line, format!("`.{style}` on the `{} {name}` line is worn by nothing — the line declares a name, it is not a node; put `.{style}` on the first node of the body (every instance wears it) or on an instance line (that one does)", n.type_word));
         }
         // A widget body is a FRAGMENT (GPAR97): `View` is the screen
         // root, so a body wearing it could never sit anywhere.
@@ -5250,6 +5269,7 @@ impl<'a> Compiler<'a> {
             }
         }
         tmp.node.placement = self.placement(&placement_props, n.line, parent_kind, kind);
+        let padding_written: bool = placement_props.iter().any(|p| matches!(p.key, PropKey::Padding | PropKey::PaddingLeft | PropKey::PaddingTop | PropKey::PaddingRight | PropKey::PaddingBottom));
         tmp.driver = self.pending_driver.take();
         self.container_child_guard(n, &tmp.node.placement, parent_kind, kind);
         if kind == Kind::List {
@@ -5505,6 +5525,15 @@ impl<'a> Compiler<'a> {
         if anchor && tmp.children.iter().any(|c| !c.props.iter().any(|p| p.key == PropKey::Overlay && p.value == Value::VBool(true))) {
             let name = if tmp.node.name == NO_STR { n.type_word.clone() } else { self.page.str(tmp.node.name).to_string() };
             self.warning("G0074", n.line, format!("`{name}` is a 1x1 box: it clips its children — mark the parts that hang off it `overlay=true` (satellites, not content)"));
+        }
+        // A text-only Button gets air around its label, a kind default
+        // like its font size; a Button holding its own content spells its
+        // own padding. Decided here, where it is known whether the file
+        // wrote a padding: `padding=0` means 0. (The runtime used to give
+        // the default to every Button whose padding WAS 0, so a written
+        // zero got 12/6, and it asked on every resolve.)
+        if kind == Kind::Button && !padding_written && tmp.children.is_empty() {
+            tmp.node.placement.padding = crate::layout::BUTTON_PADDING;
         }
         tmp
     }
@@ -6501,6 +6530,24 @@ impl<'a> Compiler<'a> {
     // ----- finish ---------------------------------------------------------
 
     fn finish(&mut self) {
+        // The page's `accent` for the marks gogo draws itself (a Check's
+        // box, a Radio's dot, a Toggle's pill), kept as those kinds'
+        // default `color` and read back by the draw step.
+        //
+        // Needed because a palette word is turned into its color while
+        // the file is compiled, so the draw step cannot ask the page for
+        // "accent": it asked the built-in palette, and the marks kept the
+        // default blue under `theme { accent = purple }`. Stored only when
+        // the page's theme changes the word, so a page that does not pays
+        // nothing.
+        let accent: Value = self.value(&AstValue::Ident { word: "accent".to_string(), opacity: None, pos: None }, 0, Some(PropKey::Color));
+        if Some(accent) != crate::page::palette_color("accent").map(Value::VColor) {
+            for kind in [Kind::Check, Kind::Radio, Kind::Toggle] {
+                let first = self.page.props.len() as u32;
+                self.page.props.push(Prop { key: PropKey::Color, value: accent });
+                self.page.kind_defaults.push(KindDefault { kind, props: (first, 1), variant: NO_STR });
+            }
+        }
         // GP40 step 2: `for=` style states against their contract (the
         // wear-time twin for plain styles lives in the styles loop) —
         // run first so a bad style errors even when nothing wears it.
@@ -6916,10 +6963,30 @@ impl<'a> Compiler<'a> {
                 }
             }
         }
-        // Whens pool, contiguous per node.
+        // Whens pool, contiguous per node, each node's in the order they
+        // win: the runtime applies them as stored, the last one written
+        // standing (`runtime::ladder_node`).
+        //
+        // Needed so the winner is decided once, here, by where a `when`
+        // comes from, and not on every frame by line numbers: a style in
+        // an included file has line numbers of its own, and its
+        // `when held` beat the node's own whenever its number was larger.
+        //
+        // The order: by the state's rank (`State::priority`); within one
+        // rank a widget's default pose first, then what styles carry in
+        // the order the node wears them, then the node's own lines, the
+        // later line last.
         for (i, list) in whens.into_iter().enumerate() {
             let first = self.page.whens.len() as u32;
-            for (j, w) in list.into_iter().enumerate() {
+            let mut order: Vec<usize> = (0..list.len()).collect();
+            order.sort_by_key(|j| {
+                let w: &WhenTmp = &list[*j];
+                let origin: u8 = if w.styled && w.line == 0 { 0 } else if w.styled { 1 } else { 2 };
+                (w.state.priority(), origin, if origin == 2 { w.line } else { 0 })
+            });
+            let mut list: Vec<Option<WhenTmp>> = list.into_iter().map(Some).collect();
+            for j in order {
+                let Some(w) = list[j].take() else { continue };
                 if w.host && authored.contains(&(of[i][j], w.state)) {
                     continue;
                 }
@@ -7194,6 +7261,13 @@ impl<'a> Compiler<'a> {
             self.page.props.push(Prop { key: PropKey::BorderThickness, value: Value::VNum(BUTTON_FOCUS_RING_EPX) });
             self.page.whens.push(When { state: State::Focused, props: (p0, 2), of: NO_NODE, line: self.page.nodes[i].line });
             self.page.nodes[i].whens = (n0, wc + 1);
+        }
+        // The built-in responses added just above went to the end of their
+        // node's list: back into rank order. The sort is stable, so within
+        // one rank the order decided at the pool stands.
+        for i in 0..self.page.nodes.len() {
+            let (w0, wc) = self.page.nodes[i].whens;
+            self.page.whens[w0 as usize..(w0 + wc) as usize].sort_by_key(|w| w.state.priority());
         }
         // GP33: the automatic couplings' driver rows — the control roots
         // exist now, so the recorded paths resolve to arena ids.
@@ -7590,10 +7664,10 @@ mod tests {
         assert_eq!(p.prop(b, PropKey::Background), Some(Value::VColor(Color_Straight_Srgb_4xU8_RGBA([0x11, 0x22, 0x33, 0xFF]))));
         assert_eq!(p.nodes[b].placement.min_height, 36.0);
         let whens: Vec<State> = p.whens[p.nodes[b].whens.0 as usize..].iter().map(|w| w.state).collect();
-        // The trailing Focused is the injected default focus ring (D129,
-        // GP26 step 2) — every Button without an authored `when focused`
-        // carries it.
-        assert_eq!(whens, vec![State::Selected, State::Held, State::Focused]);
+        // Stored in the order they win, lowest rank first. The Focused is
+        // the injected default focus ring (D129, GP26 step 2) — every
+        // Button without an authored `when focused` carries it.
+        assert_eq!(whens, vec![State::Focused, State::Selected, State::Held]);
         assert!(p.whens.iter().all(|w| w.of == NO_NODE));
         let held_props = &p.props[p.whens[1].props.0 as usize..];
         assert_eq!(held_props[0].value, Value::VColor(Color_Straight_Srgb_4xU8_RGBA([255, 255, 255, 128])));

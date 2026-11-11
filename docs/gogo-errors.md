@@ -994,6 +994,16 @@ control kind, `extends=` names another style (never itself), a subtree
 `theme { Kind … }` entry carries props only — no name, no `on:` wiring,
 no placement, no duplicates.
 
+Two more, each a line that used to build and do nothing:
+
+- `color = …` in a `theme` block. The page's text color is
+  `font_color = …`, the word text color has everywhere else; `color` is
+  a shape's fill.
+- A style on a `widget` or `control` line (`widget Card .Big { … }`). The
+  line declares a name and its `$params`; it is not a node, so nothing
+  on it can wear a style. Write `.Big` on the first node of the body
+  (every instance wears it) or on an instance line (that one does).
+
 ## G3007 — property transition shape
 
 A property transition (`transition commandBar.opacity duration=0.4`)

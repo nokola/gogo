@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::anim::{Channel, Easing, Finish, Motion, Player, Tween, get_pval, lerp_value, prop_lane};
 use crate::draw::{Draw, DrawCache, DrawStats};
-use crate::layout::{BUTTON_PADDING, LayoutCache, LayoutStats, Rect, TextMeasure};
+use crate::layout::{LayoutCache, LayoutStats, Rect, TextMeasure};
 use crate::locale::{KeyName, Locale};
 use crate::page::*;
 use crate::tree::{Children, PlacedTree};
@@ -1637,6 +1637,19 @@ impl Runtime {
     /// A code write: `text=`, `visibility=`, `value=`… Replaces an earlier
     /// write of the same key; a same-value write changes nothing.
     pub fn set_prop(&mut self, node: NodeId, key: PropKey, value: Value) {
+        // `disabled` and `selected` are STATES. The file's word is read
+        // once, at build, into the node's starting state, so a write that
+        // only stored the value changed nothing on screen. The write sets
+        // the state: one store, the one `set_state` writes, so the two
+        // calls cannot disagree.
+        match key {
+            PropKey::Disabled => return self.set_state(node, DISABLED, value == Value::VBool(true)),
+            PropKey::SelectedProp => return self.set_state(node, SELECTED, value == Value::VBool(true)),
+            _ => {}
+        }
+        // `keyboard_target` is read when the page is built and nothing
+        // reads it after: a write here would be accepted and dropped.
+        debug_assert!(key != PropKey::KeyboardTarget, "`keyboard_target` is read when the page is built — a write while the page runs changes nothing; write it in the `.gogo` file");
         // GP37: `selected` DERIVES from a Toggle's value — a code write
         // of `value=1` selects (the shipped tgl.derive-on).
         if key == PropKey::Value && self.toggle.get(node.index()).copied().unwrap_or(false) {
@@ -2953,7 +2966,24 @@ impl Resolved {
     /// walk it lands on the block alone and the Labels draw at the 15
     /// default.
     fn inherited(&self, page: &Page, node: NodeId, key: PropKey) -> Option<Value> {
-        let mut n = node;
+        self.written_from(page, node, key).or_else(|| self.kind_default_of(page, node, key))
+    }
+
+    /// What `node` shows for an inherited word when it writes none of its
+    /// own: the word of the nearest box above it, else its kind's default.
+    ///
+    /// Needed for the value a timed rule slides from and back to: with the
+    /// node's own word in force (`when held font_color=…`), `inherited`
+    /// answers that word, and a slide from it to itself is no slide.
+    fn inherited_above(&self, page: &Page, node: NodeId, key: PropKey) -> Option<Value> {
+        let parent = self.placed_parent(page, node);
+        let above = if parent == NO_NODE { None } else { self.written_from(page, parent, key) };
+        above.or_else(|| self.kind_default_of(page, node, key))
+    }
+
+    /// `key` as `from` or the nearest box above it writes it.
+    fn written_from(&self, page: &Page, from: NodeId, key: PropKey) -> Option<Value> {
+        let mut n = from;
         loop {
             let own = self.override_of(n, key).or_else(|| page.prop(n, key));
             if let Some(v) = own {
@@ -2963,10 +2993,15 @@ impl Resolved {
             // way the addon's theme propagation follows the live tree.
             let parent = self.placed_parent(page, n);
             if parent == NO_NODE {
-                break;
+                return None;
             }
             n = parent;
         }
+    }
+
+    /// The theme's default of `key` for `node`'s kind (a `theme { }`
+    /// block's defaults are kept on Label too).
+    fn kind_default_of(&self, page: &Page, node: NodeId, key: PropKey) -> Option<Value> {
         page.kind_default(page.nodes[node].kind, key, self.variant).or_else(|| page.kind_default(Kind::Label, key, self.variant)).map(|v| deref(page, self.variant, v))
     }
 
@@ -3251,29 +3286,25 @@ fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
 
 /// One node through its `when` ladder: the declared placement with the
 /// active `when`s' placement words applied is returned; their other
-/// words are pushed onto `out` in the order they win (lowest rank
-/// first; equal rank → the later line in the file, applied last, so
-/// the winner reads off the file). The one per-node rule every road
-/// shares — the from-scratch `resolve_ladder`, the retained full fill
-/// and the retained patch.
+/// words are pushed onto `out` in the order they win. That order is the
+/// order the compiler stored the node's `when`s in (lowest rank first;
+/// within a rank a style's before the node's own, the later line last),
+/// so nothing is collected or sorted here. The one per-node rule every
+/// road shares — the from-scratch `resolve_ladder`, the retained full
+/// fill and the retained patch.
 ///
 /// A static node (B36-DES stage 1) keeps its declared placement and has
 /// no `when` to scan: nothing pushed, nothing asked of the states.
 fn ladder_node(page: &Page, rt: &Runtime, id: NodeId, out: &mut Vec<(NodeId, Prop)>) -> Placement {
     let node = &page.nodes[id];
     let mut placement = node.placement;
-    // The text-only Button gets air around its label — a kind default,
-    // like its font size; a Button holding its own content spells its
-    // own padding. Decided here so layout and draw inset by ONE value.
-    if node.kind == Kind::Button && placement.padding == [0.0; 4] && node.children.1 == 0 {
-        placement.padding = BUTTON_PADDING;
-    }
     if rt.is_static(id) {
         return placement;
     }
-    let mut active: Vec<&When> = page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize].iter().filter(|w| rt.state_active(page, if w.of == NO_NODE { id } else { w.of }, w.state)).collect();
-    active.sort_by_key(|w| (w.state.priority(), w.line));
-    for w in active {
+    for w in &page.whens[node.whens.0 as usize..(node.whens.0 + node.whens.1) as usize] {
+        if !rt.state_active(page, if w.of == NO_NODE { id } else { w.of }, w.state) {
+            continue;
+        }
         for p in &page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize] {
             if p.key.is_placement() {
                 apply_placement(&mut placement, page, *p);
@@ -3370,10 +3401,18 @@ fn set_motion_word(m: &mut Motion, key: PropKey, value: Value) {
 /// Button TWEENS from its theme gray instead of popping (the shipped
 /// capture reads the theme's resting stylebox; GPAR71); opacity rests
 /// at 1.
-fn kind_visual_default(page: &Page, node: NodeId, key: PropKey) -> Option<Value> {
+fn kind_visual_default(page: &Page, r: &Resolved, node: NodeId, key: PropKey) -> Option<Value> {
     match key {
         PropKey::Opacity => Some(Value::VNum(1.0)),
         PropKey::Background if page.nodes[node].kind == Kind::Button => Some(Value::VColor(crate::draw::DEFAULT_BUTTON_BACKGROUND)),
+        // The ink a text shows when its node wrote no `font_color`: the
+        // one a box above it or the theme gives, else gogo's own. Needed
+        // so a timed `when held font_color=…` slides from it and back to
+        // it, where it used to change at once.
+        PropKey::FontColor => match r.inherited_above(page, node, PropKey::FontColor) {
+            Some(Value::VColor(ink)) => Some(Value::VColor(ink)),
+            _ => Some(Value::VColor(crate::draw::DEFAULT_TEXT_COLOR)),
+        },
         _ => None,
     }
 }
@@ -3513,7 +3552,7 @@ fn standing_value(page: &Page, r: &Resolved, node: NodeId, key: PropKey) -> Opti
         let edge: bool = matches!(key, PropKey::MarginLeft | PropKey::MarginTop | PropKey::MarginRight | PropKey::MarginBottom | PropKey::PaddingLeft | PropKey::PaddingTop | PropKey::PaddingRight | PropKey::PaddingBottom);
         placement_value(&r.placement[node.index()], key).or_else(|| edge.then_some(Value::VNum(0.0)))
     } else {
-        r.prop(page, node, key).or_else(|| motion_default(key)).or_else(|| kind_visual_default(page, node, key))
+        r.prop(page, node, key).or_else(|| motion_default(key)).or_else(|| kind_visual_default(page, r, node, key))
     }
 }
 
@@ -4009,9 +4048,9 @@ fn resolve_into(page: &Page, rt: &mut Runtime, r: &mut Resolved) {
             if page.prop_transitions.iter().any(|t| t.node == id && t.key == *key) {
                 continue;
             }
-            let target = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key)) };
+            let target = if key.is_placement() { placement_value(&r.placement[i], *key) } else { r.prop(page, id, *key).or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, r, id, *key)) };
             let Some(target) = target else { continue };
-            let current = b.current[k].or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, id, *key));
+            let current = b.current[k].or_else(|| motion_default(*key)).or_else(|| kind_visual_default(page, r, id, *key));
             let Some(current) = current else { continue };
             if current == target {
                 continue;
