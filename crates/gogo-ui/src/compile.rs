@@ -11,6 +11,7 @@ use crate::locale::Keys;
 use crate::page::*;
 use crate::runtime::{DISABLED, SELECTED};
 use crate::parser::parse;
+use crate::placement::PlacementSlip;
 
 /// Reads a `uses "path"` file relative to the current one; `None` = not found.
 pub type Loader<'a> = &'a dyn Fn(&str) -> Option<String>;
@@ -6302,186 +6303,33 @@ impl<'a> Compiler<'a> {
 
     // ----- placement ------------------------------------------------------
 
-    fn len(&mut self, v: Value, line: u32, key: &str) -> Len {
-        match v {
-            Value::VNum(n) => Len::Exact(n),
-            Value::VIdent(id) => match self.page.str(id).to_ascii_lowercase().as_str() {
-                // Size words fold case like every enum word (`width=FILL`);
-                // width/height skip the closed-words fence, so the fold
-                // lives here.
-                "fill" => Len::Fill(1.0),
-                // Weight 0 = plain hug (content-sized, no slot share);
-                // `hug(n)` is the weighted SLOT around a hugged box (GP34).
-                "hug" => Len::Hug(0.0),
-                "host" => {
-                    self.error("G0055", line, format!("`{key}=host` is gone — a pure layout needs no host axis (§7)"));
-                    Len::Unset
-                }
-                other => {
-                    let other = other.to_string();
-                    self.error("G0056", line, format!("`{key}={other}`: want a number, `fill`, `hug`, `fill(n)`"));
-                    Len::Unset
-                }
-            },
-            Value::VCall { name, args } => {
-                let weight = self.page.values.get(args.0 as usize).and_then(|a| if let Value::VNum(n) = a { Some(*n) } else { None }).unwrap_or(1.0);
-                match self.page.str(name) {
-                    "fill" => Len::Fill(weight),
-                    "hug" => Len::Hug(weight),
-                    _ => {
-                        self.error("G0056", line, format!("`{key}=…`: want `fill(n)` or `hug(n)`"));
-                        Len::Unset
-                    }
-                }
+    /// Reports what stopped `Placement::write` from reading a placement
+    /// word on a node's line, as that word's build error.
+    fn placement_slip(&mut self, slip: PlacementSlip, key: PropKey, line: u32) {
+        let key: &str = key.word();
+        match slip {
+            PlacementSlip::HostAxis => self.error("G0055", line, format!("`{key}=host` is gone — a pure layout needs no host axis (§7)")),
+            PlacementSlip::SizeWord(id) => {
+                let other: String = self.page.str(id).to_ascii_lowercase();
+                self.error("G0056", line, format!("`{key}={other}`: want a number, `fill`, `hug`, `fill(n)`"));
             }
-            // A numeric theme `$value` (`height=$backBoxHeight`), resolved
-            // here like `num`'s: so a size reads the same values its
-            // min/max and padding already do. Only default entries — a
-            // variant block cannot flip a baked length.
-            Value::VRef { .. } => match crate::runtime::deref(&self.page, NO_STR, v) {
-                Value::VNum(n) => Len::Exact(n),
-                _ => {
-                    self.error("G0056", line, format!("`{key}=`: the `$value` it names is not a number"));
-                    Len::Unset
-                }
-            },
-            _ => {
-                self.error("G0056", line, format!("`{key}=`: want a number, `$value`, `fill` or `hug`"));
-                Len::Unset
+            PlacementSlip::SizeCall => self.error("G0056", line, format!("`{key}=…`: want `fill(n)` or `hug(n)`")),
+            PlacementSlip::SizeRef => self.error("G0056", line, format!("`{key}=`: the `$value` it names is not a number")),
+            PlacementSlip::SizeOther => self.error("G0056", line, format!("`{key}=`: want a number, `$value`, `fill` or `hug`")),
+            PlacementSlip::NumberRef => self.error("G0058", line, format!("`{key}=` wants a number (epx) — the `$value` it names is not a number")),
+            PlacementSlip::NumberOther => self.error("G0058", line, format!("`{key}=` wants a number (epx)")),
+            PlacementSlip::Alignment => {
+                let expected: &str = if key == "halign" { "left/center/right" } else { "top/center/bottom" };
+                self.error("G0057", line, format!("`{key}=`: want {expected}"));
             }
-        }
-    }
-
-    fn align(&mut self, v: Value, line: u32, key: &str) -> Align {
-        // Per-axis physical words only (spec: halign=left/center/right,
-        // valign=top/center/bottom) — a cross-axis word would silently
-        // re-mean (`halign=top` pinned left), and the logical `start`/`end`
-        // wait for the RTL milestone (G14) where margins and direction
-        // flip together. Backstop only: `prop_checked` refuses these first.
-        let horizontal = key == "halign";
-        if let Value::VIdent(id) = v {
-            match (self.page.str(id), horizontal) {
-                ("left", true) | ("top", false) => return Align::Start,
-                ("center", _) => return Align::Center,
-                ("right", true) | ("bottom", false) => return Align::End,
-                _ => {}
-            }
-        }
-        let expected = if horizontal { "left/center/right" } else { "top/center/bottom" };
-        self.error("G0057", line, format!("`{key}=`: want {expected}"));
-        Align::AlignUnset
-    }
-
-    fn num(&mut self, v: Value, line: u32, key: &str) -> f32 {
-        match v {
-            Value::VNum(n) => n,
-            // A numeric theme `$value` in a length (`min_width=$rowFont`,
-            // GPAR88): placement bakes at compile and theme entries are
-            // compile-known, so the ref resolves here. Only default
-            // entries — a variant block cannot flip a baked length.
-            Value::VRef { .. } => match crate::runtime::deref(&self.page, NO_STR, v) {
-                Value::VNum(n) => n,
-                _ => {
-                    self.error("G0058", line, format!("`{key}=` wants a number (epx) — the `$value` it names is not a number"));
-                    0.0
-                }
-            },
-            _ => {
-                self.error("G0058", line, format!("`{key}=` wants a number (epx)"));
-                0.0
-            }
-        }
-    }
-
-    /// One margin/padding edge: a number, or `safe` (the host's inset for
-    /// that edge, read at layout time).
-    fn edge(&mut self, v: Value, line: u32, key: &str, p: &mut Placement, i: usize, margin: bool) {
-        if let Value::VIdent(id) = v {
-            if self.page.str(id).eq_ignore_ascii_case("safe") {
-                if margin {
-                    p.margin[i] = Some(0.0);
-                    p.margin_safe[i] = true;
-                } else {
-                    p.padding_safe[i] = true;
-                }
-                return;
-            }
-        }
-        let n = self.num(v, line, key);
-        if margin {
-            p.margin[i] = Some(n);
-        } else {
-            p.padding[i] = n;
         }
     }
 
     fn placement(&mut self, props: &[Prop], line: u32, parent: Option<Kind>, kind: Kind) -> Placement {
         let mut p = Placement::DEFAULT;
         for prop in props {
-            let v = prop.value;
-            match prop.key {
-                PropKey::Width => p.width = self.len(v, line, "width"),
-                PropKey::Height => p.height = self.len(v, line, "height"),
-                PropKey::MinWidth => p.min_width = self.num(v, line, "min_width"),
-                PropKey::MinHeight => p.min_height = self.num(v, line, "min_height"),
-                PropKey::MaxWidth => match v {
-                    Value::VIdent(id) if self.page.str(id).eq_ignore_ascii_case("fill") => p.max_width_fill = true,
-                    _ => p.max_width = Some(self.num(v, line, "max_width")),
-                },
-                PropKey::MaxHeight => match v {
-                    Value::VIdent(id) if self.page.str(id).eq_ignore_ascii_case("fill") => p.max_height_fill = true,
-                    _ => p.max_height = Some(self.num(v, line, "max_height")),
-                },
-                PropKey::Halign => p.halign = self.align(v, line, "halign"),
-                PropKey::Valign => p.valign = self.align(v, line, "valign"),
-                PropKey::MarginLeft => self.edge(v, line, "margin_left", &mut p, 0, true),
-                PropKey::MarginTop => self.edge(v, line, "margin_top", &mut p, 1, true),
-                PropKey::MarginRight => self.edge(v, line, "margin_right", &mut p, 2, true),
-                PropKey::MarginBottom => self.edge(v, line, "margin_bottom", &mut p, 3, true),
-                PropKey::Margin => match v {
-                    Value::VIdent(id) if self.page.str(id).eq_ignore_ascii_case("safe") => {
-                        p.margin = [Some(0.0); 4];
-                        p.margin_safe = [true; 4];
-                    }
-                    _ => {
-                        let m = self.num(v, line, "margin");
-                        p.margin = [Some(m); 4];
-                    }
-                },
-                PropKey::PaddingLeft => self.edge(v, line, "padding_left", &mut p, 0, false),
-                PropKey::PaddingTop => self.edge(v, line, "padding_top", &mut p, 1, false),
-                PropKey::PaddingRight => self.edge(v, line, "padding_right", &mut p, 2, false),
-                PropKey::PaddingBottom => self.edge(v, line, "padding_bottom", &mut p, 3, false),
-                PropKey::Padding => match v {
-                    Value::VIdent(id) if self.page.str(id).eq_ignore_ascii_case("safe") => p.padding_safe = [true; 4],
-                    _ => p.padding = [self.num(v, line, "padding"); 4],
-                },
-                PropKey::Size => match v {
-                    Value::VSize(w, h) => {
-                        if let Some(w) = w {
-                            p.width = Len::Exact(w);
-                        }
-                        if let Some(h) = h {
-                            p.height = Len::Exact(h);
-                        }
-                    }
-                    // `size=hug` (an Image at its picture's own size),
-                    // `size=fill`, `size=48`: one sizing word for both
-                    // sides, read as `width=` reads it. Before, a word
-                    // here compiled and did nothing.
-                    _ => {
-                        let both = self.len(v, line, "size");
-                        p.width = both;
-                        p.height = both;
-                    }
-                },
-                PropKey::MinSize => {
-                    if let Value::VSize(w, h) = v {
-                        p.min_width = w.unwrap_or(0.0);
-                        p.min_height = h.unwrap_or(0.0);
-                    }
-                }
-                _ => {}
+            if let Some(slip) = p.write(&self.page, *prop) {
+                self.placement_slip(slip, prop.key, line);
             }
         }
         // `margin=N` shorthand under alignment: the touched edges only.

@@ -1902,7 +1902,10 @@ List picker select=many, spacing=4 {
   the same way; the row-local `kb_only` special case is gone.
 - **`select=`** — `one` (default), `many`, or `off` (activation/focus
   without selection — menus; gogo's shipped opt-out word). Closed set
-  (G0057).
+  (G0057). Code may write the mode
+  (`rt.set_prop(list, PropKey::Select, …)`): the next tap follows it at
+  once, and at the next `tick` the selection does too: `off` lets every
+  row go, `one` keeps the first selected row in the List's order.
 - **Gestures** (user call, 2026-07-15): tap or Enter/Space on an item
   ALWAYS fires `activate` on the row; selection is the mode's side effect
   — `one` selects it (tapping the selected item never deselects — radio
@@ -2175,6 +2178,17 @@ catches big PORTRAIT tablets, because `lotsOfSpace` covers both shapes.
   line in the file wins (two active pairs settle by file order). Either
   half dropping releases the block (back to whichever single-axis pose
   still holds).
+- **A placement word means in a pose what it means on a line**:
+  `fill(2)`, `hug`, `max_width = fill`, `min_size = 200x100`, a theme's
+  `$number` and `safe` are read the same way in a view-level `when`, from
+  code and on a node's line. The later word is the whole answer for its
+  side: `bar.margin_bottom = 0`, over a line that says
+  `margin_bottom=safe`, puts `bar` on the screen's edge with no inset.
+- **A seat written from code is checked like a file's**:
+  `rt.set_prop(node, PropKey::SeatOf, Value::VIdent(name))` moves `node`
+  into the seat called `name` (`home` = back where its line put it). A
+  name that is no declared seat, or a seat inside `node`, stops a debug
+  build with a message; a release build leaves `node` at home.
 - **Any pose may re-anchor and re-seat**: alignment keys and seat moves
   are legal in every view-level `when` — screen whens and arrangement
   whens (plain or composed) alike. A screen flip lands at once. Under an

@@ -329,6 +329,13 @@ pub struct Runtime {
     /// needs `&mut Page`: the readers wait for `tick`, the frame door
     /// that has it. One frame late at most — a drag streams anyway.
     pub value_follow: Vec<NodeId>,
+    /// Lists whose `select` was written from code and whose selection has
+    /// not been brought in line with the new mode yet.
+    ///
+    /// Needed because `set_prop` holds no page and a List's rows are
+    /// found through one: the selection waits for `tick`, as a value's
+    /// readers do.
+    pub select_follow: Vec<NodeId>,
     /// The string a following label's number is written into before it
     /// is copied to the label. Kept so a value written on every finger
     /// move of a drag allocates nothing.
@@ -503,6 +510,7 @@ impl Runtime {
             prop_anim: Vec::new(),
             held_props: Vec::new(),
             value_follow: Vec::new(),
+            select_follow: Vec::new(),
             follow_text: String::new(),
             shown: vec![Motion::IDENTITY; page.nodes.len()],
             players: Vec::new(),
@@ -598,6 +606,7 @@ impl Runtime {
             prop_anim: _,
             held_props: _,
             value_follow: _,
+            select_follow: _,
             follow_text: _,
             state_anims: _,
             finished: _,
@@ -1119,10 +1128,7 @@ impl Runtime {
     /// `change` exactly then and a same-value write is silent; a host
     /// notifies off this bool the same way.
     pub fn set_selected(&mut self, page: &Page, list: NodeId, keys: &[ItemKey]) -> Result<bool, String> {
-        let mode = match page.prop(list, PropKey::Select) {
-            Some(Value::VIdent(w)) => page.str(w),
-            _ => "one",
-        };
+        let mode: &str = self.select_mode(page, list);
         let name = page.str(page.nodes[list].name);
         if mode == "off" {
             return Err(format!("G9104: `{name}` has select=off — no selection to write (activation still fires)"));
@@ -1145,6 +1151,39 @@ impl Runtime {
         }
         self.apply_selected(page, list);
         Ok(true)
+    }
+
+    /// A List's `select` mode: the word code wrote last, else the file's,
+    /// else `one`.
+    fn select_mode<'p>(&self, page: &'p Page, list: NodeId) -> &'p str {
+        let written: Option<Value> = self.writes.iter().rev().find(|(n, p)| *n == list && p.key == PropKey::Select).map(|(_, p)| p.value);
+        match written.or_else(|| page.prop(list, PropKey::Select)) {
+            Some(Value::VIdent(w)) => page.str(w),
+            _ => "one",
+        }
+    }
+
+    /// Brings a List's selection in line with its `select` mode after
+    /// code changed the mode: `off` holds no selection, `one` holds the
+    /// first selected row in the List's order, `many` keeps them all.
+    ///
+    /// Needed because a tap only ever adds or flips one row: without this
+    /// the rows picked under the old mode stay picked for good under
+    /// `off`, and two stay picked under `one`.
+    fn settle_selection(&mut self, page: &Page, list: NodeId) {
+        let keep: usize = match self.select_mode(page, list) {
+            "off" => 0,
+            "one" => 1,
+            _ => return,
+        };
+        let keys: Vec<ItemKey> = self.selected_keys(page, list);
+        if keys.len() <= keep {
+            return;
+        }
+        if let Some(e) = self.list_sel.iter_mut().find(|(n, _)| *n == list) {
+            e.1 = keys[..keep].to_vec();
+        }
+        self.apply_selected(page, list);
     }
 
     /// A List's live selection (the addon's `selected` read-back):
@@ -1173,10 +1212,7 @@ impl Runtime {
     /// doctrine — `many` toggles it, `off` nothing. Returns whether the
     /// selection changed (the caller fires `change` exactly then).
     pub fn tap_select(&mut self, page: &Page, list: NodeId, row: NodeId) -> bool {
-        let mode = match page.prop(list, PropKey::Select) {
-            Some(Value::VIdent(w)) => page.str(w),
-            _ => "one",
-        };
+        let mode: &str = self.select_mode(page, list);
         let was = self.has(row, SELECTED);
         let flips = match mode {
             "one" => !was,
@@ -1533,6 +1569,15 @@ impl Runtime {
                 self.value_follow = roots;
             }
         }
+        // The Lists whose `select` was written since the last tick: their
+        // selection is brought in line with the new mode.
+        if !self.select_follow.is_empty() {
+            let mut lists: Vec<NodeId> = std::mem::take(&mut self.select_follow);
+            for list in lists.drain(..) {
+                self.settle_selection(page, list);
+            }
+            self.select_follow = lists;
+        }
         if !self.changes.is_empty() {
             // A flip already recorded but not yet resolved: this frame's
             // time belongs to its tweens-to-be.
@@ -1694,6 +1739,11 @@ impl Runtime {
         // `set_value`.
         if key == PropKey::Value && !self.value_follow.contains(&node) {
             self.value_follow.push(node);
+        }
+        // A changed `select`: the rows the new mode could not have picked
+        // let go at the next `tick` (`select_follow`).
+        if key == PropKey::Select && !self.select_follow.contains(&node) {
+            self.select_follow.push(node);
         }
     }
 
@@ -3336,21 +3386,37 @@ fn ladder_motion_and_seat(page: &Page, rt: &Runtime, id: NodeId, entries: &[(Nod
     }
     for (_, p) in entries {
         match p.key {
-            PropKey::SeatOf => seat = seat_of(page, p.value),
+            PropKey::SeatOf => seat = seat_of(page, id, p.value),
             _ => set_motion_word(&mut m, p.key, p.value),
         }
     }
     (m, seat)
 }
 
-/// The seat host a `seat = <name>` word names: `home` (or an unknown
-/// name, or a non-word) = the declared parent.
-fn seat_of(page: &Page, value: Value) -> NodeId {
-    match value {
-        Value::VIdent(name) if page.str(name) == "home" => NO_NODE,
-        Value::VIdent(name) => page.find(page.str(name)).unwrap_or(NO_NODE),
-        _ => NO_NODE,
+/// The seat a `seat = <name>` word names for `node`: `home` (or a
+/// non-word) = the parent `node`'s line declares.
+///
+/// Needed because a seat written from code is checked nowhere else: a
+/// file's `node.seat = name` is checked at build (G1016), a code write
+/// takes any name. A name that is no declared seat, or a seat inside
+/// `node`, stops a debug build with a message and leaves `node` at home
+/// in a release build. A node seated inside itself never finishes laying
+/// out.
+fn seat_of(page: &Page, node: NodeId, value: Value) -> NodeId {
+    let Value::VIdent(name) = value else { return NO_NODE };
+    let word: &str = page.str(name);
+    if word == "home" {
+        return NO_NODE;
     }
+    let Some(seat) = page.find(word).filter(|s| page.nodes[*s].kind == Kind::Seat) else {
+        debug_assert!(false, "`{}.seat = {word}`: `{word}` is not a declared seat (a `seat {word}` line of the file)", page.str(page.nodes[node].name));
+        return NO_NODE;
+    };
+    if page.is_under(seat, node) { // declared on purpose: the file's nesting, as G1016 reads it
+        debug_assert!(false, "`{0}.seat = {word}`: seat `{word}` sits inside `{0}` — a node can't move into its own subtree", page.str(page.nodes[node].name));
+        return NO_NODE;
+    }
+    seat
 }
 
 /// The keys that are not props but placement facts: `x.seat = name`
@@ -3374,7 +3440,7 @@ fn fold_seats_and_motion(page: &Page, rt: &Runtime, r: &mut Resolved) {
     }
     for (id, p) in &r.overrides {
         match p.key {
-            PropKey::SeatOf => r.seat[*id] = seat_of(page, p.value),
+            PropKey::SeatOf => r.seat[*id] = seat_of(page, *id, p.value),
             _ => set_motion_word(&mut r.motion[*id], p.key, p.value),
         }
     }
@@ -3426,75 +3492,14 @@ fn motion_default(key: PropKey) -> Option<Value> {
     }
 }
 
-/// A posed size key behaves as if the file had declared it.
+/// Writes a placement word that arrives while the page runs (a
+/// view-level `when`, a code write, an anim line) into a node's placement,
+/// with the reader a node's line is read by (`Placement::write`).
+///
+/// A value that reader cannot read can only come from code; the field
+/// then holds the reader's fallback: no size, 0, no alignment.
 fn apply_placement(p: &mut Placement, page: &Page, prop: Prop) {
-    let len = |v: Value| match v {
-        Value::VNum(n) => Len::Exact(n),
-        Value::VIdent(id) if page.str(id) == "fill" => Len::Fill(1.0),
-        Value::VIdent(id) if page.str(id) == "hug" => Len::Hug(0.0),
-        _ => Len::Unset,
-    };
-    let num = |v: Value| if let Value::VNum(n) = v { n } else { 0.0 };
-    // Per-axis maps (cross-axis and `start`/`end` are load errors — the
-    // compile G0057 fence; an unknown word from a code write stays Unset).
-    let align_h = |v: Value| match v {
-        Value::VIdent(id) => match page.str(id) {
-            "left" => Align::Start,
-            "center" => Align::Center,
-            "right" => Align::End,
-            _ => Align::AlignUnset,
-        },
-        _ => Align::AlignUnset,
-    };
-    let align_v = |v: Value| match v {
-        Value::VIdent(id) => match page.str(id) {
-            "top" => Align::Start,
-            "center" => Align::Center,
-            "bottom" => Align::End,
-            _ => Align::AlignUnset,
-        },
-        _ => Align::AlignUnset,
-    };
-    match prop.key {
-        PropKey::Width => p.width = len(prop.value),
-        PropKey::Height => p.height = len(prop.value),
-        PropKey::MinWidth => p.min_width = num(prop.value),
-        PropKey::MinHeight => p.min_height = num(prop.value),
-        PropKey::MaxWidth => p.max_width = Some(num(prop.value)),
-        PropKey::MaxHeight => p.max_height = Some(num(prop.value)),
-        PropKey::Halign => p.halign = align_h(prop.value),
-        PropKey::Valign => p.valign = align_v(prop.value),
-        PropKey::MarginLeft => p.margin[0] = Some(num(prop.value)),
-        PropKey::MarginTop => p.margin[1] = Some(num(prop.value)),
-        PropKey::MarginRight => p.margin[2] = Some(num(prop.value)),
-        PropKey::MarginBottom => p.margin[3] = Some(num(prop.value)),
-        PropKey::Margin => p.margin = [Some(num(prop.value)); 4],
-        PropKey::PaddingLeft => p.padding[0] = num(prop.value),
-        PropKey::PaddingTop => p.padding[1] = num(prop.value),
-        PropKey::PaddingRight => p.padding[2] = num(prop.value),
-        PropKey::PaddingBottom => p.padding[3] = num(prop.value),
-        PropKey::Padding => p.padding = [num(prop.value); 4],
-        PropKey::Size => match prop.value {
-            Value::VSize(w, h) => {
-                if let Some(w) = w {
-                    p.width = Len::Exact(w);
-                }
-                if let Some(h) = h {
-                    p.height = Len::Exact(h);
-                }
-            }
-            // One sizing word for both sides (`size=hug`), as the compiler
-            // reads it.
-            v => {
-                let both = len(v);
-                if both != Len::Unset {
-                    p.width = both;
-                    p.height = both;
-                }
-            }
-        },
-        _ => {}
-    }
+    let _ = p.write(page, prop);
 }
 
 /// The keys a `transition` rule can move — and (GP40, user call) exactly
@@ -4442,7 +4447,7 @@ fn seat_table_moved(last: &[NodeId], now: &[NodeId]) -> bool {
 fn push_tail(page: &Page, r: &mut Resolved, id: NodeId, p: Prop) {
     r.overrides.push((id, p));
     match p.key {
-        PropKey::SeatOf => r.seat[id] = seat_of(page, p.value),
+        PropKey::SeatOf => r.seat[id] = seat_of(page, id, p.value),
         _ => set_motion_word(&mut r.motion[id], p.key, p.value),
     }
 }

@@ -910,6 +910,16 @@ writing one property are refused wherever the two sit, so a condition's
 writers stay auditable. (The retired Godot addon took composed pairs at
 view level only — a recorded difference.)
 
+One reader for placement words (decided 2026-11-11): a placement word
+written in a view-level `when`, from code or on an anim line is read by the
+function that reads a node's line. So `side.width = fill(2)`,
+`box.max_width = fill`, `box.min_size = 200x100`, `box.width = $panel_w`
+and `bar.margin_bottom = safe` mean in a `when` what they mean on the
+line. The later word is the whole answer for its side: a number written
+over a margin or a padding side that the line declared `safe` drops the
+inset (`bar.margin_bottom = 0` puts `bar` on the screen's edge), a number
+replaces a `fill` cap, and `fill` replaces a number.
+
 Size keys in a pose (D249): a `width`/`height`/`min_width`/`min_height`
 written in a `when` block behaves exactly as if the file had declared it,
 for as long as the block applies — when the block stops applying, the

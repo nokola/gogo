@@ -2247,7 +2247,7 @@ mod tests {
     /// drop.
     #[test]
     fn every_prop_key_is_read() {
-        let readers = [include_str!("layout.rs"), include_str!("draw.rs"), include_str!("runtime.rs"), include_str!("input.rs"), include_str!("anim.rs"), include_str!("compile.rs")];
+        let readers = [include_str!("layout.rs"), include_str!("draw.rs"), include_str!("runtime.rs"), include_str!("input.rs"), include_str!("anim.rs"), include_str!("compile.rs"), include_str!("placement.rs")];
         let mut unread: Vec<&str> = Vec::new();
         let mut homeless: Vec<&str> = Vec::new();
         for (word, key) in WORDS {

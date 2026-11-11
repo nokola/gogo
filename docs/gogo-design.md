@@ -479,6 +479,22 @@ the body, the instance line) already say both things. `theme { accent =
 12/6 default is given at build to a text-only Button that wrote no
 padding. A `disabled` or `selected` written from code sets the state.
 
+One reader (decided 2026-11-11). A placement word is read by one
+function, `Placement::write`, wherever it is written: a node's line at
+build, and a view-level `when`, a code write and an anim line while the
+page runs. The runtime used to carry its own, smaller copy, in which
+`min_size` was missing, `max_width = fill` was a cap of 0, `fill(n)` was
+no size, `safe` was 0 and a number written over a `safe` side kept the
+inset. The compiler turns what the reader cannot read into the build
+error for that word; a code write that cannot be read keeps the reader's
+fallback. A code write of `max_length` and of a List's `select` is read
+where the file's word is read: the last write first, the file after. A
+List's selection follows a written `select` at the next `tick`, the
+frame door that holds the page: `off` holds nothing, `one` the first
+selected row. A seat written from code is checked where its name is
+looked up, since `set_prop` holds no page: a debug build stops with a
+message, a release build leaves the node at home.
+
 Kept: `arrangement` (user's call — a `state` unification was proposed and
 declined), snake_case keys, `#RRGGBBAA`, `text="x"/key`, `when` /
 `transition` / `anim`, widgets + `$params`, `uses`, styles, Grid/Tiles,

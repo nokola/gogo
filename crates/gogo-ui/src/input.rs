@@ -369,6 +369,16 @@ fn input_text(page: &Page, rt: &Runtime, node: NodeId) -> String {
     }
 }
 
+/// The most characters `field` takes: its `max_length=` as code wrote it
+/// last, else as the file says it; no limit when absent or 0.
+fn max_length(page: &Page, rt: &Runtime, field: NodeId) -> usize {
+    let written: Option<Value> = rt.writes.iter().rev().find(|(n, p)| *n == field && p.key == PropKey::MaxLength).map(|(_, p)| p.value);
+    match written.or_else(|| page.prop(field, PropKey::MaxLength)) {
+        Some(Value::VNum(n)) if n > 0.0 => n as usize,
+        _ => usize::MAX,
+    }
+}
+
 /// The `Value` the field's events carry.
 fn text_value(page: &Page, rt: &Runtime, node: NodeId) -> Value {
     rt.writes.iter().rev().find(|(n, p)| *n == node && p.key == PropKey::Text).map(|(_, p)| p.value).or_else(|| page.prop(node, PropKey::Text)).unwrap_or(Value::VText { text: NO_STR, key: NO_KEY })
@@ -1350,10 +1360,7 @@ impl Input {
                 } else {
                     // `max_length=` caps typing at that many characters
                     // (Godot's LineEdit word; GPAR112). Absent or 0 = no cap.
-                    let cap = match page.prop(f, PropKey::MaxLength) {
-                        Some(Value::VNum(n)) if n > 0.0 => n as usize,
-                        _ => usize::MAX,
-                    };
+                    let cap: usize = max_length(page, rt, f);
                     if text.len() < cap {
                         text.insert(self.caret, c);
                         self.caret += 1;
@@ -1707,10 +1714,7 @@ impl Input {
         self.caret = self.caret.min(text.len());
         self.anchor = self.anchor.map(|a| a.min(text.len())).filter(|a| *a != self.caret);
         let (lo, hi) = self.selection().unwrap_or((self.caret, self.caret));
-        let cap = match page.prop(f, PropKey::MaxLength) {
-            Some(Value::VNum(n)) if n > 0.0 => n as usize,
-            _ => usize::MAX,
-        };
+        let cap: usize = max_length(page, rt, f);
         let room = cap.saturating_sub(text.len() - (hi - lo));
         let ins: Vec<char> = paste.chars().filter(|c| !c.is_control()).take(room).collect();
         let n = ins.len();
@@ -1793,10 +1797,7 @@ impl Input {
     pub fn ime_replace(&mut self, page: &mut Page, rt: &mut Runtime, text: &str, start: usize, end: usize) -> Vec<Event> {
         let mut events = Vec::new();
         let Some(f) = self.focus.filter(|f| page.nodes[*f].kind == Kind::Input) else { return events };
-        let cap = match page.prop(f, PropKey::MaxLength) {
-            Some(Value::VNum(n)) if n > 0.0 => n as usize,
-            _ => usize::MAX,
-        };
+        let cap: usize = max_length(page, rt, f);
         let new: String = text.chars().take(cap).collect();
         let len = new.chars().count();
         self.caret = end.min(len);

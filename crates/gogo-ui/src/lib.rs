@@ -28,6 +28,7 @@ pub mod lexer;
 pub mod locale;
 pub mod page;
 pub mod parser;
+mod placement;
 pub mod reload;
 pub mod runtime;
 pub mod tree;
