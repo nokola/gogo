@@ -1354,8 +1354,8 @@ Layers {
 Short text: the plate is exactly as wide as the text, centered. Long text:
 the plate stops at the screen minus 24 and the text wraps. Swapping
 `tipText.text` from code re-fits the plate. On a fill-capped axis the
-margins bind the measuring frame (a centered axis takes margins only when
-both are named); a number (`max_width=336`) is the fixed-limit form. A cap
+margins bind the measuring frame (the plate is centered in the room they
+leave); a number (`max_width=336`) is the fixed-limit form. A cap
 is a hard edge: content that can't shrink is cut at it, and only a
 `min_width` floor beats it.
 
@@ -1789,9 +1789,11 @@ Layers tray valign=bottom, height=50, margin_bottom=-90
 Rectangle rule margin_left=20, margin_right=20
 ```
 
-A per-edge key that can't bind does nothing, and the build says nothing
-(the far edge of an aligned axis; one edge of a centered axis). Only
-`margin_left` with `margin_right` beside an exact `width` is a build error
+A per-edge key on the far edge of an aligned axis moves nothing, and the
+build says nothing. On a centered axis one margin shifts the box by half
+of it: the box is centered in the room the margins leave. Two margins
+beside an exact size for that side (`margin_left` with `margin_right`
+beside `width=200`, or the pair for the height) are a build error
 (G1006). The `margin=N` shorthand stays
 pure breathing room and never errors. For poses that *change* at runtime
 (drawer open/closed), declare an `arrangement` (two recipes down); for
@@ -2328,10 +2330,11 @@ Scroll {
 A span that can't fit the row's remainder wraps whole to the next row (the
 tail stays empty — first-fit, no reshuffling). `cols=` is live: set it from
 code (`rt.set_prop(tiles, PropKey::Cols, Value::VNum(3.0))`) and the mosaic
-re-packs — an icon_size toggle
-is that one write. Wider air between tiles is padding inside the tile
-(wrap the content in a `Panel padding_left=6, padding_top=6`), so the gap
-scales with nothing and the hit rect stays the visible tile. A caption Label
+re-packs — a switch between small and large tiles
+is that one write. Air between tiles is `spacing=` on the Tiles
+(`Tiles cols=3, spacing=6`): the gap between the columns and between the
+rows. Padding inside a tile (a `Panel padding=6` around the content)
+keeps the whole cell one hit rect. A caption Label
 on a tile needs `clip_text=true` (plus `width=fill` to keep it stretched):
 without it, a long name's minimum makes the tile OVERLAP its neighbors —
 cells never shrink content, and nothing warns when one outgrows its cell.

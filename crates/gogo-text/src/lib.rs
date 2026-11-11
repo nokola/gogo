@@ -297,6 +297,11 @@ pub struct TextEngine {
     shape_cache: HashMap<u64, (u32, Vec<GlyphQuad>)>,
 }
 
+/// Stands where the text alignment goes in the cache key of a
+/// `TextEngine::narrowest_wrap` answer. Needed so that answer never shares
+/// an entry with a `measure` of the same text: alignments are 0, 1 and 2.
+const NARROWEST_WRAP_KEY: u8 = u8::MAX;
+
 /// The measure / shape cache key: a hash over the request, no allocation.
 fn cache_key(text: &str, size: TextPx, max_width: Option<f32>, font: Option<&str>, box_w: f32, halign: u8) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -604,9 +609,15 @@ impl TextEngine {
     }
 
     fn buffer(&mut self, text: &str, size: TextPx, max_width: Option<f32>, font: Option<&str>) -> Buffer {
+        self.buffer_wrapped(text, size, max_width, font, if max_width.is_some() { Wrap::WordOrGlyph } else { Wrap::None })
+    }
+
+    /// `text` shaped into lines no wider than `max_width`, broken the way
+    /// `wrap` says.
+    fn buffer_wrapped(&mut self, text: &str, size: TextPx, max_width: Option<f32>, font: Option<&str>, wrap: Wrap) -> Buffer {
         let line_height = self.metrics(font).line_height(size);
         let mut buffer = Buffer::new(&mut self.fs, Metrics::new(size.font_size, line_height));
-        buffer.set_wrap(if max_width.is_some() { Wrap::WordOrGlyph } else { Wrap::None });
+        buffer.set_wrap(wrap);
         buffer.set_size(max_width, None);
         let attrs = self.attrs(font);
         buffer.set_text(text, &attrs, Shaping::Advanced, None);
@@ -643,6 +654,38 @@ impl TextEngine {
         }
         self.measure_cache.insert(key, v);
         v
+    }
+
+    /// The narrowest `text` folds to, in device pixels: the width of its
+    /// longest word, with lines ending only where a word ends.
+    ///
+    /// Needed because `measure` at a wrap width of 0 breaks between
+    /// letters and answers one letter's width; a wrapping label sized by
+    /// that wraps one letter per line.
+    pub fn narrowest_wrap(&mut self, text: &str, size: TextPx, font: Option<&str>) -> f32 {
+        // The answer shares the measure cache under a key of its own: a
+        // text alignment no `measure` asks with (it asks with 0).
+        let key = cache_key(text, size, None, font, 0.0, NARROWEST_WRAP_KEY);
+        if let Some(v) = self.measure_cache.get(&key) {
+            return v.0;
+        }
+        let buffer = self.buffer_wrapped(text, size, Some(0.0), font, Wrap::Word);
+        let mut w: f32 = 0.0;
+        for run in buffer.layout_runs() {
+            // The ink of the line: from its first letter to its last, so
+            // the space a line ends on does not widen the word.
+            let from: f32 = run.glyphs.iter().filter(|g| !text[g.start..g.end].trim().is_empty()).map(|g| g.x).fold(f32::MAX, f32::min);
+            let to: f32 = run.glyphs.iter().filter(|g| !text[g.start..g.end].trim().is_empty()).map(|g| g.x + g.w).fold(0.0, f32::max);
+            if to > from {
+                w = w.max(to - from);
+            }
+        }
+        let w: f32 = w.ceil();
+        if self.measure_cache.len() >= CACHE_CAP {
+            self.measure_cache.clear();
+        }
+        self.measure_cache.insert(key, (w, 0.0));
+        w
     }
 
     /// Shapes `text` into glyph quads with the pen at (x, y) = the top-left
@@ -967,6 +1010,11 @@ impl TextMeasure for EpxMeasure<'_> {
         // draws it, so the label is measured at the size it is drawn at.
         let (w, h) = e.measure(text, TextPx::from_epx(font_size, self.epx), max_width.map(|w| w * self.epx), font.or(self.font.as_deref()));
         (w / self.epx, h / self.epx)
+    }
+
+    fn narrowest_wrap(&self, text: &str, font_size: f32, font: Option<&str>) -> f32 {
+        let mut e = self.engine.borrow_mut();
+        e.narrowest_wrap(text, TextPx::from_epx(font_size, self.epx), font.or(self.font.as_deref())) / self.epx
     }
 
     fn image_size(&self, key: ImageKey) -> Option<(f32, f32)> {

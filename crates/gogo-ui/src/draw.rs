@@ -478,7 +478,9 @@ fn authored_disabled_opacity(page: &Page, id: NodeId) -> bool {
 /// out through a NEGATIVE margin (a badge, the app-bar labels — "stick
 /// out on purpose") and an `overlay=true` one (outside the box's
 /// accounting by declaration). A Label with a written size always cuts —
-/// only the renderer can measure its text.
+/// only the renderer can measure its text. A box that shows only a part
+/// of itself (`reveal_x`/`reveal_y` under 1) cuts what it holds at that
+/// part (`shows_a_part`).
 ///
 /// One answer for two consumers, so the picture and the finger never
 /// disagree (GPAR37): draw pushes the clip and `hit` rejects a point a
@@ -505,7 +507,21 @@ pub(crate) fn clips(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId) -> 
                 px || py
             })
         });
-    matches!(node.kind, Kind::Scroll | Kind::List | Kind::Slot) || res.bool(page, id, PropKey::ClipContents).unwrap_or(false) || (node.kind == Kind::Label && res.bool(page, id, PropKey::ClipText).unwrap_or(false)) || written_overflow
+    matches!(node.kind, Kind::Scroll | Kind::List | Kind::Slot) || res.bool(page, id, PropKey::ClipContents).unwrap_or(false) || (node.kind == Kind::Label && res.bool(page, id, PropKey::ClipText).unwrap_or(false)) || written_overflow || shows_a_part(page, res, id)
+}
+
+/// Does this box show only a part of itself (`reveal_x` or `reveal_y`
+/// under 1) and hold something to cut: children, or text of its own?
+///
+/// Needed because what a revealed box holds keeps its full size: without
+/// a cut, a panel sliding shut still shows its buttons and takes taps on
+/// them.
+///
+/// A bare bar (a slider's fill) holds nothing, and a box at rest shows
+/// all of itself: neither is cut.
+fn shows_a_part(page: &Page, res: &Resolved, id: NodeId) -> bool {
+    let part = |key: PropKey| res.num(page, id, key).is_some_and(|f| f < 1.0);
+    (part(PropKey::RevealX) || part(PropKey::RevealY)) && (res.children(page, id).next().is_some() || res.prop(page, id, PropKey::Text).is_some())
 }
 
 /// The retained draw's bookkeeping for one walk (B36-DES stage 3,

@@ -74,7 +74,7 @@ fn assert_same_from_code(own: &str, word: &str, value: &str, write: impl Fn(&mut
 
 #[test]
 fn min_size_in_a_when_is_min_size() {
-    assert_same_in_a_when("width=100, height=80", "min_size", "333x222");
+    assert_same_in_a_when("halign=left, valign=top", "min_size", "333x222");
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn a_theme_number_in_a_when_is_read() {
 
 #[test]
 fn placement_words_written_from_code_read_as_on_the_line() {
-    assert_same_from_code("width=100, height=80", "min_size", "333x222", |_| (PropKey::MinSize, Value::VSize(Some(333.0), Some(222.0))));
+    assert_same_from_code("halign=left, valign=top", "min_size", "333x222", |_| (PropKey::MinSize, Value::VSize(Some(333.0), Some(222.0))));
     assert_same_from_code("width=100, height=80, valign=bottom", "margin_bottom", "safe", |p| (PropKey::MarginBottom, Value::VIdent(p.intern("safe"))));
     assert_same_from_code("width=100, height=80", "padding_left", "safe", |p| (PropKey::PaddingLeft, Value::VIdent(p.intern("safe"))));
     assert_same_from_code("height=80", "width", "HUG", |p| (PropKey::Width, Value::VIdent(p.intern("HUG"))));

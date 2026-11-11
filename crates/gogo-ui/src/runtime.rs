@@ -3046,7 +3046,13 @@ struct Retained {
     seat_moved: bool,
     /// Nodes the last resolve ran through their ladder (`debug_laddered`).
     laddered: u32,
+    /// The nodes the last resolve kept out of a seat another node won
+    /// (`settle_seats`), each with the seat it was sent to. Needed because
+    /// `Resolved::seat` holds them at home, and the next resolve must see
+    /// what they ask for again: the winner may have left.
+    outbid: Vec<(NodeId, NodeId)>,
     // Scratch buffers, kept so a steady frame allocates nothing.
+    seat_claims: Vec<(NodeId, NodeId)>,
     reach: Vec<NodeId>,
     entries: Vec<(NodeId, Prop)>,
     before: Vec<Before>,
@@ -3074,6 +3080,8 @@ impl Retained {
             seen_mask_on: true,
             seat_moved: false,
             laddered: 0,
+            outbid: Vec::new(),
+            seat_claims: Vec::new(),
             reach: Vec::new(),
             entries: Vec::new(),
             before: Vec::new(),
@@ -3224,6 +3232,8 @@ impl Resolved {
     }
 
     pub fn prop(&self, page: &Page, node: NodeId, key: PropKey) -> Option<Value> {
+        #[cfg(test)]
+        note_key_read(key);
         let raw = self
             .override_of(node, key)
             .or_else(|| page.prop(node, key))
@@ -3334,6 +3344,8 @@ impl Resolved {
 
     /// `key` as `from` or the nearest box above it writes it.
     fn written_from(&self, page: &Page, from: NodeId, key: PropKey) -> Option<Value> {
+        #[cfg(test)]
+        note_key_read(key);
         let mut n = from;
         loop {
             let own = self.override_of(n, key).or_else(|| page.prop(n, key));
@@ -3632,6 +3644,7 @@ fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
     }
     r.auto = auto;
     fold_seats_and_motion(page, rt, &mut r);
+    settle_seats(page, rt, &mut r.seat, &mut Vec::new(), &mut Vec::new());
     r
 }
 
@@ -3718,6 +3731,65 @@ fn seat_of(page: &Page, node: NodeId, value: Value) -> NodeId {
         return NO_NODE;
     }
     seat
+}
+
+/// One occupant per seat: of the nodes sent to one seat, the one with the
+/// strongest claim takes it and the others stay where their lines are.
+///
+/// Needed because an arrangement and a screen condition can each send a
+/// node to the same seat and both hold at once (the build allows the
+/// pair; one page of the first host needs it). Two nodes in one seat draw
+/// on top of each other.
+///
+/// The strongest claim is the one the placement rule picks between two
+/// `when` blocks on one node (`seat_claim_rank`): a code write, then the
+/// block with more conditions, then the later line.
+///
+/// `seat` is the table of what every node asks for and leaves as the
+/// table of where every node sits; `outbid` takes each node kept at home
+/// with the seat it asked for. `claims` is scratch.
+fn settle_seats(page: &Page, rt: &Runtime, seat: &mut [NodeId], outbid: &mut Vec<(NodeId, NodeId)>, claims: &mut Vec<(NodeId, NodeId)>) {
+    claims.clear();
+    claims.extend(seat.iter().enumerate().filter(|(_, s)| **s != NO_NODE).map(|(i, s)| (*s, NodeId::from_index(i))));
+    if claims.len() < 2 {
+        return;
+    }
+    claims.sort_unstable();
+    let mut at: usize = 0;
+    while at < claims.len() {
+        let wanted: NodeId = claims[at].0;
+        let end: usize = at + claims[at..].iter().take_while(|(s, _)| *s == wanted).count();
+        if end - at > 1 {
+            let winner: NodeId = claims[at..end].iter().map(|(_, node)| *node).max_by_key(|node| (seat_claim_rank(page, rt, *node), *node)).unwrap_or(NO_NODE);
+            for (_, node) in &claims[at..end] {
+                if *node != winner {
+                    seat[*node] = NO_NODE;
+                    outbid.push((*node, wanted));
+                }
+            }
+        }
+        at = end;
+    }
+}
+
+/// How strongly `node` holds the seat it asks for, greater = stronger: a
+/// code write above every `when` (the later write above an earlier one);
+/// between `when` blocks the one with more conditions (`State::priority`),
+/// then the later line.
+fn seat_claim_rank(page: &Page, rt: &Runtime, node: NodeId) -> (u8, u32) {
+    if let Some(at) = rt.writes.iter().rposition(|(id, p)| *id == node && p.key == PropKey::SeatOf) {
+        return (u8::MAX, at as u32);
+    }
+    let n = &page.nodes[node];
+    let mut rank: (u8, u32) = (0, 0);
+    // The node's `when`s are stored weakest first, so the last active one
+    // that names a seat is the one in force.
+    for w in &page.whens[n.whens.0 as usize..(n.whens.0 + n.whens.1) as usize] {
+        if rt.state_active(page, if w.of == NO_NODE { node } else { w.of }, w.state) && page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize].iter().any(|p| p.key == PropKey::SeatOf) {
+            rank = (w.state.priority(), w.line);
+        }
+    }
+    rank
 }
 
 /// The keys that are not props but placement facts: `x.seat = name`
@@ -4121,6 +4193,15 @@ fn resolve_into(page: &Page, rt: &mut Runtime, r: &mut Resolved) {
     // the reached nodes.
     let mut reach: Vec<NodeId> = std::mem::take(&mut rt.retained.reach);
     reach.clear();
+    // A node the last resolve kept out of a seat asks for it again: the
+    // seat table gets its claim back before the ladder is patched.
+    let mut outbid: Vec<(NodeId, NodeId)> = std::mem::take(&mut rt.retained.outbid);
+    if !full {
+        for (node, seat) in &outbid {
+            r.seat[*node] = *seat;
+        }
+    }
+    outbid.clear();
     if full {
         fill_ladder_full(page, rt, r);
     } else {
@@ -4184,6 +4265,10 @@ fn resolve_into(page: &Page, rt: &mut Runtime, r: &mut Resolved) {
         }
         touched.push(*id);
     }
+    let mut seat_claims: Vec<(NodeId, NodeId)> = std::mem::take(&mut rt.retained.seat_claims);
+    settle_seats(page, rt, &mut r.seat, &mut outbid, &mut seat_claims);
+    rt.retained.seat_claims = seat_claims;
+    rt.retained.outbid = outbid;
     // GP33: the driver — each control's live value maps onto its
     // automatic slots' shown fraction (a glide in flight shows its eased
     // value); a presence slot follows its custom state on the control.
@@ -4751,6 +4836,36 @@ fn push_tail(page: &Page, r: &mut Resolved, id: NodeId, p: Prop) {
         PropKey::SeatOf => r.seat[id] = seat_of(page, id, p.value),
         _ => set_motion_word(&mut r.motion[id], p.key, p.value),
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// While `keys_read_by` runs: every key read off a look on this thread.
+    static KEYS_READ: std::cell::RefCell<Option<Vec<PropKey>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f` and returns every key it read off a look (`Resolved::prop`
+/// and the words a node takes from the boxes above it), each once.
+///
+/// Needed by the test that keeps `layout::layout_reads` complete: the
+/// layout pass reads keys through wrappers in this file, where a search
+/// of the layout's own text cannot see them.
+#[cfg(test)]
+pub(crate) fn keys_read_by(f: impl FnOnce()) -> Vec<PropKey> {
+    KEYS_READ.with(|k| *k.borrow_mut() = Some(Vec::new()));
+    f();
+    KEYS_READ.with(|k| k.borrow_mut().take().unwrap_or_default())
+}
+
+#[cfg(test)]
+fn note_key_read(key: PropKey) {
+    KEYS_READ.with(|k| {
+        if let Some(list) = k.borrow_mut().as_mut() {
+            if !list.contains(&key) {
+                list.push(key);
+            }
+        }
+    });
 }
 
 #[cfg(test)]

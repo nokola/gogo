@@ -1,7 +1,9 @@
 A wrap panel over a unit lattice (the phone-launcher mosaic): `cols=` splits
 the width into equal units; cells flow in declaration order and wrap —
 first-fit, no backfill. A cell is one unit unless `span=N` widens it or
-`full_row=true` takes the whole row. Cell HEIGHT is the cell's own content:
+`full_row=true` takes the whole row. `spacing=N` puts N between the
+columns and between the rows (none written: the cells touch). Cell HEIGHT
+is the cell's own content:
 give a tile an `Image` with `aspect=natural` and the bitmap's ratio sizes
 it (square bitmaps make square tiles).
 

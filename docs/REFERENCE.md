@@ -93,7 +93,7 @@ WidgetType name .StyleName property=value, property=value { children }
   next line may open with a size or a `key=value`.
 - `;` separates multiple nodes on one line. `{` must be on the node's line.
 - Duplicate property on one node = error. Duplicate node name per view = error.
-- Property keys are snake_case (`min_height`, `icon_size`, `tap_pulse`). `-`
+- Property keys are snake_case (`min_height`, `font_size`, `tap_pulse`). `-`
   is not an identifier character.
 
 ## Values
@@ -802,17 +802,16 @@ another kind G2002. The words:
 | `halign` / `valign` | WHERE the control sits in the available space: `halign=left/center/right`, `valign=top/center/bottom`. One vocabulary under every parent. Position only; sizing is `width`/`height`. See Placement below. |
 | `width` / `height` | HOW BIG: a number = that exact size (epx, and don't stretch); `hug` = natural content size; `fill` = take the leftover space; `fill(2)` = a double-weighted share of it; `hug(2)` = a weighted slot around a natural-size control. See Placement below. |
 | `size=WxH` / bare `WxH` | Exact-size shorthand for both axes (`50x90`); omit a component to leave that axis alone (`x72`). |
-| `min_width` `min_height` `min_size` | Minimum only — the control still stretches with its container. The "at least N, stretchy" spelling. Do not write it next to an exact `width=`/`height=` on the same axis (an exact size is its own floor and ceiling; the compiler does not refuse the pair, and which of the two wins depends on the parent) — except where a `when` block poses that axis' size: there the floor bounds the posed values (D249); with a hug cap it forms the min/max band — see Placement. |
-| `margin=N` / `margin_left/top/right/bottom` | Margins CARVE the box the other keys produce on a free (`Layers`) child — SIGNED distances from the parent's matching edges: positive sits inside, **negative hangs past the edge**. On a filled/default axis they are insets (the unnamed edge stays flush); on an aligned axis they offset the near edge; on an unaligned `hug`/exact axis they pin. `margin=N` alone is breathing room all around. Containers refuse margins — space their children with `spacing`/`padding`/`gap`. See Placement below. |
+| `min_width` `min_height` `min_size` | Minimum only — the control still stretches with its container. The "at least N, stretchy" spelling. Next to an exact `width=`/`height=` for the same side on one line it is a build error (G1019: an exact size is its own floor and ceiling) — except where a `when` block poses that side's size: there the floor bounds the posed values (D249), in every parent. A floor that a style or a control's template carries stands beside a size written on the line that uses it, and wins. `min_size=44` is both sides; `min_size=x36` leaves the width's floor alone. With a hug cap it forms the min/max band — see Placement. |
+| `margin=N` / `margin_left/top/right/bottom` | Margins CARVE the box the other keys produce on a free (`Layers`) child — SIGNED distances from the parent's matching edges: positive sits inside, **negative hangs past the edge**. On a filled/default axis they are insets (the unnamed edge stays flush); on an aligned axis they offset the near edge; on a centered axis the box is centered in the room they leave, so one margin shifts it by half; on an unaligned `hug`/exact axis they pin. `margin=N` alone is breathing room all around. A box that places its children itself (Column, Row, Choice, Flow, Grid, Tiles, a List's rows) refuses margins on them (G1014) — space them with `spacing`/`padding`/`gap`; the one body of a `Scroll` takes them. See Placement below. |
 | `spacing=N` | Container separation (epx). Default 0 — children touch; no gap exists unless the file writes one (D244). |
 | `background` `corner_radius` `padding` `border_color` `border_thickness` | The box family, each key changing exactly its one thing. Any box takes them — a Label, an Image, a stack, a `Layers` — and the plate draws behind the content, covering the padding. Panels (`Panel`, and `View` roots) start as a **blank canvas** (WPF Border semantics — nothing drawn until a key says so); a Button starts with its default plate (spec "Default look") and `background=` recolors it. A bare Button shows no pressed look of its own: press feedback is yours to author with `when held background=`. `padding` also comes per side (`padding_left`, `padding_top`, `padding_right`, `padding_bottom`, mirroring `margin_*`) for WPF's per-side Padding thickness — asymmetric content air that still counts into a button's derived minimum. **Text leaves pad too**: `padding` is air between a node's box and its CONTENT — children or text — so `Label` and `Input` inset their own text (WPF's TextBlock/TextBox Padding ports verbatim). Drawing leaves (`Rectangle`/`Circle`/`Arc`/`Gradient`/`Image`) have nothing inside — outer air is `margin`. **`padding` is air INSIDE the border**: on a bordered node the content sits `border_thickness + padding` from the edge (WPF/CSS stacking — XAML Padding ports verbatim; a border alone insets content by its thickness), so a border can never paint over content and retuning one knob never re-derives the other. Fractional borders keep their declared thickness in the layout math and in the painted stroke (`border_thickness=1.5` paints 1.5 epx wide, antialiased). On a `Circle`, `border_color`/`border_thickness` stroke the ring instead (see Circle). On `Layers`, the `View` root and stacks, `padding` insets every child's placement and adds onto the box's minimum. **Corners also come per corner** (D135): `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left` — named keys, so there is no corner order to memorize; the uniform writes all four, a per-corner key writes one, and later on the line wins (the `padding`/`padding_left` layering law). |
 | `opacity=0..1` | The whole node's alpha, children included. |
 | `pivot=0x0` | The 0..1 box point `scale` and `rotate` transform about; unset = the center (the old behavior verbatim). `0x0` holds the top-left still while a scale grows right and down; `1x1` swings a rotation on the bottom-right hinge. Same spelling as a Gradient's `from=`/`to=` box points; anything but a full 0..1 pair refuses at build. A look word (`when` responses restyle it), not itself animatable. Hits follow every motion channel — translate/scale/pivot through the moved rects, rotation by un-rotating the finger — so look and touch always agree. |
 | `visibility=visible/space_only/gone` | The three-state triad (D133; the bool `visible=` is retired). `gone` hides and releases the space; `space_only` hides but keeps holding its layout slot — toggling it never moves a sibling (WPF Hidden). Hidden is hidden either way: hit-inert and unfocusable; `on:show`/`on:hide` track the pixels. `space_only` holds its slot under any parent. Code flips visible/gone with `Runtime::set_visible`. |
-| `reveal_y=0..1` / `reveal_x=0..1` | The node's LAYOUT SPACE as a fraction — the smooth-slide primitive. `0` conceals (the node earns no room on that axis and its own box shrinks from the trailing edge; the leading edge stays pinned. What is INSIDE the box is not cut: its text and children still draw, and take touches, past the shrunk box unless the node also says `clip_contents=true`), `1` grants it all. The factor applies to the extent the node would otherwise have — natural size when hugged, the **stretched extent when filled** (a `width=fill` label in a 100-wide column at `reveal_x=0.5` gets a 50-wide box; a label with no width word gets half of its own text's width). It's a float, so poses flip it, `transition` rules tween it, anims drive it — and the whole document reflows smoothly. A concealed node is still **alive** (anims run, conditions poll) — `visibility=gone` stays the instant switch and zeroes the space. Any parent: in a container the siblings close up as the box shrinks; under `Layers` the box shows its fraction from the edge its alignment names. The channel exists only where DECLARED: a `when`/anim driving `x.reveal_y` without `reveal_y=` on `x`'s line is a build error. See the COOKBOOK smooth-slide recipe. |
+| `reveal_y=0..1` / `reveal_x=0..1` | The node's LAYOUT SPACE as a fraction — the smooth-slide primitive. `0` conceals (the node earns no room on that axis and its own box shrinks toward the edge it is aligned to: the left or top edge with no alignment, the right with `halign=right`, the middle with `halign=center`. What is INSIDE the box is cut at the part that shows: its text and children draw there only and take no touch outside it. The content keeps its size and travels with the box — it is laid out from the corner where the shown part starts, so a sheet with `valign=bottom` slides out through the bottom), `1` grants it all. The factor applies to the extent the node would otherwise have — natural size when hugged, the **stretched extent when filled** (a `width=fill` label in a 100-wide column at `reveal_x=0.5` gets a 50-wide box; a label with no width word gets half of its own text's width). It's a float, so poses flip it, `transition` rules tween it, anims drive it — and the whole document reflows smoothly. A concealed node is still **alive** (anims run, conditions poll) — `visibility=gone` stays the instant switch and zeroes the space. Any parent: in a container the siblings close up as the box shrinks; under `Layers` the box shows its fraction from the edge its alignment names. The channel exists only where DECLARED: a `when`/anim driving `x.reveal_y` without `reveal_y=` on `x`'s line is a build error. See the COOKBOOK smooth-slide recipe. |
 | `font_size=N` | Font size (epx) of the node's own text and of the Labels inside it that write none of their own — see the font note below the table. |
 | `font_color=#...` | Text color of the node's own text and of the Labels inside it that write none of their own — the text half of `background=` (what WPF calls `Foreground` and CSS calls `color`). Pairs with `font_size`. |
-| `icon_size=N` | Accepted on a Button and read by nothing: the Rust crate draws no button icon (`icon=` is accepted and unread too) — put an `Image` in the Button's body. |
 | `min` `max` | A Slider's lower and upper bound. |
 | `toggle` | `toggle=true` makes a Button latch: it holds `selected` while on. |
 | `touch_target=off` | Marks a deliberately small interactive control. Accepted and read by nothing yet: the Rust crate has no touch-target lint. |
@@ -824,7 +823,7 @@ another kind G2002. The words:
 | `on:<event>=...` | Wiring — see Events and triggers. |
 
 Resource paths. Resource-typed properties take path strings that always
-carry a scheme (`icon="res://icons/undo.png"`; a bare `undo.png` is
+carry a scheme (`source="res://icons/undo.png"`; a bare `undo.png` is
 refused, G0071 — a bare word could be a label or a path). `res://` is an
 asset under the build's resource root, checked and embedded at build
 time. Any other scheme on an `Image`'s `source=` — `preview://brush`,
@@ -936,14 +935,13 @@ Layers screen {
   clamps the natural size into the pair — below 100 the floor holds, above
   300 the cap binds (wrap-text wraps there). The floor beats the cap (WPF
   clamp order): a runtime `$param` floor that crosses above the cap wins.
-  One contradiction is refused at build: a literal `min_width` above a
-  literal `max_width` (G1013). The compiler does not refuse the others,
-  so do not write them: `min_height` above `max_height` (the floor wins),
-  `min_*` next to an exact `width=`/`height=` on the same axis (an exact
-  size IS its own floor and ceiling; which of the two wins depends on the
-  parent), and `min_*` with `aspect=` (the ratio wins, the floor on the
-  derived axis is ignored). A floor under `fill` stays legal:
-  "at least N, still stretchy".
+  The contradictions are refused at build, for the width and for the
+  height alike: a literal floor above a literal cap (G1013); a floor or
+  a cap next to an exact size for the same side on one line (G1019: an
+  exact size IS its own floor and ceiling — unless a `when` poses that
+  size, which the floor and the cap then bound); and a floor on the side
+  `aspect=` works out (G1017: the ratio sets that side). A floor under
+  `fill` stays legal: "at least N, still stretchy".
 - **`max_width=fill`** caps at what a `fill` axis would GET — parent frame
   minus region padding minus margins, live across resizes. Margins bind the
   measuring frame like they inset fill, whatever the alignment, so a
@@ -1250,6 +1248,9 @@ Tiles gallery cols=2 {
 - `cols=N` (required — the count every `span=` is checked against) splits the
   Tiles' width into N equal units; it is a LIVE property, so code can
   re-pack the mosaic (`rt.set_prop(tiles, PropKey::Cols, Value::VNum(3.0))`).
+- `spacing=N` puts N between the columns and between the rows, as on a
+  Column or a Grid; with none written the cells touch. A cell of two
+  units covers the gutter between them.
 - `cells=lattice` (the default) or `cells=natural` (D112): with `natural`
   every cell is as wide as its own content and the row wraps where the next
   one would not fit — a names-only catalog, a row of tags. `span=` says
@@ -1436,14 +1437,14 @@ with **no input tuning**:
   non-scrolling axis. A `List` reads the word the same way.
 - **A capped hug axis scrolls PAST its cap** (D138 — the List D124
   doctrine on Scroll): `height=hug, max_height=300` follows the content up
-  to 300 epx, then the axis scrolls; `max_*=fill` is accepted and caps
-  nothing (the box grows with its content and does not scroll) — write
-  `fill` for an axis that scrolls past its frame. The compiler checks
-  none of the contradictions here: a written `allow=` alone decides the
-  pan axes, so a bare hug axis listed in it collapses to nothing (a
-  panning axis asks its parent for no room), and a capped axis left out
-  of it is cut at its cap with no way to scroll. Both axes hugged
-  bare = nothing left to scroll, with no warning.
+  to 300 epx, then the axis scrolls. The contradictions are build errors
+  (G1020): a hug axis capped with `max_*=fill` (it would grow with its
+  content and never scroll — write `fill` for an axis that scrolls past
+  its frame, or cap at a number); a bare hug axis that pans, listed in
+  `allow=` or aligned with no size word (it would be 0 long: a panning
+  axis asks its parent for no room); and a capped axis left out of
+  `allow=` (cut at its cap with no way to scroll). Both axes hugged
+  bare = nothing left to scroll: a warning (G1021).
 
 ### Input
 
@@ -2226,7 +2227,8 @@ catches big PORTRAIT tablets, because `lotsOfSpace` covers both shapes.
   per seat is checked per condition: two occupants claiming one seat in
   the same condition refuse (G1016); claims under different conditions
   are accepted (two arrangements never hold together; an arrangement
-  claim and a screen claim can, and then both occupants sit in the seat);
+  claim and a screen claim can, and then the rule above picks the one
+  occupant — the other stays at its declared home);
   a bare class claim and a bare orientation claim on one occupant refuse
   outright (G3005). Full rules on the seat card.
 - **Flips are instant** by design — a rotation is the OS snapping the
@@ -2924,7 +2926,13 @@ a build's tables), `reload::same_shape`, `reload::swap` and
 **Painting.** The draw list is plain data: quads, text runs, pictures,
 gradients, clips, in paint order (`gogo_ui::Draw`). `gogo-ui` draws
 nothing itself and measures no text: the host passes a `TextMeasure` and
-paints the list with its own renderer.
+paints the list with its own renderer. A `TextMeasure` answers two
+questions about a text: its size at a wrap width (`measure`), and the
+narrowest it folds to, which is the width of its longest word
+(`narrowest_wrap`; a wrapping `fill` label never gets less). The second
+has a default that measures every word alone, so a measure of your own
+needs only `measure`; `gogo-text`'s measure answers both from its line
+breaker.
 
 ## Errors (reading a diagnostic)
 

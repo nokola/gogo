@@ -607,31 +607,36 @@ fn aligned_capped_margins_count_once() {
 
 /// `_min_max_band_tests` 1091-1096 (band.err-crossed, band.err-fixed-min,
 /// band.err-fixed-min-size): a floor above the cap refuses at build
-/// (G1013). FLIP: a floor next to an exact size is LEGAL on any axis and
-/// the floor still wins over a smaller written size — it exists to bound
-/// POSED sizes, so it is not dead (GPAR79, user 2026-08-31; G1012
-/// retired; Godot refuses both fixture lines).
+/// (G1013). A floor next to an exact size exists to bound POSED sizes
+/// (GPAR79, user 2026-08-31): where a `when` writes that size the pair
+/// builds and the floor wins over a smaller size, in a free parent and in
+/// a stack. On a line whose size nothing poses the pair is refused
+/// (G1019, as Godot refuses both fixture lines).
 #[test]
-fn crossed_band_refuses_and_a_floor_beside_an_exact_size_builds_and_clamps() {
+fn crossed_band_refuses_and_a_floor_beside_an_exact_size_bounds_what_a_when_poses() {
     assert!(codes("View v { Layers { Panel p width=hug, min_width=300, max_width=100 } }").contains(&"G1013".to_string()));
-    let c = ok("View v { Layers { Panel p size=100x40, min_height=50, halign=left, valign=top } }");
+    assert_eq!(codes("View v { Layers { Panel p size=100x40, min_height=50, halign=left, valign=top } }"), ["G1019"]);
+    assert_eq!(codes("View v { Column { Panel q width=100, height=40, min_width=120 } }"), ["G1019"]);
+    let c = ok("arrangement low\nwhen low { p.height = 20 }\nView v { Layers { Panel p size=100x40, min_height=50, halign=left, valign=top } }");
     let rt = Runtime::new(&c.page);
     let f = lay(&c.page, &rt, 400.0, 800.0);
     let rects = f.rects();
     let p = (c.page.find("p").unwrap()).index();
     assert_eq!((rects[p].w, rects[p].h), (100.0, 50.0), "the floor beats the smaller written height");
-    let c = ok("View v { Column { Panel q width=100, height=40, min_width=120 } }");
-    let rt = Runtime::new(&c.page);
-    let f = lay(&c.page, &rt, 400.0, 800.0);
-    let rects = f.rects();
-    let q = (c.page.find("q").unwrap()).index();
-    assert_eq!(rects[q].w, 120.0, "the clamp holds on a stack child too");
+    for parent in ["Column", "Row"] {
+        let c = ok(&format!("arrangement thin\nwhen thin {{ q.size = 50x10 }}\nView v {{ {parent} {{ Panel q width=100, height=40, min_size=120x60 }} }}"));
+        let rt = Runtime::new(&c.page);
+        let f = lay(&c.page, &rt, 400.0, 800.0);
+        let rects = f.rects();
+        let q = (c.page.find("q").unwrap()).index();
+        assert_eq!((rects[q].w, rects[q].h), (120.0, 60.0), "the floor holds on both sides of a {parent}'s child");
+    }
 }
 
 /// `_min_max_band_tests` 1097-1098 (band.err-aspect-min): a floor on the
-/// axis `aspect=` derives "would break the ratio" in Godot; Rust builds it.
+/// axis `aspect=` derives "would break the ratio" in Godot; refused here
+/// too (G1017): the layout never reads it.
 #[test]
-#[ignore = "GP41: not ported: load-time lint for min_* on an aspect-derived axis"]
 fn a_floor_on_an_aspect_derived_axis_refuses() {
     assert!(errs("View v { Layers { Panel p width=fill, aspect=1.5, min_height=10 } }"));
 }

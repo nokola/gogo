@@ -11,6 +11,6 @@ Scroll page height=120, allow=vertical, bars=never {
 
 The axis left out holds the content to the Scroll's size: with `allow=vertical` a `fill` column is exactly the Scroll's width, so wrap text wraps on screen and one line too long to wrap is cut at the edge on its own.
 
-Do not name a bare `hug` axis: the compiler accepts it, but the Scroll then gets no size on that axis (it lays out 0 wide or 0 tall). A capped hug axis (`width=hug, max_width=300`) is fine to name: it scrolls past its cap (see `max_width`).
+Naming a bare `hug` axis is a build error (G1020): a side that pans asks its parent for no room, so the Scroll would be 0 long there. A capped hug axis (`width=hug, max_width=300`) is fine to name: it scrolls past its cap (see `max_width`). Leaving a capped axis OUT of `allow=` is the same error: what the cap cuts could not be reached.
 
 `Scroll` only. A `List` picks its axis with `layout` (`layout Row` pans sideways); other nodes don't scroll.

@@ -687,7 +687,10 @@ Layers {
 ## G1006 — both margins and an exact size over-constrain the axis
 
 `width=200, margin_left=10, margin_right=10` says three things about
-one axis; the box cannot honor them all. Drop one.
+one axis; the box cannot honor them all. Drop one. The same holds for
+`height=` with `margin_top=` and `margin_bottom=`, and for `margin=N`
+beside an exact size on a side with no alignment (the shorthand writes
+both margins there).
 
 ## G1010 — `height=fill` but no row takes the leftover (lint)
 
@@ -701,15 +704,19 @@ filling box has no room to be centered in. Use `hug`, or cap the fill
 (`max_width=`, `max_height=`). `left`/`right` with `fill` are not
 refused.
 
-## G1013 — `min_width` above `max_width`
+## G1013 — a floor above its cap
 
-The floor is above the ceiling; no size satisfies both.
+`min_width` above `max_width`, or `min_height` above `max_height`: the
+floor is above the ceiling; no size satisfies both.
 
-## G1014 — margins under a Column/Row/Flow/Grid
+## G1014 — a margin on a child of a box that places its children
 
-A stack parent seats its children — margins there never bind, posed or
-declared; space children with `spacing=` on the parent or a `gap`
-between them. The same rule refuses `margin=` in a pose (a pose moves
+A Column, Row, Choice, Flow, Grid or Tiles deals each child its place,
+and so does a List with its rows: a margin on such a child is taken and
+moves nothing, posed or declared. Space the children with `spacing=` on
+the parent or a `gap` line between them, or give the parent `padding=`.
+The one body of a `Scroll` is not such a child: a margin insets it and
+scrolls with it. The same rule refuses `margin=` in a pose (a pose moves
 one edge at a time — write `margin_left=`/…) and placement words under
 an input state's `when` (placement answers the view's conditions —
 `when <arrangement>`, `when screen.*`; a held box re-anchoring would
@@ -736,7 +743,9 @@ derived (both `fill` is fine: the box is the largest of that ratio that
 fits): two written numbers leave nothing to derive (the ratio IS the
 second size), a hug axis is content-sized, a `max_*` cap would break the
 ratio, and a stack/grid parent owns both axes (aspect needs a free
-parent — Layers, View, Panel). The ratio is positive width/height;
+parent — Layers, View, Panel). A floor on the side the ratio works out
+(`width=100, aspect=2, min_height=80`) is never read: put it on the side
+that drives the ratio. The ratio is positive width/height;
 `aspect=natural` reads a bitmap's own ratio and lives on Image only.
 
 ## G1018 — a List's cap rides its hug
@@ -745,6 +754,58 @@ parent — Layers, View, Panel). The ratio is positive width/height;
 rows to the cap, then scrolls); on any other height the cap would fight
 the viewport. A `layout Row` strip runs sideways: its cap is
 `max_width=` on `width=hug`.
+
+## G1019 — a floor or a cap beside an exact size for the same side
+
+`width=100, min_width=200` on one line: an exact width is the width, so
+the floor says nothing or contradicts it. `width=100, max_width=40`: the
+cap is never read. Drop one of the two; a box that takes the room it is
+given up to 40 is `width=fill, max_width=40`. The same holds for the
+height, for `size=` and a bare `100x40`, and for `min_size=`.
+
+Wrong:
+
+```kdl error=G1019
+Rectangle bar width=100, min_width=200
+```
+
+Two forms build, because there the second word has a job. A `when` that
+writes that size on the node: the floor and the cap bound what the
+`when` asks for. And words from different lines: a style or a control's
+template that carries `min_size=48x48`, used on a line that writes
+`20x20` — the floor holds, in every parent.
+
+```kdl
+arrangement small
+when small { bar.width = 20 }
+Rectangle bar width=100, min_width=40
+```
+
+## G1020 — a Scroll that is 0 long on a side it pans, or that can never reach what it cuts
+
+Three Scrolls that build nothing usable. A side that pans and hugs with
+no cap (`allow=vertical, height=hug`, or an aligned side with no size
+word): a side that pans asks its parent for no room, so the Scroll is 0
+long there — write `height=fill`, a number, or `height=hug,
+max_height=300`. A side that a cap cuts while `allow=` leaves it out
+(`allow=horizontal, height=hug, max_height=300`): what lies past the cap
+cannot be reached — name the side in `allow=`, or drop `allow=`. And
+`height=hug, max_height=fill`: that side grows with its content, past
+its parent, and never scrolls — write `height=fill`, or cap at a number.
+
+Wrong:
+
+```kdl error=G1020
+Scroll page allow=vertical, height=hug {
+    Column { Label text="row" }
+}
+```
+
+## G1021 — a Scroll that hugs both sides never scrolls (warning)
+
+`Scroll width=hug, height=hug`: as big as its content on both sides, it
+is a plain box and nothing scrolls. Give a side a size: `height=fill`, a
+number, or `height=hug, max_height=300`.
 
 ## G2001 — unknown property
 
@@ -815,7 +876,9 @@ Panel scrim background=#FFFF00FF { Label a text="x" }   // the XAML paste #FFFFF
 ## G2005 — `stops=` takes the gradient's color list
 
 `stops=[white, black]` spaces evenly; `@positions` pin entries and are
-all-or-none, never decreasing.
+all-or-none, never decreasing. A `when` or an anim line that writes a
+stop (`g.stop_3_color`) names a stop the list declares: stop 3 of a
+two-stop gradient is refused.
 
 ## G2006 — `transparent` in `stops=`
 

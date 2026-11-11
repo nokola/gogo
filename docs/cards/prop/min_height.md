@@ -8,4 +8,4 @@ Row spacing=10 {
 }
 ```
 
-Next to an exact `height=` on the same axis the compiler accepts it and the floor wins: `height=10, min_height=30` is 30 tall. The exception is a child of a Column or of a Tiles: there the exact height holds. The floor also clamps a height that a `when` block poses on the node (the floor beats a posed height, WPF's MinHeight-over-Height order). With a hug cap it forms the min/max band (D135); the floor beats the cap (WPF clamp order) — see `min_width`/`max_width`.
+Next to an exact `height=` on the same line the floor is a build error (G1019): an exact height is the height. Two forms build, and in both the floor wins in every parent (WPF's MinHeight-over-Height order): a `when` block poses the height on the node, or the floor comes from another line (the style above beside `height=30` on a Button that wears it: the Button is 36 tall). With a hug cap it forms the min/max band (D135); the floor beats the cap (WPF clamp order) — see `min_width`/`max_width`.

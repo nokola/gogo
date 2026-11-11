@@ -397,6 +397,60 @@ fn parent_name(parent: Option<Kind>) -> &'static str {
     parent.map_or("the root", kind_name)
 }
 
+/// Gathers into `out` every node whose width (0) or height (1) a `when`
+/// block under `items` writes, by the node's name: `when wide {
+/// box.width = 200 }` anywhere, and `when wide width=200` in a node's own
+/// body (`owner` is that node's name).
+fn collect_posed_sizes(items: &[AstItem], owner: Option<&str>, out: &mut std::collections::HashSet<(String, usize)>) {
+    fn sides(word: &str) -> &'static [usize] {
+        match word {
+            "width" => &[0],
+            "height" => &[1],
+            "size" => &[0, 1],
+            _ => &[],
+        }
+    }
+    for item in items {
+        let AstItem::Node(n) = item else { continue };
+        if n.type_word != "when" {
+            collect_posed_sizes(&n.children, n.name.as_deref(), out);
+            continue;
+        }
+        let mut note = |target: Option<&str>, word: &str| {
+            if let Some(target) = target {
+                // A name inside a control is written `inst/name`: the last
+                // part is the node's.
+                let name: &str = target.rsplit(['.', '/']).next().unwrap_or(target);
+                for side in sides(word) {
+                    out.insert((name.to_string(), *side));
+                }
+            }
+        };
+        for p in &n.props {
+            note(owner, &p.key);
+        }
+        for c in &n.children {
+            if let AstItem::Assign { key, dollar: false, .. } = c {
+                match key.rsplit_once('.') {
+                    Some((target, word)) => note(Some(target), word),
+                    None => note(owner, key),
+                }
+            }
+        }
+    }
+}
+
+/// Does a box of this kind deal each child its place, so that a margin
+/// on a child moves nothing? The stacks (Column, Row, Choice, and a List
+/// with its rows), Flow, Grid and Tiles.
+///
+/// Needed as the one list behind G1014, on a node's line and in a `when`:
+/// a margin there would be taken and do nothing. A Scroll is not one: it
+/// holds one body that pans, and a margin on that body insets it.
+fn places_its_children(kind: Kind) -> bool {
+    matches!(kind, Kind::Column | Kind::Row | Kind::Choice | Kind::List | Kind::Flow | Kind::Grid | Kind::GridRow | Kind::Tiles)
+}
+
 /// "did you mean 'X'? (or: …)" over ranked candidates, or an
 /// "options:" list when nothing is close — gogo-design §7 promises
 /// every unknown word a suggestion (GPAR87, the shipped ranking).
@@ -465,6 +519,7 @@ fn unknown_property(word: &str, kind: Kind) -> String {
     let dialect: Option<&str> = match word {
         "foreground" | "text_color" | "font_colour" | "colour" => Some("text color is `font_color=`, a plate is `background=`"),
         "columns" => Some("a Grid's tracks are `cols=[…]`"),
+        "icon" | "icon_size" => Some("a Button with a picture holds an Image (`Button { Image source=\"res://…\", 24x24 }`)"),
         "rows" => Some("Grid rows are `row { }` lines (`row height=40 { … }`)"),
         "mouse_filter" => Some("input is `interactive=true` (claims it) or `interactive=false` (hit-invisible)"),
         "duration" | "easing" | "anim" | "delay" | "duration_each" => Some("timing belongs on a `transition` line (`transition any -> held duration=0.1`); a `when` holds standing values"),
@@ -524,7 +579,7 @@ fn wrong_kind(key: PropKey, kind: Kind) -> String {
         PropKey::Sweep | PropKey::Thickness => format!("`{word}=` is an Arc word — a {name} sweeps nothing"),
         PropKey::Dash => format!("`dash=` dashes an Arc's stroke — a {name}'s ring or border dashes with `border_dash=`"),
         PropKey::Value | PropKey::Min | PropKey::Max | PropKey::Step => format!("`{word}=` belongs to a Slider, Input, Toggle or choice — a {name} holds no value"),
-        PropKey::SelectedProp | PropKey::ToggleMode | PropKey::TapPulse | PropKey::IconSrc => format!("`{word}=` belongs to a press surface (Button, Check, Toggle, Radio, ListItem) — a {name} is not pressed"),
+        PropKey::SelectedProp | PropKey::ToggleMode | PropKey::TapPulse => format!("`{word}=` belongs to a press surface (Button, Check, Toggle, Radio, ListItem) — a {name} is not pressed"),
         PropKey::Select => format!("`select=` is a List word — a {name} selects nothing"),
         PropKey::Automatic => format!("`automatic=` is a slot word — a {name} is not a slot"),
         PropKey::DisabledOpacity => "`disabled_opacity=` is page-wide — write it in the top `theme { }` block".to_string(),
@@ -678,6 +733,11 @@ pub struct Compiler<'a> {
     /// declares it (style, word, type, style line) — `finish` draws the
     /// D2 advisory when exactly one type is in the set.
     d2_lands: Vec<(String, String, String, u32)>,
+    /// The nodes whose width (0) or height (1) a `when` block writes, by
+    /// name, gathered from the whole file before its nodes compile. Needed
+    /// by `size_pair_guard`: on such a node a floor or a cap beside the
+    /// exact size bounds what the `when` asks for.
+    posed_sizes: std::collections::HashSet<(String, usize)>,
     /// While a Gradient's own line compiles: its name and the
     /// gradient-only words it carries, so G2003's Rectangle rewrite can be
     /// spelled out (`check_stops`).
@@ -818,6 +878,7 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         slot_writes: Vec::new(),
         pending_style_states: Vec::new(),
         d2_lands: Vec::new(),
+        posed_sizes: std::collections::HashSet::new(),
         stops_ctx: None,
         repeat_binding: None,
         in_when: 0,
@@ -1503,6 +1564,7 @@ impl<'a> Compiler<'a> {
     /// `is_main`: the file whose root becomes the page (a `uses` file only
     /// contributes directives).
     fn document(&mut self, doc: &Document, is_main: bool) {
+        collect_posed_sizes(&doc.items, None, &mut self.posed_sizes);
         // Pass 0: arrangements, so a `transition a -> b` may sit above its
         // `arrangement` lines (files written that way exist). The file's
         // anims too, so a `play(x)` or a rule's `anim=x` may sit above
@@ -1993,7 +2055,15 @@ impl<'a> Compiler<'a> {
             if matches!(p.key.as_str(), "cols" | "areas" | "row_height") {
                 self.error("G1002", p.line, format!("`{}=` is grid structure and can't come from a style — write it on the Grid line", p.key));
             }
+            // Where a cell sits is part of the grid's shape: the grid
+            // checks read it off the cell's own line, so a style cannot
+            // carry it (a cell could end up outside the tracks, with no
+            // room at all).
+            if matches!(p.key.as_str(), "col_span" | "row_span" | "span" | "full_row") {
+                self.error("G1002", p.line, format!("`{}=` says where a cell sits and can't come from a style — write it on the cell's line", p.key));
+            }
         }
+        self.size_pair_guard(&props, &[], None);
         // `slot.<name>.<prop>=` paths are checked HERE, at the
         // declaration (customization spec §3.4) — a wearer only ever receives writes
         // that already passed. A control's go to `slot_props` for its
@@ -3560,6 +3630,16 @@ impl<'a> Compiler<'a> {
                         }
                         if !self.check_prop_kind(&base_word, key, self.page.nodes[node].kind, step.line) {
                             continue;
+                        }
+                        // A stop lane names a DECLARED stop, as a `when`
+                        // on it must: a lane on a stop past the `stops=`
+                        // list would play and show nothing.
+                        if let PropKey::StopColor(n) | PropKey::StopOffset(n) = key {
+                            let count: usize = self.page.prop(node, PropKey::Stops).map_or(0, |v| self.page.list(v).len());
+                            if n as usize > count {
+                                self.error("G2005", step.line, format!("this gradient declares {count} stops — stop {n} names nothing"));
+                                continue;
+                            }
                         }
                     }
                     let num = |key: &str| step.props.iter().find(|p| p.key == key).and_then(|p| p.value.as_num());
@@ -5163,6 +5243,13 @@ impl<'a> Compiler<'a> {
             }
         }
         all_props.extend(n.props.iter().cloned());
+        // Each written line by itself: the node's own, and the line of
+        // the instance that uses it.
+        let posed_name: Option<String> = instance.and_then(|i| i.name.clone()).or_else(|| n.name.clone());
+        self.size_pair_guard(&n.props, &n.args, posed_name.as_deref());
+        if let Some(i) = instance {
+            self.size_pair_guard(&i.props, &i.args, posed_name.as_deref());
+        }
         for c in &n.children {
             if let AstItem::Node(t) = c {
                 if t.type_word == "theme" {
@@ -5367,10 +5454,23 @@ impl<'a> Compiler<'a> {
                 }
             }
         }
-        tmp.node.placement = self.placement(&placement_props, n.line, parent_kind, kind);
-        let padding_written: bool = placement_props.iter().any(|p| matches!(p.key, PropKey::Padding | PropKey::PaddingLeft | PropKey::PaddingTop | PropKey::PaddingRight | PropKey::PaddingBottom));
+        tmp.node.placement = self.placement(&placement_props, n.line);
+        let mut padding_written: [bool; 4] = [false; 4];
+        for p in &placement_props {
+            match p.key {
+                PropKey::Padding => padding_written = [true; 4],
+                PropKey::PaddingLeft => padding_written[0] = true,
+                PropKey::PaddingTop => padding_written[1] = true,
+                PropKey::PaddingRight => padding_written[2] = true,
+                PropKey::PaddingBottom => padding_written[3] = true,
+                _ => {}
+            }
+        }
         tmp.driver = self.pending_driver.take();
         self.container_child_guard(n, &tmp.node.placement, parent_kind, kind);
+        if kind == Kind::Scroll {
+            self.scroll_guard(n, &tmp.node.placement);
+        }
         if kind == Kind::List {
             // The List self-scrolls on its layout's axis (D121/D128): a
             // `layout Row` strip pans sideways, everything else scrolls
@@ -5463,6 +5563,17 @@ impl<'a> Compiler<'a> {
                 }
                 if pl.max_width.is_some() || pl.max_height.is_some() || pl.max_width_fill || pl.max_height_fill {
                     self.error("G1017", n.line, "a `max_*` cap cannot combine with `aspect=` — the clamp would break the ratio");
+                }
+                // The side the ratio works out takes no floor: the layout
+                // sets it from the other side and never reads the floor.
+                // Which side that is follows `layout::aspect_drive`.
+                let spelled = |len: Len| matches!(len, Len::Exact(_) | Len::Fill(_));
+                let both_follow: bool = (matches!(pl.width, Len::Fill(_)) && matches!(pl.height, Len::Fill(_))) || (pl.width == Len::Unset && pl.height == Len::Unset);
+                let height_drives: bool = matches!(pl.height, Len::Exact(_)) || (matches!(pl.height, Len::Fill(_)) && !spelled(pl.width));
+                for (word, floor, follows) in [("width", pl.min_width, both_follow || height_drives), ("height", pl.min_height, both_follow || !height_drives)] {
+                    if floor > 0.0 && follows {
+                        self.error("G1017", n.line, format!("`min_{word}=` beside `aspect=`: the {word} follows the ratio here and its floor is never read — put the floor on the side that drives the ratio, or drop it"));
+                    }
                 }
                 if parent_kind.map(|k| k.is_stack() || matches!(k, Kind::Flow | Kind::Grid | Kind::GridRow | Kind::Tiles)).unwrap_or(false) {
                     self.error("G1017", n.line, "`aspect=` needs a free parent (Layers, View, Panel) — a container seats its children and owns both axes");
@@ -5626,13 +5737,20 @@ impl<'a> Compiler<'a> {
             self.warning("G0074", n.line, format!("`{name}` is a 1x1 box: it clips its children — mark the parts that hang off it `overlay=true` (satellites, not content)"));
         }
         // A text-only Button gets air around its label, a kind default
-        // like its font size; a Button holding its own content spells its
-        // own padding. Decided here, where it is known whether the file
-        // wrote a padding: `padding=0` means 0. (The runtime used to give
-        // the default to every Button whose padding WAS 0, so a written
-        // zero got 12/6, and it asked on every resolve.)
-        if kind == Kind::Button && !padding_written && tmp.children.is_empty() {
-            tmp.node.placement.padding = crate::layout::BUTTON_PADDING;
+        // like its font size: 12 left and right, 6 above and below, on
+        // each side the file did not write. A Button holding its own
+        // content spells its own padding.
+        //
+        // Decided here, where it is known which sides the file wrote:
+        // `padding=0` means 0 on all four, and `padding_left=9` moves the
+        // text 9 from the left and keeps the air on the other three, as
+        // the same word written from code does.
+        if kind == Kind::Button && tmp.children.is_empty() {
+            for side in 0..4 {
+                if !padding_written[side] {
+                    tmp.node.placement.padding[side] = crate::layout::BUTTON_PADDING[side];
+                }
+            }
         }
         tmp
     }
@@ -5903,23 +6021,59 @@ impl<'a> Compiler<'a> {
         None
     }
 
+    /// A Scroll whose size words and `allow=` cannot work together.
+    ///
+    /// Needed because each of these builds a Scroll that is not there or
+    /// that cannot scroll, with nothing on screen to say why:
+    /// - a side that pans and hugs with no cap is 0 long: a panning side
+    ///   asks its parent for no room, and a hug box takes what it asks;
+    /// - a side cut by a cap that `allow=` leaves out: what lies past the
+    ///   cap cannot be reached;
+    /// - a hug side capped with `fill`: it grows with its content, past
+    ///   its parent, and never scrolls;
+    /// - both sides hugging (a warning): the Scroll is a plain box.
+    ///
+    /// The axes are read as `layout::scroll_axes_of` reads them.
+    fn scroll_guard(&mut self, n: &AstNode, p: &Placement) {
+        let allow: Option<&str> = n.props.iter().find(|q| q.key == "allow").and_then(|q| q.value.as_ident());
+        let mut idle_hugs: u32 = 0;
+        for (word, pan_word, len, align, cap, cap_fill, allowed) in [
+            ("width", "sideways", p.width, p.halign, p.max_width, p.max_width_fill, allow.map(|a| matches!(a, "horizontal" | "both"))),
+            ("height", "up and down", p.height, p.valign, p.max_height, p.max_height_fill, allow.map(|a| matches!(a, "vertical" | "both"))),
+        ] {
+            // An aligned side with no size word hugs, like any box.
+            let hugs: bool = matches!(len, Len::Hug(_)) || (len == Len::Unset && align != Align::AlignUnset);
+            let pans: bool = allowed.unwrap_or(!matches!(len, Len::Hug(_)) || cap.is_some());
+            if !hugs {
+                continue;
+            }
+            if cap_fill && !(pans && allowed == Some(true)) {
+                self.error("G1020", n.line, format!("`{word}=hug, max_{word}=fill` on a Scroll never scrolls: the Scroll grows with its content, past its parent — write `{word}=fill` (the parent's room, and it scrolls past it) or cap at a number (`max_{word}=300`)"));
+            } else if pans && cap.is_none() {
+                self.error("G1020", n.line, format!("a Scroll that pans {pan_word} needs a {word} of its own — hugging, it is 0 long there (a side that pans asks for no room); write `{word}=fill`, a number, or `{word}=hug, max_{word}=300` (as long as its content up to 300, then it scrolls)"));
+            } else if !pans && cap.is_some() {
+                self.error("G1020", n.line, format!("`max_{word}=` cuts this Scroll's content and `allow=` leaves that side out, so what lies past the cap can't be reached — name the side in `allow=`, or drop `allow=` (a capped hug side scrolls by itself)"));
+            } else if !pans {
+                idle_hugs += 1;
+            }
+        }
+        if idle_hugs == 2 {
+            self.warning("G1021", n.line, "a Scroll that hugs both sides never scrolls — it is as big as its content, a plain box; give a side a size (`height=fill`, a number, or `height=hug, max_height=300`)");
+        }
+    }
+
     /// The shipped container-child fences (GP34, resolver
     /// _validate_layout_parents + the D139/D144 cap rules): under a parent
-    /// that seats its children, margins are provably dead, an overlay
-    /// can't refuse its seat, and a size cap works only where the box
-    /// reports its own minimum (a Layers) or scrolls past it.
+    /// that seats its children, an overlay can't refuse its seat, and a
+    /// size cap works only where the box reports its own minimum (a
+    /// Layers) or scrolls past it. (A margin there is G1014, checked once
+    /// the tree is built: `places_its_children`.)
     fn container_child_guard(&mut self, n: &AstNode, p: &Placement, parent_kind: Option<Kind>, kind: Kind) {
         let container = matches!(parent_kind, Some(k) if matches!(k, Kind::Column | Kind::Row | Kind::Flow | Kind::Grid | Kind::GridRow | Kind::Tiles | Kind::List | Kind::Scroll));
         if !container || kind == Kind::Gap {
             return;
         }
         let pname = parent_name(parent_kind);
-        // Margins under a seating parent never move anything — the seat
-        // is the parent's to hand out (uniform rhythm is `spacing=`, one
-        // divergent gap is a `gap N` line).
-        if let Some(mp) = n.props.iter().find(|q| matches!(q.key.as_str(), "margin" | "margin_left" | "margin_top" | "margin_right" | "margin_bottom")) {
-            self.error("G1002", mp.line, format!("a {pname} lays out its children — margins only apply under a plain box (Layers, Panel, View); uniform rhythm is the parent's `spacing=`, a single divergent gap is a `gap N` line at the break"));
-        }
         // D139: an overlay can't refuse a seat it was dealt — `Column {{
         // Layers {{ content; badge overlay=true }} }}` already spells the
         // flowing case.
@@ -6423,7 +6577,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn placement(&mut self, props: &[Prop], line: u32, parent: Option<Kind>, kind: Kind) -> Placement {
+    fn placement(&mut self, props: &[Prop], line: u32) -> Placement {
         let mut p = Placement::DEFAULT;
         for prop in props {
             if let Some(slip) = p.write(&self.page, *prop) {
@@ -6451,26 +6605,119 @@ impl<'a> Compiler<'a> {
                 Align::AlignUnset => {}
             }
         }
-        // Contradictions the spec refuses at load.
-        if p.halign == Align::Center && matches!(p.width, Len::Fill(_)) && p.max_width.is_none() {
-            self.error("G1011", line, "`halign=center` with `width=fill`: fill leaves nothing to position (use `hug`, or a `max_width` cap)");
-        }
-        if p.valign == Align::Center && matches!(p.height, Len::Fill(_)) && p.max_height.is_none() {
-            self.error("G1011", line, "`valign=center` with `height=fill`: fill leaves nothing to position (use `hug`, or a `max_height` cap)");
-        }
-        if let (Some(max), true) = (p.max_width, p.min_width > 0.0) {
-            if p.min_width > max {
-                self.error("G1013", line, "`min_width` above `max_width`");
+        // Contradictions the spec refuses at load. Each is written once
+        // for a side and asked of both, so a check of the width always
+        // has its twin for the height.
+        for (word, align_word, side_word, len, align, floor, cap, near, far) in [
+            ("width", "halign", "horizontal", p.width, p.halign, p.min_width, p.max_width, p.margin[0], p.margin[2]),
+            ("height", "valign", "vertical", p.height, p.valign, p.min_height, p.max_height, p.margin[1], p.margin[3]),
+        ] {
+            if align == Align::Center && matches!(len, Len::Fill(_)) && cap.is_none() {
+                self.error("G1011", line, format!("`{align_word}=center` with `{word}=fill`: fill leaves nothing to position (use `hug`, or a `max_{word}` cap)"));
+            }
+            if let Some(max) = cap {
+                if floor > max {
+                    self.error("G1013", line, format!("`min_{word}` above `max_{word}`"));
+                }
+            }
+            if near.is_some() && far.is_some() && matches!(len, Len::Exact(_)) {
+                self.error("G1006", line, format!("both {side_word} margins and an exact `{word}` over-constrain the axis"));
             }
         }
-        if p.margin.iter().any(Option::is_some) && parent.map(|k| k.is_stack() || matches!(k, Kind::Flow | Kind::Grid | Kind::GridRow | Kind::Tiles)).unwrap_or(false) {
-            self.error("G1014", line, "margins under a Column/Row/Flow/Grid are an error — space children with `spacing=` / `gap` (or `padding` on the parent)");
-        }
-        if p.margin[0].is_some() && p.margin[2].is_some() && matches!(p.width, Len::Exact(_)) {
-            self.error("G1006", line, "both horizontal margins and an exact `width` over-constrain the axis");
-        }
-        let _ = kind;
         p
+    }
+
+    /// A floor or a cap written beside an exact size for the same side,
+    /// on ONE line: `width=100, min_width=200`, `44x44, max_width=40`.
+    /// `props` and `args` are that line's words; `name` is the node's.
+    ///
+    /// Needed because the pair says one thing twice or two things that
+    /// cannot both hold: an exact size is the size. The floor beside it
+    /// says nothing or contradicts it, and the cap is never read.
+    ///
+    /// Two forms are left alone, because there the second word has a job:
+    /// - the words come from different lines: a control whose template
+    ///   says `min_size=48x48`, used as `Knob k 96x96`;
+    /// - a `when` writes that side's size on the node: the floor and the
+    ///   cap bound what the `when` asks for (`posed_sizes`).
+    fn size_pair_guard(&mut self, props: &[AstProp], args: &[AstValue], name: Option<&str>) {
+        // Per side: the exact size, the floor and the cap with their lines.
+        let mut exact: [Option<f32>; 2] = [None; 2];
+        let mut floor: [Option<(f32, u32)>; 2] = [None; 2];
+        let mut cap: [Option<(Option<f32>, u32)>; 2] = [None; 2];
+        let both = |v: &AstValue| -> [Option<f32>; 2] {
+            match v {
+                AstValue::Size { w, h } => [*w, *h],
+                AstValue::Num { value, .. } => [Some(*value); 2],
+                _ => [None; 2],
+            }
+        };
+        for a in args {
+            let sides = both(a);
+            for side in 0..2 {
+                exact[side] = sides[side].or(exact[side]);
+            }
+        }
+        for p in props {
+            let (side, word): (usize, &str) = match p.key.as_str() {
+                "width" | "min_width" | "max_width" => (0, p.key.as_str()),
+                "height" | "min_height" | "max_height" => (1, p.key.as_str()),
+                "size" | "min_size" => {
+                    let sides = both(&p.value);
+                    for side in 0..2 {
+                        if let Some(n) = sides[side] {
+                            if p.key == "size" {
+                                exact[side] = Some(n);
+                            } else {
+                                floor[side] = Some((n, p.line));
+                            }
+                        }
+                    }
+                    continue;
+                }
+                _ => continue,
+            };
+            if word.starts_with("min_") {
+                floor[side] = p.value.as_num().map(|n| (n, p.line)).or(floor[side]);
+            } else if word.starts_with("max_") {
+                cap[side] = match &p.value {
+                    AstValue::Num { value, .. } => Some((Some(*value), p.line)),
+                    AstValue::Ident { word, .. } if word.eq_ignore_ascii_case("fill") => Some((None, p.line)),
+                    _ => cap[side],
+                };
+            } else {
+                exact[side] = p.value.as_num().or(exact[side]);
+            }
+        }
+        for (side, word) in [(0usize, "width"), (1usize, "height")] {
+            let Some(size) = exact[side] else { continue };
+            if name.is_some_and(|n| self.posed_sizes.contains(&(n.to_string(), side))) {
+                continue;
+            }
+            if let Some((min, line)) = floor[side].filter(|(min, _)| *min > 0.0) {
+                self.error("G1019", line, format!("`min_{word}={min}` beside `{word}={size}`: an exact {word} is the {word} — the floor says nothing or contradicts it; drop one of the two"));
+            }
+            match cap[side] {
+                Some((Some(max), line)) => self.error("G1019", line, format!("`max_{word}={max}` beside `{word}={size}`: an exact {word} is the {word}, and the cap is never read — a box that takes the room it is given up to {max} is `{word}=fill, max_{word}={max}`")),
+                Some((None, line)) => self.error("G1019", line, format!("`max_{word}=fill` beside `{word}={size}`: an exact {word} is the {word}, and the cap is never read — a box of {size} that gives way to a smaller parent is `{word}=fill, max_{word}={size}`")),
+                None => {}
+            }
+        }
+    }
+
+    /// The kind of the box that places node `i`: its parent, looked past
+    /// a `repeat` (its rows take the places of the box that holds the
+    /// repeat). `None` for the root.
+    fn placing_parent_kind(&self, i: usize) -> Option<Kind> {
+        let mut parent: NodeId = self.page.nodes[i].parent;
+        while parent != NO_NODE {
+            let kind: Kind = self.page.nodes[parent].kind;
+            if kind != Kind::Repeat {
+                return Some(kind);
+            }
+            parent = self.page.nodes[parent].parent;
+        }
+        None
     }
 
     // ----- finish ---------------------------------------------------------
@@ -6947,6 +7194,22 @@ impl<'a> Compiler<'a> {
             }
             self.page.nodes[i].whens = (first, self.page.whens.len() as u32 - first);
         }
+        // A margin on a child of a box that places its children (a
+        // stack, Flow, Grid, Tiles, a List's rows): the box deals each
+        // child its place, so the margin would be taken and move nothing.
+        // Checked here, with the tree built, because a row's place is
+        // dealt by the box that holds its `repeat`.
+        for i in 0..self.page.nodes.len() {
+            let node = &self.page.nodes[i];
+            if node.kind == Kind::Gap || !node.placement.margin.iter().any(Option::is_some) {
+                continue;
+            }
+            let parent: Option<Kind> = self.placing_parent_kind(i);
+            if parent.is_some_and(places_its_children) {
+                let (line, pname): (u32, &str) = (node.line, parent_name(parent));
+                self.error("G1014", line, format!("a {pname} places its children itself, so a margin on one moves nothing — space them with `spacing=` on the {pname} or a `gap` line, or give the {pname} `padding=`"));
+            }
+        }
         // A posed margin on a stack child (GPAR94, the addon's pose rule
         // = the node-line G1014): the parent seats its children — the
         // pose could never bind. The addon's OTHER pose refusals (a
@@ -6959,11 +7222,7 @@ impl<'a> Compiler<'a> {
             if wc == 0 {
                 continue;
             }
-            let parent = self.page.nodes[i].parent;
-            let in_stack = parent != NO_NODE && {
-                let k = self.page.nodes[parent].kind;
-                k.is_stack() || matches!(k, Kind::Flow | Kind::Grid | Kind::GridRow | Kind::Tiles)
-            };
+            let in_stack = self.placing_parent_kind(i).is_some_and(places_its_children);
             if !in_stack {
                 continue;
             }

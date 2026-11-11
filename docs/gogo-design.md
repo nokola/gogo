@@ -156,8 +156,11 @@ pub fn layout(page: &Page, res: &Resolved, viewport: Rect, text: &dyn TextMeasur
       child never ends up narrower than its content or its `min_width`,
       whichever is more; when that does not fit, the children run past
       the parent's edge.
-    A `wrap=true` label with `width=fill` has no width of its own
-    (Godot's autowrap minimum) — the text bends to the box.
+    A `wrap=true` label with `width=fill` is never narrower than its
+    longest word (Godot's autowrap minimum) — above that the text bends
+    to the box. The layout asks the text measure for that width
+    (`TextMeasure::narrowest_wrap`): a measure at a wrap width of 0
+    breaks between letters.
   - `star_split` — ARRANGE along an axis, the star rule: fixed slots take
     their size, fills share what is left by weight, a fill whose share is
     under its floor takes the floor and the rest re-share (Godot
@@ -199,8 +202,12 @@ pub fn layout(page: &Page, res: &Resolved, viewport: Rect, text: &dyn TextMeasur
   fraction of its own measure; a `fill` axis shows the fraction of what
   it was granted, from its alignment edge — a Rectangle `reveal_x=0.3`
   in a 100-wide Layers is 30 wide at the left, the slider fill bar with
-  no wrapper Row. Not a clip mask: the box itself shrinks, so a Label
-  re-lays out in the smaller box.
+  no wrapper Row. The box itself shrinks, and what it holds is cut at
+  the part that shows (2026-11-11): one cut while the fraction is under
+  1 and the box holds something, none at rest, none for a bare bar. The
+  content keeps its size and travels with the box (user, 2026-11-11):
+  it is laid out from the corner where the shown part starts, for a
+  hugging box and an exact one alike.
 - Debug: the rects are plain numbers a host can print — `kept.rects()[node]`
   for a `node` from `Page::find("name")` — the numbers behind a layout diff.
 
@@ -509,6 +516,32 @@ List holds its bar's lane as a Scroll does, from one function. A repeat
 nobody could fill (no name, or inside another repeat's row) and an
 `empty { }` nothing could hide are build errors.
 
+Layout (decided 2026-11-11). A word the file writes either does its
+job or is a build error; the layout's answer does not depend on the
+parent. `cells=` in a `when` re-packs the Tiles: the list of keys the
+kept layout watches (`layout_reads`) is checked by a test that records
+every key the layout pass reads. A wrapping `fill` label is never
+narrower than its longest word, which the text measure answers
+(`narrowest_wrap`), where its room is no written number; in a box with a
+written width it takes that width and folds inside a word if it must (a
+text box the user drags narrow). A revealed box cuts what it holds and shows its part
+from the edge it is aligned to. One occupant per seat while the page
+runs: of two nodes sent to one seat the placement rule picks one (a code
+write, then more conditions, then the later line). A margin on a
+Scroll's body insets it; one error (G1014) for a margin under a box that
+places its children. A floor or a cap beside an exact size on one line
+is refused (G1019) unless a `when` poses that size; a floor from a style
+or a control's template holds under the size of the line that uses it,
+in every parent. A centered box is centered in the room its margins
+leave, an Image centered by default included. A cap decides the width a
+box measures its content at, so a parent that hugs a capped wrapping
+label is as tall as the label. The size checks are written once for a
+side and asked of both. A Scroll that would be 0 long on a side it pans,
+or could never reach what it cuts, is refused (G1020). Cell words stay
+out of styles. `spacing=` works on Tiles, a Button has no icon words, an
+anim line names a gradient stop that exists, `row_height=` takes `fill`.
+A Button's 12/6 padding fills each side the file did not write.
+
 Hot reload (decided 2026-11-11). One entry point for every host
 (`reload::Reloader`: `open`, `refresh`), switched by the cargo feature
 `hot-reload`. A runtime flag would leave the compiler linked into the
@@ -722,7 +755,9 @@ Changed 2026-08-31 (E8 — user decisions; the table is §8):
 - `areas=` on a Grid was refused in this round, naming `row { }` (it
   had been a warning and an empty grid); the areas/for= port round
   above built it, and it compiles today.
-- `icon_size=` joins `icon=` as an accepted-unread Button word.
+- `icon_size=` joins `icon=` as an accepted-unread Button word. (Both
+  left the Button's words 2026-11-11: no icon was ever drawn, and a
+  Button with a picture holds an `Image`.)
 
 Changed 2026-09-01 (E10 — user decisions, the Godot addon now a stepping
 stone on its way out; semantics may diverge from it for ergonomics):
@@ -1286,7 +1321,7 @@ A Grid cell adds `col_span`, `row_span`; a Tiles cell adds `span`, `full_row`.
 | `Grid` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `cols`, `areas`, `row_height`, `spacing` |
 | `Tiles` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `cols`, `cells`, `spacing` |
 | `Label` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `text`, `font_size`, `font_color`, `wrap`, `clip_text`, `horizontal_alignment`, `vertical_alignment`, `text_fit`, `text_flip` |
-| `Button` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `text`, `font_size`, `font_color`, `wrap`, `clip_text`, `horizontal_alignment`, `vertical_alignment`, `tap_pulse`, `toggle`, `selected`, `icon`, `icon_size` |
+| `Button` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `text`, `font_size`, `font_color`, `wrap`, `clip_text`, `horizontal_alignment`, `vertical_alignment`, `tap_pulse`, `toggle`, `selected` |
 | `Image` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `source`, `fit`, `loading`, `release`, `window`, `sampling` |
 | `Rectangle` | `color`, `color.a`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash` |
 | `Circle` | `color`, `color.a`, `border_thickness`, `border_color`, `border_dash` |

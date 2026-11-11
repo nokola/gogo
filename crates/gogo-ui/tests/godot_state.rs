@@ -590,18 +590,21 @@ fn selected_write_restyles_at_once() {
 #[test]
 fn empty_source_and_polish_props() {
     ok("widget I $icon=\"\" { Image img source=$icon }\nView v { I inst }");
-    let mut fx = Fx::new("View v { Button b text=\"t\", opacity=0.4, font_size=11, width=60, icon_size=30 }");
+    let mut fx = Fx::new("View v { Button b text=\"t\", opacity=0.4, font_size=11, width=60 }");
     assert_eq!(fx.text_alpha("t"), 102);
     let list = fx.draws();
     assert!(list.iter().any(|d| matches!(d, Draw::Text { font_size, .. } if *font_size == 11.0)), "{list:#?}");
     assert_eq!(fx.rect("b").w, 60.0);
 }
 
-/// `_state_tests` 6341 (`prop.icon_size`): `icon_size=30` is a known
-/// Button prop (the icon's max width).
+/// `_state_tests` 6341 (`prop.icon_size`): in Godot `icon_size=30` is a
+/// Button prop (the icon's max width). FLIP: no icon is drawn here, so
+/// the word is no word of a Button; the message names what draws a
+/// picture on one.
 #[test]
-fn icon_size_is_a_known_button_prop() {
-    assert!(!codes("View v { Button b text=\"t\", icon_size=30 }").contains(&"G2001".to_string()));
+fn icon_size_is_no_button_prop() {
+    let c = compile("View v { Button b text=\"t\", icon_size=30 }", &|_| None);
+    assert!(c.diags.iter().any(|d| d.code == "G2001" && d.message.contains("holds an Image")), "{:#?}", c.diags);
 }
 
 // ------------------------------------------------------- _touch_lint_tests

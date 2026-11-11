@@ -377,3 +377,40 @@ fn the_layouts_measure_counts_the_gap_of_its_screen() {
     let (_, h) = measure.measure("H H H", 20.0, Some(one_w + 0.5), None);
     assert_eq!(h, (3.0 * fh_px + 2.0 * 2.0) / 2.0);
 }
+
+/// The narrowest a text folds to is its longest word. `measure` at a wrap
+/// width of 0 cannot say it: it breaks between letters.
+#[test]
+fn the_narrowest_a_text_folds_to_is_its_longest_word() {
+    let engine: RefCell<TextEngine> = RefCell::new(engine());
+    let measure = EpxMeasure { engine: &engine, epx: 1.0, font: None, images: &[] };
+    let text = "hello wonderful world";
+    let (word, _) = measure.measure("wonderful", 15.0, None, None);
+    let (letter, _) = measure.measure(text, 15.0, Some(0.0), None);
+    assert!(letter < word / 3.0, "a wrap width of 0 breaks between letters: {letter} against {word}");
+    assert_eq!(measure.narrowest_wrap(text, 15.0, None), word);
+    assert_eq!(measure.narrowest_wrap("wonderful", 15.0, None), word, "one word");
+    assert_eq!(measure.narrowest_wrap("", 15.0, None), 0.0, "no text");
+    // On a screen with two device pixels per epx the answer is still in epx.
+    let twice = EpxMeasure { engine: &engine, epx: 2.0, font: None, images: &[] };
+    assert_eq!(twice.narrowest_wrap(text, 15.0, None), twice.measure("wonderful", 15.0, None, None).0);
+}
+
+/// A wrapping label that fills what is left of a Row too narrow for it
+/// keeps its longest word whole. Red when the label's smallest width
+/// comes from a measure at a wrap width of 0: with Roboto that is one
+/// letter, and the label wraps a letter per line.
+#[test]
+fn a_wrapping_label_in_a_tight_row_keeps_its_longest_word_whole() {
+    let engine: RefCell<TextEngine> = RefCell::new(engine());
+    let measure = EpxMeasure { engine: &engine, epx: 1.0, font: None, images: &[] };
+    let c = gogo_ui::compile("View v {\n Row r width=60, halign=left, valign=top {\n Rectangle k width=50, height=10\n Label t text=\"hello wonderful world\", wrap=true, width=fill\n }\n}", &|_| None);
+    assert!(!gogo_ui::has_errors(&c.diags), "{:#?}", c.diags);
+    let rt = gogo_ui::Runtime::new(&c.page);
+    let look = gogo_ui::resolve(&c.page, &rt);
+    let rects = gogo_ui::layout(&c.page, &look, gogo_ui::Rect { x: 0.0, y: 0.0, w: 400.0, h: 800.0 }, &measure);
+    let label = rects[c.page.find("t").unwrap().index()];
+    let (word, _) = measure.measure("wonderful", 15.0, None, None);
+    assert_eq!(label.w, word, "as wide as `wonderful`");
+    assert_eq!(label.h, measure.measure("hello wonderful world", 15.0, Some(word + 0.01), None).1, "one word to a line");
+}

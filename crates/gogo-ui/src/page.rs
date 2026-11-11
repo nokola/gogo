@@ -893,9 +893,6 @@ pub enum PropKey {
     /// columns (WrapPanel's other axis; GPAR97).
     Orientation,
     Step,
-    IconSrc,
-    /// `icon_size=` on a Button: the icon's box (accepted-unread beside `icon=`).
-    IconSize,
     Automatic,
     /// `x.seat = <name>` in a `when`: the socket the node moves into (apart from `Kind::Seat`).
     SeatOf,
@@ -1014,8 +1011,6 @@ pub const WORDS: &[(&str, PropKey)] = &[
     ("select", PropKey::Select),
     ("orientation", PropKey::Orientation),
     ("step", PropKey::Step),
-    ("icon", PropKey::IconSrc),
-    ("icon_size", PropKey::IconSize),
     ("automatic", PropKey::Automatic),
     ("seat", PropKey::SeatOf),
     ("overlay", PropKey::Overlay),
@@ -1136,7 +1131,6 @@ impl PropKey {
                 | PropKey::Min
                 | PropKey::Max
                 | PropKey::Step
-                | PropKey::RowHeight
                 | PropKey::ColSpan
                 | PropKey::RowSpan
                 | PropKey::Angle
@@ -1264,7 +1258,7 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
         // `text_fit`/`text_flip`: a Label alone stretches a glyph over
         // its box (a Button's text stays text).
         Kind::Label => &[BOX, PLATE, PADDING, TEXT, &[PropKey::TextFit, PropKey::TextFlip]],
-        Kind::Button => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::ToggleMode, PropKey::SelectedProp, PropKey::IconSrc, PropKey::IconSize]],
+        Kind::Button => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::ToggleMode, PropKey::SelectedProp]],
         Kind::Image => &[BOX, PLATE, &[PropKey::Source, PropKey::Fit, PropKey::Loading, PropKey::Release, PropKey::Window, PropKey::Sampling]],
         Kind::Rectangle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::CornerRadius, PropKey::CornerRadiusTopLeft, PropKey::CornerRadiusTopRight, PropKey::CornerRadiusBottomRight, PropKey::CornerRadiusBottomLeft, PropKey::BorderThickness, PropKey::BorderColor, PropKey::BorderDash]],
         Kind::Circle => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::BorderThickness, PropKey::BorderColor, PropKey::BorderDash]],
@@ -1887,8 +1881,6 @@ pub const UNREAD_BY_DESIGN: &[(PropKey, &str)] = &[
     (PropKey::TouchTarget, "accepted: `touch_target=off` silences the 44-epx finger-target lint; the lint is not built here yet (GP41), and hit testing always uses the node's own rect"),
     (PropKey::AccessibilityName, "host-read: no screen-reader bridge here yet"),
     (PropKey::KeyboardTarget, "read at compile into `Node.focusable`, not as a prop: `keyboard_target=off` keeps keyboard focus off the node"),
-    (PropKey::IconSrc, "accepted for old files; an icon file hint nothing reads"),
-    (PropKey::IconSize, "accepted for old files beside `icon=`; icons are not drawn here"),
     (PropKey::Automatic, "read at compile into `Node.auto`, not as a prop"),
     (PropKey::SeatOf, "read at resolve through `Resolved.seat`, not as a prop"),
     (PropKey::Areas, "read at compile: `Compiler::grid_areas` expands it into `row { }` structure before the node builds"),

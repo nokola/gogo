@@ -96,18 +96,23 @@ fn seat_fits_its_occupant_to_the_socket() {
     assert_eq!((socket.w, socket.h), (50.0, 30.0), "{socket:?}");
 }
 
-/// GP21 + GP22: Tiles cells abut (`spacing=` says nothing), a cell keeps
-/// its own height even with `height=fill`, and a `clip_text` caption
-/// claims no width so it never widens the lattice.
+/// GP21 + GP22: Tiles cells touch with no `spacing=` written and stand
+/// `spacing=` apart with it, a cell keeps its own height even with
+/// `height=fill`, and a `clip_text` caption claims no width so it never
+/// widens the lattice.
 #[test]
-fn tiles_abut_keep_content_heights_and_clip_text_claims_nothing() {
-    let (p, r) = lay("View v {\n Tiles t cols=2, spacing=8, width=200, halign=left, valign=top {\n  Rectangle a height=40\n  Rectangle b min_height=20, height=fill\n  Rectangle c height=30, span=2\n }\n}\n", 400.0, 400.0);
+fn tiles_keep_content_heights_and_clip_text_claims_nothing() {
+    let (p, r) = lay("View v {\n Tiles t cols=2, width=200, halign=left, valign=top {\n  Rectangle a height=40\n  Rectangle b min_height=20, height=fill\n  Rectangle c height=30, span=2\n }\n}\n", 400.0, 400.0);
     let a = rect(&p, &r, "a");
     let b = rect(&p, &r, "b");
     let c = rect(&p, &r, "c");
     assert_eq!(a, Rect::new(0.0, 0.0, 100.0, 40.0));
-    assert_eq!(b, Rect::new(100.0, 0.0, 100.0, 20.0), "content height, no gutter: {b:?}");
-    assert_eq!(c, Rect::new(0.0, 40.0, 200.0, 30.0), "the next row starts at the tallest cell, no gutter: {c:?}");
+    assert_eq!(b, Rect::new(100.0, 0.0, 100.0, 20.0), "content height, the cells touch: {b:?}");
+    assert_eq!(c, Rect::new(0.0, 40.0, 200.0, 30.0), "the next row starts at the tallest cell: {c:?}");
+    let (p, r) = lay("View v {\n Tiles t cols=2, spacing=8, width=200, halign=left, valign=top {\n  Rectangle a height=40\n  Rectangle b min_height=20, height=fill\n  Rectangle c height=30, span=2\n }\n}\n", 400.0, 400.0);
+    assert_eq!(rect(&p, &r, "a"), Rect::new(0.0, 0.0, 96.0, 40.0));
+    assert_eq!(rect(&p, &r, "b"), Rect::new(104.0, 0.0, 96.0, 20.0), "8 between the two columns");
+    assert_eq!(rect(&p, &r, "c"), Rect::new(0.0, 48.0, 200.0, 30.0), "8 under the tallest cell of the row above");
     let (p, r) = lay("View v {\n Tiles t cols=3, width=hug, halign=left, valign=top {\n  Label cap text=\"a very long caption that would widen the tile\", font_size=10, clip_text=true\n  Rectangle x 40x40\n }\n}\n", 400.0, 400.0);
     let t = rect(&p, &r, "t");
     assert_eq!(t.w, 40.0, "the widest cell's OWN claim is the 40 box, not the caption: {t:?}");

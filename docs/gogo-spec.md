@@ -79,14 +79,14 @@ painting) is in REFERENCE.md, "Host API".
 | Kind   | Syntax                  | Notes |
 |--------|-------------------------|-------|
 | string | `"Paint"`, `"new stroke"/newStroke` | Escapes: `\"` `\\` `\n` `\t`. No interpolation in v1. Optional `/key` suffix = translation term (see below). |
-| path   | `"res://icons/undo.png"`, `"preview://brush"` | A string on a resource property (`source=`, `icon=`, `font=`), scheme always written (G0071 — a bare word could be a label or a path). `res://` is an asset under the build's resource root, checked and embedded at build time. Any other scheme on an `Image`'s `source=` is a **host picture**: the app's code registers pixels under that exact name at run time (a live preview, a canvas tile); the build bakes the name as the picture's id, and the box shows nothing until the code registers it. `""` = no picture. Never translated — `/key` on a path is an error. |
+| path   | `"res://icons/undo.png"`, `"preview://brush"` | A string on a resource property (`source=`, `font=`), scheme always written (G0071 — a bare word could be a label or a path). `res://` is an asset under the build's resource root, checked and embedded at build time. Any other scheme on an `Image`'s `source=` is a **host picture**: the app's code registers pixels under that exact name at run time (a live preview, a canvas tile); the build bakes the name as the picture's id, and the box shows nothing until the code registers it. `""` = no picture. Never translated — `/key` on a path is an error. |
 | slice  | `animals[12]`, `toolbar.play`, `bubble` | An **atlas slice** on `source=` (and in a theme value or widget param that feeds one): a grid cell by number, a named slice, or a whole-picture atlas — see Atlases. A bare word on `source=` always names an atlas (a path is quoted); `[n]` touches the name, no space. |
 | number | `36`, `0.5`, `-4`       | A number on a *length* property is **epx** (effective pixels, density-independent); the suffix `epx` may be written. There is no device-pixel unit: `px` is refused (G0038). `%` is legal only where a rule names it (an anim's `from=`/`to=`, `key_unit=`). On a scalar property (e.g. `Slider.value`) `px` and `%` are refused the same way; `epx` there is accepted and means nothing. |
 | bool   | `true`, `false`         | |
 | color  | `#RRGGBBAA`, `#RRGGBB`, `red`, `black/0.5`, `white@0.24` | RGBA hex, alpha **last** (the CSS convention). 6 digits ⇒ alpha `FF`. Bare palette names (`red`, `danger`, `surface`, `transparent`) are contextual keywords legal only in color-typed positions (see Resolver-defined vocabulary). Every color spelling takes an optional `/opacity` suffix (a bare 0..1 number) setting the **final alpha**: `black/0.5`, `#FF6347/0.25`, `$accent/0.3`. `/o` **replaces the alpha of the value it is written on** — on a `$ref` or palette word, the alpha that value would have had: `$flash/0` is `$flash` made transparent (a translucent disc's fade stop derives from the disc), `$dim/0.3` over `$dim = #80808080` draws 0.3, `$a/0.3` over `$a = $b/0.5` draws 0.3. An 8-digit hex takes it too (`#FFFFFF6B/0` — a pasted color, faded). The suffix written at the slot is the alpha the slot gets; there is nothing else to know (E6, 2026-08-31). Inside a Gradient's `stops=` list an entry may also carry `@position` (0..1, always after any `/`) — fenced everywhere else. **Porting from WPF/XAML:** WPF writes `#AARRGGBB` (alpha first) — move the leading alpha pair to the end (`#AA000000` → `#000000AA`). |
 | ref    | `$name`                 | Reads a widget parameter (innermost scope) or theme value. |
 | ident  | `center_bottom`         | Bare word: enum member or handler name; validated by resolver per property type. |
-| size   | `220x110`, `220x`, `x110` | Shorthand for an exact size on both axes (the `size=` prop: exactly that size). Components are epx only (no units inside). Omitted component = unset. `min_size=` is the minimum-only spelling. |
+| size   | `220x110`, `220x`, `x110` | Shorthand for an exact size on both axes (the `size=` prop: exactly that size). Components are epx only (no units inside). Omitted component = unset. `min_size=` is the minimum-only spelling; there one number is both sides (`min_size=44`). |
 | call   | `play(appear)`, `fill(2)` | Ident + parenthesized args. Callees are closed per position: `play`/`go`/`toggle`/`emit` on `on:` keys, `fill(n)`/`hug(n)` in sizing positions (weights — n may be fractional), `round(n, step)` where a number or a text goes (n rounded to a multiple of step; step is 1 when not written). The controlled on-ramp for v2 expressions. |
 | list   | `[80, hug, fill(2)]`    | Ordinary values in brackets; newlines are free inside the brackets (the list cousin of trailing-comma continuation). Six props accept one: Grid's `cols=`/`areas=`, Gradient's `stops=`, `border_dash=`, an Arc's `dash=` and an Image's `window=`; a list on any other prop is refused (G0040). |
 
@@ -396,8 +396,8 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
   `toggle(name)`, `emit(Name)`; `on:show`/`on:hide` are the visibility
   pair and take `play(animName)` only (G0084; see Animations).
 - **Look properties**: `opacity` (the whole node's alpha),
-  `font_size` (epx), `font_color` (`icon=` and `icon_size=` are accepted
-  on a Button for old files; no icon is drawn),
+  `font_size` (epx), `font_color` (a Button has no `icon=` word: a
+  Button with a picture holds an `Image`),
   `background`/`corner_radius`/`border_*`/`padding` (any box: the plate
   draws behind the content and covers the padding; a Button starts with
   its default plate, which `background=` recolors. On a `Circle`,
@@ -454,9 +454,14 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
     cuts it). When the room comes from nowhere the author wrote (the
     screen, a chain of unwritten boxes) the box is never smaller than its
     content. A hug box is sized by content and passes no written number
-    down; a `min_*` floor is a written number and wins; a Label keeps the
-    width its text needs (text does not bend to a box; the written box cuts
-    it). (The Godot addon let the engine grow the filler to its minimum —
+    down; a `min_*` floor is a written number and wins; a Label that does
+    not wrap keeps the width its text needs (one line of text does not bend
+    to a box; the written box cuts it), and a wrapping Label takes the
+    written width like any box and folds its text there, inside a word
+    where a word is wider than the box. Where the room is no written number
+    (a Row's leftover, a chain of unwritten boxes) a wrapping `fill` Label
+    is never narrower than its longest word.
+    (The Godot addon let the engine grow the filler to its minimum —
     a recorded difference.) `width=host` / `height=host`, the addon's word
     for an axis the host's code sizes, are gone (G0055): a layout that
     writes nothing back has no such axis to guard, and the host program
@@ -468,20 +473,28 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
     or a sized parent). A wrapping label whose width provably never binds gets the G1004
     lint, in two shapes: `width=hug` with no `max_width` never wraps, and
     `width=fill` under a chain that sizes to content wraps at about one word.
-    A min next to an exact `width=`/`height=` on
-    the same axis is legal and the min still wins (GPAR79 2026-08-31,
-    dropping D135's refusal): `size = max(floor, written)` — the WPF
-    Min-over-Width order, the same clamp posed sizes obey — so the pair
-    never resolves by declaration order. The floor's real job there is
-    bounding posed sizes on that axis. A min with `aspect=` builds, and the axis the ratio derives ignores it (the
-    Godot addon refused the pair; here only the cap is refused).
+    A min next to an exact `width=`/`height=` for the same side bounds
+    POSED sizes (GPAR79 2026-08-31): where a `when` writes that size on
+    the node the pair builds, and `size = max(floor, written)` — the WPF
+    Min-over-Width order — in every parent, a stack's child included. The
+    same holds when the two words come from different lines: a style or
+    a control's template carries the floor, the line that uses it the
+    size. On ONE line whose size nothing poses the pair is a build error
+    (G1019, decided 2026-11-11): the floor says nothing or contradicts
+    the size. A cap beside an exact size follows the same rule; an exact
+    size is never cut by a cap (the cap bounds a `fill` or a `hug` that a
+    `when` poses). A min on the side `aspect=` works out is a build error
+    too (G1017): the layout never reads it.
     - **`max_width`/`max_height` — the size caps** (D132; the List caps
       D123/D124 generalized): pair with `hug` (content size, at most the
       cap) or `fill` (available space, at most the cap — D245, below). On
       a hug axis: natural content size, at most the cap. Wrap-capable text hugs its UNWRAPPED
       extent and starts wrapping only when the cap binds (a wrap-Label's
       plain minimum collapses toward its longest word; the cap is what makes
-      "hug a wrapping label" expressible). The box tracks content LIVE —
+      "hug a wrapping label" expressible). Once the cap binds, the box is
+      as wide as the cap (a number and `fill` alike) and as tall as the
+      wrapped lines, whichever width word stands beside the cap, and a
+      parent that hugs the box is that tall too. The box tracks content LIVE —
       code-behind text swaps re-fit it. A cap never shears content: hard
       minimums win (WPF's own clamp order — Min beats Max:
       `size = max(floor, min(natural, cap))`). A written size or
@@ -590,13 +603,15 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
       look; `reserve` = auto visibility with the bar's space always held).
       A capped hug axis scrolls PAST its cap (D124 generalized): `height=
       hug, max_height=300` follows content to 300, then scrolls
-      (a `max_*=fill` cap does not: that axis grows with its content and
-      never scrolls; `fill` already scrolls past the frame).
-      The compiler does not check contradictions (the Godot addon did):
-      `allow=` listing a bare hug axis (the Scroll is 0 long on it), a
-      capped axis left out of `allow=` (what lies past the cap cannot be
-      reached) and both axes hugged bare (nothing scrolls) all build
-      with no message. `Scroll
+      (`fill` already scrolls past the frame).
+      The contradictions are build errors (G1020, decided 2026-11-11): a
+      side that pans and hugs with no cap, named in `allow=` or aligned
+      with no size word (the Scroll would be 0 long on it: a side that
+      pans asks its parent for no room); a capped side left out of
+      `allow=` (what lies past the cap could not be reached); a hug side
+      capped with `fill` (it would grow with its content and never
+      scroll). Both sides hugged bare is a warning (G1021): nothing
+      scrolls. `Scroll
       height=100, width=hug` = WPF's default ScrollViewer: content-wide,
       exactly 100 tall, scrolls vertically. On `List`, `bars=` reaches the
       internal scroll (the same word one level up); the axis stays the
@@ -620,13 +635,16 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
     produce: INSETS of a default/`fill` axis (the unnamed edge stays bound
     at inset 0 — the WPF Margin-under-Stretch reading), near-edge offsets of
     an aligned axis (a far-edge margin moves nothing but still counts in a
-    hugging parent's size; on a centered axis two written margins center
-    the box between them and a lone one moves nothing — none of these is
-    an error, where the Godot addon refused them), PINS of an unaligned
+    hugging parent's size; on a centered axis the box is centered in the
+    room the written margins leave, so a lone margin shifts it by half:
+    `halign=center, margin_left=20` sits 10 right of the middle, and an
+    Image centered by its kind's default shifts the same way — none of
+    these is an error, where the Godot addon refused them), PINS of an unaligned
     `hug`/exact axis (pin ± size; grow points away from the pin). The
     `margin=N` shorthand is breathing room: insets all around on filled
     axes, the touched edges under alignment. Two per-edge keys bind both
-    edges (a declared size there over-constrains); the document root is
+    edges (a declared size there over-constrains: G1006, for the width
+    and for the height); the document root is
     placed like any box, so a lone margin there insets it.
     `anchors=` and `offset_*` left the language — placement says it all
     (removed-key errors carry the migration hints).
@@ -637,10 +655,11 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
     `size_flags_vertical` are gone (G0041) and `inset=N` is not a word
     (G2001) — the fill default plus `margin=N` say the same thing, and the
     document root fills the host's rectangle with no size word. Margins under a Container parent are
-    build errors (G1014: they'd be silently dead). "Container" here means the kinds that seat children in
-    slots — stacks, Flow, Grid, Tiles. A `Scroll` or a `List` is NOT one
-    (decided 2026-08-30): each seats one pannable body, and margins on that
-    body inset it like margins anywhere free. `padding` is legal on ANY
+    build errors (G1014: they'd be silently dead). "Container" here means the kinds that deal each child
+    its place — the stacks (Column, Row, Choice), Flow, Grid, Tiles, and a
+    `List` with its rows. A `Scroll` is NOT one (decided 2026-08-30): it
+    holds one pannable body, and margins on that body inset it like
+    margins anywhere free, and scroll with it. `padding` is legal on ANY
     container — air inside a Column or a Scroll is as sayable as air inside
     a Panel (the retired addon refused it there; recorded difference).
   - `Row`/`Column` stack their children on x / y.
@@ -1045,26 +1064,34 @@ occupant). The rules the compiler checks: a seat has a name and no child
 of its own (it may take size and placement words — `seat side width=200`
 is a socket 200 wide, empty or occupied); a seat and a resting home
 may sit under any parent, a free one included; one occupant per seat
-under ONE condition (claims under different conditions are not checked
-against each other — two arrangements, or an arrangement and a screen
-class, may name the same seat, and if both hold both nodes sit in it);
-no moves into a node's own subtree.
+under ONE condition (claims under different conditions build — two
+arrangements, or an arrangement and a screen class, may name the same
+seat; while both hold, the placement rule picks the occupant: more
+conditions win, equal count → the later line, and the other node stays
+at its declared home); no moves into a node's own subtree.
 
 The smooth-slide primitive: the node's LAYOUT SPACE as a 0..1 fraction.
 `visibility` is a word and words snap; making the space a float puts it on
 the same rails as every other response — poses flip it, `transition` rules
 tween it, anims may drive it. The
-node's box itself shrinks to the fraction. It is not a clip mask, so a
-Label lays out again in the smaller box. The rules:
+node's box itself shrinks to the fraction, and what the box holds — its
+children, its own text — is cut at the part that shows and takes no
+touch outside it. The rules:
 
 - Under a container (`Column`/`Row`/`Grid`/...) the node takes only its
   shown fraction of space, and the siblings close up as it shrinks (a
   disclosure collapse).
-- A hug axis shows the fraction of its own measure, placed by its
-  alignment; a `fill` or exact axis keeps its left (top) edge and shows
-  the fraction from there, whatever its alignment — a
-  Rectangle with `reveal_x=0.3` in a 100-wide `Layers` is 30 wide, at the
-  left.
+- A hug axis shows the fraction of its own measure; a `fill` or exact
+  axis the fraction of its size. The part shown starts at the edge the
+  box is aligned to, whatever its size word: a Rectangle with
+  `reveal_x=0.3` in a 100-wide `Layers` is 30 wide at the left, with
+  `halign=right` at the right, with `halign=center` in the middle.
+- What the box holds keeps its size and travels with the box: it is laid
+  out from the corner where the shown part starts. A sheet aligned to
+  the bottom shows the top of its content and carries it out through
+  the bottom as it closes, with `height=hug` and with `height=200`
+  alike; a box with no alignment keeps its content in place and closes
+  over it from the far edge.
 - `reveal_y=0` is not `visibility=gone`: a concealed node stays ALIVE (anims
   run, states poll), it just earns no space. `visibility=gone` remains the
   "gone" switch and zeroes the space instantly.
@@ -1441,7 +1468,10 @@ Rules:
 - **`cols=N` is required** (the signature every `span=` is checked against —
   same explicitness as Grid's `cols=`), takes a whole number, and is LIVE:
   code may re-set it and the mosaic re-packs (list values error toward Grid).
-- **Packing is first-fit wrap, advance-by-actual-width**: unit = width/cols;
+- **Packing is first-fit wrap, advance-by-actual-width**: unit = width/cols
+  (`spacing=N` puts N between the columns and between the rows: the unit
+  is what the gutters leave, and a cell of two units covers the gutter
+  between them);
   a cell is `span=K` units (default 1), `full_row=true` the whole row
   (exclusive with `span=` — a full row IS the whole span), or — an exact
   `width=`, written or set by code — its own declared size, packed at its own
@@ -1474,8 +1504,8 @@ Rules:
   belongs to the content: `clip_text=true` on a Label, a
   `clip_contents=true` wrapper otherwise, or a wider cell.
 - `span=`/`full_row=` are CELL props of direct Tiles children only (styles
-  can't place cells; widget instance lines may carry them — they stamp the
-  widget root).
+  can't place cells, G1002; widget instance lines may carry them — they
+  stamp the widget root).
 
 **Rejected alternatives**: `cols=` on Flow (grid tracks in a Flow costume —
 it would silently change Flow's natural-size contract); a Grid auto-flow
@@ -1632,9 +1662,11 @@ Sizes are epx. `accent` and `gray` are the palette's words.
   `corner_radius=`); the label centered. No plate under a mark
   (Check/Radio draw their mark, not a plate). A text-only Button (one
   with no children of its own) puts 12 of air left and right of its
-  label and 6 above and below unless the file writes `padding=`; a
+  label and 6 above and below, on each side the file does not write:
+  `padding_left=9` moves the text 9 from the left and keeps the other
+  three, `padding=0` is 0 all around. A
   Button holding its own content spells its own padding. The default is
-  decided once, at resolve, so layout and draw inset by the same number
+  decided once, at build, so layout and draw inset by the same number
   (decided 2026-08-30).
 - **Check** — a 20 box, 1.5 white outline; selected fills `accent` and
   draws a white 10 square inside. Mark, then 8 of air, then the text.

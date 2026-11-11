@@ -86,6 +86,21 @@ pub trait TextMeasure {
     /// Width and height of `text` at `font_size` epx; wrapped at
     /// `max_width` when given. `font` = the file key from `font=`.
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> (f32, f32);
+    /// The narrowest `text` folds to: the width of its longest word, with
+    /// lines ending only between words.
+    ///
+    /// Needed because a wrapping label that fills what is left of a Row
+    /// keeps room for its longest word. `measure` at a wrap width of 0
+    /// cannot answer it: a text engine then breaks between letters and
+    /// answers one letter's width, and the label wraps one letter per
+    /// line.
+    ///
+    /// This default measures every word alone, split at white space. A
+    /// measure that shapes text answers from its own line breaker, which
+    /// also knows the scripts written without spaces.
+    fn narrowest_wrap(&self, text: &str, font_size: f32, font: Option<&str>) -> f32 {
+        text.split_whitespace().map(|word| self.measure(word, font_size, None, font).0).fold(0.0, f32::max)
+    }
     /// A bitmap's own size in pixels, for `aspect=natural` (`None` =
     /// unknown). `key` is the build-wide image id (`Draw::Image` carries
     /// the same), so a host answers from a table, not a string match.
@@ -313,6 +328,7 @@ pub(crate) fn layout_reads(key: PropKey) -> bool {
                 | PropKey::RevealY
                 | PropKey::Overlay
                 | PropKey::Cols
+                | PropKey::Cells
                 | PropKey::Span
                 | PropKey::FullRow
                 | PropKey::Bars
@@ -360,27 +376,82 @@ impl<'a> Lay<'a> {
     /// axis has no own extent (a bare Rectangle measures 0): it shows the
     /// fraction of what it was GRANTED — the slider fill bar, `reveal_x`
     /// = the value's share of the track (user call 2026-09-05; before
-    /// this the bar was 0 wide at every value and no pin looked). Reads
-    /// no rect but `placed`, so the pass can run in any order.
+    /// this the bar was 0 wide at every value and no pin looked). The
+    /// part shown starts at the edge the box is aligned to, whatever its
+    /// size word: `halign=right` shows the right end, `halign=center` the
+    /// middle, and a box with no alignment its left (top) end. Reads no
+    /// rect but `placed`, so the pass can run in any order.
     fn reveal(&self, id: NodeId, placed: Rect) -> Rect {
+        let (fx, fy) = self.reveal_fractions(id);
+        if fx.is_none() && fy.is_none() {
+            return placed;
+        }
+        self.shown_part(id, placed, fx, fy)
+    }
+
+    /// The fraction of itself a box shows across and down (`reveal_x`,
+    /// `reveal_y`); `None` on an axis where it shows all of itself.
+    fn reveal_fractions(&self, id: NodeId) -> (Option<f32>, Option<f32>) {
+        let fraction = |key: PropKey| self.res.num(self.page, id, key).map(|f| f.clamp(0.0, 1.0)).filter(|f| *f < 1.0);
+        (fraction(PropKey::RevealX), fraction(PropKey::RevealY))
+    }
+
+    /// The rectangle a box lays its children out in: its rect as placed,
+    /// or, for a box that shows only a part of itself, a rectangle of the
+    /// box's full size that starts where the shown part starts.
+    ///
+    /// Needed so what a revealed box holds keeps its size and travels with
+    /// the box, whatever the box's size word: a sheet aligned to the
+    /// bottom shows the top of its content and carries it out through the
+    /// bottom as it closes. Without it a box with an exact size leaves its
+    /// content where the full box would stand while a hugging box carries
+    /// it, and an exact box in a stack, placed in a slot of its shown
+    /// length, squeezes what fills it into that slot.
+    fn content_frame(&self, id: NodeId, placed: Rect) -> Rect {
+        let (fx, fy) = self.reveal_fractions(id);
+        if fx.is_none() && fy.is_none() {
+            return placed;
+        }
+        let shown: Rect = self.shown_part(id, placed, fx, fy);
+        let p = self.placement(id);
+        let w: f32 = match p.width {
+            Len::Exact(n) if fx.is_some() => n.max(p.min_width),
+            _ => placed.w,
+        };
+        let h: f32 = match p.height {
+            Len::Exact(n) if fy.is_some() => n.max(p.min_height),
+            _ => placed.h,
+        };
+        Rect::new(shown.x, shown.y, w, h)
+    }
+
+    /// `reveal` for a box that shows `fx` of itself across and `fy` down
+    /// (`None` = all of that axis).
+    fn shown_part(&self, id: NodeId, placed: Rect, fx: Option<f32>, fy: Option<f32>) -> Rect {
         let mut r = placed;
-        let fx = self.res.num(self.page, id, PropKey::RevealX).map(|f| f.clamp(0.0, 1.0));
-        let fy = self.res.num(self.page, id, PropKey::RevealY).map(|f| f.clamp(0.0, 1.0));
-        if let Some(f) = fx.filter(|f| *f < 1.0) {
-            if matches!(self.placement(id).width, Len::Fill(_)) {
+        // The alignment the box was placed by: an Image with both sizes
+        // is centered in a container when its line names no alignment.
+        let mut p = *self.placement(id);
+        if let Some(parent_kind) = self.placing_parent_kind(id) {
+            image_center_default(parent_kind, self.node(id).kind, &mut p);
+        }
+        if let Some(f) = fx {
+            if matches!(p.width, Len::Fill(_)) {
                 r.w *= f;
             } else {
                 let (sw, _) = self.size_at(id, Some(placed.w));
                 r.w = r.w.min(sw);
             }
+            r.x += shown_from(p.halign, placed.w - r.w);
         }
-        if let Some(f) = fy.filter(|f| *f < 1.0) {
-            if matches!(self.placement(id).height, Len::Fill(_)) {
+        if let Some(f) = fy {
+            if matches!(p.height, Len::Fill(_)) {
                 r.h *= f;
             } else {
                 let (_, sh) = self.size_at(id, Some(placed.w));
                 r.h = r.h.min(sh);
             }
+            r.y += shown_from(p.valign, placed.h - r.h);
         }
         r
     }
@@ -549,16 +620,25 @@ impl<'a> Lay<'a> {
 
     fn size_at_uncached(&self, id: NodeId, avail_w: Option<f32>, final_w: bool) -> (f32, f32) {
         let p = self.placement(id);
-        // A HUG width with a cap measures its content NATURALLY (a wrap
-        // label counts one unwrapped line) and the cap binds after — the
-        // shipped order (GPAR76): the toast plate is
-        // min(unwrapped + padding, frame − margins) and the text wraps
-        // inside; the height then counts the folded lines at that bound
-        // width. Without the natural-first pass the plate hugged its
-        // widest WRAPPED line and never reached the cap.
+        // A box with a cap (`max_width=`) is never wider than the cap, so
+        // its content is measured at a width the cap allows: a wrapping
+        // label counts the lines it has at the width the box ends up
+        // with, whichever width word stands beside the cap. Needed
+        // because a parent that hugs the box takes this answer for the
+        // box's height: measured wider than the cap, the text of a toast
+        // pokes out under its row.
+        //
+        // A box that hugs, or one asked with no width on offer (a Row
+        // asking how wide its child wants to be), measures its content
+        // NATURALLY first (a wrap label counts one unwrapped line) and
+        // the cap binds after, the shipped order (GPAR76): the toast
+        // plate is min(unwrapped + padding, frame − margins) and the text
+        // wraps inside. A box that takes the room it is offered measures
+        // at that room or at the cap, whichever is less.
         let hug_w = matches!(p.width, Len::Hug(_)) || (matches!(p.width, Len::Unset) && p.halign != Align::AlignUnset);
-        let (cw, ch) = if !final_w && hug_w && (p.max_width.is_some() || p.max_width_fill) {
-            let (nw, nh) = self.content_min(id, None);
+        let (cw, ch) = if final_w || !(p.max_width.is_some() || p.max_width_fill) {
+            self.content_min(id, avail_w)
+        } else {
             // The fill cap = the room minus this box's own margins (the
             // returned size adds them back, so reporting `avail` raw
             // would grow an unwritten ancestor by the margin width per
@@ -566,23 +646,32 @@ impl<'a> Lay<'a> {
             let m = self.margins(id);
             let mw = m[0].unwrap_or(0.0) + m[2].unwrap_or(0.0);
             let cap = if p.max_width_fill { avail_w.map(|a| (a - mw).max(0.0)) } else { p.max_width };
-            match cap {
-                // Only when the cap BINDS: re-measure at the capped
-                // width so the height counts the folded lines.
-                Some(c) if nw.max(p.min_width) > c => {
-                    // The bound width IS the minimum reported upward —
-                    // reporting the raw natural would grow an unwritten
-                    // ancestor to the unwrapped line and lift the cap.
-                    let (_, h2) = self.content_min(id, Some(c));
-                    (c, h2)
+            match (avail_w, cap) {
+                (Some(room), Some(c)) if !hug_w => self.content_min(id, Some(room.min(c))),
+                (Some(_), None) if !hug_w => self.content_min(id, avail_w),
+                _ => {
+                    let (nw, nh) = self.content_min(id, None);
+                    match cap {
+                        // Only when the cap BINDS: re-measure at the capped
+                        // width so the height counts the folded lines.
+                        Some(c) if nw.max(p.min_width) > c => {
+                            // The bound width IS the minimum reported upward —
+                            // reporting the raw natural would grow an unwritten
+                            // ancestor to the unwrapped line and lift the cap.
+                            let (_, h2) = self.content_min(id, Some(c));
+                            (c, h2)
+                        }
+                        _ => (nw, nh),
+                    }
                 }
-                _ => (nw, nh),
             }
-        } else {
-            self.content_min(id, avail_w)
         };
+        // A floor holds under an exact size too (a control whose
+        // template says `min_size=48x48` used at `20x20`, a width a `when`
+        // poses under the line's floor), here as where the box is placed
+        // (`free_axis`), so the answer is the same in every parent.
         let w = match p.width {
-            Len::Exact(n) => n,
+            Len::Exact(n) => n.max(p.min_width),
             _ => {
                 let mut w = cw.max(p.min_width);
                 if let Some(cap) = p.max_width {
@@ -592,7 +681,7 @@ impl<'a> Lay<'a> {
             }
         };
         let h = match p.height {
-            Len::Exact(n) => n,
+            Len::Exact(n) => n.max(p.min_height),
             _ => {
                 let mut h = ch.max(p.min_height);
                 if let Some(cap) = p.max_height {
@@ -641,7 +730,11 @@ impl<'a> Lay<'a> {
                 // (the tip dialogs' paragraphs), and a cap (`max_width=`)
                 // stops a hug. Only a HUG axis — declared, or an aligned
                 // axis with no width — measures UNWRAPPED, "size to the
-                // text", staying one line until a cap binds it.
+                // text", staying one line until a cap binds it: the caller
+                // (`size_at_uncached`) asks a capped hug with no width for
+                // its one line, and with the cap's width once the cap
+                // binds, so a number cap and `max_width=fill` fold the
+                // text at the same place.
                 let hugs = matches!(p.width, Len::Hug(_)) || (matches!(p.width, Len::Unset) && p.halign != Align::AlignUnset);
                 let bound = if !wrap {
                     None
@@ -650,9 +743,10 @@ impl<'a> Lay<'a> {
                         Len::Exact(n) => Some(inner_w.map_or(n - inset[0] - inset[2], |i| i.min(n - inset[0] - inset[2])).max(0.0)),
                         _ => inner_w,
                     }
+                } else if p.max_width.is_some() || p.max_width_fill {
+                    inner_w
                 } else {
-                    let cap = if p.max_width_fill { inner_w } else { p.max_width.map(|c| (c - inset[0] - inset[2]).max(0.0)) };
-                    cap.map(|c| inner_w.map_or(c, |i| c.min(i)))
+                    None
                 };
                 // A hair of slack on the bound: a box that took its width
                 // FROM this text (a natural Tiles cell, a hugging Flow
@@ -672,7 +766,7 @@ impl<'a> Lay<'a> {
                 let w = if self.res.bool(self.page, id, PropKey::ClipText).unwrap_or(false) {
                     0.0
                 } else if wrap && matches!(p.width, Len::Fill(_)) {
-                    self.text.measure(text, self.font_size(id), Some(0.0), self.font_key(id)).0
+                    self.text.narrowest_wrap(text, self.font_size(id), self.font_key(id))
                 } else {
                     w
                 };
@@ -1071,11 +1165,20 @@ impl<'a> Lay<'a> {
             }
             _ => frame,
         };
-        // Text is the one content a box cannot bend: a Label keeps the
-        // width its text needs even inside a written box, and the written
-        // box cuts it (draw) — otherwise the overflow would hide inside a
-        // label rect that never pokes past, and nothing would clip it.
-        let written = if self.node(id).kind == Kind::Label { [false, false] } else { written };
+        // One line of text is the one content a box cannot bend: a Label
+        // keeps the width its text needs even inside a written box, and the
+        // written box cuts it (draw) — otherwise the overflow would hide
+        // inside a label rect that never pokes past, and nothing would clip
+        // it. A label that WRAPS does bend: it takes a written width like
+        // any box and folds its text there, inside a word where a word is
+        // wider than the box (a text box the user drags narrow). Its
+        // longest-word floor holds where the room is no written number.
+        let written = if self.node(id).kind == Kind::Label {
+            let wraps: bool = self.res.bool(self.page, id, PropKey::Wrap).unwrap_or(false);
+            [written[0] && wraps, false]
+        } else {
+            written
+        };
         let (min_w, _) = self.size_at(id, Some(frame.w));
         let (x, w) = free_axis(frame.x, frame.w, p.width, p.halign, m[0], m[2], min_w, p.min_width, p.max_width, p.max_width_fill, written[0]);
         // The height minimum at the width the node actually got (wrap
@@ -1129,6 +1232,8 @@ impl<'a> Lay<'a> {
     }
 
     fn place_children(&mut self, id: NodeId, rect: Rect) {
+        // Only a box that holds something asks where its content starts.
+        let rect: Rect = if self.res.children(self.page, id).next().is_some() { self.content_frame(id, rect) } else { rect };
         let inner = self.inner_of(id, rect);
         let kind = self.node(id).kind;
         if places_each_child_alone(kind) {
@@ -1320,14 +1425,15 @@ impl<'a> Lay<'a> {
 
     // ----- tiles -------------------------------------------------------------
 
-    /// The Tiles lattice: unit = width / cols, cells abut (no gutters —
-    /// `spacing=` says nothing here); a cell is `span` units (`full_row` =
-    /// all of them), packed first-fit in declaration order, wrapping
-    /// whole; a row is as tall as its tallest cell.
+    /// The Tiles lattice: `cols` columns of one width with `spacing=`
+    /// between them and between the rows (none written = the cells
+    /// touch); a cell is `span` columns and the gutters between them
+    /// (`full_row` = the whole width), packed first-fit in declaration
+    /// order, wrapping whole; a row is as tall as its tallest cell.
     fn tiles_cells(&self, id: NodeId, inner_w: f32) -> (Vec<(NodeId, Rect)>, f32) {
-        let spacing = 0.0f32;
+        let spacing = self.spacing(id);
         let cols = self.res.num(self.page, id, PropKey::Cols).unwrap_or(1.0).max(1.0) as usize;
-        let unit = (inner_w / cols as f32).max(0.0);
+        let unit = ((inner_w - spacing * (cols as f32 - 1.0)) / cols as f32).max(0.0);
         // `cells=natural` (D112): a cell is as wide as its own content, so
         // short names pack several to a row and a long one takes what it
         // needs — the names-only catalog. `span=` says nothing then (there
@@ -1355,7 +1461,7 @@ impl<'a> Lay<'a> {
             let w = if full {
                 inner_w
             } else if let Len::Exact(fw) = self.res.placement[c].width {
-                fw
+                fw.max(self.res.placement[c].min_width)
             } else if natural {
                 self.size_at(c, None).0.min(inner_w)
             } else {
@@ -1833,7 +1939,9 @@ fn free_axis(start: f32, extent: f32, len: Len, align: Align, m_near: Option<f32
     let pos = match align {
         Align::Start => start + near,
         Align::End => start + extent - far - size,
-        Align::Center => start + (extent - size) / 2.0,
+        // Centered in the room the written margins leave: one margin
+        // shifts the box by half of it.
+        Align::Center => start + near + (extent - near - far - size) / 2.0,
         Align::AlignUnset => {
             // A pin: the named edge moves, the other follows at size distance.
             if m_near.is_some() {
@@ -1849,6 +1957,16 @@ fn free_axis(start: f32, extent: f32, len: Len, align: Align, m_near: Option<f32
         }
     };
     (pos, size)
+}
+
+/// Where the shown part of a revealed box starts, from the start of the
+/// box as placed: `hidden` is how much of the box does not show.
+fn shown_from(align: Align, hidden: f32) -> f32 {
+    match align {
+        Align::End => hidden,
+        Align::Center => hidden / 2.0,
+        Align::Start | Align::AlignUnset => 0.0,
+    }
 }
 
 /// Which axes a Scroll pans: `allow=` when present, else inferred from
@@ -2536,6 +2654,62 @@ mod tests {
 
     fn rect(p: &Page, r: &[Rect], name: &str) -> Rect {
         r[p.find(name).unwrap().index()]
+    }
+
+    /// A page that sends the layout pass down each of its roads: every
+    /// container kind, text that wraps and text that is cut, a ratio, a
+    /// revealed box, a seat, cells with spans.
+    const EVERY_ROAD: &str = "View v {
+ Column col spacing=4, border_thickness=1 {
+  Label title text=\"Brushes and colors\", wrap=true, font_size=20
+  Label cut text=\"cut\", clip_text=true
+  Row row { Rectangle a width=20, height=10; gap fill; Button ok text=\"OK\" }
+  Flow flow orientation=vertical, height=60 { Rectangle f1 10x10; Rectangle f2 10x10 }
+  Tiles tiles cols=3, cells=natural, spacing=2 { Label t1 text=\"one\"; Label t2 text=\"two\", span=2; Label t3 text=\"three\", full_row=true }
+  Grid grid cols=[hug, fill], row_height=20 { row { Rectangle g1 col_span=2 }; row { Rectangle g2 row_span=1; Rectangle g3 } }
+  Scroll scroll allow=vertical, bars=reserve, height=40 { Column body { Label s1 text=\"x\" } }
+  List list height=60, bars=never { empty { Label none text=\"none\" }; repeat rows by $item.id { ListItem { Label r text=$item.title } } }
+  Panel part reveal_y=0.5 { Rectangle shape aspect=2, width=30; Rectangle over overlay=true, width=fill, height=fill }
+  Layers free { seat spot; Check c text=\"c\"; Toggle t; Slider s; Input i; Rectangle hid visibility=gone }
+ }
+}
+";
+
+    /// Every key the layout pass reads off the look is one `layout_reads`
+    /// names. Red when a new read is added to the pass and not to the
+    /// list: the layout kept between frames would then keep the old
+    /// answer when a `when` or a code write changes that key (a mosaic
+    /// kept its old cell sizes when `cells=` changed).
+    #[test]
+    fn every_key_the_layout_reads_is_in_layout_reads() {
+        // The keys read while a page is laid out, wrappers in other files
+        // included.
+        let c = compile(EVERY_ROAD, &|_| None);
+        assert!(!crate::diag::has_errors(&c.diags), "{:#?}", c.diags);
+        let rt = Runtime::new(&c.page);
+        let res = resolve(&c.page, &rt);
+        let read: Vec<PropKey> = crate::runtime::keys_read_by(|| {
+            layout(&c.page, &res, Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+        });
+        let unwatched: Vec<PropKey> = read.iter().copied().filter(|k| !layout_reads(*k)).collect();
+        assert!(unwatched.is_empty(), "the layout pass reads {unwatched:?}, which `layout_reads` does not name");
+        for key in [PropKey::Cells, PropKey::Cols, PropKey::Span, PropKey::FullRow, PropKey::ColSpan, PropKey::RowSpan, PropKey::RowHeight, PropKey::Spacing, PropKey::Wrap, PropKey::ClipText, PropKey::Text, PropKey::FontSize, PropKey::Font, PropKey::Aspect, PropKey::RevealX, PropKey::RevealY, PropKey::Overlay, PropKey::Orientation, PropKey::Bars, PropKey::Allow, PropKey::BorderThickness, PropKey::Visibility] {
+            assert!(read.contains(&key), "the page must send the layout down the road that reads {key:?}");
+        }
+        // The keys the layout file itself names, for the roads the page
+        // above may miss. `FontColor` is named only where the kept draw
+        // asks which words a box hands down.
+        let source: &str = include_str!("layout.rs");
+        let pass: &str = source.split("#[cfg(test)]").next().unwrap_or(source);
+        let by_name: Vec<(String, PropKey)> = WORDS.iter().map(|(_, k)| (format!("{k:?}"), *k)).collect();
+        for part in pass.split("PropKey::").skip(1) {
+            let name: String = part.chars().take_while(|ch| ch.is_ascii_alphanumeric()).collect();
+            if name == "FontColor" || name.is_empty() {
+                continue;
+            }
+            let Some((_, key)) = by_name.iter().find(|(n, _)| *n == name) else { continue };
+            assert!(layout_reads(*key), "layout.rs names `PropKey::{name}`, which `layout_reads` does not");
+        }
     }
 
     #[test]

@@ -194,7 +194,7 @@ fn a_hugging_flow_is_as_wide_as_its_widest_packed_row() {
 #[test]
 fn margins_under_a_container_are_refused() {
     let c = gogo_ui::compile::compile("View v { Column c { Rectangle r 40x10, margin_left=8 } }", &|_| None);
-    assert!(c.diags.iter().any(|d| d.message.contains("margins only apply under a plain box")), "{:#?}", c.diags);
+    assert!(c.diags.iter().any(|d| d.code == "G1014" && d.message.contains("a Column places its children itself") && d.message.contains("`spacing=`") && d.message.contains("`gap`")), "{:#?}", c.diags);
     let free = gogo_ui::compile::compile("View v { Layers l { Rectangle r 40x10, margin_left=8 } }", &|_| None);
     assert!(free.diags.is_empty(), "a free parent keeps margins: {:#?}", free.diags);
 }

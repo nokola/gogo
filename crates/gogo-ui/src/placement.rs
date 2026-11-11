@@ -207,12 +207,24 @@ impl Placement {
                     self.height = both;
                 }
             },
-            PropKey::MinSize => {
-                if let Value::VSize(w, h) = v {
-                    self.min_width = w.unwrap_or(0.0);
-                    self.min_height = h.unwrap_or(0.0);
+            PropKey::MinSize => match v {
+                // `min_size=30x20`, `min_size=30x`, `min_size=x20`: the
+                // sides it names; the other keeps the floor it has.
+                Value::VSize(w, h) => {
+                    if let Some(w) = w {
+                        self.min_width = w;
+                    }
+                    if let Some(h) = h {
+                        self.min_height = h;
+                    }
                 }
-            }
+                // One number for both sides (`min_size=44`), as `size=44`.
+                _ => {
+                    let both: f32 = or(number_of(page, v), 0.0, &mut slip);
+                    self.min_width = both;
+                    self.min_height = both;
+                }
+            },
             _ => {}
         }
         slip

@@ -266,7 +266,7 @@ fn offscreen_names_shoved_nodes_not_parked_ones() {
 /// plate. Two named edges still span a box with NO size word.
 #[test]
 fn margins_never_stretch_a_hug_box() {
-    let c = ok("View v {\n Panel card width=hug, height=hug, margin=8, valign=top { Rectangle r 50x20 }\n Panel span margin=8, margin_top=100, height=40 { }\n}\n");
+    let c = ok("View v {\n Panel card width=hug, height=hug, margin=8, valign=top { Rectangle r 50x20 }\n Panel span margin=8, margin_top=100, height=40, valign=top { }\n}\n");
     let page = &c.page;
     let rt = Runtime::new(page);
     let f = KeptFrame::fresh(page, resolve(page, &rt), Rect::new(0.0, 0.0, 400.0, 400.0), &FixedAdvance);
