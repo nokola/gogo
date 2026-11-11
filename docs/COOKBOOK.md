@@ -126,8 +126,8 @@ View myPageRoot {
 Anything you spell wins over the defaults (`View splash background=black`
 paints black; `View bar valign=bottom` hugs the bottom instead of filling).
 When the root itself IS a styled box — a toast banner, a progress track —
-use `Panel` at the root instead: it keeps the plate look that View's
-transparent default exists to remove.
+a `Panel` may be the root instead. Like `View` it takes the whole space and
+paints nothing until you give it a `background=`.
 
 ---
 
@@ -287,8 +287,9 @@ style MenuButton width=220, height=48 {
 ```
 
 WPF's `Foreground` and CSS's `color` both land here. Gogo's `color=` is
-only the fill of nodes that own one (`Rectangle`, `Circle`) — on anything
-else it's an error that points you to `font_color=`/`background=`/`opacity=`.
+only the color of nodes that own one (a `Rectangle`'s or `Circle`'s fill, an
+`Arc`'s stroke, a `Slider`'s filled part) — on anything else it's an error
+that points you to `font_color=`/`background=`/`opacity=`.
 
 ---
 
@@ -320,8 +321,9 @@ Button dangerRow .GalleryItem text="Delete" {
 }
 ```
 
-Merge order, most local wins: style base → style when → node properties → node
-when override.
+Merge order, the later one wins: style base → node properties → style when →
+node when override. A `when` beats a plain property while its state holds, so
+a property on the node never switches a style's response off.
 
 ---
 
@@ -349,8 +351,8 @@ Styles usually live in a shared file, pulled in with `uses`:
 uses "styles/theme.gogo"
 ```
 
-(If you guess `style=ToolButton` instead, the error redirects you: *"use
-`.ToolButton` to apply a style"*.)
+(If you guess `style=ToolButton` instead, the compiler refuses it: `style=`
+is not a property (G2001). The spelling is `.ToolButton`.)
 
 ---
 
@@ -561,16 +563,19 @@ StatCard runCard {
 
 - A named slot is a **region**: its line takes placement (`width`/`height`/
   `halign`/`valign`/margins/`WxH`) and the box family (`background`/
-  `corner_radius`/`border-*`/`padding`). Content is clipped to it and fills
+  `corner_radius`/`border_*`/`padding`). Content is clipped to it and fills
   it; `padding` pushes content in; the region takes its content's space in a
   stack, so it never collapses.
 - Filling replaces that slot's **default content** entirely. Box props stay
   (they belong to the region). Slots declared *inside* another slot's content are
   structure — they survive a fill and draw above it.
-- Restyling content is filling: `slot label font_size=12` errors — bring the
-  node instead (`slot label { Label font_size=12 }`).
-- Typos are caught: an unknown fill name errors with the widget's slot list;
-  bare children on a widget without a default slot error naming the fills.
+- Restyling content is filling: a content word on the widget's own slot line
+  (`slot label font_size=12`) errors — bring the node instead
+  (`slot label { Label font_size=12 }`). On an instance's fill line the
+  compiler checks nothing yet: properties written there are dropped.
+- Typos are not caught yet: a fill for a slot name the widget does not have,
+  and bare children on a widget without a default slot, compile with no
+  error and show nothing.
 
 ---
 
@@ -605,16 +610,19 @@ fn task(id: i64, title: &str) -> Item {
 ```
 
 - Assignment IS the change event: re-assign and gogo reconciles by key —
-  items whose data didn't change keep their nodes (focus and states
-  survive), changed items rebuild, removed keys free, order follows the
-  array. Sort or filter app-side and just assign the result.
+  items whose data didn't change keep their rows untouched (focus and
+  states survive), a changed item is bound again to a row that already
+  exists (nothing is rebuilt), a removed key's row goes back to the pool,
+  order follows the array. Sort or filter app-side and just assign the
+  result.
 - `$item.field` reads the item's data; `as $task` renames the binding
   (`repeat tasks as $task by $task.id`). Primitive collections key on the
   item itself: `repeat names by $item`.
-- `empty { ... }` is REQUIRED, first in the body — the zero-items screen,
-  which also shows before the first assignment; `set_items` with no items
-  clears back to it. Truly nothing to show? A literal `empty { }`
-  says so explicitly.
+- `empty { ... }` is the zero-items screen: it shows before the first
+  assignment, and `set_items` with no items clears back to it. In a plain
+  `repeat` it sits in the repeat's body, and the compiler does not ask for
+  one; a `List` must have exactly one, beside its repeat (G9016). Truly
+  nothing to show? A literal `empty { }` says so explicitly.
 - Buttons inside the template know their row: for an event from inside a
   row, `Runtime::item_key(&page, ev.node)` is the key of that row.
 - Bad data — a duplicate `id` above all — refuses the WHOLE assignment:
@@ -689,7 +697,9 @@ The data is handed over exactly as before (`set_items`). Then, with
   the `empty` text — counts into the minimum (D127), so a bare list shows
   its header and "none yet" line even in a HUG parent (a centered menu
   `Column`, a scrolling page) — but the ROWS starve there: provable cases
-  warn at build time (G9015), the rest at runtime. Fixes: `height=<epx>`,
+  warn at build time (G9015); the rest give no warning, and a host can ask
+  `gogo_ui::layout::starved` which Lists got no room for a row. Fixes:
+  `height=<epx>`,
   or `height=hug` to size to the items (a bare hug never scrolls —
   content past the screen overflows). `height=hug, max_height=400` is the
   full centered-menu arc: the block grows with the items until the cap,
@@ -813,7 +823,8 @@ the `transition` rule. The arrows, Home/End AND the mouse wheel all reach
 the behavior as logical actions — a vertical wheel tick is
 `Increment`/`Decrement` on the instance under the pointer, no focus
 needed. `live($value)` keeps the label current — a bare `$value` in the
-body errors with the wrap fix-it (it would freeze). Float displays round
+body compiles too, but its label keeps the value the instance started with
+and never follows a drag. Float displays round
 to 0.1 by default; `live(round($value, 1))` picks another step. The
 position thumb takes its width from its content — give the Circle a real
 width (`width=20`), not `width=fill`.
@@ -837,10 +848,11 @@ Fader gain slot.track.corner_radius=3, value=25   // one-off: no style needed
 
 - Typos die at the declaration: `slot.thmb` lists the real slots,
   `when hovred` lists the real states, and a driven property
-  (`slot.thumb.x`) errors — the control moves it, you style its look.
+  (`slot.thumb.halign`) errors — the control moves it, you style its look.
 - Slot responses in `when` take the motion words (`scale`, `translate.x`,
-  `rotate`, `opacity`) and the box family (`background`, `corner_radius`,
-  `border-*`).
+  `rotate`), `opacity`, `background` and `border_color`. The rest of the box
+  family (`corner_radius`, `border_thickness`) is the region's base look: it
+  goes on the style line, and in a `when` it is an error (G3002).
 - A plain style (no `for=`) may respond to `held` too — it's checked
   where you apply it, and works on any press surface (buttons, `ListItem`
   rows, sliders, controls declaring `state_builtin held`).
@@ -904,9 +916,9 @@ anim appear duration_each=0.5, easing=cubic_out {
 
 Motion words (`translate`/`scale`/`rotate`/`opacity`) use a visual-only
 channel — layout never moves, containers can't stomp it, and it works on any
-node (no restructuring a tree to animate it). Layout geometry (`position`,
-`offset_*`, sizes) is not animatable: layout is declared, motion is
-transformed.
+node (no restructuring a tree to animate it). Layout words (sizes, margins,
+paddings) do not move under an anim: such a line compiles, but the box stays
+where the layout put it — layout is declared, motion is transformed.
 
 - `from`/`to` is shorthand for two keys. `to=` alone starts from the LIVE
   value when the step begins (interruptible fades); `from=` pins the start
@@ -1042,8 +1054,8 @@ style ToolButton background=$chrome {
 state's *plain* responses (`background` here). Without them the plain
 responses change **instantly** — predictable, but an instant color pop next
 to a smooth scale reads as a bug, so time them whenever a rule carries an
-anim. Leaving the state cancels the anim and tweens the displaced
-properties back with the leaving rule's timing.
+anim. Leaving the state cancels the anim: what the anim moved goes back at
+once, and the plain responses tween back with the leaving rule's timing.
 
 ---
 
@@ -1062,7 +1074,7 @@ widget FxButton $icon="", $text="" {
             key t=0.1, v=1.25, easing=cubic_out   // pop out fast
             key t=0.3, v=1.0,  easing=back_out    // settle with overshoot
         }
-        caption.translate.x {
+        and caption.translate.x {
             key t=0,    v=0
             key t=0.05, v=-3
             key t=0.10, v=3
@@ -1098,9 +1110,9 @@ Notes:
 - One `anim` holds both effects — tracks run in parallel.
 - Widget-scoped anims and styles see the widget's internal names (`icon`,
   `caption`) and are invisible outside it.
-- Leaving the state restores displaced properties to base with the
-  leaving rule's timing; tracks that end at their base value (the shake ends
-  at 0) need no undo.
+- Leaving the state puts what the anim moved back to base at once (the
+  leaving rule times only the plain responses); tracks that end at their
+  base value (the shake ends at 0) need no undo.
 - Rapid press/release is safe: entering a state cancels its exit tween
   (and vice versa), always starting from current values.
 - Scaling pops from the center: `scale` and `rotate` turn about the box's
@@ -1140,18 +1152,19 @@ Button backButton     text="Back",     on:activate=go(base)
 
 ## How do I stop an animation and put things back?
 
-`Runtime::stop` ends the anim without playing it out and returns every
-property it animated to what the file says without the anim — the declared
-value, the `when` value holding at the time, or a finished anim's end pose
-the play started from. A stopped anim is not in the list
-`Runtime::take_finished` hands out.
+`Runtime::stop` ends the anim without playing it out and, called with
+`restore` true, returns every property it animated to what the file says
+without the anim — the declared value, the `when` value holding at the
+time, or a finished anim's end pose the play started from. Called with
+`false`, the values stay where the anim left them. A stopped anim is not in
+the list `Runtime::take_finished` hands out.
 
 ```kdl
 anim pulse repeat=forever {
     dot.scale from=1, to=1.2, duration=0.4, autoreverse=true
 }
 style DotLook {
-    when held scale=0.9
+    when held dot.scale=0.9
 }
 Button dotButton .DotLook width=40, height=40 {
     Circle dot width=24, height=24, color=accent, halign=center, valign=center
@@ -1163,13 +1176,13 @@ the stop puts `dot.scale` back to 1, the declared value):
 
 ```rust
     host.rt.play_id(&host.page, appear, Finish::Nothing);
-    host.rt.stop_id(appear, true); // true: every property goes back to what the file says
+    host.rt.stop_id(appear, true); // true: every property goes back to what stands without the anim
 ```
 
 Three answers to "back to what?":
 
 - Nothing else writes the property → the **declared** value (`scale` 1).
-- A `when` is holding it (the button is held: `when held scale=0.9`) →
+- A `when` is holding it (the button is held: `when held dot.scale=0.9`) →
   the **when's** value, 0.9. The anim was the top writer while it played;
   stopping hands the property back to the `when`.
 - The play started from a **finished** anim's end pose (`vanish` faded the
@@ -1185,14 +1198,13 @@ would fight on every flip"); an anim started from code simply outranks the
 
 ## How do I animate a color (a glow, a flash)?
 
-Any word a `transition` rule can move, an anim can drive — colors
-included, with everything a track already has (chains, `autoreverse`,
-`repeat=forever`, easings):
+An anim can drive the look words a `transition` rule can move — colors,
+`corner_radius`, `border_thickness`, `font_size` — with everything an anim
+already has (chains, `autoreverse`, `repeat=forever` on the header, easings):
 
 ```kdl partial
-anim warn {
-    saveButton.background to=#E51400FF, duration=0.2,
-        autoreverse=true, repeat=forever
+anim warn repeat=forever {
+    saveButton.background to=#E51400FF, duration=0.2, autoreverse=true
 }
 
 anim fadeHint {
@@ -1253,7 +1265,8 @@ eats.
 
 ## How do I disable a control (and style it)?
 
-Set `disabled=true` from code or markup; style the look in the shared style:
+Write `disabled=true` in the file, or flip it from code with
+`rt.set_state(node, DISABLED, true)`; style the look in the shared style:
 
 ```kdl
 style ToolButton background=$chrome {
@@ -1265,16 +1278,21 @@ Button undoButton .ToolButton text="Undo", disabled=true
 
 Built-in states: `held`, `hovered`, `focused`, `focus_within`, `disabled`,
 `selected`.
-`hovered`, `focused`, and `disabled` work on **any** node — a button
-`disabled`
-also stops answering input; on anything else it's a styling flag (the greyed
-Label beside its greyed Slider), with `interactive=false` as the input switch
-when a node must also stop responding. `held` needs a press surface (a
+`hovered`, `focused`, and `disabled` may be written on **any** node.
+`disabled` stops input on the node and on everything inside it (a disabled
+`Panel` switches off every control in it), and `when disabled` answers on
+each of them; on a node that takes no input it is a styling flag (the greyed
+Label beside its greyed Slider). `focused` holds only on a node the keyboard
+can reach (the Button family, a `ListItem` row, a Slider, an `Input`, a
+control declaring `state_builtin focused`), `hovered` on the input-taking
+node under the mouse and on every node that contains it. `held` needs a
+press surface (a
 button, a `ListItem` row, a slider); `selected` needs a provider (a
 toggle-mode button, a Radio, a `List`).
 `hovered` answers a real mouse only — a finger isn't a pointer, so touch
-screens never show hover styles (the emulated pointer would otherwise strand
-the look wherever the finger lifted) — and a mouse press holds hover through
+screens never show hover styles (the host feeds hover from a mouse,
+`Input::hover`, never from a finger, so no look is left where a finger
+lifted) — and a mouse press holds hover through
 a mid-drag slip off the control until release. A misspelled state is a
 build error that names the states (G0036).
 
@@ -1294,10 +1312,11 @@ Label name min_width=220         // at least 220 — still stretches
 ```
 
 There is no device-pixel unit: every length is epx (a `px` suffix is build
-error G0038), and the renderer snaps each box to whole device pixels.
+error G0038), and the renderer snaps each box's corner to a whole device
+pixel (its size keeps its fraction).
 
 `size=WxH` (or a bare `50x90`) is the exact-size shorthand for both axes;
-omit a component to leave that axis alone (`size=x72`). `min-*` is the
+omit a component to leave that axis alone (`size=x72`). `min_*` is the
 "at least" spelling — the control keeps stretching with its container.
 Heads-up on the default: children stretch across a `Column`'s width unless
 you say `hug` (or give an exact size).
@@ -1312,8 +1331,10 @@ then wraps — see "How do I make a box hug text that can wrap (a toast)?".
 
 ## How do I make a box hug text that can wrap (a toast)?
 
-`width=hug` on a box holding a wrapping `Label` collapses — a wrap-label's
-minimum shrinks toward its longest word. The cap is the fix: `max_width=`
+`width=hug` on a box holding a wrapping `Label` stops short: the text wraps
+at the room the parent offers and the box is only as wide as its longest
+wrapped line (in a `Row` the text stays on one line). The cap is the fix:
+`max_width=`
 pairs with `hug` and means "size to the text, wrap only past this". With
 `max_width=fill` the limit is the space a `width=fill` box would get — the
 parent frame minus the margins — tracked live across resizes:
@@ -1331,10 +1352,10 @@ Layers {
 Short text: the plate is exactly as wide as the text, centered. Long text:
 the plate stops at the screen minus 24 and the text wraps. Swapping
 `tipText.text` from code re-fits the plate. On a fill-capped axis the
-margins bind the measuring frame (the one place a centered axis takes
-margins); a number (`max_width=336`) is the fixed-limit form. Caps bind
-under free parents (`Layers`, slots) and never shear content that can't
-shrink — hard minimums win.
+margins bind the measuring frame (a centered axis takes margins only when
+both are named); a number (`max_width=336`) is the fixed-limit form. A cap
+is a hard edge: content that can't shrink is cut at it, and only a
+`min_width` floor beats it.
 
 Add `min_width=` for a floor and the box hugs inside a band (D135):
 `width=hug, min_width=100, max_width=336` never drops below 100 however
@@ -1398,22 +1419,22 @@ Layers {
 On a phone narrower than 380 the column fills edge to edge, exactly like
 plain `fill`. On anything wider it stops at 380 and centers — by pure
 width math, no per-screen-class poses. The side (`halign=center`, or
-left/right) is required: when the cap binds, the leftover space has to go
-somewhere, and the file says where instead of a silent default (WPF
-silently centers here — a classic surprise).
+left/right) says where the leftover space goes when the cap binds. It is not
+required: with no side written the column centers, as WPF does.
 
 On a stack's own stacking axis (a width cap in a `Row`, a height cap in a
-`Column`) the cap is refused (G1002: the slot is the frame there) — cap
-the stack itself. Margins
-inset the measuring space, and rigid content wider than the cap still
-wins (a cap never shears — same floor-beats-cap law as the hug cap).
+`Column`) a cap on a `fill` axis is refused (G1002: the slot is the frame
+there) — cap the stack itself. Margins
+inset the measuring space, and rigid content wider than the cap is cut at
+it (the cap is a hard edge, the same as the hug cap).
 
 ---
 
 ## How do I make a box scroll when its content is too tall (a menu)?
 
 Give the exact size to a `Scroll` — a Scroll axis is allowed to be smaller
-than its content (that's its whole job); everything else grows to fit. A
+than its content (that's its whole job); any other exact-size box cuts off
+what does not fit. A
 `hug` axis on the Scroll fits the content and turns scrolling off on that
 axis, so a menu hugs its width and pans vertically:
 
@@ -1432,7 +1453,7 @@ Scroll halign=center, valign=center, height=100, width=hug {
 The centering moved to the Scroll — it is the 100-tall box now; the Column
 inside takes the viewport and scrolls past it (touch pan, fling, springy
 edges — see "How do I let a list scroll under the notch?" for insets). Both
-axes `hug` would leave nothing to scroll — the build warns. For selectable
+axes `hug` leave nothing to scroll, and the build says nothing. For selectable
 rows use a `List` instead; it scrolls itself and must not sit in a `Scroll`.
 
 Don't know how tall the menu should be? Cap the hug instead of picking a
@@ -1459,9 +1480,10 @@ hides the scrollbar while the axis keeps panning — the handheld look
 
 ## How do I center a control?
 
-`halign` and `valign` — and they work the same everywhere: on a free layer
+`halign` and `valign` — and they work the same on a free layer
 (`Layers`) and inside containers (`Column`, `Row`,
-`Panel`, `Scroll`):
+`Panel`, `Scroll`), with one exception: along a stack's own line (`valign`
+in a `Column`, `halign` in a `Row`) they do nothing:
 
 ```kdl
 Layers page {
@@ -1499,17 +1521,19 @@ Label rowLabel text="save + share", font_size=15, min_height=48, vertical_alignm
 ```
 
 Wrapping is `wrap=true` (WPF `TextWrapping="Wrap"`). A wrapping
-Label needs a width to wrap against — a `min_width`, a container that
-stretches it, or `max_width=fill` on a hugging box (wrap at the screen):
+Label needs a width to wrap against — its own `width=` (a number or `fill`),
+a container that stretches it, or `max_width=fill` on a hugging box (wrap at
+the screen). A `min_width` is only a floor, the text does not wrap at it:
 
 ```kdl
 Label blurb text="A longer description that wraps onto several lines",
     font_size=13, min_width=180, wrap=true
 ```
 
-Under a pure hug chain wrap-text renders single-line at its full text width
-(hug = natural size, D254) — a wrap that can never bind is linted (G1004)
-instead of collapsing the box to a sliver.
+A Label that hugs its own width (`width=hug`, or `halign=` and no width),
+or sits in a `Row` with no width word, renders its wrap-text single-line at
+its full text width (hug = natural size, D254). `wrap=true` beside
+`width=hug` with no `max_width` is linted (G1004).
 
 ---
 
@@ -1528,7 +1552,7 @@ Panel padding=12 {
 }
 ```
 
-  A `Layers` (and the `View` root) takes `padding-*` directly — free
+  A `Layers` (and the `View` root) takes `padding_*` directly — free
   placement is gogo's own math, so the air folds into every child's
   placement with no wrapper at all:
 
@@ -1604,7 +1628,8 @@ max; an exact size (`width=50`, `50x90`) clamps its axis — content never
 grows it. Air works both ways (D242): `Panel padding=N` and positive
 placement margins both count into the derived minimum — the empty space you
 declared is space the button reserves. Negative margins mean "stick out past
-the edge on purpose" and count as zero. See REFERENCE "Button content
+the edge on purpose": the part that hangs out comes off the derived
+minimum, never below zero. See REFERENCE "Button content
 sizing".
 
 ---
@@ -1626,7 +1651,8 @@ Layers screen {
 }
 ```
 
-The layer host must be a `Layers` — a `Column`/`Row`
+The layer host is a `Layers` (the `View` root and a `Panel` stack their
+children the same way) — a `Column`/`Row`
 would lay the children out in a line instead of letting them stack.
 
 ---
@@ -1713,7 +1739,7 @@ Panel previewStrip background=#000000FF {
 let key = images.get("preview://brush").expect("the page names it");
 let on = ui.external_image(key);
 // whenever the picture changes: point the box at the new texture
-ui.set_external_image(&device, on, &texture);
+ui.set_external_image(&device, on, Tex_Image_Straight_Srgb_4xU8_RGBA::new(&texture));
 ```
 
 (`images` and `ui` here are the host's picture table and its renderer, not
@@ -1761,8 +1787,10 @@ Layers tray valign=bottom, height=50, margin_bottom=-90
 Rectangle rule margin_left=20, margin_right=20
 ```
 
-A per-edge key that can't bind is a build error (the far edge of an
-aligned axis; any edge of a centered axis) — the `margin=N` shorthand stays
+A per-edge key that can't bind does nothing, and the build says nothing
+(the far edge of an aligned axis; one edge of a centered axis). Only
+`margin_left` with `margin_right` beside an exact `width` is a build error
+(G1006). The `margin=N` shorthand stays
 pure breathing room and never errors. For poses that *change* at runtime
 (drawer open/closed), declare an `arrangement` (two recipes down); for
 transient motion, animate `translate` (next recipe).
@@ -1878,8 +1906,9 @@ Panel panel visibility=gone, halign=left, height=fill,
 ```
 
 Flipping the visibility runs the pair (the hide plays first, then hides and
-restores the base look). Playing the opposite anim mid-flight starts from
-current values.
+restores the base look). Played mid-flight, the opposite anim starts each
+line from the current value unless the line names a `from=`: `disappear`
+turns around where the panel is, `appear` jumps back to its `from=`.
 
 **It stays off-screen as a standing pose** (a parked tile, a collapsed
 drawer): that's an `arrangement`, not an anim — next recipe.
@@ -2021,11 +2050,12 @@ when screen.landscapeSmall {
 Pose keys are margins, `width`/`height`, `halign`/`valign` and any style
 prop. Setting an alignment RE-DECLARES that axis from the pose's keys —
 that's how a stretch-with-margins portrait panel becomes a docked
-fixed-width landscape one. (Arrangements can't re-anchor — they tween.)
+fixed-width landscape one. (An arrangement can re-anchor too: its flip
+glides the box to the new seat.)
 
 It composes with arrangements: a dialog holding its `expanded` pose on a
-rotated screen keeps BOTH — the arrangement wins any key both set, the
-screen class keeps the rest, and closing the pose lands back on the
+rotated screen keeps BOTH — a key both set goes to the block written later
+in the file, each keeps the rest, and closing the pose lands back on the
 landscape seat, not on the portrait base. No transition rules here: a
 rotation is the OS snapping the window, and the pose snaps with it.
 
@@ -2116,8 +2146,9 @@ when screen.portraitSmall {
 A declared `min_width`/`min_height` floor still clamps every posed size
 (declare `min_width=30` and a posed `width=20` renders 30 — the floor
 rule), and a posed `min_*` replaces the declared floor for as long as
-its block applies. Margins and alignment on container children stay build
-errors — the parent seats its children; only the SIZE is poseable.
+its block applies. Margins on container children stay build errors (G1014)
+— the parent seats its children; a pose may write the SIZE and the
+alignment a child may write there (`halign` in a `Column`).
 
 ---
 
@@ -2150,14 +2181,14 @@ Layers stage width=240, height=200 {
 Keep the button **momentary** — don't add `toggle=true`. A toggle-MODE
 button holds its own selected state next to the pose's, and the two drift
 apart the moment anything else flips the pose (a second button, code,
-`go(base)` anywhere); gogo lints the combination. The pose IS the state.
+`go(base)` anywhere), and the build says nothing. The pose IS the state.
 
 ---
 
 ## How do I slide content open smoothly (animated expand)?
 
-`reveal_y=` — the node's layout SPACE as a 0..1 fraction. `visible` is a
-bool and bools snap; a fraction is a float, and floats tween under the
+`reveal_y=` — the node's layout SPACE as a 0..1 fraction. `visibility` is a
+word and words snap; a fraction is a float, and floats tween under the
 `transition` rule — so the label below slides open and the panel border
 grows WITH it, no magic heights to maintain:
 
@@ -2294,13 +2325,14 @@ Scroll {
 
 A span that can't fit the row's remainder wraps whole to the next row (the
 tail stays empty — first-fit, no reshuffling). `cols=` is live: set it from
-code (`tiles.Set("cols", 3)`) and the mosaic re-packs — an icon_size toggle
+code (`rt.set_prop(tiles, PropKey::Cols, Value::VNum(3.0))`) and the mosaic
+re-packs — an icon_size toggle
 is that one write. Wider air between tiles is padding inside the tile
 (wrap the content in a `Panel padding_left=6, padding_top=6`), so the gap
 scales with nothing and the hit rect stays the visible tile. A caption Label
 on a tile needs `clip_text=true` (plus `width=fill` to keep it stretched):
 without it, a long name's minimum makes the tile OVERLAP its neighbors —
-cells never shrink content, and Tiles warns when one outgrows its cell.
+cells never shrink content, and nothing warns when one outgrows its cell.
 
 **A names-only view of the same mosaic.** Give each tile a second look — its
 name in a bordered `Panel` — hidden under pictures, and let one arrangement
@@ -2327,9 +2359,7 @@ Tiles gallery cols=2, cells=lattice {
 ```
 
 Code flips it with `rt.go(Arrangement::Names)` and back with
-`rt.go(Arrangement::Base)`. The effects catalog (`effect_select.gogo`) is
-this recipe, reached as the Icon Size button's fourth stop; its chips also
-carry the entry's picture as a 40x40 thumbnail under the name's start.
+`rt.go(Arrangement::Base)`.
 
 ---
 
@@ -2496,10 +2526,10 @@ Gradient flash fill=radial,
 
 - Positions are all-or-none, never decrease (equal = a hard step), and
   under `repeat=mirror` stop at 0.5. `/opacity` is allowed on any entry.
-- Fade out with `C/0` (first example): the RGB under alpha 0 steers the
-  blend even though it never shows — `accent/0` fades clean, `#00000000`
-  fades through dark gray. Bare `transparent` is refused in `stops=`
-  because it's #00000000 without saying so.
+- Fade out with `C/0` (first example). Stops mix premultiplied, so the RGB
+  under alpha 0 adds nothing to the blend: `accent/0` and `#00000000` both
+  fade clean. Bare `transparent` is still refused in `stops=` (G2006):
+  write `white/0` or `black/0`.
 - A **solid color is a `Rectangle`**, not a one-stop gradient — the build
   says so (G2003) and offers the rewrite. The reverse trap: two stacked
   `Rectangle`s do NOT make a fade — there is no interpolation between
@@ -2661,10 +2691,10 @@ choice saveLocation {
 }
 ```
 
-- The `when` must sit at widget scope. Written INSIDE the body (say, inside
-  the `Row`) it would answer the Row's own never-raised `selected` — that
-  spelling is a build error in widget bodies (the dead-when trap: the app
-  builds, the dots just never fill).
+- Keep the `when` at widget scope. Written on a body node's own line
+  (`Circle dot ... { when selected opacity=1 }`) it answers that node's own
+  never-raised `selected`, and the build does not refuse it (the dead-when
+  trap: the app builds, the dots just never fill).
 - A `for=` widget only instantiates as the direct body of its host type
   (`Radio` here; `Check` and `Button` work the same way).
 - The host can still add its own `when selected` inline; for the same state
@@ -2806,22 +2836,23 @@ refused and the last good version of the page stays on screen.
 
 The migration questions — the same answers as the recipes above, entered
 from the WPF/XAML instinct you already have. Each subsection is one
-question; the dock's table of contents lists them as their own group.
+question.
 
 ## Where does my wrapping text get its width?
 
 WPF's measure pass hands *available size* down to every element — even a
 size-to-content one. A left-aligned `CheckBox` in a 640-wide panel is
 measured with 640 available, its `TextBlock TextWrapping="Wrap"` wraps
-there, and the checkbox still hugs the wrapped result. gogo does not hand
-a hugging box an available width: wrap-text
+there, and the checkbox still hugs the wrapped result. gogo hands the room
+down the same way through a hugging `Panel`, `Column`, `Button` or `Check`,
+but not through a `Row`, and not to a Label that hugs: there wrap-text
 only wraps where a .gogo width **binds** it (D254). Porting XAML text means
 deciding, per shape, where that bound comes from:
 
 | XAML shape | gogo spelling |
 |---|---|
 | `<TextBlock TextWrapping="Wrap"/>` stretching in a panel | `Label wrap=true, width=fill` |
-| Left-aligned content control holding wrap text (`<CheckBox HorizontalAlignment="Left">`) | bind the chain: `width=fill` on the control, the row AND the label — a hug chain has no width to hand down, and a `fill` label inside one gets the leftover of a content-sized row: its own one-char raw minimum (linted, G1004) |
+| Left-aligned content control holding wrap text (`<CheckBox HorizontalAlignment="Left">`) | bind the chain: `width=fill` on the control, the row AND the label — a `Row` in a hug chain hands no width down, and a `fill` label inside one gets the leftover of a content-sized row: its own one-char raw minimum (linted, G1004) |
 | `MaxWidth` hug — size to text, wrap at the screen (a toast) | `width=hug, max_width=fill` on the box (a number caps at a fixed width) |
 | Wrap text inside a floored button (`MinWidth` guarantees the line) | `min_width` on the BUTTON + `width=fill` down to the label — the floor is the width the wrap binds at, and G1004 credits it |
 | `TextTrimming` / no wrapping | plain `Label` — no `wrap=`, no width decision needed |

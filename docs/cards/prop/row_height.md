@@ -1,5 +1,6 @@
-A uniform default height for every `row { }` block (the sizing triad —
-epx, `hug`, `fill`). A `row height=` on one block overrides it for that
+A uniform default height for every `row { }` block: an epx number or
+`fill(n)` (the bare words `hug` and `fill` are refused here, G0058 — write
+them on a row's own `height=`). A `row height=` on one block overrides it for that
 row. Row-form only: areas rows each carry their own `: height` instead.
 
 ```

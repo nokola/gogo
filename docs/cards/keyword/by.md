@@ -1,6 +1,7 @@
-The `repeat` identity clause — REQUIRED. Items reconcile by key: reorder,
-insert and remove keep per-item state attached to the right items. There is
-no index fallback, ever.
+The `repeat` identity clause. With it, items reconcile by key: reorder,
+insert and remove keep per-item state attached to the right items. A
+repeat with no `by` is the counted form: code shows the first N rows with
+`Runtime::set_count` and fills them itself.
 
 ```
 Column {
@@ -12,7 +13,8 @@ Column {
 ```
 
 The path starts at the item binding (pure by grammar — no calls, operators
-or literals; nested fields fine; bare `by $item` = the item IS its key), so
-every repeat line shows its binding at least once. Keys must be String or
-int; duplicates refuse the whole assignment, loudly, and the last good
-items stay live.
+or literals; a dotted path such as `$item.meta.uuid` names ONE field,
+`meta.uuid`, because an item is a flat record; bare `by $item` = the item
+IS its key), so every keyed repeat line shows its binding at least once.
+Keys must be String or int; duplicates refuse the whole assignment,
+loudly, and the last good items stay live.

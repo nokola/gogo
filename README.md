@@ -51,7 +51,7 @@ Performance is achieved by combining an "immediate-like" retained UI - every .go
 ### Developer (and AI) Ergonomics
 - **Hot reload** in debug mode - changes in .gogo files reflect on screen in 0.25sec.
 - **Instructive errors** inspired from Rust error messages point not only where, but often how to fix an issue.
-- **Extensive how-to and guides** in `COOKBOOK.md` and sample .gogo colde for every feature in `/docs/cards`
+- **Extensive how-to and guides** in `docs/COOKBOOK.md` and sample .gogo code for every feature in `docs/cards/`
 - Easy animations, portrait/landscape, screen sizes, and common situations solved.
 - Used in shipped production apps.
 
@@ -94,12 +94,13 @@ Source, [examples/window/src/main.rs](examples/window/src/main.rs), contains the
 | `docs/gogo-spec.md` | grammar and design rules |
 | `docs/REFERENCE.md` | everything, organized for lookup |
 | `docs/COOKBOOK.md` | recipes: "How do I ...?" |
-| `docs/cards/` | one short card per control and keyword |
+| `docs/cards/` | one short card per control, and for most keywords and properties |
 | `docs/gogo-errors.md` | one teaching entry per diagnostic code, with a checked wrong-and-fixed example for the common ones |
 | `docs/gogo-design.md` | how the crate works inside |
 | `docs/examples/` | the sample project the docs speak about: a shared theme, a guided tour in one file, and `host_tour.rs`, the host program the docs' Rust examples are cut from |
 | `docs/design/` | notes from when the language was designed; history, not reference |
 | `vscode/` | the VS Code extension: syntax colors, comment toggling, brackets |
+| `scripts/test-packages.sh` | packs each crate the way crates.io gets it and runs its tests from the package |
 
 ## The examples in the docs are compiled
 
@@ -127,11 +128,10 @@ gogo was taken out of the FanRust application, where it draws every page of
 a shipping Android app. It began as an addon for the Godot engine, and the
 docs were first written for that one. They describe the Rust crate now;
 where the addon behaved differently in a way worth knowing, the text says
-so. `docs/gogo-design.md`, the notes on how the crate works inside, still
-speaks of FanRust's crates in its body.
+so.
 
-`gogo-text` and `gogo-wgpu` came out of the same app in November 2026;
-their comments still name that app's notes in places.
+`gogo-text` and `gogo-wgpu` came out of the same app in November 2026.
+The comments of `crates/gogo-ui` still name that app's notes in places.
 
 ## License
 

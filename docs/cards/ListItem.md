@@ -40,12 +40,14 @@ List picker {
 - **The cursor echo obeys focus-visible**: it draws only while the
   KEYBOARD last moved the cursor. A tap moves focus to the row
   silently — no shade survives a press-and-wander. (Your authored
-  `when focused` is never gated — style it and it answers every focus.)
+  `when focused` follows the same rule: after a tap it stays off until
+  a key is pressed.)
 - **A drawn box like `Panel`**: `background=`, `padding=`, `corner_radius=`,
-  `border-*=` — blank until told. One child fills it; multi-part rows lay
-  out with a `Row`/`Column` inside.
+  `border_color=`/`border_thickness=` — blank until told. One child fills
+  it; multi-part rows lay out with a `Row`/`Column` inside.
 - **One tap surface.** The row claims taps wherever the finger lands;
   interactive children (the `Button` above) take their own presses first —
   tapping the button fires the button, not the row.
-- Names inside are per-item local; handlers wired in the row get the item's
-  key as the last argument.
+- Names inside are per-item local; an event from inside the row carries
+  the node it happened on, and `Runtime::item_key(&page, ev.node)` gives
+  the row's key.

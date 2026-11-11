@@ -1,7 +1,7 @@
 The box's border stroke width (epx) — pairs with `border_color`. Content
 sits `border_thickness + padding` from the edge, so a border never paints
-over content. Fractional values keep their declared thickness in layout
-math even though the painted stroke rounds to whole px. On a `Circle` it
+over content. Fractional values keep their declared thickness, in layout
+math and in the painted stroke alike. On a `Circle` it
 strokes the ring (inward).
 
 ```

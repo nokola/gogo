@@ -581,7 +581,7 @@ dependencies = [
 
 [[package]]
 name = "gogo-example-window"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "gogo-text",
  "gogo-ui",
@@ -593,7 +593,7 @@ dependencies = [
 
 [[package]]
 name = "gogo-text"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "cosmic-text",
  "fontdb",
@@ -602,11 +602,11 @@ dependencies = [
 
 [[package]]
 name = "gogo-ui"
-version = "0.2.1"
+version = "0.3.0"
 
 [[package]]
 name = "gogo-wgpu"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "bytemuck",
  "gogo-text",

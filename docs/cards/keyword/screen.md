@@ -47,10 +47,12 @@ A composed block holds only while BOTH its conditions do — `when expanded
 screen.landscapeSmall { ... }` (arrangement first; the second slot takes a
 class or an orientation), for a pose neither axis owns alone. It is more
 specific than either half, so its keys win; either half dropping releases
-it back to whichever single-axis pose still holds. Alignment keys need an
-instant change (G3004): legal here — and in a plain arrangement `when` —
-exactly while the arrangement has NO `transition` rule; the screen-first
-pair has no arrangement half and is always instant.
+it back to whichever single-axis pose still holds. Alignment keys are
+legal here and in a plain arrangement `when`, timed or not: where a
+`transition` rule times the arrangement, the box glides to its new anchor
+over the rule's duration (the Godot addon refused that as G3004; the Rust
+crate has no such error); the screen-first pair has no arrangement half
+and is always instant.
 
 A pose may also RESIZE any child — a `width`/`height`/`min_width`/
 `min_height` written here behaves exactly as if the file had declared it,
@@ -58,14 +60,18 @@ for as long as the condition applies (D249), on flow and free children
 alike; a posed `width`/`height` on a fill child stops it taking the
 leftover, and the pose dropping restores the declared axis. A declared
 `min_width`/`min_height` floor still clamps every posed size, and a posed
-`min_*` replaces the declared floor. Margins and alignment on container
-children stay build errors: the parent seats its children.
+`min_*` replaces the declared floor. Margins on the children of a
+`Column`, `Row`, `Flow`, `Grid` or `Tiles` stay build errors (G1014): the
+parent seats its children. A posed alignment on a stack's child is
+legal: it moves the child across the stack.
 
 A `when` may also MOVE a node to a declared socket — `x.seat = sideSeat`
 (see the seat card) — the one response that reparents. Legal from screen
-whens, composed blocks, and arrangement whens no `transition` rule times
-(G3003); `x.seat = home` sends it back while a more specific condition
+whens, composed blocks and arrangement whens, timed or not (the Rust
+crate has no G3003: under a timed arrangement the box glides to its
+seat); `x.seat = home` sends it back while a more specific condition
 holds. Contested seats follow the same rule as placement keys above.
 
-The active class and orientation hold across a hot reload. `screen.*`
-blocks are view-level only — styles can't respond to them.
+The active class and orientation hold across a hot reload. A `screen.*`
+condition also works in a style and in a node's own block
+(`when screen.landscape opacity=0.5`), where it answers for that node.

@@ -1,8 +1,8 @@
-Text color across all state slots — the text half of `background=` (what
+Text color — the text half of `background=` (what
 WPF calls Foreground and CSS calls color). Pairs with `font_size`. A
-`font_color` response inside `when` works against the theme: the tween
-starts from the theme's resting value and hands back when the condition
-ends.
+`font_color` response inside `when` tweens from the node's own
+`font_color=` and hands back when the condition ends; with none written
+on the node the text switches color at once.
 
 ```
 Column spacing=6 {

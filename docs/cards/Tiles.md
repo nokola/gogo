@@ -6,7 +6,7 @@ give a tile an `Image` with `aspect=natural` and the bitmap's ratio sizes
 it (square bitmaps make square tiles).
 
 Cells never shrink content below its minimum — an oversized child OVERLAPS
-its neighbors (Tiles warns at sort time). Clip it: `clip_text=true` on a
+its neighbors (nothing warns). Clip it: `clip_text=true` on a
 Label caption, a `clip_contents=true` wrapper otherwise, or widen the cell
 (`span=`).
 

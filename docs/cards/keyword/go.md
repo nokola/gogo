@@ -1,8 +1,9 @@
-`on:<signal>=go(arrangementName)` flips the view's arrangement — `go(base)`
+`on:<event>=go(arrangementName)` flips the view's arrangement — `go(base)`
 returns home. The flip tweens with the matching `transition` rule, and the
 active pose re-asserts on rotation and hot reload. From code:
-`set_arrangement(root, "name")`. One button that flips back AND forth is
-`toggle(name)`.
+`Runtime::go` (`rt.go(Arrangement::Expanded)`, the enum a build generates;
+`Runtime::go_id` on a page compiled while the program runs). One button
+that flips back AND forth is `toggle(name)`.
 
 ```
 arrangement expanded

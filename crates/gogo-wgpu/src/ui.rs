@@ -23,7 +23,7 @@ use gogo_ui::layout::Rect;
 use gogo_ui::locale::Locale;
 use gogo_ui::page::{NO_STR, Page};
 use gogo_ui::ImageKey;
-use gogo_text::TextEngine;
+use gogo_text::{TextEngine, TextPx};
 
 /// A frame's draw lists, in draw order, each with the page that owns its
 /// strings. A slice, an array or a `Vec` of `(draws, page)` pairs is one.
@@ -916,11 +916,11 @@ impl UiRenderer {
                     let s = gogo_ui::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let r = px(rect);
-                    // Truncated to whole device pixels, the size
-                    // `gogo_text::EpxMeasure` measured the label at.
-                    let size_px = (font_size * epx).floor().max(1.0);
+                    // The size `gogo_text::EpxMeasure` measured the label
+                    // at: both ask `TextPx::from_epx`.
+                    let size: TextPx = TextPx::from_epx(*font_size, epx);
                     let max_w = if *wrap { Some(r[2]) } else { None };
-                    let (_, th) = text.measure(s, size_px, max_w, font_key);
+                    let (_, th) = text.measure(s, size, max_w, font_key);
                     let y = match valign {
                         TextAlign::Start => r[1],
                         TextAlign::Center => r[1] + (r[3] - th) / 2.0,
@@ -938,7 +938,7 @@ impl UiRenderer {
                     // atlas at the first glyph that shows - text that is all
                     // outside must not split the batch around it.
                     glyphs.clear();
-                    text.shape_into(s, size_px, max_w, font_key, x, y, box_w, h, &mut glyphs);
+                    text.shape_into(s, size, max_w, font_key, x, y, box_w, h, &mut glyphs);
                     if let Some(start) = text_start {
                         text_secs += start.elapsed().as_secs_f32();
                     }
@@ -990,11 +990,11 @@ impl UiRenderer {
                     let s = gogo_ui::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let r = px(rect);
-                    let size_px = (font_size * epx).floor().max(1.0);
+                    let size: TextPx = TextPx::from_epx(*font_size, epx);
                     let byte = |i: u32| s.char_indices().nth(i as usize).map(|(b, _)| b).unwrap_or(s.len());
-                    let (xlo, _) = text.measure(&s[..byte(*lo)], size_px, None, font_key);
-                    let (xhi, _) = text.measure(&s[..byte(*hi)], size_px, None, font_key);
-                    let h = size_px * 1.2;
+                    let (xlo, _) = text.measure(&s[..byte(*lo)], size, None, font_key);
+                    let (xhi, _) = text.measure(&s[..byte(*hi)], size, None, font_key);
+                    let h = size.font_size * 1.2;
                     let y = r[1] + (r[3] - h) / 2.0;
                     self.push_quad(current, Quad { rect: [r[0] + xlo, y, (xhi - xlo).max(0.0), h], color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_RECT, 0.0], uv: NO_UV, rot, wedge, swing, eye });
                 }
@@ -1006,10 +1006,10 @@ impl UiRenderer {
                     let s = gogo_ui::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let r = px(rect);
-                    let size_px = (font_size * epx).floor().max(1.0);
+                    let size: TextPx = TextPx::from_epx(*font_size, epx);
                     let byte = |i: u32| s.char_indices().nth(i as usize).map(|(b, _)| b).unwrap_or(s.len());
-                    let (xlo, _) = text.measure(&s[..byte(*lo)], size_px, None, font_key);
-                    let (xhi, _) = text.measure(&s[..byte(*hi)], size_px, None, font_key);
+                    let (xlo, _) = text.measure(&s[..byte(*lo)], size, None, font_key);
+                    let (xhi, _) = text.measure(&s[..byte(*hi)], size, None, font_key);
                     let color = color.to_f32();
                     for x in [r[0] + xlo, r[0] + xhi] {
                         let h = gogo_ui::input::sel_handle_rect(r[1] + r[3], x, gogo_ui::input::SEL_HANDLE_EPX * epx);
@@ -1022,10 +1022,10 @@ impl UiRenderer {
                     let s = gogo_ui::locale::display(page, locale, *text_id, *key);
                     let font_key = if *font == NO_STR { None } else { Some(page.str(*font)) };
                     let r = px(rect);
-                    let size_px = (font_size * epx).floor().max(1.0);
+                    let size: TextPx = TextPx::from_epx(*font_size, epx);
                     let byte = s.char_indices().nth(*index as usize).map(|(b, _)| b).unwrap_or(s.len());
-                    let (pw, _) = text.measure(&s[..byte], size_px, None, font_key);
-                    let h = size_px * 1.2;
+                    let (pw, _) = text.measure(&s[..byte], size, None, font_key);
+                    let h = size.font_size * 1.2;
                     let x = r[0] + pw;
                     let y = r[1] + (r[3] - h) / 2.0;
                     self.push_quad(current, Quad { rect: [x, y, (1.5 * epx).max(1.0), h], color: color.to_f32(), border_color: [0.0; 4], params: [0.0, 0.0, KIND_RECT, 0.0], uv: NO_UV, rot, wedge, swing, eye });

@@ -1,6 +1,7 @@
-The Gradient's pattern: `linear` (default), `radial`, `square`, `conic`.
-Round fills center in the box and reach the right edge by default; aim
-with `from=`/`to=` (or `angle=` for linear). Not to be confused with the
+The Gradient's pattern: `linear` (default), `radial`, `conic`.
+Round fills center in the box and reach its edges; `from=`/`to=` are
+accepted on them and move nothing yet. A linear fill aims with `angle=`
+or `from=`/`to=`. Not to be confused with the
 sizing word `fill` on `width=`/`height=` — that one is a value, not this
 key.
 

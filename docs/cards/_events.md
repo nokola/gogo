@@ -25,7 +25,7 @@ Priority when several hold (higher wins per property): arrangements <
 |---|---|---|
 | `activate` | the control's own trigger gesture completed — a Button's tap or Enter/Space, a List row's tap | — (List: the event's node is the row; `Runtime::item_key` gives its key) |
 | `press` / `release` | a finger landed on a press surface or a Slider, and that gesture ended (exactly one `release` per `press`) | — |
-| `change` | the COMMITTED value is now different — once per genuine transition, programmatic writes included | the new value |
+| `change` | the COMMITTED value is now different — once per genuine transition a tap, a drag or a key makes; a write from code reports nothing | the new value |
 | `edit` | a live, uncommitted value moved — per drag tick, per keystroke | the live value |
 | `show` / `hide` | visibility choreography — takes `play(anim)` | — |
 | `pointer` | every touch phase on a box the host draws itself (needs `interactive=true`) | the phase and the position inside the box |
@@ -38,7 +38,7 @@ Priority when several hold (higher wins per property): arrangements <
 | `Toggle` | `selected` (flips live mid-drag) | — | `change` | `bool`; on settle, only if the side differs from before the gesture |
 | `choice` | `selected` per Radio | — | `change` on the GROUP line | the picked Radio's name; items style `when selected`, never wire `change` |
 | `Slider` | — (`held` is the drag) | `edit` | `change` | `float`; release commits; a keyboard step commits directly |
-| `Input` | — | `edit` | `change` | `String`; Enter or focus loss commits; programmatic `text=` reports too |
+| `Input` | — | `edit` | `change` | `String`; Enter or focus loss commits; a text written from code reports nothing |
 | `List` | `selected` on the row's `ListItem` root | — | `change` | read the keys with `Runtime::selected_keys`; `activate` fires on every row tap |
 
 Values on an `on:` key: a handler name (`on:activate=SaveBrush`), or a
@@ -57,5 +57,6 @@ Column spacing=8 {
 ```
 
 Rules of thumb: listen to `activate` on buttons, `change` on everything
-else (it also catches programmatic updates); reach for `edit` only when
-you genuinely need the live stream.
+else (a write from code brings no event back: the code that wrote
+already knows); reach for `edit` only when you genuinely need the live
+stream.

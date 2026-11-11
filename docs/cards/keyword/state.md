@@ -14,7 +14,8 @@ Fader vol { when clipping opacity=0.85 }   // styled like any state
 
 Built-in names (`hovered`, `held`, ...) are reserved — opting into those is
 `state_builtin`. Priority when several states hold: custom states sit between
-`held` and `disabled`, declaration order among themselves (later wins).
+`held` and `disabled`; among themselves the `when` block written later in
+the file wins.
 
 At TOP level, `state` is the retired pose directive — declare an
 `arrangement` instead.

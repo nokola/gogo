@@ -1,4 +1,4 @@
-Rounds the box's corners (epx) — one knob of the box family (`background` / `corner_radius` / `padding` / `border-*`), each changing exactly its one thing. A `Circle` has no box to round — its error routes back to sizing the disc.
+Rounds the box's corners (epx) — one knob of the box family (`background` / `corner_radius` / `padding` / `border_*`), each changing exactly its one thing. A `Circle` has no box to round — its error names what a Circle has instead: `color=` and a ring (`border_thickness=`, `border_color=`).
 
 ```
 Panel card background=panel, corner_radius=10, padding=12 {

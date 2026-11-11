@@ -1,6 +1,7 @@
 Aims a LINEAR Gradient — the CSS compass: 0 = to top, 90 = to right,
-degrees clockwise. Round fills aim with `from=`/`to=` instead; spelling
-both `angle=` and `from=`/`to=` is an error.
+degrees clockwise. Round fills have no direction (`angle=` on one is an
+error); on a linear fill, spelling both `angle=` and `from=`/`to=` is an
+error.
 
 ```
 Row spacing=8 {

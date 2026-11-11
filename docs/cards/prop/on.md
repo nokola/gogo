@@ -2,7 +2,8 @@ Wiring: `on:<event>=` binds a discrete moment. The events are bare stems —
 `activate` (the control's trigger gesture: a Button's completed tap or
 Enter/Space, a List row's tap), `press` / `release` (a finger landed on a
 press surface, and that gesture ended), `change` (the committed value is
-now different — once per genuine change, code writes included), `edit`
+now different — once per genuine change a finger or key makes; a write
+from code raises no event), `edit`
 (the live uncommitted stream: Slider drag ticks, Input keystrokes), the
 visibility pair `show`/`hide` (show also plays when a control lands
 visible; hide plays first, then hides), and `pointer` (every touch phase

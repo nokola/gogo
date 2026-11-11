@@ -11,5 +11,6 @@ Column sizePick spacing=4 {
         Radio large  text="Large"
     }
 }
-// a Change event on `size` carries the picked Radio's name (large)
+// the Change event comes from the picked Radio, names the handler `size`
+// and carries that Radio's name (large)
 ```

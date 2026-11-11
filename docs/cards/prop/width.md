@@ -3,7 +3,8 @@ don't stretch); `hug` = natural content size; `fill` = take the leftover
 space; `fill(2)` = a double-weighted share of it. Weights split what
 remains AFTER fixed/hug siblings take their minimums. "At least N but
 stretchy" is `min_width=`, not a number here. A number smaller than the
-content can't hold — content wins and the build warns; scroll it or let
+content holds: the box keeps that size and cuts what pokes past it, and
+the build says nothing; scroll it or let
 it `hug`. On a `Scroll`, `hug` fits the content and turns that axis'
 scrolling off — unless capped: `width=hug, max_width=300` follows the
 content to 300, then the axis scrolls (see `max_width`, `allow`).

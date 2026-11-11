@@ -1,7 +1,8 @@
 An Image's picture, named by a path string that always carries a scheme:
 
 - `res://path` — an asset under the build's resource root, checked and
-  embedded at build time. A bare `icon.svg` is refused (G0071): a bare
+  embedded at build time. A bare `icon.png` is refused (G0071; the check
+  knows `.png`, `.jpg` and `.jpeg` names): a bare
   word could be a label or a path, the scheme says which.
 - `<host>://name` — any other scheme is a HOST picture: pixels the app's
   code hands the renderer at run time under that exact name (a live

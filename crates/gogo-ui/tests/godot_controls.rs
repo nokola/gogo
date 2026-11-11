@@ -962,7 +962,8 @@ fn diag_unclosed_brace_is_refused() {
 /// ON PURPOSE (`diag::SHARED_WITH_ADDON`) — a new Rust code can never
 /// silently land on a published number with a different meaning. The
 /// per-code teaching entries are `docs/gogo-errors.md`
-/// (`every_diag_code_has_a_teaching_entry_and_no_entry_is_stale` holds the two together).
+/// (`every_diag_code_has_a_teaching_entry_and_no_entry_is_stale` in
+/// `tests/docs_tables.rs` holds the two together).
 #[test]
 fn diag_source_and_registry_match_both_ways() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -1062,22 +1063,6 @@ View v { Column c halign=left, valign=top { Spinner sp; Spinner sp2 { when busy 
     // outside any control the word is still an unknown state
     let d = diags("View v { Panel p { when busy opacity=0.5 } }");
     assert!(has_code(&d, "G0036"), "{d:#?}");
-}
-
-/// GPAR61 (round 7, 2026-08-31): the addon's third leg — every
-/// registered code has a teaching entry in docs/gogo-errors.md and every
-/// entry is a registered code (no page for a retired number can linger).
-#[test]
-fn every_diag_code_has_a_teaching_entry_and_no_entry_is_stale() {
-    let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/gogo-errors.md")).expect("docs/gogo-errors.md");
-    let headings: Vec<&str> = doc.lines().filter_map(|l| l.strip_prefix("## ")).filter_map(|l| l.split_whitespace().next()).collect();
-    for (code, _) in gogo_ui::diag::REGISTRY {
-        assert!(headings.contains(code), "`{code}` is registered but has no `## {code}` entry in docs/gogo-errors.md");
-    }
-    for h in &headings {
-        assert!(gogo_ui::diag::REGISTRY.iter().any(|(c, _)| c == h), "docs/gogo-errors.md teaches `{h}`, which is not a registered code");
-        assert!(!gogo_ui::diag::RETIRED.contains(h), "docs/gogo-errors.md teaches retired `{h}`");
-    }
 }
 
 // ----- GP40 step 1: static `slot.` paths (customization spec §3.4) -----

@@ -6,7 +6,7 @@ A slider is made of pieces:
 - the **progress** — the colored part showing how far along you are
 - the **thumb** — the little circle you drag
 
-In gogo, each piece is written with the `slot` keyword, and slots are the parts styles can reach — as `slot.` paths on the style line. A slot region takes placement (`width`/`height`/`halign`/`valign`/margins) and the box family (`background`/`corner_radius`/`border-*`/`padding`):
+In gogo, each piece is written with the `slot` keyword, and slots are the parts styles can reach — as `slot.` paths on the style line. A slot region takes placement (`width`/`height`/`halign`/`valign`/margins) and the box family (`background`/`corner_radius`/`border_*`/`padding`):
 
 ```kdl partial
 style Chunky for=Fader, slot.thumb.width=32, slot.thumb.height=32
@@ -173,7 +173,7 @@ This knob shows a value that code sets. To turn under a finger it needs a `behav
 
 ## Why you can't add your own kinds
 
-You might want a seventh kind — some custom formula from value to property. Gogo doesn't allow it:
+You might want a sixth kind — some custom formula from value to property. Gogo doesn't allow it:
 
 ```text
 ui/knob.gogo:4: error G5107: unknown automatic kind 'sparkle' — the set is closed: length, position, presence, arc, angle

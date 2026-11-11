@@ -4,6 +4,11 @@ description = "gogo: a declarative UI language for apps and games. Compiles .gog
 keywords = ["ui", "gui", "declarative", "layout", "game"]
 categories = ["gui", "game-development", "parser-implementations"]
 readme = "../../README.md"
+# The tests that read the repository around this crate (`docs/`, `vscode/`,
+# the other crates' folders) stay out of the crates.io package. A package
+# carries this folder alone, and `cargo test` on it has to pass
+# (`scripts/test-packages.sh` checks that).
+exclude = ["tests/docs_examples.rs", "tests/docs_tables.rs", "tests/license_files.rs", "tests/vscode_grammar.rs"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true

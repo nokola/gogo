@@ -1,5 +1,6 @@
 A `key` line's value at its time `t=` — a number (epx on length
-properties) or a color, matching the property the keyed line drives.
+properties). A color line takes no keys: it spells its legs as chained
+steps (`then box.background to=red, duration=0.2`).
 The journey eases INTO each key with that key's `easing=`.
 
 ```

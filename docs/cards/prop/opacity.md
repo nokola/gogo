@@ -1,4 +1,4 @@
-Whole-node fade, 0..1 (`modulate.a`). It is also a motion word — anims
+Whole-node fade, 0..1. It is also a motion word — anims
 and `when` responses drive it (`when disabled opacity=0.4`), and it
 tweens under `transition` rules. Per-color alpha belongs to the color
 itself: the `/opacity` suffix (`black/0.5`).

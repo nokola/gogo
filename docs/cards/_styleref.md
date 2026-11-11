@@ -2,7 +2,6 @@
 style's property bag. Local properties win over the style's; several
 (`.A .B`) apply left to right. A style carries `when` responses and
 `transition` rules along with plain props — the wearer gets those too.
-Ctrl+click the token jumps to the definition.
 
 ```
 style Chip background=#2E4053, corner_radius=12, min_height=36 {

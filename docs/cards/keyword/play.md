@@ -19,11 +19,13 @@ Layers stage width=240, height=100, on:show=play(panelOpen) {
 ```
 
 **Stopping from code.** `Runtime::stop` ends the anim without playing it
-out — it is not reported as finished (`Runtime::take_finished`) — and
-puts every property it animated back to what the file says
-without the anim: the declared value, or the `when` value holding at the
-time, or a finished anim's end pose the play started from (that is a
-standing value the author chose, so it stays). `Runtime::is_playing`
+out — it is not reported as finished (`Runtime::take_finished`) — and,
+with `restore = true`, puts every property it animated back to what the
+file says without the anim: the declared value, or the `when` value
+holding at the time, or a finished anim's end pose the play started from
+(that is a standing value the author chose, so it stays). With
+`restore = false` the values stay where the stop found them.
+`Runtime::is_playing`
 asks. One property has one writer: while an anim plays it owns what it
 animates; when it ends its end pose stands until the next writer.
 

@@ -1,4 +1,4 @@
-Transient choreography on the motion channel (`translate`/`scale`/`rotate`/`opacity` + animatable props). An anim is a CHAIN of steps: property lines, `group { }`, `play <anim>`, `each ... { }` and `delay=` pauses. Every step after the first says when it runs — `and` (with the previous step) or `then` (after it) — or carries `after=<group>` instead. Play with `play_anim("x")`, `on:show=play(x)` or a transition's `anim=`.
+Transient choreography on the motion channel (`translate`/`scale`/`rotate`/`opacity` + animatable props). An anim is a CHAIN of steps: property lines, `group { }`, `play <anim>`, `each ... { }` and `delay=` pauses. Every step after the first says when it runs — `and` (with the previous step) or `then` (after it) — or carries `after=<group>` instead. Play with `Runtime::play` from code, `on:show=play(x)` or a transition's `anim=`.
 
 ```
 // sidebar floats in and content fades in, then the title pops
@@ -40,4 +40,4 @@ anim nudge {
 Button saveButton text="Save", on:activate=play(nudge)
 ```
 
-The anim header carries playback (`repeat=forever`, `speed=`) and honestly-named defaults: `duration_each=` is EVERY step's default duration (the word says per-step — a `then`-chain can't make it lie), `easing=` and `autoreverse=true` distribute the same way, and a line's own words always win, through any depth of `group`s. The Main Menu example (empty line ▸ Examples) is the staggered entrance as a complete screen.
+The anim header carries playback (`repeat=forever`, `speed=`) and honestly-named defaults: `duration_each=` is EVERY step's default duration (the word says per-step — a `then`-chain can't make it lie), `easing=` and `autoreverse=true` distribute the same way, and a line's own words always win, through any depth of `group`s. The Main Menu example (the `_example-mainmenu` card) is the staggered entrance as a complete screen.

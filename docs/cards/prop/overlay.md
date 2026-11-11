@@ -20,13 +20,13 @@ Panel chip width=120, height=48, background=#1F1F1FFF {
 }
 ```
 
-The badge hangs past the chip's corner and the chip never grows for it —
-without `overlay=true` the build warns that the 120x48 box is smaller than
-its content. Free parents only (permanent law): under `Column`/`Row`/`Grid`
+The badge hangs past the chip's corner and the chip never grows for it.
+A box with a written size cuts a child that pokes past it; an overlay
+child is never cut. Free parents only (permanent law): under `Column`/`Row`/`Grid`
 a child holds a seat it can't refuse — wrap the flowed content in `Layers`
-and declare the overlay beside it. The overlay's own inside still checks:
-children inside it validate against ITS box, and a nested overlay is exempt
-only at its own parent boundary. Two contradictions refuse at build:
+and declare the overlay beside it. The overlay's own inside is a box like
+any other: its written size cuts its own children, and a nested overlay
+is left alone only by its own parent. Two contradictions refuse at build:
 `overlay` with `visibility=space_only` (a seat-holder is not an overlay — a
 hidden overlay is `visibility=gone`), and `overlay` with `fill` on an axis
 the parent hugs with no non-overlay child (nothing determines the size).

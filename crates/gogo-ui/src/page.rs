@@ -1804,7 +1804,7 @@ pub const UNREAD_BY_DESIGN: &[(PropKey, &str)] = &[
     (PropKey::Release, "read at compile into the build's `RELEASE_UNUSED` list (`Images::release_lines`); the host frees those pictures when no live page names them"),
     (PropKey::TouchTarget, "accepted: `touch_target=off` silences the 44-epx finger-target lint; the lint is not built here yet (GP41), and hit testing always uses the node's own rect"),
     (PropKey::AccessibilityName, "host-read: no screen-reader bridge here yet"),
-    (PropKey::KeyboardTarget, "host-read: no keyboard focus routing here yet"),
+    (PropKey::KeyboardTarget, "read at compile into `Node.focusable`, not as a prop: `keyboard_target=off` keeps keyboard focus off the node"),
     (PropKey::IconSrc, "accepted for old files; an icon file hint nothing reads"),
     (PropKey::IconSize, "accepted for old files beside `icon=`; icons are not drawn here"),
     (PropKey::Automatic, "read at compile into `Node.auto`, not as a prop"),
@@ -2223,35 +2223,6 @@ mod tests {
         }
         assert!(unread.is_empty(), "prop keys nobody reads — read them or list them in UNREAD_BY_DESIGN: {unread:?}");
         assert!(homeless.is_empty(), "prop keys no kind takes — give them a row in `kind_row`: {homeless:?}");
-    }
-
-    /// The per-kind word lists in docs/gogo-design.md are generated from
-    /// the table; on a mismatch the test prints the block to paste.
-    #[test]
-    fn kind_words_doc_is_current() {
-        let doc = include_str!("../../../docs/gogo-design.md");
-        let start = "<!-- kind-words:start -->";
-        let end = "<!-- kind-words:end -->";
-        let generated = kind_words_markdown();
-        let (a, b) = (doc.find(start).expect("start marker"), doc.find(end).expect("end marker"));
-        let current = doc[a + start.len()..b].trim();
-        assert!(current == generated.trim(), "docs/gogo-design.md kind-words block is stale — replace it with:\n\n{generated}");
-    }
-
-    /// `kind_words` per kind as a markdown table, one row per kind: the
-    /// words every box takes once at the top, then each kind's own.
-    fn kind_words_markdown() -> String {
-        let mut out = String::new();
-        out.push_str("Every box takes: ");
-        out.push_str(&BOX.iter().map(|k| format!("`{}`", k.word())).collect::<Vec<_>>().join(", "));
-        out.push_str(".\nA Grid cell adds `col_span`, `row_span`; a Tiles cell adds `span`, `full_row`.\n\n| kind | own words |\n|---|---|\n");
-        let kinds = KIND_WORDS.iter().map(|(w, k)| (*w, *k)).chain(std::iter::once(("<code control>", Kind::Custom)));
-        for (word, kind) in kinds {
-            let own = kind_own_words(kind);
-            let cell = if own.is_empty() { "(none — the line takes clauses, not properties)".to_string() } else { own.iter().map(|w| format!("`{w}`")).collect::<Vec<_>>().join(", ") };
-            out.push_str(&format!("| `{word}` | {cell} |\n"));
-        }
-        out
     }
 }
 

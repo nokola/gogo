@@ -4,7 +4,7 @@ order), shifted by `stagger_by=N`. Lines inside an each are BARE (the
 each names the target; prefixing errors). With `stagger_by` > 0 the
 each's length depends on how many wearers it finds at play time, so
 nothing may sequence AFTER it — keep it the tail of its chain. The Main
-Menu example (empty line ▸ Examples) adds a `then` pop for a
+Menu example (the `_example-mainmenu` card) adds a `then` pop for a
 settle-then-pop entrance.
 
 ```

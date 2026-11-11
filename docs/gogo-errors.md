@@ -11,22 +11,23 @@ tests compile it and check that the compiler refuses it with exactly that
 code; a `Fix` example must compile.
 
 Codes are grouped in bands: G0xxx language and parsing, G1xxx placement,
-G2xxx color and gradients, G3xxx styles and theme shape, G4xxx
-animation, G5xxx widgets and controls, G6xxx theme values, G7xxx file
-structure, G8xxx translation, G9xxx repeat and List. Retired numbers
+G2xxx properties and their values (unknown words, colors, gradients,
+pictures and atlases), G3xxx styles and theme shape, G4xxx animation,
+G5xxx widgets and controls, G6xxx theme values, G7xxx file structure,
+G8xxx translation, G9xxx repeat and List. Retired numbers
 (`diag::RETIRED`) are never reused.
 
 ## G0001 — unexpected character
 
-A character the language has no meaning for, at the caret. Usually a
-stray symbol from a paste; delete it or quote it if it was meant as
-text.
+A character the language has no meaning for; the message names it and
+its line. Usually a stray symbol from a paste; delete it or quote it if
+it was meant as text.
 
 ## G0002 — unclosed block
 
-A `{` was opened and the file ended before its `}`. The caret points at
-the `{` that was never closed — the missing brace belongs to whoever
-opened it. Indentation finds it fast: the `}` almost always goes at the
+A `{` was opened and the file ended before its `}`. The message gives
+the line where the file ends, not the line of the `{` that was never
+closed. Indentation finds it fast: the `}` almost always goes at the
 first line that dedents past the opener.
 
 Wrong:
@@ -60,8 +61,10 @@ one gogo knows (`\n`, `\t`, `\"`, `\\`). For a literal backslash write
 ## G0005 — one hex color form
 
 Colors are `#RRGGBB` or `#RRGGBBAA` — six or eight hex digits, alpha
-LAST. A four-digit or `#AARRGGBB` form is refused rather than guessed
-(see G2004 for why alpha-first pastes are dangerous).
+LAST. A three- or four-digit form (`#F00`) is refused rather than
+guessed. An eight-digit `#AARRGGBB` paste cannot be told apart: it is
+read alpha LAST like any other (G2004 catches the one case where that
+leaves the alpha at 00).
 
 ## G0006 — `$` must be followed by a name
 
@@ -70,7 +73,7 @@ parameters are `$word`.
 
 ## G0007 — `/opacity` is 0..1
 
-The `/` suffix scales a color's alpha and takes a fraction:
+The `/` suffix sets a color's alpha and takes a fraction:
 `black/0.5`, not `black/50`.
 
 ## G0008 — `@pos` is 0..1
@@ -80,8 +83,8 @@ run: `white@0.24`.
 
 ## G0009 — bad number
 
-Digits that do not form a number (two dots, a lone `-`, …). Rewrite the
-number.
+Digits that do not form a number (two dots as in `1.2.3`, a leading dot
+as in `.5`, …). Rewrite the number.
 
 ## G0011 — unexpected `}`
 
@@ -96,14 +99,17 @@ position instead.
 
 ## G0013 — expected a node type or `$value`
 
-A line starts with something that is neither a node kind (`Button`,
-`Column`…), a directive (`theme`, `style`…) nor a `$definition`. Most
-often a typo in the kind word — the message suggests the nearest one.
+A line starts with something that is not a word at all — a number, a
+quoted string, a stray symbol — where a node kind (`Button`,
+`Column`…), a directive (`theme`, `style`…) or a `$definition` goes.
+The message names what it found. (A misspelled kind word is G7011.)
 
 ## G0014 — expected end of line
 
-The line's form is complete but more tokens follow. Usually a missing
-comma earlier made two properties run together.
+An assignment line (`$name = value`, or `node.prop = value` in a `when`
+block) holds one value, and more tokens follow it. Put the second
+assignment on its own line. (Two properties run together on a node
+line are G0017.)
 
 ## G0015 — a comma before `{`
 
@@ -137,8 +143,8 @@ A list `[…` reached the end of the file unclosed.
 ## G0021 — expected a value
 
 A property position holds something that is not a value (a stray
-symbol, a keyword). Inside calls, named arguments are legal grammar:
-`arc(from=-225, sweep=270)`.
+symbol, or nothing: the line ends after `=`). Inside calls, named
+arguments are legal grammar: `arc(from=-225, sweep=270)`.
 
 ## G0022 — `key = …` is only legal inside a `when` block
 
@@ -238,17 +244,24 @@ An opacity or position suffix on a word that takes neither
 
 ## G0040 — `@pos` / a list where none belongs
 
-A stop position or a `[list]` outside `stops=`. Positions mean nothing
-off a gradient.
+A stop position (`white@0.24`) outside `stops=`, or a `[list]` on a
+property that takes none. Positions mean nothing off a gradient; lists
+go on `cols=`, `areas=`, `stops=`, `border_dash=`, `dash=` and
+`window=`.
 
 ## G0041 — retired placement words
 
-Placement words from older drafts (the message names today's word).
+Godot property names that gogo spells another way: `anchors`,
+`offset_*` and `size_flags_*` (placement says it: halign/valign,
+width/height, margins), `stretch_mode`/`expand_mode` (`fit=`),
+`autowrap_mode` (`wrap=true`) and `texture` (`source=`). The message
+names today's word.
 
 ## G0043 — unknown flag
 
-A bare word in a node's property list that is not a known flag
-(`signals` is one; most words need `=value`).
+Not given today: `signals` is the only flag the parser knows, and any
+other bare word in a node's property list is reported as G0046
+(`unexpected … — a property is key=value`).
 
 ## G0044 — node name used twice
 
@@ -264,7 +277,8 @@ space: it holds no children.
 
 `base`, `any`, value words and property words cannot be node names —
 `transition base -> held` next to a child called `base` would read as
-two things.
+two things. Any other stray word, number or string after the name gets
+this code too: a property is `key=value`.
 
 ## G0047 — `gap` lives in a Column/Row
 
@@ -305,8 +319,9 @@ may not both set the same property — the loser would silently vanish.
 
 ## G0055 — `=host` is gone
 
-The old host-axis words; a pure layout needs no host axis (§7 of the
-spec).
+`width=host` / `height=host` were the Godot addon's words for an axis
+the host's code sizes. The host program now sizes a page by the
+rectangle it lays it out in, so a size is a number, `fill` or `hug`.
 
 ## G0056 — a size is a number, `fill`, `hug`, `fill(n)`
 
@@ -315,7 +330,9 @@ not a number. (A numeric `$value` is fine: `height=$backBoxHeight`.)
 
 ## G0057 — cross-axis alignment word
 
-An alignment word that does not exist on this axis (`halign=top`).
+A property that takes one of a fixed list of words got another: an
+alignment word from the other axis (`halign=top`), `visibility=maybe`,
+`fit=stretch`. The message lists the words the property takes.
 
 ## G0058 — a number key given a non-number
 
@@ -340,14 +357,25 @@ root.
 Every step after the first starts with `and` (alongside the previous)
 or `then` (after the whole cluster); the first stands alone.
 
-## G0062 — `after=` is not supported yet
+## G0062 — anim step edges: `after=`, `play`, `each`, `group` misuse
 
-The addon's `after=<group>` anchors have no Rust counterpart yet.
+A step of an anim placed or named in a way that cannot play. `after=`
+goes on a `group` line and names another named `group` of the same anim
+(`group late after=intro { … }`); it stands instead of `and`/`then`,
+never beside one, and two groups never wait on each other. A `group`
+holds at least one step and its name is used once. `play <name>` names
+a declared anim that ends (not `repeat=forever`) and does not play
+itself. `each <node>` or `each .Style` names who it drives, never sits
+inside another `each`, and its lines are bare (`opacity to=0`). A
+`then` cannot wait on an `each … stagger_by=`, a pause (`delay=`) is
+never negative, and `key` lines sit inside a property line.
 
 ## G0063 — anim lane shape
 
 An anim line drives `<node>.<motion word>` — translate.x, translate.y,
-scale, scale.x, scale.y, rotate, opacity. `slot.<name>.<channel>` lanes
+scale, scale.x, scale.y, rotate, opacity — or `<node>.<property>` for a
+look property (`box.background`, `box.corner_radius`, `box.font_size`).
+`slot.<name>.<channel>` lanes
 belong to a control's OWN scoped anims. And an anim holds journeys,
 never assignments: `box.opacity from=1, to=0, duration=0.2` — a bare
 `box.opacity = 0` would snap with no track to play.
@@ -359,7 +387,7 @@ fills in), `to=` is not.
 
 ## G0065 — `easing=` takes a name
 
-An easing word (`cubic_out`, `spring`, …), not a number.
+An easing word (`cubic_out`, `bounce_out`, …), not a number.
 
 ## G0066 — `repeat=` takes `forever`
 
@@ -389,14 +417,15 @@ scope per group).
 
 ## G0071 — an asset path carries `res://`
 
-Image and font paths are explicit: `src="res://icons/save.png"`. A bare
-file name could be a label or a path — the scheme says which.
+Image and font paths are explicit: `source="res://icons/save.png"`. A
+bare file name could be a label or a path — the scheme says which.
 
 ## G0072 — `on:<event>` fires only on a press surface
 
 `activate`/`press`/`release` live on Button, Check, Toggle, Radio,
-ListItem (and the List that owns them; a Slider brackets its drag with
-press/release). `change` on a Radio belongs on the `choice` line.
+ListItem. A List takes `on:activate` only (for the rows it owns); a
+Slider takes `on:press`/`on:release` (they bracket its drag) but not
+`on:activate`. `change` on a Radio belongs on the `choice` line.
 `on:pointer` goes on a passive box — on a control it would fight the
 control's own gestures.
 
@@ -421,9 +450,10 @@ names; an empty head declares nothing.
 
 ## G0077 — control-body lines in a widget body
 
-`script`, `state`, `state_builtin`, `signal` describe a `control`'s
-code-behind; a `widget` has none. Under `state`, a built-in's name is
-also refused — `state hover` claims the engine's state; declare
+`state`, `state_builtin`, `signal`, `keys` and `behavior` lines say how
+a `control` behaves; a `widget` has no behavior, so its body refuses
+them (and the Godot addon's `script` line). Under `state`, a built-in's
+name is also refused — `state hover` claims a built-in state; declare
 built-ins with `state_builtin`, your own words with `state`.
 
 ## G0078 — a bool key / overlay rules
@@ -433,8 +463,10 @@ sits under a hug parent that nothing sizes.
 
 ## G0079 — unknown unit on a number
 
-Numbers take `epx` (the default — just write the number) or `px` /`%`
-in the retired-forms sense of G0038; anything else is a typo.
+Numbers take `epx` (the default — just write the number). `px` and `%`
+are read as units too: `px` is retired (G0038); `%` is retired as a
+length (G0038) and lives on in `key_unit=5%` and in an anim's
+`translate.x`/`translate.y` values (`to=100%`). Anything else is a typo.
 
 ## G0080 — `round()` goes inside live()
 
@@ -459,14 +491,15 @@ body (`slider`: track; `toggle`: track and thumb); one `behavior` line
 per control; and the behavior OWNS the key groups its spec lists
 (`slider`: arrows, home_end; `toggle`: all four) — a `keys` claim on
 one is a second owner, refused. The Godot addon's `script "x.gd"` line
-is refused here too, naming `behavior` (a dropped line left a control
-deaf, todo-bugs.md #4).
+is refused here too, naming `behavior` (a line dropped without a word
+would leave the control deaf to taps).
 
 ## G1002 — grid track bookkeeping
 
-The row form must square with `cols=`: each `row { }` fills the track
-count (a `skip` covers one), spans reach only declared tracks, weights
-ride tracks not cells, and structure words never come from a style.
+The row form must square with `cols=`: a `row { }` covers no more
+tracks than `cols=` declares (a `skip` covers one; a short row leaves
+its last tracks empty), spans reach only declared tracks, weights ride
+tracks not cells, and structure words never come from a style.
 
 Wrong:
 
@@ -504,8 +537,11 @@ Grid shell cols=[80, fill],
 
 ## G1004 — `wrap=true` with no width to wrap at (lint)
 
-A wrapping label whose width nothing determines wraps at infinity —
-give it a width or put it in a sized box.
+A wrapping label whose width nothing determines never wraps
+(`width=hug` measures the text on one line), or wraps at about one word
+when the boxes above it size to their content. Give it `width=fill`, a
+number or a `max_width`; in the second case give the boxes above it a
+width too. A sized box around a `width=hug` label does not help.
 
 Warns:
 
@@ -535,8 +571,10 @@ give a row the leftover (`: fill`) or hug the Grid.
 
 ## G1011 — an aligned axis with `fill` leaves nothing to position
 
-`halign=left, width=fill` — a filling box has no room to be left OF.
-Pick one.
+`halign=center, width=fill` (or `valign=center, height=fill`) — a
+filling box has no room to be centered in. Use `hug`, or cap the fill
+(`max_width=`, `max_height=`). `left`/`right` with `fill` are not
+refused.
 
 ## G1013 — `min_width` above `max_width`
 
@@ -554,8 +592,10 @@ fight the finger).
 
 ## G1015 — a seat declaration's shape
 
-`seat name` declares a named, empty socket inside a container; content
-and props ride the occupant, not the socket.
+`seat name` declares a named, empty socket: it needs a name (`home` is
+taken — in a seat move it means the node's declared home) and holds no
+children, only what a `when` moves into it. Size words on the seat line
+size the socket (`seat socket width=200`).
 
 ## G1016 — a seat move's rules
 
@@ -566,9 +606,10 @@ declared home is where it rests.
 
 ## G1017 — `aspect=` contract
 
-`aspect=` relates the two axes, so exactly ONE spelled axis drives:
-both sizes spelled leaves nothing to derive (the ratio IS the second
-size), a hug axis is content-sized, a `max_*` cap would break the
+`aspect=` relates the two axes, so one axis drives and the other is
+derived (both `fill` is fine: the box is the largest of that ratio that
+fits): two written numbers leave nothing to derive (the ratio IS the
+second size), a hug axis is content-sized, a `max_*` cap would break the
 ratio, and a stack/grid parent owns both axes (aspect needs a free
 parent — Layers, View, Panel). The ratio is positive width/height;
 `aspect=natural` reads a bitmap's own ratio and lives on Image only.
@@ -582,7 +623,9 @@ the viewport. A `layout Row` strip runs sideways: its cap is
 
 ## G2001 — unknown property
 
-No kind takes this word. The message suggests the nearest real one.
+No kind takes this word. The message suggests the nearest real one, or
+names the gogo word for a XAML or Godot spelling (`foreground=`,
+`visible=`, `mouse_filter=`).
 
 Wrong:
 
@@ -593,8 +636,9 @@ Label title text="Hello", no_such_word=1
 ## G2002 — another dialect's or another kind's word
 
 The word exists but not HERE: a Grid cell word off its lattice, a
-XAML/Godot spelling, a `Scroll`-only word on a box. The message names
-where it belongs.
+`Scroll`-only word on a box, `color=` on a Label. The message names
+where it belongs. (A XAML or Godot spelling that is no gogo word at
+all, such as `foreground=` or `visible=`, is G2001.)
 
 Wrong:
 
@@ -628,7 +672,8 @@ Rectangle veil color=blue
 
 A hex color whose ALPHA channel reads zero because an `#AARRGGBB` paste
 put alpha first (gogo is `#RRGGBBAA`, alpha LAST). The box would be
-invisible with no other symptom.
+invisible with no other symptom. The compiler checks `background=` and
+`border_color=` outside a `when`; other color words are not checked.
 
 Wrong:
 
@@ -639,7 +684,7 @@ Panel scrim background=#FFFFFF00 { Label a text="x" }   // white, alpha 00: noth
 Fix:
 
 ```kdl
-Panel scrim background=#00FFFFFF { Label a text="x" }   // the XAML paste, alpha moved LAST
+Panel scrim background=#FFFF00FF { Label a text="x" }   // the XAML paste #FFFFFF00, alpha moved LAST
 ```
 
 ## G2005 — `stops=` takes the gradient's color list
@@ -685,8 +730,9 @@ error — such a window would draw nothing and say nothing.
 An `atlas` line names one picture and says how to cut it. It sits at the
 top of a file (never inside a node), has one plain name, takes the picture
 by `source="res://….png"` or a packer's export by `from="res://….json"`
-(one of the two), and its words are `cell=`, `edge=` and the `edge_left`
-/ `edge_top` / `edge_right` / `edge_bottom` family. Its block holds only
+(one of the two), and its words are `cell=`, `edge=`, the `edge_left`
+/ `edge_top` / `edge_right` / `edge_bottom` family and `release=unused`
+(G2020). Its block holds only
 `slice` lines; a grid (`cell=`) has no block.
 
 Wrong: `atlas icons cell=48x48` · Fix: `atlas icons source="res://icons.png", cell=48x48`
@@ -938,9 +984,11 @@ Dot d 200x8
 
 ## G5107 — `automatic=` driver coupling
 
-The driver set is closed (`position`, `length`, `presence`); `by`
-couples it to a value or state and `in a..b` gives the value's range —
-each form's message names what is missing or extra.
+The driver set is closed (`position`, `length`, `presence`, `arc`,
+`angle`; the last two take their aperture in parentheses:
+`automatic=arc(from=-225, sweep=270)`); `by` couples it to a value or
+state and `in a..b` gives the value's range — each form's message names
+what is missing or extra.
 
 ## G6001 — undefined `$ref`
 
@@ -1032,9 +1080,9 @@ Label b text="Save it"/save
 
 ## G8002 — displayed text with no translation key
 
-Only when the host asks for it (`CompileOptions::require_keys`; the
-app's build does). Every string a page shows needs a key, so no
-English-only text ships in a translated app:
+Only when the host asks for it (`CompileOptions::require_keys`, off by
+default). Every string a page shows needs a key, so no English-only
+text ships in a translated app:
 
 ```kdl partial
 Label text="Privacy"                    // error[G8002]
@@ -1057,14 +1105,15 @@ file — not a node inside a body.
 
 Same rule as G2021 for `/key`: a reload shows text through the key table
 the app was built with, so a key it never baked has no string in any
-language. Rebuild once to add the key; editing the English of an existing
-key reloads fine.
+language. Rebuild once to add the key. Changing the English of an
+existing key needs a rebuild too: the reload refuses it as G8001, because
+the table still holds the old string.
 
 ## G9002 — repeat/slot clause shape
 
-`as $binding` names the item binding (sigil and all, no dots), and a
-keyed repeat with no `capacity=` requires `by` (there is nothing to
-count).
+`as $binding` names the item binding (sigil and all, no dots), `as`
+comes before `by`, and each clause is written once. `by` is optional: a
+repeat without it is a counted one, filled by the host's `set_count`.
 
 Wrong:
 
@@ -1129,9 +1178,12 @@ Column {
 }
 ```
 
-## G9008 — a dotted `$ref` outside a repeat item binding
+## G9008 — a dotted `$name` in a definition
 
-`$x.field` reads a repeat item; theme values and params are flat.
+A `$` definition or a widget parameter whose name holds a dot
+(`$brush.size = 3`, `widget W $a.b=1`). `$x.field` reads a repeat item;
+theme values and params are flat. (Reading a dotted `$ref` outside a
+repeat is G6001.)
 
 Wrong:
 

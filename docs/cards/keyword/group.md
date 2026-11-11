@@ -9,7 +9,7 @@ What a property line can drive:
 | `scale.x` / `scale.y` | one-axis scale |
 | `rotate` | degrees, around the center |
 | `opacity` | whole-node fade, 0..1 |
-| `background`, `font_color`, … | any numeric/color property nothing else writes |
+| `background`, `font_color`, … | the words a `transition` rule can time: the color words (whole, or `.a` for the alpha alone), `corner_radius`, `border_thickness`, `font_size`, a Gradient's `angle` and its live stops. Not every number: `spacing=` is refused (G0063) |
 
 Layout geometry (`width`, `margin`, …) is fenced — an anim would fight the layout; a pose that changes and STAYS is arrangement + `when` + `transition` territory.
 

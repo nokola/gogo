@@ -24,3 +24,17 @@ jobs:
       # runner's copy up to date before cargo uses it.
       - run: rustup update stable --no-self-update
       - run: cargo test --workspace --no-fail-fast
+
+  # Runs each crate's tests from its crates.io package, the way someone
+  # who downloaded the crate would.
+  #
+  # Needed because a package carries one crate's folder and nothing around
+  # it: a test that reads docs/ or assets/ passes in the job above and
+  # fails for whoever downloads the crate. One OS is enough: what a
+  # package holds is the same on all three.
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup update stable --no-self-update
+      - run: sh scripts/test-packages.sh

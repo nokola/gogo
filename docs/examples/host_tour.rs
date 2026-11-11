@@ -202,7 +202,7 @@ fn anim_tour(host: &mut Hosted) {
     assert!(host.rt.take_finished().contains(&appear)); // the finished anims, once each
 
     host.rt.play_id(&host.page, appear, Finish::Nothing);
-    host.rt.stop_id(appear, true); // true: every property goes back to what the file says
+    host.rt.stop_id(appear, true); // true: every property goes back to what stands without the anim
     assert!(!host.rt.is_playing_id(appear));
 }
 

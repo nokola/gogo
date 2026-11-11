@@ -11,9 +11,10 @@ List picker select=many {
 }
 ```
 
-Under `one`, `selected` is a key or null (tapping the selected item never
-deselects — null comes from code); under `many` it's an Array of keys and
-taps toggle; under `off` writes are refused. `change(selected)` fires on
-genuine selection change; double-tap or Enter fires `activate(key, item)`
-(`On<Name>Activate` by convention — a single tap activates under `off`,
-where there is no selection to move).
+Under `one`, a tap selects the row and tapping the selected row never
+deselects (only code clears it); under `many` taps toggle; under `off`
+code writes are refused. Code reads the selection with
+`Runtime::selected_keys` and writes it with `Runtime::set_selected`. A
+`Change` event on the List fires on genuine selection change, and every
+completed tap (or Enter/Space on a focused row) then fires `Activate` on
+the row, under `off` too.

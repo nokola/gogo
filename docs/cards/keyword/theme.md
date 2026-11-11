@@ -1,7 +1,7 @@
 Three shapes, one keyword. Top level: `theme { }` holds document defaults,
 `theme dark { }` a variant that wins while active. Inside a node's body:
-`theme font_size=15` is the PROPAGATING subtree default (unlike node-local
-`font_size=`).
+`theme font_size=15` is the PROPAGATING subtree default: every Label
+below with no `font_size=` of its own takes it.
 
 ```
 $accent = #E51400

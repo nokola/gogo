@@ -7,14 +7,16 @@ rule: **the axis you spelled drives, the axis you didn't is derived.**
 be, live across resizes. Both axes `fill` + aspect = the largest
 ratio rectangle that fits the space the parent offers, centered (WPF
 Uniform — the color-wheel shape). Both axes spelled + aspect is an
-error (drop one); `hug` and `max-*=` don't combine with it (v1).
+error (drop one); `hug` and `max_*=` don't combine with it (v1).
 
 Numbers solve under free parents (Layers / slot).
 `aspect=natural` works by the picture instead: the Image's MINIMUM follows
 the bitmap's ratio from the driving axis (the WPF UniformToFill
-measure) — works under containers and free parents alike, and stays
-correct while `loading=lazy` pixels are still decoding (the bitmap-
-exact `Tiles` cells). Nothing spelled: width drives.
+measure) — works under containers and free parents alike. The layout
+asks the host for the picture's size (`TextMeasure::image_size`): until
+the host knows it (a `loading=lazy` picture it has not measured yet) the
+Image has no ratio to follow and gets no height from it. Nothing
+spelled: width drives.
 
 ```
 Layers {

@@ -1,13 +1,11 @@
 The box's fill color — it RECOLORS, never reshapes. Panels (and `View`
 roots) start as a blank canvas: nothing draws until a key says so.
-Buttons start as a copy of their theme chrome, so `background=` keeps the
-corner radius and borders and changes only the color. On a button it is
-the PIGMENT TAKEOVER (D128): the one recolored box fills every state slot,
-so press feedback is yours to author with `when held background=` —
-shape keys alone (`padding`/`corner_radius`/`border-*`) leave the theme's
-own state feedback alive. Inside `when held` the tween starts from the
-theme's resting value and hands back cleanly (a padded button gets its
-per-state shape copies back). Text color is `font_color=`; a
+A Button starts with a default plate (dark gray, 60% opaque);
+`background=` changes only its color and leaves the corner radius and
+borders as written. A Button has no press feedback of its own, with or
+without `background=`: it is yours to author with `when held background=`.
+Inside `when held` the tween starts from the button's resting color and
+hands back when the press ends. Text color is `font_color=`; a
 `Rectangle`/`Circle` fill is `color=`.
 
 ```

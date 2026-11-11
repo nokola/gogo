@@ -1,5 +1,5 @@
 Generated gradient fills. `stops=` is required (one color is a
-`Rectangle`); `fill=linear|radial|square|conic`; `@position` pins a stop,
+`Rectangle`); `fill=linear|radial|conic`; `@position` pins a stop,
 `/opacity` is allowed; `angle=` aims linear fills (CSS compass: 0 = to
 top, 90 = to right). Size the box — a Gradient has no natural size.
 

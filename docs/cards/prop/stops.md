@@ -8,13 +8,12 @@ stay live: `stop_1_color`, `stop_1_offset`, ... are real per-stop
 properties whens and anims drive — numbered from 1 in declaration order
 (`stop_1` = the first stop in `stops=[...]`, not an array index).
 
-Fading out: the RGB under alpha 0 steers the blend even though it never
-shows on its own (interpolation is straight RGBA) — `white/0` fades white
-out clean, `#00000000` fades through dark gray. Bare `transparent` is
-refused in `stops=` for exactly that reason: it's #00000000 without saying
-so. (Porting note: WPF's DEFAULT stop color is transparent black — a XAML
-`GradientStop` with no `Color=` fades dark; port it as `#00000000` only
-when that dark edging is the shipped look.)
+Fading out: stops mix with their alpha multiplied in (premultiplied
+Oklab), so the RGB under alpha 0 adds nothing — `white/0` and `#00000000`
+both fade the neighboring color out clean. Bare `transparent` is still
+refused in `stops=` (G2006): write `white/0` or `black/0`. (Porting note:
+WPF's DEFAULT stop color is transparent black, and in WPF such a stop
+fades dark; in gogo it fades clean.)
 
 ```
 Gradient fade fill=linear, angle=90,

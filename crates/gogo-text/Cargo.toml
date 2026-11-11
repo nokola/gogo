@@ -4,6 +4,11 @@ description = "Text for gogo UIs: shapes and measures text and rasterizes glyphs
 keywords = ["ui", "gui", "text", "font", "glyph"]
 categories = ["gui", "text-processing"]
 readme = "../../README.md"
+# The tests that need a font read `assets/Fonts` at the top of the
+# repository, which a crates.io package does not carry, so they stay out
+# of the package (`scripts/test-packages.sh` checks that `cargo test`
+# passes on it).
+exclude = ["tests/text_engine.rs"]
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -16,4 +21,4 @@ cosmic-text = { version = "0.19.0", default-features = false, features = ["std",
 # OS font folders, `memmap` maps the files instead of copying a phone's
 # whole /system/fonts into memory.
 fontdb = { version = "0.23.0", default-features = false, features = ["std", "fs", "memmap"] }
-gogo-ui = { path = "../gogo-ui", version = "0.2.0" }
+gogo-ui = { path = "../gogo-ui", version = "0.3.0" }

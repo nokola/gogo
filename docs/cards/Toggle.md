@@ -7,7 +7,7 @@ Toggle mute value=1, on:change=OnMuteChange
 
 Under the hood one number is the truth: `value` runs 0..1, the thumb follows
 it, and `selected` flips as it crosses the middle — live while a finger
-drags (`held` holds through the drag). A tap glides to the other end; a
+drags (`held` holds through the drag). A tap jumps to the other end; a
 drag settles on the side it lands. `change(bool)` fires on settle, and
 only if the value differs from before the gesture — wiggling across the
 middle is zero changes; state is live presentation, `change` is

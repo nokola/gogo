@@ -1,4 +1,7 @@
-Where a widget instance's children land — one per widget body (v1).
+Where a widget instance's children land. A body may also NAME slots
+(`slot header { Label text="untitled" }`, the braces holding the default
+content): an instance fills one with its own `slot header { ... }` child,
+and its other children land in the bare `slot`.
 
 ```
 widget Card {

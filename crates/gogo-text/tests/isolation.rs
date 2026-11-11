@@ -17,18 +17,32 @@ use std::path::Path;
 /// covers `android-activity` and `android_logger`).
 const OS_OR_GPU: &[&str] = &["wgpu", "winit", "android", "jni", "image", "egui", "pollster", "env_logger", "raw-window-handle", "ndk"];
 
-/// Every dependency name in a manifest's text: the keys of each
-/// `[...dependencies...]` table, in order.
+/// Every dependency name in a manifest's text, in order: the keys of each
+/// `[...dependencies]` table, and the name in each
+/// `[...dependencies.NAME]` header.
 ///
 /// Needed as a plain line scan, with no toml crate, so that this test adds
 /// no dependency of its own to the crate it guards.
+///
+/// It reads both spellings because cargo rewrites the manifest that goes
+/// into a crates.io package with one table per dependency: a scan of the
+/// first spelling alone finds `version` and `features` there, and no
+/// dependency.
 fn dependency_names(manifest: &str) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
     let mut in_deps: bool = false;
     for raw in manifest.lines() {
         let line: &str = raw.trim();
-        if line.starts_with('[') {
-            in_deps = line.contains("dependencies");
+        if let Some(header) = line.strip_prefix('[') {
+            let header: &str = header.trim_end_matches(']');
+            // `[dependencies]` opens a table of names. `[dependencies.wgpu]`
+            // is one dependency: the lines under it are its settings.
+            in_deps = header.ends_with("dependencies");
+            if let Some((table, name)) = header.rsplit_once('.') {
+                if table.ends_with("dependencies") {
+                    names.push(name.trim_matches('"').to_string());
+                }
+            }
             continue;
         }
         if !in_deps || line.is_empty() || line.starts_with('#') {
@@ -65,4 +79,7 @@ fn the_scan_sees_what_it_forbids() {
     let deps: Vec<String> = dependency_names(manifest);
     assert_eq!(deps, ["serde", "wgpu", "android-activity"]);
     assert_eq!(forbidden(&deps), [&"wgpu".to_string(), &"android-activity".to_string()]);
+    // The same names in the spelling cargo writes into a package.
+    let packaged: &str = "[package]\nname = \"x\"\n\n[[test]]\nname = \"isolation\"\n\n[dependencies.serde]\nversion = \"1\"\nfeatures = [\n    \"derive\",\n]\n\n[dependencies.wgpu]\nversion = \"30\"\ndefault-features = false\n\n[dev-dependencies.android-activity]\nversion = \"0.6\"\n\n[target.'cfg(windows)'.dependencies]\nwinit = \"0.30\"\n";
+    assert_eq!(dependency_names(packaged), ["serde", "wgpu", "android-activity", "winit"]);
 }

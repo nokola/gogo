@@ -9,8 +9,8 @@
 //! letters, tinted by the text color, and an RGBA color atlas for emoji,
 //! drawn in their own colors. Each doubles when it fills, and every glyph
 //! of the grown one is rasterized again on demand. All sizes here are
-//! DEVICE pixels: the caller converts epx (`EpxMeasure` does it for the
-//! layout).
+//! DEVICE pixels: the caller converts epx (`TextPx::from_epx` for the
+//! size of a label's text; `EpxMeasure` does all of it for the layout).
 //!
 //! Emoji come from a COLOR FACE: one with color palettes or color bitmap
 //! strikes, such as the phone's own emoji font after
@@ -41,13 +41,53 @@ use cosmic_text::{Align, Attrs, Buffer, CacheKey, CacheKeyFlags, Family, FontSys
 use gogo_ui::layout::TextMeasure;
 use gogo_ui::ImageKey;
 
-/// Pixels added between two lines of a label: none above the first line,
-/// none below the last. Device pixels, the same at every scale.
+/// The gap between two lines of a label, in epx: none above the first
+/// line, none below the last.
 ///
-/// Needed as one shared number because the layout sizes a label's box
-/// with it (`FaceMetrics::block_height`) and the shaper places the rows
-/// by it.
-pub const LINE_SPACING_PX: f32 = 3.0;
+/// Needed in epx so that wrapped text is set equally tight on every
+/// screen. A gap fixed in device pixels is three times as wide, measured
+/// against the letters, on a screen with 1 device pixel per epx as on a
+/// phone with 3.
+pub const LINE_GAP_EPX: f32 = 1.0;
+
+/// The size of a label's text on one screen, in device pixels: its font
+/// size and the gap between two of its lines.
+///
+/// Needed as one value because the layout measures a label and the
+/// renderer draws it, and both must turn its size in epx into the same
+/// pixels. Measured one pixel bigger than it is drawn, a label wraps a
+/// word early; with another gap, its lines sit off the box the layout
+/// gave it. `from_epx` is the one place that does the turning.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextPx {
+    /// The font size: a whole number of device pixels, 1 or more.
+    pub font_size: f32,
+    /// The gap between two lines: a whole number of device pixels.
+    pub line_gap: f32,
+}
+
+impl TextPx {
+    /// The size of text of `font_size_epx` on a screen that has `epx`
+    /// device pixels per epx.
+    ///
+    /// The font size is cut down to a whole pixel. The gap is
+    /// `LINE_GAP_EPX` rounded to the nearest whole pixel. Neither goes
+    /// under 1.
+    ///
+    /// Needed whole because glyphs are rasterized on whole pixels: with a
+    /// gap of 2.6 pixels the lines of one label would sit 2 and 3 pixels
+    /// apart in turns.
+    pub fn from_epx(font_size_epx: f32, epx: f32) -> TextPx {
+        TextPx { font_size: (font_size_epx * epx).floor().max(1.0), line_gap: (LINE_GAP_EPX * epx).round().max(1.0) }
+    }
+
+    /// A size for text that is one line, where no gap shows: one glyph
+    /// (`TextEngine::glyph`), or letters rasterized ahead of their first
+    /// frame (`TextEngine::warm`).
+    fn one_line(font_size: f32) -> TextPx {
+        TextPx { font_size, line_gap: 0.0 }
+    }
+}
 
 /// Entries a measure cache or a shape cache holds before it is emptied.
 ///
@@ -100,16 +140,16 @@ impl FaceMetrics {
         (self.ascent * scale).ceil() + (self.descent * scale).ceil()
     }
 
-    /// The pitch between lines: the face height plus the line spacing.
-    pub fn line_height(&self, font_size: f32) -> f32 {
-        self.font_height(font_size) + LINE_SPACING_PX
+    /// The pitch between lines: the face height plus the line gap.
+    pub fn line_height(&self, size: TextPx) -> f32 {
+        self.font_height(size.font_size) + size.line_gap
     }
 
-    /// The box height of `lines` lines: spacing sits only BETWEEN lines
-    /// (lines × font height + (lines − 1) × `LINE_SPACING_PX`).
-    pub fn block_height(&self, font_size: f32, lines: f32) -> f32 {
+    /// The box height of `lines` lines: the gap sits only BETWEEN lines
+    /// (lines × font height + (lines − 1) × the line gap).
+    pub fn block_height(&self, size: TextPx, lines: f32) -> f32 {
         let n = lines.max(1.0);
-        n * self.font_height(font_size) + (n - 1.0) * LINE_SPACING_PX
+        n * self.font_height(size.font_size) + (n - 1.0) * size.line_gap
     }
 }
 
@@ -258,10 +298,11 @@ pub struct TextEngine {
 }
 
 /// The measure / shape cache key: a hash over the request, no allocation.
-fn cache_key(text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>, box_w: f32, halign: u8) -> u64 {
+fn cache_key(text: &str, size: TextPx, max_width: Option<f32>, font: Option<&str>, box_w: f32, halign: u8) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut h);
-    font_size.to_bits().hash(&mut h);
+    size.font_size.to_bits().hash(&mut h);
+    size.line_gap.to_bits().hash(&mut h);
     max_width.unwrap_or(-1.0).to_bits().hash(&mut h);
     font.unwrap_or("").hash(&mut h);
     box_w.to_bits().hash(&mut h);
@@ -467,7 +508,7 @@ impl TextEngine {
     /// its ink box and atlas uv, or None when the face draws nothing for
     /// it. The `text_fit=stretch` word maps this box onto a Label's rect.
     pub fn glyph(&mut self, ch: &str, font_size: f32, font: Option<&str>) -> Option<GlyphQuad> {
-        self.shape(ch, font_size, None, font, 0.0, 0.0, 0.0, 0).into_iter().find(|g| g.w > 0.0 && g.h > 0.0)
+        self.shape(ch, TextPx::one_line(font_size), None, font, 0.0, 0.0, 0.0, 0).into_iter().find(|g| g.w > 0.0 && g.h > 0.0)
     }
 
     pub fn atlas(&self) -> (&[u8], u32) {
@@ -562,9 +603,9 @@ impl TextEngine {
         self.face(font).map_or(FaceMetrics::FALLBACK, |f| f.metrics)
     }
 
-    fn buffer(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> Buffer {
-        let line_height = self.metrics(font).line_height(font_size);
-        let mut buffer = Buffer::new(&mut self.fs, Metrics::new(font_size, line_height));
+    fn buffer(&mut self, text: &str, size: TextPx, max_width: Option<f32>, font: Option<&str>) -> Buffer {
+        let line_height = self.metrics(font).line_height(size);
+        let mut buffer = Buffer::new(&mut self.fs, Metrics::new(size.font_size, line_height));
         buffer.set_wrap(if max_width.is_some() { Wrap::WordOrGlyph } else { Wrap::None });
         buffer.set_size(max_width, None);
         let attrs = self.attrs(font);
@@ -583,19 +624,19 @@ impl TextEngine {
     }
 
     /// Width and height in device pixels.
-    pub fn measure(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> (f32, f32) {
-        let key = cache_key(text, font_size, max_width, font, 0.0, 0);
+    pub fn measure(&mut self, text: &str, size: TextPx, max_width: Option<f32>, font: Option<&str>) -> (f32, f32) {
+        let key = cache_key(text, size, max_width, font, 0.0, 0);
         if let Some(v) = self.measure_cache.get(&key) {
             return *v;
         }
-        let buffer = self.buffer(text, font_size, max_width, font);
+        let buffer = self.buffer(text, size, max_width, font);
         let mut w: f32 = 0.0;
         let mut lines: f32 = 0.0;
         for run in buffer.layout_runs() {
             w = w.max(run.line_w);
             lines += 1.0;
         }
-        let h = self.metrics(font).block_height(font_size, lines);
+        let h = self.metrics(font).block_height(size, lines);
         let v = (w.ceil(), h);
         if self.measure_cache.len() >= CACHE_CAP {
             self.measure_cache.clear();
@@ -607,9 +648,9 @@ impl TextEngine {
     /// Shapes `text` into glyph quads with the pen at (x, y) = the top-left
     /// of the text box; rasterizes new glyphs into the atlas. `halign`:
     /// 0 start, 1 center, 2 end within `box_w` (when wrapping).
-    pub fn shape(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>, x: f32, y: f32, box_w: f32, halign: u8) -> Vec<GlyphQuad> {
+    pub fn shape(&mut self, text: &str, size: TextPx, max_width: Option<f32>, font: Option<&str>, x: f32, y: f32, box_w: f32, halign: u8) -> Vec<GlyphQuad> {
         let mut out: Vec<GlyphQuad> = Vec::new();
-        self.shape_into(text, font_size, max_width, font, x, y, box_w, halign, &mut out);
+        self.shape_into(text, size, max_width, font, x, y, box_w, halign, &mut out);
         out
     }
 
@@ -619,16 +660,16 @@ impl TextEngine {
     /// through here: a run the cache holds then costs no allocation, so a
     /// frame that shows only cached text allocates nothing.
     #[allow(clippy::too_many_arguments)]
-    pub fn shape_into(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>, x: f32, y: f32, box_w: f32, halign: u8, out: &mut Vec<GlyphQuad>) {
+    pub fn shape_into(&mut self, text: &str, size: TextPx, max_width: Option<f32>, font: Option<&str>, x: f32, y: f32, box_w: f32, halign: u8, out: &mut Vec<GlyphQuad>) {
         let (dx, dy) = (x.round(), y.round());
-        let key = cache_key(text, font_size, max_width, font, box_w, halign);
+        let key = cache_key(text, size, max_width, font, box_w, halign);
         if let Some((generation, quads)) = self.shape_cache.get(&key) {
             if *generation == self.generation {
                 out.extend(quads.iter().map(|q| GlyphQuad { x: q.x + dx, y: q.y + dy, ..*q }));
                 return;
             }
         }
-        let quads = self.shape_uncached(text, font_size, max_width, font, box_w, halign);
+        let quads = self.shape_uncached(text, size, max_width, font, box_w, halign);
         if self.shape_cache.len() >= CACHE_CAP {
             self.shape_cache.clear();
         }
@@ -648,12 +689,12 @@ impl TextEngine {
     ///
     /// The run is shaped again against the grown atlas, in the same
     /// buffer. A run that grows nothing (the usual one) is shaped once.
-    fn shape_uncached(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>, box_w: f32, halign: u8) -> Vec<GlyphQuad> {
+    fn shape_uncached(&mut self, text: &str, size: TextPx, max_width: Option<f32>, font: Option<&str>, box_w: f32, halign: u8) -> Vec<GlyphQuad> {
         let mut out: Vec<GlyphQuad> = Vec::new();
         loop {
             let generation: u32 = self.generation;
             out.clear();
-            self.shape_pass(text, font_size, max_width, font, box_w, halign, &mut out);
+            self.shape_pass(text, size, max_width, font, box_w, halign, &mut out);
             if self.generation == generation {
                 return out;
             }
@@ -662,10 +703,10 @@ impl TextEngine {
 
     /// One shaping pass into `out`; its uvs are good only if neither atlas
     /// grew during it (`shape_uncached` checks and runs it again).
-    fn shape_pass(&mut self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>, box_w: f32, halign: u8, out: &mut Vec<GlyphQuad>) {
+    fn shape_pass(&mut self, text: &str, size: TextPx, max_width: Option<f32>, font: Option<&str>, box_w: f32, halign: u8, out: &mut Vec<GlyphQuad>) {
         let (x, y) = (0.0f32, 0.0f32);
         let (bold, _) = Self::style(font);
-        let buffer = self.buffer(text, font_size, max_width, font);
+        let buffer = self.buffer(text, size, max_width, font);
         // Per glyph: its raster key, its face, and the bytes of its line it
         // covers (the cluster an emoji painter is asked for).
         let lines: Vec<&str> = buffer.lines.iter().map(|l| l.text()).collect();
@@ -686,10 +727,10 @@ impl TextEngine {
                 }
                 out.push(GlyphQuad {
                     x: (x + shift).round() + g.x as f32 + slot.left as f32,
-                    // cosmic-text puts half of the line spacing above each
+                    // cosmic-text puts half of the line gap above each
                     // line; `block_height` counts none above the first, so
-                    // every row moves up by half a spacing.
-                    y: y.round() + (line_y - LINE_SPACING_PX / 2.0).round() + g.y as f32 - slot.top as f32,
+                    // every row moves up by half a gap.
+                    y: y.round() + (line_y - size.line_gap / 2.0).round() + g.y as f32 - slot.top as f32,
                     w: slot.width as f32,
                     h: slot.height as f32,
                     uv: [slot.u0, slot.v0, slot.u1, slot.v1],
@@ -860,7 +901,7 @@ impl TextEngine {
     /// Needed so that the first frame that shows them rasterizes nothing:
     /// a host calls it at start with the letters its first screen shows.
     pub fn warm(&mut self, chars: &str, font_size: f32, font: Option<&str>) {
-        let _ = self.shape(chars, font_size, None, font, 0.0, 0.0, 0.0, 0);
+        let _ = self.shape(chars, TextPx::one_line(font_size), None, font, 0.0, 0.0, 0.0, 0);
     }
 }
 
@@ -922,12 +963,9 @@ pub struct EpxMeasure<'a> {
 impl TextMeasure for EpxMeasure<'_> {
     fn measure(&self, text: &str, font_size: f32, max_width: Option<f32>, font: Option<&str>) -> (f32, f32) {
         let mut e = self.engine.borrow_mut();
-        // The size in device pixels is truncated to a whole pixel, the
-        // same way a renderer truncates it when it draws. Needed because a
-        // label has to be measured at the size it is drawn at: measured a
-        // fraction of a pixel bigger, every line is a hair wider and wraps
-        // a word early.
-        let (w, h) = e.measure(text, (font_size * self.epx).floor().max(1.0), max_width.map(|w| w * self.epx), font.or(self.font.as_deref()));
+        // `TextPx::from_epx` is how a renderer sizes the label when it
+        // draws it, so the label is measured at the size it is drawn at.
+        let (w, h) = e.measure(text, TextPx::from_epx(font_size, self.epx), max_width.map(|w| w * self.epx), font.or(self.font.as_deref()));
         (w / self.epx, h / self.epx)
     }
 
@@ -953,288 +991,38 @@ impl TextMeasure for EpxMeasure<'_> {
 mod tests {
     use super::*;
 
-    /// A run whose glyph grows the atlas mid-way comes out whole against
-    /// the grown atlas: its uvs equal a re-shape's. Red when the glyphs
-    /// shaped before the grow keep uvs into the atlas that was and the run
-    /// sits in the cache that way: the user sees a label without its first
-    /// letters ("ve changes?" for "Save changes?").
+    /// `TextPx::from_epx` cuts the font size down to a whole pixel and
+    /// rounds the 1 epx line gap to a whole pixel; neither goes under 1.
     #[test]
-    fn a_run_that_grows_the_atlas_is_shaped_whole_against_the_grown_one() {
-        let mut e = engine();
-        let before: u32 = e.generation;
-        // 400-px glyphs: nine fill the 1024 atlas, so the alphabet grows it
-        // inside this one run.
-        let text = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
-        let shaped: Vec<GlyphQuad> = e.shape(text, 400.0, None, None, 0.0, 0.0, 100_000.0, 0);
-        assert!(e.generation > before, "the precondition: the run grew the atlas");
-        e.shape_cache.clear();
-        let again: Vec<GlyphQuad> = e.shape(text, 400.0, None, None, 0.0, 0.0, 100_000.0, 0);
-        assert_eq!(shaped.len(), again.len());
-        for (a, b) in shaped.iter().zip(&again) {
-            assert_eq!(a.uv, b.uv, "a glyph of the run that grew the atlas, shaped whole: {a:?} vs {b:?}");
+    fn a_text_size_is_whole_pixels() {
+        let rows: [(f32, f32, f32, f32); 8] = [
+            // font size in epx, device pixels per epx -> font px, gap px
+            (16.0, 1.0, 16.0, 1.0),
+            (16.0, 1.25, 20.0, 1.0),
+            (16.0, 1.5, 24.0, 2.0),
+            (16.0, 2.0, 32.0, 2.0),
+            (16.0, 2.625, 42.0, 3.0),
+            (16.0, 3.0, 48.0, 3.0),
+            (15.5, 1.0, 15.0, 1.0),
+            (0.2, 0.25, 1.0, 1.0),
+        ];
+        for (font_size_epx, epx, font_px, gap_px) in rows {
+            assert_eq!(TextPx::from_epx(font_size_epx, epx), TextPx { font_size: font_px, line_gap: gap_px }, "{font_size_epx} epx at {epx} device pixels per epx");
         }
     }
 
-    /// A right-to-left line in a wide box starts at the box's left edge
-    /// like a Latin one, and `halign` still moves it: centre and end land
-    /// where they would for Latin text, not twice as far. Red when
-    /// cosmic-text's default stands: the Arabic word sits against the
-    /// right edge of the wrap width. Ignored unless asked for: it needs an
-    /// OS font with Arabic letters, which a bare test machine may not
-    /// have (see `engine_with_emoji`).
+    /// A block of lines is that many font heights with a gap between
+    /// each two: none above the first line, none below the last.
     #[test]
-    #[ignore = "needs an OS font with Arabic letters: run with --include-ignored on Windows"]
-    fn a_right_to_left_line_starts_at_the_left_edge_and_halign_still_moves_it() {
-        let mut e = engine();
-        e.load_system_fonts(); // the desktop's Arabic face (Arial / Segoe UI)
-        assert!(e.has_glyph('ع'), "precondition: an Arabic face");
-        let span = |q: &[GlyphQuad]| -> (f32, f32) { (q.iter().map(|g| g.x).fold(f32::MAX, f32::min), q.iter().map(|g| g.x + g.w).fold(f32::MIN, f32::max)) };
-        let box_w: f32 = 600.0;
-        let (left, right) = span(&e.shape("عربي", 40.0, Some(box_w), None, 0.0, 0.0, box_w, 0));
-        assert!(left < 20.0, "start = the left edge: {left}..{right}");
-        let w: f32 = right - left;
-        let (c_left, _) = span(&e.shape("عربي", 40.0, Some(box_w), None, 0.0, 0.0, box_w, 1));
-        assert!((c_left - (box_w - w) / 2.0).abs() < 20.0, "centred once: {c_left} for width {w}");
-        let (_, e_right) = span(&e.shape("عربي", 40.0, Some(box_w), None, 0.0, 0.0, box_w, 2));
-        assert!((e_right - box_w).abs() < 20.0 && e_right <= box_w + 2.0, "end = the right edge: {e_right}");
-        let (l_left, _) = span(&e.shape("English", 40.0, Some(box_w), None, 0.0, 0.0, box_w, 0));
-        assert!(l_left < 20.0, "Latin unchanged: {l_left}");
-    }
-
-    fn engine() -> TextEngine {
-        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/Fonts/Roboto Regular.ttf")).expect("font");
-        TextEngine::new(&[("assets/Fonts/Roboto Regular.ttf", bytes)])
-    }
-
-    /// Roboto plus Windows' Segoe UI Emoji as a fallback face (a color
-    /// face: COLRv0 layers swash paints itself).
-    ///
-    /// Needed by the emoji tests, which are `#[ignore]` for that reason:
-    /// the file exists on Windows only, and a test that returned early
-    /// elsewhere would count as passed without having run. A Windows host
-    /// runs them with `cargo test -p gogo-text -- --include-ignored`.
-    fn engine_with_emoji() -> TextEngine {
-        let segoe = Path::new("C:/Windows/Fonts/seguiemj.ttf");
-        let mut e = engine();
-        assert!(e.add_fallback_font_file(segoe), "this test needs {}", segoe.display());
-        e
-    }
-
-    /// The color atlas texel at the top-left of `q`'s slot, RGBA.
-    fn color_texel_of(e: &TextEngine, q: &GlyphQuad) -> [u8; 4] {
-        let (atlas, side) = e.color_atlas();
-        let (x, y) = ((q.uv[0] * side as f32).round() as usize, (q.uv[1] * side as f32).round() as usize);
-        let i = (y * side as usize + x) * 4;
-        [atlas[i], atlas[i + 1], atlas[i + 2], atlas[i + 3]]
-    }
-
-    /// An emoji of a color face lands in the COLOR atlas with its own
-    /// colors (`color: true`, texels that are not gray), a letter beside
-    /// it in the coverage atlas; both atlases report dirty. Red when the
-    /// rasterizer keeps coverage masks only: every other glyph is dropped,
-    /// and the user sees a box for each emoji.
-    #[test]
-    #[ignore = "needs Windows' Segoe UI Emoji font: run with --include-ignored on Windows"]
-    fn an_emoji_lands_in_the_color_atlas_beside_the_letters() {
-        let mut e: TextEngine = engine_with_emoji();
-        assert!(!e.take_color_dirty(), "nothing packed yet");
-        let quads: Vec<GlyphQuad> = e.shape("a😀", 40.0, None, None, 0.0, 0.0, 0.0, 0);
-        assert_eq!(quads.len(), 2, "{quads:?}");
-        assert!(!quads[0].color, "the letter: coverage atlas");
-        assert!(quads[1].color, "the emoji: color atlas");
-        assert!(quads[1].w > 20.0 && quads[1].h > 20.0, "an emoji at 40 px is a real box: {:?}", quads[1]);
-        assert!(e.take_dirty() && e.take_color_dirty());
-        // Somewhere in the emoji's slot a texel is opaque and colored.
-        let (atlas, side) = e.color_atlas();
-        let (x0, y0, x1, y1) = ((quads[1].uv[0] * side as f32) as usize, (quads[1].uv[1] * side as f32) as usize, (quads[1].uv[2] * side as f32) as usize, (quads[1].uv[3] * side as f32) as usize);
-        let colored = (y0..y1).flat_map(|y| (x0..x1).map(move |x| (x, y))).any(|(x, y)| {
-            let i = (y * side as usize + x) * 4;
-            let (r, g, b, a) = (atlas[i], atlas[i + 1], atlas[i + 2], atlas[i + 3]);
-            // swash's layered coverage tops out a hair under 255.
-            a >= 250 && (r != g || g != b)
-        });
-        assert!(colored, "the slot holds the emoji's own colors");
-    }
-
-    /// With a host painter installed, an emoji is painted by the host
-    /// (its raster lands in the color atlas, placed by its left/top), a
-    /// letter still by swash, and a host that declines (`None`) leaves
-    /// the emoji to swash. The painter runs once per (cluster, size).
-    #[test]
-    #[ignore = "needs Windows' Segoe UI Emoji font: run with --include-ignored on Windows"]
-    fn the_host_paints_an_emoji_when_it_has_one() {
-        let mut e: TextEngine = engine_with_emoji();
-        let asked: std::rc::Rc<RefCell<Vec<(String, f32)>>> = std::rc::Rc::new(RefCell::new(Vec::new()));
-        let log = asked.clone();
-        e.set_host_color_glyph_painter(Some(Box::new(move |cluster: &str, px: f32| {
-            log.borrow_mut().push((cluster.to_string(), px));
-            // A 6×6 solid green square sitting 2 px right of the pen, 5 above the baseline.
-            (cluster == "😀").then(|| HostColorGlyph { width: 6, height: 6, left: 2, top: 5, rgba: [0, 255, 0, 255].repeat(36) })
-        })));
-        let quads: Vec<GlyphQuad> = e.shape("a😀", 40.0, None, None, 0.0, 0.0, 0.0, 0);
-        assert_eq!(quads.len(), 2, "{quads:?}");
-        assert!(!quads[0].color, "the letter: swash, coverage atlas");
-        assert_eq!(asked.borrow().as_slice(), &[("😀".to_string(), 40.0)], "asked once, the cluster text and the px size");
-        assert!(quads[1].color);
-        assert_eq!((quads[1].w, quads[1].h), (6.0, 6.0), "the host's raster size");
-        assert_eq!(color_texel_of(&e, &quads[1]), [0, 255, 0, 255], "the host's pixels");
-        // The second shape of the same run is served from the cache.
-        let _ = e.shape("a😀", 40.0, None, None, 0.0, 0.0, 0.0, 0);
-        assert_eq!(asked.borrow().len(), 1, "no second ask for a cached run");
-        // The quad sits `left` px right of the pen and `top` px above the
-        // baseline: against a painter that reports (0, 0), it is 2 right
-        // and 5 up. A new painter repaints (the old slots are dropped).
-        e.set_host_color_glyph_painter(Some(Box::new(|_: &str, _: f32| Some(HostColorGlyph { width: 6, height: 6, left: 0, top: 0, rgba: [0, 0, 255, 255].repeat(36) }))));
-        let at_pen: Vec<GlyphQuad> = e.shape("a😀", 40.0, None, None, 0.0, 0.0, 0.0, 0);
-        assert_eq!((quads[1].x - at_pen[1].x, quads[1].y - at_pen[1].y), (2.0, -5.0), "{quads:?} vs {at_pen:?}");
-        assert_eq!(color_texel_of(&e, &at_pen[1]), [0, 0, 255, 255], "the new painter's pixels");
-        // A host that declines leaves the emoji to swash.
-        e.set_host_color_glyph_painter(Some(Box::new(|_: &str, _: f32| None)));
-        let declined: Vec<GlyphQuad> = e.shape("a😀", 40.0, None, None, 0.0, 0.0, 0.0, 0);
-        assert!(declined[1].color && declined[1].w > 20.0, "swash's own raster: {declined:?}");
-    }
-
-    /// A host raster that fills the color atlas grows it, and the run is
-    /// shaped whole against the grown one (the coverage atlas's law,
-    /// `a_run_that_grows_the_atlas_is_shaped_whole_against_the_grown_one`).
-    #[test]
-    #[ignore = "needs Windows' Segoe UI Emoji font: run with --include-ignored on Windows"]
-    fn a_host_emoji_that_fills_the_color_atlas_grows_it() {
-        let mut e: TextEngine = engine_with_emoji();
-        e.set_host_color_glyph_painter(Some(Box::new(|_: &str, _: f32| Some(HostColorGlyph { width: 300, height: 300, left: 0, top: 300, rgba: [255, 0, 0, 255].repeat(300 * 300) }))));
-        let before: u32 = e.generation;
-        // Four 300-px squares do not fit a 512 atlas: it doubles mid-run.
-        let quads: Vec<GlyphQuad> = e.shape("😀😁😂🤣", 40.0, None, None, 0.0, 0.0, 0.0, 0);
-        assert!(e.generation > before, "the precondition: the run grew the color atlas");
-        assert_eq!(e.color_atlas().1, 1024);
-        assert_eq!(quads.len(), 4, "{quads:?}");
-        for q in &quads {
-            assert!(q.color);
-            assert_eq!(color_texel_of(&e, q), [255, 0, 0, 255], "every slot is into the grown atlas: {q:?}");
-        }
-    }
-
-    /// A fallback file serves the glyphs no page font has: Roboto has no
-    /// Arabic, Windows' Arial does. The face gets no key, a missing file
-    /// is a false, and the measure cache is dropped so a label measured
-    /// as boxes is measured again. Ignored unless asked for: Arial is a
-    /// Windows file (see `engine_with_emoji`).
-    #[test]
-    #[ignore = "needs Windows' Arial font: run with --include-ignored on Windows"]
-    fn a_fallback_file_serves_glyphs_no_page_font_has() {
-        let arial = Path::new("C:/Windows/Fonts/arial.ttf");
-        assert!(arial.exists(), "this test needs {}", arial.display());
-        let mut e = engine();
-        assert!(!e.has_glyph('س'), "Roboto has no Arabic");
-        let boxes_w: f32 = e.measure("سلام", 20.0, None, None).0;
-        assert!(e.add_fallback_font_file(arial));
-        assert!(e.has_glyph('س'));
-        assert!(!e.has_face("C:/Windows/Fonts/arial.ttf"), "a fallback face has no key");
-        let glyphs_w: f32 = e.measure("سلام", 20.0, None, None).0;
-        assert_ne!(boxes_w, glyphs_w, "the measure cache was dropped");
-        assert!(!e.add_fallback_font_file(Path::new("C:/Windows/Fonts/no-such-font.ttf")));
-    }
-
-    /// The Roboto faces' metrics as the files carry them (the layout
-    /// contract reads them, never a fitted constant).
-    #[test]
-    fn roboto_faces_carry_their_metrics() {
-        for name in ["Roboto Regular", "Roboto Light", "Roboto Medium", "Roboto Bold"] {
-            let path = format!("{}/../../assets/Fonts/{name}.ttf", env!("CARGO_MANIFEST_DIR"));
-            let bytes = std::fs::read(&path).expect("font");
-            let e = TextEngine::new(&[(name, bytes)]);
-            let m = e.metrics(None);
-            println!("{name}: ascent {} descent {} upem {} -> 24px {} 28px {} 36px {} 48px {}", m.ascent, m.descent, m.units_per_em, m.font_height(24.0), m.font_height(28.0), m.font_height(36.0), m.font_height(48.0));
-            assert!(m.units_per_em > 0.0);
-        }
-    }
-
-    #[test]
-    fn measures_wraps_and_rasterizes() {
-        let mut e = engine();
-        let (w, h) = e.measure("Hello", 20.0, None, None);
-        assert!(w > 30.0 && w < 70.0, "{w}");
-        assert_eq!(h, 24.0);
-        // Whole-pixel ascent + descent at each size, not a ratio of it.
-        let m = e.metrics(None);
+    fn a_block_has_a_gap_between_lines_only() {
+        let m: FaceMetrics = FaceMetrics::FALLBACK;
+        // 24 px of Roboto's metrics: 23 up, 6 down.
         assert_eq!(m.font_height(24.0), 29.0);
-        assert_eq!(m.font_height(28.0), 33.0);
-        assert_eq!(m.font_height(20.0), 24.0);
-        let (_, h2) = e.measure("one two three four five six seven", 20.0, Some(100.0), None);
-        assert!(h2 >= 48.0, "{h2}");
-        let quads = e.shape("Hi", 20.0, None, None, 10.0, 5.0, 0.0, 0);
-        assert_eq!(quads.len(), 2);
-        assert!(quads[0].x >= 10.0 && quads[1].x > quads[0].x);
-        let (atlas, size) = e.atlas();
-        assert!(atlas.iter().any(|b| *b > 128), "atlas has ink");
-        assert_eq!(size, 1024);
-        assert!(e.take_dirty());
-        assert!(!e.take_dirty());
-    }
-
-    /// A style suffix on the font key is a faux style: bold grows the
-    /// coverage, italic skews it — the same glyph, its own atlas slot.
-    #[test]
-    fn a_style_suffix_fakes_bold_and_italic() {
-        let mut e = engine();
-        let key = "assets/Fonts/Roboto Regular.ttf";
-        let plain = e.glyph("H", 24.0, Some(key)).unwrap();
-        let bold = e.glyph("H", 24.0, Some(&styled_key(key, true, false))).unwrap();
-        let italic = e.glyph("H", 24.0, Some(&styled_key(key, false, true))).unwrap();
-        // 24 px → 1 px of growth each side.
-        assert_eq!(bold.w, plain.w + 2.0, "bold {bold:?} vs {plain:?}");
-        assert_eq!(bold.h, plain.h + 2.0);
-        assert!(italic.w > plain.w, "the skew widens the ink box: {italic:?} vs {plain:?}");
-        assert_eq!(e.measure("Hi", 24.0, None, Some(key)), e.measure("Hi", 24.0, None, Some(&styled_key(key, true, false))), "bold keeps the advances");
-    }
-
-    /// A face added by key after construction shapes under that key.
-    #[test]
-    fn a_face_added_later_shapes_under_its_key() {
-        let mut e = engine();
-        assert!(!e.has_face("Heavy"));
-        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/Fonts/Roboto Bold.ttf")).expect("font");
-        assert!(e.add_face("Heavy", bytes));
-        assert!(e.has_face("Heavy") && e.has_face("Heavy#bold"));
-        let (regular, _) = e.measure("The quick brown fox", 24.0, None, None);
-        let (heavy, _) = e.measure("The quick brown fox", 24.0, None, Some("Heavy"));
-        assert!((regular - heavy).abs() > 1.0, "a different face measures differently: {regular} vs {heavy}");
-        assert!(!e.add_face("junk", vec![0, 1, 2, 3]), "no face in those bytes");
-    }
-
-    /// The OS scan runs once, names each family once, and a family can
-    /// become a face. Skips its OS-specific half where the folders are
-    /// empty (a bare CI box).
-    #[test]
-    fn system_fonts_load_once_and_name_families() {
-        let mut e = engine();
-        assert!(e.system_families().is_empty());
-        let n = e.load_system_fonts();
-        assert_eq!(e.load_system_fonts(), n, "the second call is a no-op");
-        let names = e.system_families().to_vec();
-        assert_eq!(names.len(), n);
-        let mut sorted = names.clone();
-        sorted.dedup();
-        assert_eq!(sorted, names, "sorted, no repeats");
-        if names.is_empty() {
-            eprintln!("SKIP: no system fonts on this box");
-            return;
-        }
-        assert!(!e.add_system_face("os", "no such family 0x1234"));
-        assert!(e.add_system_face("os", &names[0]));
-        let (w, _) = e.measure("Hello", 24.0, None, Some("os"));
-        assert!(w > 0.0);
-    }
-
-    /// One glyph reports its ink box — what a `TextStretch` maps onto its
-    /// rect (an ornament font's bubble stretched over a callout).
-    #[test]
-    fn glyph_reports_an_ink_box() {
-        let mut e = engine();
-        let bytes = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/Fonts/Roboto Bold.ttf")).expect("font");
-        assert!(e.add_face("second", bytes));
-        let g = e.glyph("0", 100.0, Some("second")).expect("ink");
-        assert!(g.w > 20.0 && g.h > 20.0, "{g:?}");
-        assert!(e.glyph(" ", 100.0, Some("second")).is_none(), "a space has no ink");
+        let one: TextPx = TextPx { font_size: 24.0, line_gap: 1.0 };
+        let three: TextPx = TextPx { font_size: 24.0, line_gap: 3.0 };
+        assert_eq!((m.block_height(one, 1.0), m.block_height(three, 1.0)), (29.0, 29.0), "one line: no gap");
+        assert_eq!((m.block_height(one, 3.0), m.block_height(three, 3.0)), (89.0, 93.0), "three lines: two gaps");
+        assert_eq!((m.line_height(one), m.line_height(three)), (30.0, 32.0), "the pitch from one line to the next");
+        assert_eq!(m.block_height(one, 0.0), 29.0, "an empty label is one line tall");
     }
 }

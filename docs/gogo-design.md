@@ -3,12 +3,11 @@
 > This file was written while gogo lived inside the FanRust application
 > (2026-08 to 2026-11), and it keeps that record: dated decisions, ids
 > such as GPAR61 and D97 from FanRust's own logs, and comparisons with the
-> earlier Godot addon ("the addon", "shipped"). Names that are not in this
-> repository belong to FanRust, the first host program: `imaging`,
-> `imaging_wgpu`, `text`, `app`, `shell`, `crates/app/ui`,
-> `fanrust-desktop`, `Platform`, `DECISIONS.md` and the `todo-*.md` files.
-> The crate itself is `gogo-ui` (`crates/gogo-ui`). To use the crate, read
-> REFERENCE.md, "Host API".
+> earlier Godot addon ("the addon", "shipped"). "The first host" is
+> FanRust: where a rule came from one of its pages, the text says what
+> the page needed. The crates named here are the ones in this repository:
+> `gogo-ui` (`crates/gogo-ui`), `gogo-text` and `gogo-wgpu`. To use them,
+> read REFERENCE.md, "Host API".
 
 The `gogo-ui` crate is pure Rust: no wgpu, no winit, no OS. Input: `.gogo`
 text (at build time) + touches + the current theme/arrangement. Output: a
@@ -19,8 +18,8 @@ Godot gogo → Rust gogo, one line each:
 
 | Godot | Rust |
 |---|---|
-| parse `.gogo` at load | parse at build time (`build.rs`), same parser at runtime only for dev hot reload |
-| one engine node per widget | one 64-byte struct per node in a flat `Vec` |
+| parse `.gogo` at load | parse at build time (`build_pages` in `build.rs`); the same compiler also runs at run time (`compile`, hot reload) |
+| one engine node per widget | one plain `Copy` struct per node in a flat `Vec` |
 | engine layout, min-size passes, ratchets | one pure `layout()` pass, nothing written back |
 | engine draws each node | one draw list, one batched GPU pass |
 | signals + auto-wired `On<Name>` host methods | build-time `enum` of handler names per page, app matches on it |
@@ -29,26 +28,33 @@ Godot gogo → Rust gogo, one line each:
 
 ```rust
 pub struct Page {
-    pub nodes: Vec<Node>,          // index 0 = root; children are contiguous ranges
-    pub strings: Vec<Cow<'static, str>>,
-    pub theme: ThemeTable,         // $values per variant
-    pub arrangements: Vec<Arrangement>,
+    pub nodes: Vec<Node>,          // index 0 = root; a node's children are one contiguous run
+    pub strings: Vec<String>,      // every name and text, by StrId; id 0 = the empty string
+    pub props: Vec<Prop>,          // every node's (key, value) pairs; a node owns a range
+    pub whens: Vec<When>,          // `when <state>` responses; a node owns a range
+    pub handlers: Vec<OnHandler>,  // on:<event> = action; a node owns a range
+    pub theme: Vec<ThemeEntry>,    // $values per variant
+    pub arrangements: Vec<StrId>,
     pub transitions: Vec<Transition>,
-    pub anims: Vec<Anim>,
+    pub anims: Vec<AnimTrack>,
+    // … and the smaller tables: values, kind_defaults, prop_transitions,
+    // anim_heads, choices, repeats, behaviors, slices (page.rs)
 }
 
 pub struct Node {
-    pub kind: Kind,                // Column, Row, Flow, Layers, Scroll, Grid, Tiles, Panel,
-                                   // Label, Button, Image, Rectangle, Circle, Gradient,
-                                   // Slider, Input, Check, Toggle, Radio, List, Repeat, Custom(u16)
-    pub name: StrId,               // 0 = unnamed
-    pub parent: NodeId,
-    pub children: Range<NodeId>,   // contiguous; a SUBTREE is not a slice (children-first order) — Page::is_under
-    pub placement: Placement,      // halign, valign, margins, width, height, min_width, min_height
-    pub props: PropRange,          // resolved base props (style merge done at build time)
-    pub whens: WhenRange,          // `when <state>` responses, per state
-    pub handlers: HandlerRange,    // on:<event> = handler id
-    pub flags: Flags,              // disabled, visible, clip
+    pub kind: Kind,                // View, Panel, Column, Row, Flow, Layers, Scroll, Grid, Tiles,
+                                   // Label, Button, Image, Rectangle, Circle, Arc, Gradient,
+                                   // Slider, Input, Check, Toggle, Radio, Choice, List, ListItem,
+                                   // Repeat, Gap, GridRow, Skip, Slot, Seat, Empty, Custom
+    pub name: StrId,               // NO_STR (id 0) = unnamed
+    pub parent: NodeId,            // NO_NODE = the root
+    pub children: (u32, u32),      // first child, count; contiguous; a SUBTREE is not a slice (children-first order) — Page::is_under
+    pub placement: Placement,      // halign, valign, margins, padding, width, height, min_*, max_*
+    pub props: (u32, u32),         // first, count in Page::props (style merge done at build time)
+    pub whens: (u32, u32),         // first, count in Page::whens
+    pub handlers: (u32, u32),      // first, count in Page::handlers
+    pub initial_states: u8,        // the selected / disabled bits the file starts with
+    // … type_name, widget, subtree_end, gap, auto, choice, focusable, line
 }
 ```
 
@@ -61,39 +67,43 @@ pub struct Node {
   (`IMAGES` is dense by it): a draw and the renderer pass the id, never
   the path, and a host picture the pages never named interns into the
   same `Images` table (D13). Props are `(PropKey, Value)`
-  pairs in one page-wide `Vec<Prop>`; a node owns a range. `Value` is an enum: `F32`,
-  `Color`, `Str(StrId)`, `ThemeRef(ThemeId)`, `List(Range)`, `Enum(u16)`.
+  pairs in one page-wide `Vec<Prop>`; a node owns a range. `Value` is an enum: `VBool`,
+  `VNum`, `VColor`, `VColorPair`, `VText { text, key }`, `VImage(ImageKey)`,
+  `VRef { name, opacity }`, `VIdent(StrId)`, `VSize`, `VCall`, `VList`, `VStop`, `VItem`.
 - Styles (`.Style`) and `uses` are merged at build time — the runtime never
   sees a style. `$theme` refs stay refs: variants switch at runtime.
 - A `repeat`'s template is a typed slot: the build emits `<Repeat>Slot`
   (`TEMPLATE`, `at(slot_root)` over `NodeId::rebase`), so a code-behind
   over a pooled row binds its widgets by field; a widget placed only inside
-  a template still gets its `<Widget>Names`. The effect page's property rows
-  are such pools (D14).
+  a template still gets its `<Widget>Names` (D14).
 - A hostless widget may carry `when screen.<class> { node.prop = value }`
   blocks posing its OWN body — one copy per instance, ranked as a default
   under any page pose on the same instance (D14). Any other state word at
   widget scope still needs `for=`.
 - A `behavior slider` reads a live `min=` / `max=` / `step=` write on its
-  root over the contract's baked numbers (a filter's row takes its range
-  per open); `Runtime::clear_prop` takes a code write back.
+  root over the contract's baked numbers (a row reused for another
+  setting takes that setting's range); `Runtime::clear_prop` takes a
+  code write back.
 - Translation keys (`text="x"/key`) stay keys, one id space for the whole
   build (`KEYS`, `enum Key` — `/ok` in two files is one key). `BuildOptions::
-  runtime_keys` joins keys code looks up by name (the shipped terms
-  database) after the pages; a page's English wins where both name a key. The
+  runtime_keys` joins keys code looks up by name (a host's own table of
+  terms) after the pages; a page's English wins where both name a key. The
   runtime's `Locale` is read at layout and draw time through one function
   (`locale::display`, one index per read, nothing allocated), so a language
   switch is one relayout and a label is measured in the language it is
-  drawn; a key the table lacks shows its English. Tables come from the app
-  (`app::translation` reads the shipped `.txt`; later the server).
-- `repeat` nodes hold a template range. Instances are appended to `nodes`
-  at set time (`page.set_items(repeat_id, &items)`), replacing the previous
-  instances. This is the only runtime tree change.
+  drawn; a key the table lacks shows its English. Tables come from the host:
+  it builds a `Locale` (`Locale::build`) and hands it to `Runtime::set_locale`.
+- A `repeat` holds one hidden template. Its rows are clones of it,
+  appended to `nodes` the first time they are needed
+  (`Runtime::set_items(page, repeat, &items)` for a keyed repeat,
+  `Runtime::set_count` for a counted one); a row no longer shown keeps
+  its nodes and the next row reuses them. This is the only way the arena
+  changes at run time: it grows, and no node is ever removed.
 - Static form: `build.rs` emits the same structs as `&'static` slices per
   page; boot copies them into the `Vec`s (memcpy-sized). Hot reload parses
   text into the same `Page`. One parser, one `Page` type.
-- Strings are `Cow<'static, str>`: static pages borrow, hot-reloaded pages
-  own.
+- Strings are owned (`Vec<String>`): `Page::from_static` copies a built
+  page's strings in, and a page compiled at run time owns its own.
 
 ## 2. State overlay
 
@@ -107,23 +117,28 @@ base props → single poses (arrangement / screen class / orientation,
 ```
 
 `Runtime` (per page) holds: active arrangement, per-node state bits, running
-tweens (`Vec<Tween { node, key, from, to, t, easing }>`). `resolve(page,
-runtime) -> Resolved` writes one `Vec<Prop>` of current values — the layout
-and draw passes read only `Resolved`, never `Page` props directly. Tweens
-retarget from the current value (spec: mid-flight re-flip).
+tweens (`Vec<Tween { node, key, from, to, elapsed, duration, easing }>`).
+`resolve(page, runtime) -> Resolved` builds the current look from scratch;
+a frame takes `Runtime::resolve_retained(page)`, which keeps the last look
+and works out again only the nodes a change reaches. `Resolved` holds each
+node's placement and the values that differ from the file (`overrides`) —
+the layout and draw passes ask it (`Resolved::prop(page, node, key)`),
+never `Page` props directly. Tweens retarget from the current value (spec:
+mid-flight re-flip).
 
-Anims (`anim <name>`) run on the same tween list.
+Anims (`anim <name>`) run on their own list (`Runtime::players`); what
+they write lands on top of the `when` responses.
 
 ## 3. Layout pass
 
 ```rust
-pub fn layout(page: &Page, resolved: &Resolved, viewport: Rect, epx: f32) -> Vec<Rect>
+pub fn layout(page: &Page, res: &Resolved, viewport: Rect, text: &dyn TextMeasure) -> Vec<Rect>
 ```
 
 - Output is one `Rect` per node (epx units), indexed by `NodeId`. Pure:
   same inputs, same output; no field of `Page` or `Runtime` is written.
 - Measure and arrange, two questions with two names (2026-08-30, after
-  the app-bar and ad_plate parity bugs showed one function answering
+  two layout bugs in the first host showed one function answering
   both):
   - `size_at(node, width)` — MEASURE: the box the node wants given the
     width its parent can offer (wrapped text and Flow rows need it).
@@ -138,8 +153,9 @@ pub fn layout(page: &Page, resolved: &Resolved, viewport: Rect, epx: f32) -> Vec
       nothing to share yet, so "fill" has nothing to say here.
     - Parent that was told its size ("I'm 300 wide, split it"): fixed
       children take their size, `fill` children share what's left. A fill
-      child can end up narrower than its text here; the smallest it goes is
-      its `min_width`.
+      child never ends up narrower than its content or its `min_width`,
+      whichever is more; when that does not fit, the children run past
+      the parent's edge.
     A `wrap=true` label with `width=fill` has no width of its own
     (Godot's autowrap minimum) — the text bends to the box.
   - `star_split` — ARRANGE along an axis, the star rule: fixed slots take
@@ -147,13 +163,14 @@ pub fn layout(page: &Page, resolved: &Resolved, viewport: Rect, epx: f32) -> Vec
     under its floor takes the floor and the rest re-share (Godot
     BoxContainer, WPF star). So `fill(2)` / `fill(3)` is 2:5 of the room
     whatever the children hold, and two `width=fill` columns around a
-    fixed cluster are equal (crop_page: 100 | 160 | 100 epx).
+    fixed cluster are equal (in a 360-wide row: 100 | 160 | 100 epx).
   Then `place` lays each child into its slot top-down. Every kind's
   measure/place is a `match` on `Kind` in `layout.rs`; no per-kind trait
-  objects. No invalidation graph (WPF's `InvalidateMeasure` cascades):
-  a dirty frame lays the whole page out again — at these page sizes that
-  is cheaper than tracking, and there is no ratchet to guard (Godot's
-  min-size-only model was what produced D255/D283).
+  objects. Two roads give the same rects: `layout` lays the whole page
+  out from scratch, and the frame road (`Runtime::layout_retained`,
+  `layout::LayoutCache`) keeps the last answer and lays out again only
+  under the boxes a change can reach. There is no ratchet to guard
+  (Godot's min-size-only model was what produced D255/D283).
 - Semantics per kind copy the spec: `fill`/`hug`/exact, min floors
   clamp posed values, View children place freely, Panel is the styled box
   with padding + border stacking, Grid/Tiles per the D82/D94 sections,
@@ -163,13 +180,15 @@ pub fn layout(page: &Page, resolved: &Resolved, viewport: Rect, epx: f32) -> Vec
   `halign` picks (the near edge when no `halign` is written). Two named
   edges span the box — it reaches between them — only where no size word
   is written on that axis (GPAR39, 2026-08-31).
-- Text measure asks a `TextMeasure` trait (`fn measure(&self, text, font, size,
-  max_width) -> Size`) supplied by the caller; the crate ships a fixed-advance
-  fake for tests and `imaging`-side code plugs `cosmic-text` in. Cached by
-  (StrId, font, size, width) so a warm frame does no shaping.
-- Cost target: ~500 nodes in tens of µs (est.). Rects are re-laid out only
-  when a resolved value, the viewport, or an item set changed (a dirty bit
-  on `Runtime`); an idle page does nothing.
+- Text measure asks a `TextMeasure` trait (`fn measure(&self, text, font_size,
+  max_width, font) -> (f32, f32)`) supplied by the caller; the crate ships a
+  fixed-advance fake for tests (`FixedAdvance`) and `crates/gogo-text` plugs
+  `cosmic-text` in (`EpxMeasure` over a `TextEngine`), which caches each
+  measure by (text, font, size, width) so a warm frame does no shaping.
+- Cost target: ~500 nodes in tens of µs (est.). `Runtime::dirty` is set by
+  anything that changes what layout or draw would give (a resolved value,
+  an item set, a code write) and cleared by `frame_retained`; a host that
+  skips the frame while it is clear makes an idle page cost nothing.
 - Fractions stay in the rects; the renderer rounds each rect's origin to
   a device pixel at draw time (decided 2026-08-30, Q7) — crisp glyph runs
   under a `height=205.7` image, no per-node compounding in the layout.
@@ -182,28 +201,32 @@ pub fn layout(page: &Page, resolved: &Resolved, viewport: Rect, epx: f32) -> Vec
   in a 100-wide Layers is 30 wide at the left, the slider fill bar with
   no wrapper Row. Not a clip mask: the box itself shrinks, so a Label
   re-lays out in the smaller box.
-- Debug: `fanrust-desktop --page x --shot out.png --rects` prints every
-  named node's rect — the numbers behind a parity diff.
+- Debug: the rects are plain numbers a host can print — `kept.rects()[node]`
+  for a `node` from `Page::find("name")` — the numbers behind a layout diff.
 
 ## 4. Draw list
 
 ```rust
+// Rgba below stands for Color_Straight_Srgb_4xU8_RGBA, the one color type.
 pub enum Draw {
     Quad { rect: Rect, color: Rgba, corner: f32, border: f32, border_color: Rgba },
-    Image { rect: Rect, image: ImageId, tint: Rgba },       // ImageId = atlas entry or standalone texture
+    Image { rect: Rect, image: ImageKey, tint: Rgba, fit: Fit, window: Option<[f32; 4]>, sampling: Sampling },
     Gradient { rect: Rect, kind: GradientKind, angle: f32, corner: f32, period: (f32, f32), stops: u32 },
     GradientStop { pos: f32, color: Rgba },                  // the `stops` records right after their Gradient
     Circle { rect: Rect, color: Rgba, border: f32, border_color: Rgba },
-    Text { rect: Rect, run: RunId, color: Rgba },            // RunId = shaped glyph run in the text cache
+    Text { rect: Rect, text: StrId, key: KeyId, font_size: f32, color: Rgba, halign: TextAlign, valign: TextAlign, wrap: bool, font: StrId },
     ClipPush(Rect), ClipPop,
+    // … QuadCorners, Arc, TextStretch, Caret, Selection, SelHandles,
+    // WedgePush/WedgePop, RotatePush/RotatePop, SwingPush/SwingPop
 }
-pub fn draw(page: &Page, resolved: &Resolved, rects: &[Rect]) -> Vec<Draw>
+pub fn draw(page: &Page, f: Frame<'_>) -> Vec<Draw>   // a Frame = one frame's look (`Resolved`) and its rects
 ```
 
-- Forward walk of the arena = paint order (parents before children,
-  siblings in file order; `Layers` overlays later). Opacity multiplies
-  down the walk; a `disabled` control dims its subtree to 0.3 unless the
-  file says otherwise.
+- A walk down the tree = paint order (parents before children,
+  siblings in file order; `Layers` overlays later). It is not the
+  arena's index order: a node's children sit after its later siblings.
+  Opacity multiplies down the walk; a `disabled` control dims its
+  subtree to 0.3 unless the file says otherwise.
 - Default look (2026-08-30): the native kinds draw the same numbers on
   every engine, so a bare `Button text="OK"` is one picture everywhere
   (`draw.rs` consts, spec "Default look"): Button plate gray 0.1 at 0.6,
@@ -232,33 +255,35 @@ pub fn draw(page: &Page, resolved: &Resolved, rects: &[Rect]) -> Vec<Draw>
   transparent color's rgb); Oklab keeps lightness even across hues
   (red→green passes through a real midtone, not muddy brown). CSS
   `color-mix()` made the same default. DELIBERATE DIVERGENCE from the
-  addon's per-byte sRGB lerp — and the gradient editor's `color_at`
-  sampler follows the law too, so a seeded stop sits ON the rendered
-  line. Scope: mixes between two authored colors only; the shader's
-  1-px antialias coverage ramps are not color design and stay as-is.
+  addon's per-byte sRGB lerp — a host that samples a gradient in code
+  (a gradient editor) calls the same function, so a seeded stop sits ON
+  the rendered line. Scope: mixes between two authored colors only; the
+  shader's 1-px antialias coverage ramps are not color design and stay
+  as-is.
 - Palette: the bare color words are one table for every engine,
   `page::PALETTE` = the Godot resolver's (CSS-named: `red` tomato,
-  `blue`/`accent` cornflower, `gray` slate …). Fantasia's `theme.gogo`
-  overrides what it needs (`red = #E51400`); the WP set is not the
-  language's.
-- `imaging_wgpu` turns the list into one instanced draw of "UI quads" (a
-  quad type per command: solid/rounded/image/glyph/circle/gradient, one
-  shader with a `match` on type) against the UI atlas; clip = scissor
-  changes, which split the draw only where a `Scroll` starts. `gogo` never
-  sees a device pixel: `epx` → device px scaling is a uniform in that shader.
-- Glyph runs come from the text cache (`cosmic-text` in `imaging`-side
-  code, G6); the draw list refers to them by id. Atlas glyphs for every
-  (font, size) a page uses are rasterized once at boot (`FANRUST_BOOT ui
-  ready`).
+  `blue`/`accent` cornflower, `gray` slate …). A host's theme file
+  overrides what it needs (`theme { red = #E51400 }`); no host's own
+  set is the language's.
+- `crates/gogo-wgpu` turns the list into instanced draws of "UI quads" (a
+  quad type per command: solid/rounded/image/glyph/circle/gradient/arc, one
+  shader that branches on the type), one draw per run of quads that share
+  a clip and a texture; clip = scissor. `gogo-ui` never sees a device
+  pixel: the renderer multiplies every rect by `epx` as it builds the quads.
+- A `Draw::Text` carries the string's id, the font and the size; the
+  renderer shapes it through `crates/gogo-text` (`cosmic-text`), whose
+  `TextEngine` keeps the shaped runs in a cache. A glyph is rasterized
+  into the atlas the first time it is shaped; a host that wants none of
+  that in its first frame calls `TextEngine::warm` at start.
 
 ## 5. Touch and events
 
 ```rust
-pub fn hit(page: &Page, rects: &[Rect], p: Point) -> Option<NodeId>   // last drawn wins
-pub fn touch(page: &Page, runtime: &mut Runtime, rects: &[Rect], t: Touch) -> Vec<Event>
+pub fn hit(page: &Page, f: Frame<'_>, x: f32, y: f32, any: bool) -> Option<NodeId>   // last drawn wins
+impl Input { pub fn touch(&mut self, page: &Page, rt: &mut Runtime, f: Frame<'_>, measure: &dyn TextMeasure, t: Touch) -> Vec<Event> }
 ```
 
-- `hit` walks the arena backwards (top-most painted first), skipping
+- `hit` walks the paint order backwards (top-most painted first), skipping
   non-interactive and hidden nodes, honoring clip rects of `Scroll`
   ancestors. Hit-testing is Godot gogo's D103 ONE input model (adopted
   2026-08-30, user): input-taking KINDS answer by default, everything
@@ -268,13 +293,15 @@ pub fn touch(page: &Page, runtime: &mut Runtime, rects: &[Rect], t: Touch) -> Ve
   handlers-claim-input clause was removed).
 - `touch` drives the spec's input vocabulary: `held` on press, slide-off
   clears, slide-back re-arms, `activate` on a completed tap; Slider `edit`
-  per drag tick and `change` on release; Toggle `selected` flips at the
+  per changed value and `change` on release; Toggle `selected` flips at the
   midpoint, `change` on settle; Scroll pans and flings (the code-built pan
   strip of the Godot port becomes the only Scroll). Returned `Event { node,
-  kind: Activate | Change(Value) | Edit(Value) | Show | Hide, handler:
-  Handler }`. The model has only pointers: a mouse is one pointer — the
-  shell feeds it as one fixed finger id, so every event fires for mouse
-  and touch alike.
+  kind: Press | Release | Activate | Change(Value) | Edit(Value) |
+  Pointer | Key | Signal, action: Option<Action> }`: `action` is what the
+  file's `on:` line names, `None` = the node's own name is the handler.
+  `on:show` and `on:hide` play anims and send no event. The model has
+  only pointers: a mouse is one pointer — the host feeds it as one fixed
+  finger id (`MOUSE_ID`), so every event fires for mouse and touch alike.
 - `on:pointer=name` (renamed from `on:touch` 2026-08-30, user — the stack
   is touch-first but the reader's understanding is not; WinRT and the web
   both call the unified mouse/touch/pen stream "pointer") is the raw
@@ -302,9 +329,10 @@ pub fn touch(page: &Page, runtime: &mut Runtime, rects: &[Rect], t: Touch) -> Ve
   host gets it; an anim can drive the same lane (`x.swing from=0 to=90`).
 - `Handler` is a per-page `enum` emitted by `build.rs` from the file's
   `on:` values and the auto-wiring convention (`Button save` → `Save`).
-  The app matches on it; an unhandled variant is a compile warning, a
-  handler in the app with no node is a compile error — the Godot
-  load-time G-codes become rustc errors.
+  The app turns an event's handler name into one (`Handler::from_name`)
+  and matches on it; a variant the `match` leaves out and a handler in
+  the app with no node are both compile errors — the Godot load-time
+  G-codes become rustc errors.
 - `Key` is the build-wide `enum` of translation keys, emitted the same way
   (`Key::PickColorHint`); `Runtime::set_key` takes it and nothing else, so a
   key no page declares does not compile. `set_text` is the other write — a
@@ -317,8 +345,9 @@ pub fn touch(page: &Page, runtime: &mut Runtime, rects: &[Rect], t: Touch) -> Ve
 The Godot G-codes (G2003 one-stop gradient, G8001 translation drift,
 G9008 dotted refs, duplicate prop, …) become `build.rs` errors with the
 same codes and messages, pointing at file:line — a bad `.gogo` fails
-`cargo build`. The runtime parser returns the same `Diagnostic` list for hot
-reload, shown by the debug overlay.
+`cargo build`. A compile at run time returns the same `Diagnostic` list
+(`Compiled::diags`; `reload::recompile` for a hot reload) and the host
+shows it: `examples/window` prints it.
 
 ## 7. Language changes (decided 2026-08-29, breaking is fine)
 
@@ -340,13 +369,13 @@ Removed — engine-born, no reason left:
   Added 2026-08-30 (user): `release` — the end of a press gesture, fired
   exactly once however it ends (lift inside or out, cancel, a Scroll
   steal, disable/hide under the finger). The pair is `press`/`release`,
-  not `down`/`up`: the D181 discussion (FantasiaGodot/TODO.md "press vs
-  pressed") only demanded that state and event never share a spelling
+  not `down`/`up`: the D181 discussion ("press vs pressed") only
+  demanded that state and event never share a spelling
   (`held` vs `press`), and press/release are the words as spoken.
   The ported spelling for Godot's raw `Control` (a box that claims NO
   minimum from its children): `Layers` with `overlay=true` on each child
-  that must not ask for room — effect_select's clip zone is the worked
-  example (GPAR66, decided 2026-08-30: clip and measure stay separate).
+  that must not ask for room (GPAR66, decided 2026-08-30: clip and
+  measure stay separate).
 - Retired-spelling redirects (`Border`→`Panel`, `pressed`→`held`, …).
   Unknown word = build error with a suggestion, no alias table.
 - (Reversed 2026-08-29, user call:) `interactive=` STAYS beside `disabled=`
@@ -392,8 +421,8 @@ Code-behind values (decided 2026-08-29; NOT built — as of 2026-11 the
 compiler has no `export` word, and code writes a value with
 `Runtime::set_prop`):
 `export $barWidth = 480` at page scope; reads are plain `$barWidth`; the
-build emits a typed setter per exported value; `live()` is not a FanRust
-word (a `$ref` is dereferenced at resolve, every frame). A code-owned AXIS
+build emits a typed setter per exported value; `live()` is not needed
+for it (a `$ref` is dereferenced at resolve, every frame). A code-owned AXIS
 no longer exists — code hands the layout a value, the layout stays the one
 writer. Example (toolbar): portrait `appBar width=fill`; `when
 screen.landscape { appBar.width = $barWidth; appBar.halign = center }`
@@ -402,22 +431,26 @@ with `export $barWidth` computed by code from min(w, h).
 Kept: `arrangement` (user's call — a `state` unification was proposed and
 declined), snake_case keys, `#RRGGBBAA`, `text="x"/key`, `when` /
 `transition` / `anim`, widgets + `$params`, `uses`, styles, Grid/Tiles,
-screen classes, `visibility=gone|hidden`.
+screen classes, `visibility=gone|space_only` (`hidden` until 2026-08-31).
 
 Accepted Godot forms (round 3, so the copied files build): a node line may
 break right after its name when the next line opens with a size or a
-`key=` member; `res://` paths (`res://` = the FanRust root, assets checked
-and embedded by the build); `slot`/`seat`/`control`/`live()`/`automatic=`
-from the control-customization spec; `choice` erased into its parent;
-`layout <Kind>` inside a List; `color.a` / `modulate.a` as opacity-like
-keys. Godot's render facts the layout copies: font px = `int(epx × size)`,
+`key=` member; `res://` paths (`res://` = the folder the host names in
+`BuildOptions::res_root`, assets checked and embedded by the build);
+`slot`/`seat`/`control`/`live()`/`automatic=` from the
+control-customization spec; `choice` erased into its parent;
+`layout <Kind>` inside a List; `color.a` as an opacity-like key
+(`modulate.a` is refused, G0075: write `opacity`). Godot's render facts
+the layout copies: font px = `int(epx × size)`,
 face height = the file's ascent and descent each scaled and rounded UP to
 whole px (FreeType's `FT_Size_Metrics`: 24 px Roboto = 23 + 6 = 29, not
 round(28.13) = 28 — one px per list row otherwise; read from the font at
-load, `text::FaceMetrics`), line pitch = face height + 3 px, a both-axes-
+load, `gogo_text::FaceMetrics`), line pitch = face height + the line gap
+(1 epx as whole device px, `gogo_text::TextPx`; Godot's 3 px at every
+scale was the rule until 0.3.0), a both-axes-
 sized Image centers in a stack, an auto scroll bar keeps a 4-epx lane on
-each overflowing axis, Input plate = (0.1, 0.1, 0.1) at 0.6, clear color
-#1F1F1F.
+each overflowing axis, Input plate = (0.1, 0.1, 0.1) at 0.6. (The color
+behind a page is the host's: gogo clears nothing.)
 
 Start states (2026-08-30): `selected=true`, `disabled=true` and a
 `choice`'s `value=<name>` are build-time state bits (`Node.initial_states`),
@@ -434,15 +467,16 @@ something the runtime used to drop, the build fails naming the rule —
 one hex form (`#RRGGBB`/`#RRGGBBAA`; `#F00` is G0005 with the long
 spelling in hand), `/opacity` and `@pos` inside 0..1 (G0007/G0008),
 malformed numbers (`1.2.3`, `.5` — G0009, never a silent 0), a list only
-on `cols=`/`areas=`/`stops=` and `@pos` only in `stops=` (G0040), a number
-key given a word (`opacity=red` — G0058), the Gradient rules (`stops=`
-required, linear|radial, `angle=` linear-only, non-empty color list,
-`@` all-or-none and never decreasing — G2005; one stop = G2003 with the
-`Rectangle` rewrite; bare `transparent` in stops = G2006), a Radio outside
-`choice` (G0069), one arrow and one endpoint per side of a `transition`
-and at most two `when` conditions (G0034/G0038), `repeat`/`slot` clauses
-on their own lines in their fixed order and typed (G9002–G9004, G5107;
-`by` optional on `repeat` — the `max=N` form keys nothing, GP27),
+on `cols=`/`areas=`/`stops=`/`border_dash=`/`dash=`/`window=` and `@pos`
+only in `stops=` (G0040), a number key given a word (`opacity=red` —
+G0058), the Gradient rules (`stops=` required, linear|radial|conic,
+`angle=` linear-only, non-empty color list, `@` all-or-none and never
+decreasing — G2005; one stop = G2003 with the `Rectangle` rewrite; bare
+`transparent` in stops = G2006), a Radio outside `choice` (G0069), one
+arrow and one endpoint per side of a `transition` and at most two `when`
+conditions (G0034/G0038), `repeat`/`slot` clauses on their own lines in
+their fixed order and typed (G9002–G9004, G5107; `by` optional on
+`repeat` — the `capacity=N` form keys nothing, GP27),
 duplicate `$params` (G0018), no `.` in a `$name` declaration (G9008), no
 `/key` on `uses` or asset paths (G0023), `Check true` / bare `interactive`
 typo nets (G0046; `base`/`any` as a node name is the same code —
@@ -474,13 +508,15 @@ Changed 2026-08-31 (`capacity=` + the P2 GPAR round):
   screen (user design 2026-08-31). Both repeat forms (counted and keyed)
   clone ONE hidden template into row SLOTS at first touch; freed slots
   re-bind in place, so the arena stops growing at the high-water row
-  count and a steady `set_items` allocates NOTHING (pins in
-  repeat_capacity.rs). Slots take per-slot names (`marks/2/knob`) and
-  per-slot copies of the template's anims.
+  count and a steady `set_items` allocates NOTHING (the slot reuse is
+  pinned in `crates/gogo-ui/tests/godot_repeat_list.rs`). Slots take
+  per-slot names (`marks/2/knob`) and per-slot copies of the template's
+  anims.
 - Input takes input (GPAR112): tap-to-focus, `Input::key`, `edit`
   streams changed values, Enter/blur commit once per genuine change,
-  `Draw::Caret` shaped by the renderer; desktop winit keys + IME are
-  wired. The Android soft keyboard is the open device half.
+  `Draw::Caret` shaped by the renderer. The host feeds the keys
+  (`Input::key`) and an IME's text (`Input::ime_replace`);
+  `examples/window` wires the mouse only.
 - The finger meets the picture: hit-testing follows motion (GPAR50),
   a caught glide keeps the pull (GPAR5), a Toggle release always
   settles (GPAR8), Slider `edit` fires per changed value (GPAR6).
@@ -506,9 +542,10 @@ Changed 2026-08-31 (P1 GPAR round — GPAR4/12/30/61/66/69/108):
 - A glide is stopped only by a touch that lands ON the gliding Scroll or
   its content — chrome drawn over it presses while the list keeps
   rolling underneath (D130, GPAR4).
-- Translations ship EMBEDDED (`app::assets::TRANSLATIONS`) and the
-  phone's system language picks one (`Platform::lang()`; `--lang` wins,
-  the desktop stays English so shots never drift) (GPAR12).
+- Translations are the host's to ship and to pick: it builds one
+  `Locale` per language (the first host embeds its tables and reads the
+  phone's system language) and hands the chosen one to
+  `Runtime::set_locale` (GPAR12).
 - `font_color=` and `$` theme values are color positions: `$dim = gray`
   is the COLOR gray, `$scrim = black/0.5` keeps its alpha (GPAR30).
 - The G-codes are renumbered to the published registry —
@@ -535,8 +572,6 @@ Changed 2026-08-31 (GPAR37/GP8/GP20/GP32 close-out):
   a `for=` widget's `transition` rules time the HOST's flips; a
   `control`'s endpoint-less `transition` is its default feel; a control's
   own anims drive `slot.<name>.<motion word>` lanes (GP32).
-- Shot harnesses take `--go <arrangement>` (parity `-Go`, `_go` files) —
-  posed states shoot without code-behind (GP8).
 
 Changed 2026-08-31 (areas/for= port round — GPAR74/81/90/99, GP39 closed):
 - Grid `areas=` is ported: expanded at compile into the same `row { }`
@@ -579,12 +614,14 @@ Changed 2026-08-31 (E8 — user decisions; the table is §8):
   are the subtree's text defaults and INHERIT (`Resolved::inherited`) —
   the shipped addon's theme propagation. Found by the table: the page
   roots' `theme font_size=$fontNormal` landed on the root alone, so every
-  Label under ad_plate, caption_page and settings_page drew at 15. Any
+  Label under three of the first host's pages drew at 15. Any
   other word on a block's `theme` line is G3006.
 - `for=` on a style names a kind (checked, G3006) and is not a property
-  of the nodes wearing it; the kind-match check itself is GP40.
-- `areas=` on a Grid is refused naming `row { }` (it was a warning and an
-  empty grid); `crates/app/ui/test.gogo` rewritten to rows.
+  of the nodes wearing it; the wearer must be that kind (G3006 too,
+  built in the areas/for= port round above).
+- `areas=` on a Grid was refused in this round, naming `row { }` (it
+  had been a warning and an empty grid); the areas/for= port round
+  above built it, and it compiles today.
 - `icon_size=` joins `icon=` as an accepted-unread Button word.
 
 Changed 2026-09-01 (E10 — user decisions, the Godot addon now a stepping
@@ -607,8 +644,8 @@ stone on its way out; semantics may diverge from it for ergonomics):
   wrap labels wrap a line early.
 
 Changed 2026-09-02 (E12 — GP40 contract round step 2, user decisions):
-- The native-backend gate family is CUT (customization spec: G5106,
-  the `render=gogo` exits, the D112 Button carve-out): it polices
+- The native-backend gate family is CUT (customization spec: the
+  `render=gogo` exits, the D112 Button carve-out): it polices
   Godot's native-vs-gogo backend split, and this engine has ONE
   renderer (D1). A `for=` style applies with no ceremony, and the
   `render=` word is REMOVED with the family (user 2026-09-02): one
@@ -676,8 +713,7 @@ Changed 2026-09-02 (E12 — GP40 contract round step 2, user decisions):
   entries hold what can switch with the variant TODAY: base-look props
   riding the variant-gated kind defaults. A variant entry's `when`s and
   user-control restyles need variant-STAMPED baked writes — deferred
-  LATER, IF NEEDED (user 2026-09-02; todo-gogo.md GP47 holds the
-  worked explanation).
+  LATER, IF NEEDED (user 2026-09-02, GP47).
 
 Changed 2026-09-02 (GP40 leftovers, after the contract round):
 
@@ -787,15 +823,14 @@ Changed 2026-09-02 (GP26 step 3 — the §5.5 router, wheel, List cursor):
 Changed 2026-09-06 (GP53 — input behaviors are the gogo user's, user
 call: option C over the closed enum):
 
-- The RP6 evidence came in: the app's 20 `on:pointer` sites (color
+- The RP6 evidence came in: the first host's 20 `on:pointer` sites (color
   wheel, small picker, gradient bar and marks, crop, object page) are
   2D surfaces with their own models, none value-shaped; the one
-  value-shaped control beside `slider` was the effect page's
-  HorizontalSwitch, whose `script "toggle_behavior.gd"` line the
-  compiler DROPPED silently (todo-bugs.md #4 — the switch was deaf).
-  What those code-behinds did share was the by-hand reframe of a
-  pointer into a sibling's space — `Event::pointer_in(rects, node)`
-  now (gradient_edit uses it).
+  value-shaped control beside `slider` was a two-state switch, whose
+  `script "toggle_behavior.gd"` line the compiler DROPPED silently (the
+  switch was deaf). What those code-behinds did share was the by-hand
+  reframe of a pointer into a sibling's space — `Event::pointer_in(rects,
+  node)` now.
 - `behavior <name>` names a behavior the RUNTIME routes to: the addon's
   `GogoControlScript` reborn as `gogo_ui::Behavior` — `began(cx, x, y) ->
   Claim`, `moved`, `ended`, `canceled`, `key(cx, action) -> bool` —
@@ -824,20 +859,20 @@ call: option C over the closed enum):
   the other end, a drag past 6 epx puts the thumb under the finger
   (thumb-width compensated over the track) and settles nearest on
   release; Enter/Space flip, Right/Up/End on, Left/Down/Home off; it
-  owns all four key groups. The effect pages' switch wears it.
+  owns all four key groups.
 - The FEEL rule the addon had and Rust lacked: a driven slot's write
   while the root is HELD lands DIRECT (a glide in flight is dropped at
   the value); with `held` off — the release's settle, a key step, a
   code write — it glides by the control's `transition`. Without it the
   switch's 0.3 s feel trailed the finger by a glide per sample.
-- Two rules the effect page's rows forced the same day (todo-bugs.md
-  #6): a pooled repeat row is a CLONE and `Page::clone_subtree` carries
-  the automatic-slot drivers, the `live($value)` labels and the
-  control's `transition` feel (the clone had behaviors only — its fill
-  never followed its value); and the frame loop asks
-  `Runtime::is_moving` AFTER the layout pass, where glides are armed —
-  the addon's `gogo_anims` group, kept current by every pump — so the
-  desktop's wait-for-events idle never freezes a settle mid-slide.
+- Two rules a host's pooled rows forced the same day: a pooled repeat
+  row is a CLONE and `Page::clone_subtree` carries the automatic-slot
+  drivers, the `live($value)` labels and the control's `transition`
+  feel (the clone had behaviors only — its fill never followed its
+  value); and the frame loop asks `Runtime::is_moving` AFTER the layout
+  pass, where glides are armed — the addon's `gogo_anims` group, kept
+  current by every pump — so a host that sleeps until the next event
+  never freezes a settle mid-slide.
 - A `script` line in a control is a G0082 error naming `behavior` —
   refused, never dropped (the bug #4 class). The addon's three docs
   (gogo-spec.md, REFERENCE.md, COOKBOOK.md + the keyword cards) are the
@@ -846,9 +881,10 @@ call: option C over the closed enum):
 
 Changed 2026-09-02 (GP26 step 4 — hover, the chain reading):
 
-- `hovered` answers a REAL mouse only (D75 — the shell decides the
-  source; touch never sets a single bit, so no sticky hover survives a
-  finger). The box under the cursor holds it — and so does EVERY
+- `hovered` answers a REAL mouse only (D75 — the host decides the
+  source: it calls `Input::hover` for mouse motion and never for a
+  touch, so no sticky hover survives a finger). The box under the
+  cursor holds it — and so does EVERY
   ancestor. DEVIATION, user call 2026-09-02: the shipped addon lights
   only the control whose own `mouse_entered` fired; the chain reading
   is deliberate — gogo also runs game UIs where "the settings page
@@ -862,40 +898,26 @@ Changed 2026-09-02 (GP26 step 4 — hover, the chain reading):
   desktops; if a touchscreen ever shows sticky hover, gate by winit
   device id. Android sends no cursor events — unaffected.
 
-Changed 2026-09-02 (GP26 step 5 — the Android soft keyboard, verified
-on device):
+Changed 2026-09-02 (GP26 step 5 — the soft keyboard, verified on an
+Android phone in the first host):
 
-- The keyboard follows the caret's EDGES: `Platform::show_soft_keyboard`
-  (GameActivity's own IME door) fires when the caret appears, moves
-  fields or goes away — every door (tap, Tab, wheel, blur, reset) is
-  covered by the one check. Edges, NOT the level: syncing the level
-  re-raised a keyboard the user had dismissed with Back, because the
-  caret was still set (device bug, fixed 2026-09-02) — a Back dismiss
-  now stands until the field is tapped again (that tap re-raises);
-  `onSoftwareKeyboardVisibilityChanged` keeps the flip state honest.
+- The keyboard follows the caret's EDGES: the host raises its soft
+  keyboard when `Runtime::caret` appears or moves to another field and
+  drops it when the caret goes away — every door (tap, Tab, wheel, blur,
+  reset) is covered by that one check. Edges, NOT the level: syncing
+  the level re-raised a keyboard the user had dismissed with Back,
+  because the caret was still set — a Back dismiss stands until the
+  field is tapped again (that tap re-raises).
 - The IME speaks WHOLE text states, not keys (autocorrect and swipe
-  rewrite spans): MainActivity overrides the GameTextInput Listener
-  (`stateChanged`, `onEditorAction`, visibility) and forwards through
-  FanRustBridge as PlatformEvents; `Input::ime_replace` writes each
-  state into the focused field — max_length applies like typing,
-  `edit` streams once per genuine change, the IME's Done key commits
-  through the one Enter door, and the commit law held unchanged.
-  Seeding rides `set_text_input_state` (the write half is safe).
-- The shell's page pick used to DROP a tap that hit nothing on any
-  page — the focus-loss commit door never fired on device (worked only
-  in unit tests). It now routes such taps to the page holding focus;
-  tap-away commits and the keyboard drops, verified on the phone.
-- WORKAROUND, upstream bug: android-activity 0.6.1's
-  `text_input_state()` builds a slice from GameTextInput's NULL text
-  pointer before any state exists — a debug-build abort. The read half
-  is simply not used (the Java push path above); only the write half
-  is called.
-- <span style='color:red'>TODO</span>, logged: hardware/BT key events do not arrive on Android
-  (winit's GameActivity key path delivered nothing — even injected
-  keycodes); non-ASCII IME cursor units (Java UTF-16 vs chars);
-  the insets pass (then `insets_px`) reported bottom=0, so a BOTTOM-anchored field could sit
-  under the keyboard (the toolbar probe is unaffected; matters for
-  caption_page).
+  rewrite spans): the host hands each state to `Input::ime_replace`,
+  which writes it into the focused field — max_length applies like
+  typing, `edit` streams once per genuine change, and the commit law
+  holds unchanged (the host sends the IME's Done key as `Key::Enter`,
+  the one Enter door). `Input::ime_seed` gives the text and the
+  selection to start the IME from.
+- A host with several pages hands a tap that hits nothing on any page
+  to the page holding focus: that tap is the focus-loss commit door,
+  and dropping it leaves the field uncommitted and the keyboard up.
 
 Changed 2026-09-02 (GP24, the user's call): unstyled text stays PURE
 WHITE — Labels and every Button state. A decided deviation from Godot's
@@ -913,15 +935,15 @@ emulator-verified):
   LANDS (decided behavior change — it used to jump to the end); a MOUSE
   drag selects while a finger's drag still pans (pointer kinds never
   blur into each other); a double click selects the word.
-- The clipboard never enters gogo: the shell owns Ctrl+C/X/V and the
-  IO (arboard on desktop, ClipboardManager over the bridge on Android);
+- The clipboard never enters gogo: the host owns Ctrl+C/X/V and the
+  clipboard itself (a desktop crate, Android's ClipboardManager);
   gogo only hands text out (`selected_text`) and takes text in
   (`paste`, `delete_selection` — `max_length` caps the RESULT).
 - The touch door is a long-press: 0.5 s still in a field selects the
   word under the finger and raises the edit bar (Cut/Copy/Paste/All) —
   the built-in `edit_bar.gogo` PAGE (module `gogo_edit_bar`, compiled
   into every app by `build_pages`): the labels are translation keys,
-  the look is plain gogo (restyle the file, not Rust), and the shell
+  the look is plain gogo (restyle the file, not Rust), and the host
   composes it topmost, docks it with `edit_bar_anchor`, packs the
   buttons by state (Cut/Copy need a selection, All needs text) and
   answers the taps through the same doors as the shortcuts. A press
@@ -939,14 +961,14 @@ emulator-verified):
 - The IME re-seed law (found on device): an IME pushes whole text
   states on its own schedule, so a LOCAL change it never saw (the
   long-press select, the bar's All, a paste) gets REVERTED by its next
-  push. The shell re-seeds whenever the field's state differs from what
-  the IME last saw; ordinary typing updates that memory instead, so
-  composing (autocorrect spans) is never restarted.
-- <span style='color:red'>TODO</span>: the bar's four terms (`cut`, `copy`, `paste`,
-  `selectAll`) are missing from the shipped translation tables — every
-  language shows the English literals until the data adds them. Emoji
-  addendum 2026-09-02: IME spans convert UTF-16↔chars at the platform
-  seam (backspace deletes a whole emoji; rendering one is GP49).
+  push. A host re-seeds (`Input::ime_seed`) whenever the field's state
+  differs from what the IME last saw; ordinary typing updates that
+  memory instead, so composing (autocorrect spans) is never restarted.
+- The bar's four labels are the translation keys `cut`, `copy`, `paste`
+  and `selectAll`: a host whose tables lack them shows the English
+  literals. Emoji addendum 2026-09-02: a host converts IME spans
+  between UTF-16 units and chars at its own seam (`Input::ime_replace`
+  counts chars), so backspace deletes a whole emoji.
 
 ### Added 2026-09-05 (user): `border_dash=`, gradient tiling, code images
 
@@ -987,13 +1009,14 @@ emulator-verified):
   a span nothing changes. Why: the progress shimmer — one tilted, moving
   comb of stripes — was 16 tiles and lost shipped's 3-degree tilt at the
   seams; one tiled gradient has the tilt back.
-- **Code images, one registry**: `gogo_image!("res://assets/x.png")` names
-  a picture CODE shows. The app's build.rs scans `src/**/*.rs` for the
-  literal and hands the paths to the page build as `code_images`; they
-  join the SAME image table as every `source=` (one `ImageKey` space, one
-  embed, one decode) and the generated `code_image(path)` gives the site
-  its key. The literal must be a plain string in the macro — a path
-  built at runtime is not embedded, and the runtime table is SEALED for
+- **Code images, one registry**: a host names the `res://` pictures its
+  CODE shows in `BuildOptions::code_images` (the crate ships no macro for
+  it: the first host wraps each path in a macro of its own,
+  `gogo_image!("res://assets/x.png")`, and its build.rs scans
+  `src/**/*.rs` for the literal); they join the SAME image table as every
+  `source=` (one `ImageKey` space, one embed, one decode) and the
+  generated `code_image(path)` gives the site its key. A path built at
+  runtime is not embedded, and the runtime table is SEALED for
   `res://` names: interning one the build did not embed is the
   **`unembedded_image` lint**, a debug panic naming the path (release
   interns a key that shows nothing). Host pictures (`face://3`,
@@ -1091,7 +1114,7 @@ emulator-verified):
   `cell=WxH`), `name.play` (a `{ slice … }` block or a `from=` packer
   JSON) or `name` (the whole picture, usually with `edge=`). `edge=` makes
   a 9-slice. Language rules: gogo-spec.md "Atlases"; usage: REFERENCE.md
-  Directives → Atlases; why and pins: DECISIONS.md D97.
+  Directives → Atlases (D97).
 - **A slice is an `ImageKey` with the top bit set**, indexing the build's
   `pub static SLICES`; `draw` turns it into its picture plus windows, so
   hosts only see whole pictures and `Value`/`Draw` keep their size.
@@ -1193,4 +1216,4 @@ A Grid cell adds `col_span`, `row_span`; a Tiles cell adds `span`, `full_row`.
   to the expected arena (kind, name, children ranges, prop count).
 - G4: rect pins per kind, taken from the Godot suites where they exist
   (same file, same numbers) — layout parity before render parity.
-- G5: screenshot vs FantasiaGodot per page, max channel diff (GOALS 3).
+- G5: screenshot vs the Godot addon per page, max channel diff.

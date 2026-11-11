@@ -7,7 +7,8 @@ How many degrees of turn something covers. Two homes:
   goes around the circle — a knob with `sweep=270` turns three quarters
   of a circle from its minimum to its maximum.
 
-Degrees, screen convention: 0° points right, positive turns clockwise.
+Degrees, clockwise. On an `Arc` 0° points up (the compass); inside a
+radial kind's config 0° points right.
 
 ```
 Arc gauge 48x48, from=-90, sweep=180, thickness=3, color=red

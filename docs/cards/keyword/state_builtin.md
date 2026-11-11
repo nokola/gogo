@@ -11,10 +11,11 @@ control Knob $value=0, $min=0, $max=1 {
 }
 ```
 
-`hovered`/`focused`/`focus_within`/`disabled` are universal (always
-styleable, everywhere); declaring them lists them on the contract.
-`held`/`selected` are capabilities — declaring them is what makes `when
-held`/`when selected` legal on the control. `held` is maintained by the
+A `when` on a control can name only what this line lists: any of the
+six the line leaves out is a build error (G0036), on an instance and in
+a style it wears — `hovered`, `focused`, `focus_within` and `disabled`
+included. Listing `focused` also makes the control reachable by Tab and
+the arrows. `held` is maintained by the
 runtime from the gesture bracket on the root (a behavior never flips it);
 `selected` on a control with a `behavior` line DERIVES from the value —
 live, as a drag crosses the midpoint.

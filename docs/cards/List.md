@@ -38,9 +38,10 @@ List bag select=one {
 }
 ```
 
-- **It scrolls itself** (WP feel: touch pan, fling, spring edges — wheel and
-  scrollbar on desktop). The List's box is the VIEWPORT: unplaced, it takes
-  the space its parent offers; `height=` pins it. Statics scroll with the
+- **It scrolls itself** (WP feel: touch pan, fling, spring edges; the mouse
+  wheel does not pan it yet, and the bar only shows where you are). The
+  List's box is the VIEWPORT: unplaced, it takes the space its parent
+  offers; `height=` pins it. Statics scroll with the
   rows, and the keyboard cursor stays in view. No `Scroll` wrapper — ever.
   `bars=never|always|reserve` paints the internal scroll's bar (D138 — the
   same word `Scroll` takes; `never` is the handheld look, the axis still
@@ -60,8 +61,9 @@ List bag select=one {
   a bare list in a centered menu shows its header and "none yet" text out
   of the box. The ROWS stay the viewport's business: in a hug parent they
   starve — provable cases warn at build time (G9015: `valign=`-anchored
-  Column chains, `Scroll` pages), the rest at runtime (the half-starved
-  nudge, items present but less than a row's worth of room).
+  Column chains, `Scroll` pages); for the rest nothing warns at run time,
+  and a host can ask `gogo_ui::layout::starved` which Lists got less than
+  a row's worth of room.
 - **`height=hug` sizes the box to the items** — the menu-sized list.
   `height=hug` flips the List's minimum to its whole content's, so the
   menu grows with its items; the explicit trade: a bare hug List does not
@@ -78,32 +80,35 @@ List bag select=one {
   here, like on buttons), `when focused` for the keyboard cursor.
   Multi-part rows lay out with a `Row`/`Column` inside.
 - **A bare list looks like a list.** Unstyled rows show selection, the
-  cursor and the press out of the box — the theme's own list-selection
-  fill, a half-strength shade while held (it clears when the finger
+  cursor and the press out of the box — a white fill at 30% for the
+  selection, a half-strength shade while held (it clears when the finger
   slides off the row), and a faint echo for the cursor that draws only
   when the KEYBOARD moved it — a tap parks the cursor silently (see the
   ListItem card). Your `when selected` / `when focused` / `when held`
   replaces that state's default entirely, per state.
 - `select=` — `one` (default), `many`, or `off` (activation/focus only —
   menus).
-- **Tap selects; double-tap or Enter activates** — `activate(key, item)`
-  is the List's own trigger gesture (`On<Name>Activate` by convention; a
-  single tap activates under `select=off`, where there is no selection to
-  move). Selection is the mode's business — `one` selects (tapping the
-  selected item never deselects; `null` comes from code), `many` toggles,
-  `off` nothing. `change(selected)` fires only on actual change
-  (`on:change=` / `on:activate=` are the explicit forms). A `Button`
-  inside a row takes its own presses — tapping it fires the button, not the
-  row.
-- **`selected`** is a live property on the node: a key or `null` under
-  `one`, an Array of keys under `many` (`[]` = none). Selected keys with no
+- **A tap selects AND activates** — every completed tap on a row, and
+  Enter or Space on the focused row, gives an `Activate` event whose node
+  is the row; `Runtime::item_key(&page, ev.node)` is its key. Selection
+  is the mode's business — `one` selects (tapping the selected item never
+  deselects; code clears it with `Runtime::set_selected` and no keys),
+  `many` toggles, `off` nothing. When the selection actually changed, a
+  `Change` event on the List comes first (`on:change=` on the List line
+  names its handler; `on:activate=` goes on the `ListItem` line). A
+  `Button` inside a row takes its own presses — tapping it fires the
+  button, not the row.
+- **The selection** is read and written from code as a list of keys:
+  `Runtime::selected_keys` reads it (empty = none, at most one key under
+  `one`) and `Runtime::set_selected` writes it. Selected keys with no
   present item are **inert** — they render nothing, error nothing, and read
   back until the item arrives (select-then-load) or you reassign. Invalid
   writes are refused whole (G9104); the last good selection stays.
-- **Screen readers see a real list**: the List reports itself as a list
-  box (a plain list under `select=off`) with a live item count; rows
-  report their index and selection, and a reader's click lands like a
-  tap — selection side effect included. See the Accessibility card.
+- **Screen readers hear nothing yet**: gogo hands nothing to the
+  platform's accessibility tree, so a reader gets no list, no item count
+  and no row selection. See the Accessibility card.
 
-Items arrive by the repeat's name, as always: `set_items("tasks", ...)` —
-reconcile keeps selection by key across reorders, rebuilds and hot reloads.
+Items arrive through the repeat's node, as always:
+`rt.set_items(&mut page, tasks, &items)` — reconcile keeps selection by key
+across reorders and rebuilds. A hot reload does not carry the rows or the
+selection yet: code sets them again.

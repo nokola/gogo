@@ -1,6 +1,6 @@
 Independent on/off — never joins an exclusive group (inside `choice`,
 use `Radio`). Holds `selected` while ON; `change(bool)` fires once per
-genuine flip, programmatic writes included.
+flip a tap or a key makes. A write from code flips it and reports nothing.
 
 ```
 Check gridToggle text="Show grid", selected=true

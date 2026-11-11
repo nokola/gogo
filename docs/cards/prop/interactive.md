@@ -1,4 +1,5 @@
-THE input switch. Interactive controls (Button, Slider, Input, Scroll)
+THE input switch. Interactive controls (Button, Check, Toggle, Radio,
+ListItem, Slider, Input, Scroll, List)
 answer input by default, everything else is transparent — `interactive=`
 overrides that for THIS control only, like any property. `true` claims
 input (a drag surface, a blocking plate, a catcher); `false` makes an

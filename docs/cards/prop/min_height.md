@@ -8,4 +8,4 @@ Row spacing=10 {
 }
 ```
 
-Next to an exact `height=` on the same axis it is refused — an exact size IS its own floor and ceiling. The one exception (D249): when some `when` block poses `height=` on the node, the floor is live again — it clamps every posed value (the floor beats a posed height, WPF's MinHeight-over-Height order). With a hug cap it forms the min/max band (D135); the floor beats the cap (WPF clamp order) — see `min_width`/`max_width`.
+Next to an exact `height=` on the same axis the compiler accepts it and the floor wins: `height=10, min_height=30` is 30 tall. The exception is a child of a Column or of a Tiles: there the exact height holds. The floor also clamps a height that a `when` block poses on the node (the floor beats a posed height, WPF's MinHeight-over-Height order). With a hug cap it forms the min/max band (D135); the floor beats the cap (WPF clamp order) — see `min_width`/`max_width`.

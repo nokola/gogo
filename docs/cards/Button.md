@@ -5,7 +5,8 @@ button's own name (`okButton`) unless `on:activate=` names another.
 `toggle=true` gives it an on/off value: it holds `selected` while ON and
 fires `change(bool)`.
 Content minimums derive from free children, positive margins included
-(an exact size clamps; negative margins count as zero).
+(an exact size clamps; a negative margin takes that much off the child's
+claim, never below zero).
 
 ```
 style ToolButton min_height=36 {

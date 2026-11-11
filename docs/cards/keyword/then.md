@@ -1,4 +1,4 @@
-The sequencing connective: `then` starts this anim step AFTER the previous step — and everything `and`-joined to it — completes (autoreverse's way back included). Following a referenced step (`after=`), `then` means "after that step", resolved in graph time. Shift the start with `offset=` (negative overlaps the previous step's tail); a bare timed wait in the chain is the `delay=` step.
+The sequencing connective: `then` starts this anim step AFTER the previous step — and everything `and`-joined to it — completes (autoreverse's way back included). A group placed by reference (`after=<group>`) stands outside this order: a `then` written after it waits for the step before that group, not for the group. Shift the start with `offset=` (negative overlaps the previous step's tail); a bare timed wait in the chain is the `delay=` step.
 
 ```
 anim toast {

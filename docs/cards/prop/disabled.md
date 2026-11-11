@@ -1,8 +1,9 @@
 The universal off-switch condition: `disabled=true` flips the `disabled`
 state the node's `when disabled` responses read. On a control that takes
 input (Button, Slider, Input, ...) it blocks the input and dims the
-control; on passive nodes it is styling-only — the look greys via `when`,
-input is `interactive=`'s job.
+control; on any other box it dims the box and switches off every control
+inside it. The dim is the theme's `disabled_opacity` (0.3 unless the file
+sets it); a `when disabled opacity=` on the node replaces it.
 
 ```
 style ToolButton {
