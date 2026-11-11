@@ -22,6 +22,7 @@
 //! hovers): the box under the cursor and EVERY ancestor light, and a
 //! press holds the hovered look until release. Coordinates are epx.
 
+use crate::anim::Finish;
 use crate::draw::hit;
 use crate::frame::Frame;
 use crate::layout::{DEFAULT_FONT_SIZE, Rect, SLIDER_KNOB_EPX, TOGGLE_PILL, TextMeasure};
@@ -1070,7 +1071,7 @@ impl Input {
             rt.set_state(b.root, SELECTED, v >= (b.min + b.max) / 2.0);
         }
         if edit {
-            self.push_event(rt, events, b.root, EventKind::Edit(Value::VNum(v)), event_action(page, b.root, "edit"));
+            self.push_event(page, rt, events, b.root, EventKind::Edit(Value::VNum(v)), event_action(page, b.root, "edit"));
         }
         v
     }
@@ -1087,7 +1088,7 @@ impl Input {
         }
         let v = self.land_behavior_write(page, rt, events, b, was, &cx, false);
         if changed(b, was, v) {
-            self.push_event(rt, events, b.root, EventKind::Change(change_value(b, v)), event_action(page, b.root, "change"));
+            self.push_event(page, rt, events, b.root, EventKind::Change(change_value(b, v)), event_action(page, b.root, "change"));
         }
         true
     }
@@ -1097,12 +1098,18 @@ impl Input {
         self.fling.is_some()
     }
 
-    fn push_event(&self, rt: &mut Runtime, events: &mut Vec<Event>, node: NodeId, kind: EventKind, action: Option<Action>) {
-        // `go(x)` / `toggle(x)` flip the view's arrangement right here — a
-        // declarative wiring, no host handler.
+    /// Hands an event to the host, after carrying out the action its
+    /// `on:` line wired.
+    ///
+    /// Needed so the three actions a file can wire by itself work with no
+    /// code in the host: `go(x)` and `toggle(x)` flip the view's
+    /// arrangement, `play(x)` starts the anim. `emit(X)` and a handler
+    /// name are the host's to answer, from the event.
+    fn push_event(&self, page: &Page, rt: &mut Runtime, events: &mut Vec<Event>, node: NodeId, kind: EventKind, action: Option<Action>) {
         match action {
             Some(Action::Go(a)) => rt.go_id(a),
             Some(Action::ToggleArrangement(a)) => rt.toggle_id(a),
+            Some(Action::Play(anim)) => rt.play_id(page, anim, Finish::Nothing),
             _ => {}
         }
         events.push(Event { node, kind, action });
@@ -1118,7 +1125,7 @@ impl Input {
         }
         p.release_owed = false;
         if let Some(action) = event_action(page, p.node, "release") {
-            self.push_event(rt, events, p.node, EventKind::Release, Some(action));
+            self.push_event(page, rt, events, p.node, EventKind::Release, Some(action));
         }
     }
 
@@ -1138,7 +1145,7 @@ impl Input {
                 rt.set_state(b.root, SELECTED, p.value_from >= (b.min + b.max) / 2.0);
             }
             if b.drag_ended != NO_STR {
-                self.push_event(rt, events, b.root, EventKind::Signal, Some(Action::Emit(b.drag_ended)));
+                self.push_event(page, rt, events, b.root, EventKind::Signal, Some(Action::Emit(b.drag_ended)));
             }
         }
         match p.kind {
@@ -1266,7 +1273,7 @@ impl Input {
                     _ => false,
                 };
                 if claimed {
-                    self.push_event(rt, &mut events, f, EventKind::Key { key: k, mods }, event_action(page, f, "key"));
+                    self.push_event(page, rt, &mut events, f, EventKind::Key { key: k, mods }, event_action(page, f, "key"));
                     return events;
                 }
             }
@@ -1408,7 +1415,7 @@ impl Input {
                 let now: String = text.iter().collect();
                 if now != self.committed {
                     self.committed = now;
-                    self.push_event(rt, &mut events, f, EventKind::Change(text_value(page, rt, f)), event_action(page, f, "change"));
+                    self.push_event(page, rt, &mut events, f, EventKind::Change(text_value(page, rt, f)), event_action(page, f, "change"));
                 }
                 return events;
             }
@@ -1421,7 +1428,7 @@ impl Input {
         }
         let now: String = text.iter().collect();
         rt.set_text(page, f, &now);
-        self.push_event(rt, &mut events, f, EventKind::Edit(text_value(page, rt, f)), event_action(page, f, "edit"));
+        self.push_event(page, rt, &mut events, f, EventKind::Edit(text_value(page, rt, f)), event_action(page, f, "edit"));
         events
     }
 
@@ -1440,7 +1447,7 @@ impl Input {
         if page.nodes[f].kind == Kind::Input {
             let now = input_text(page, rt, f);
             if now != self.committed {
-                self.push_event(rt, events, f, EventKind::Change(text_value(page, rt, f)), event_action(page, f, "change"));
+                self.push_event(page, rt, events, f, EventKind::Change(text_value(page, rt, f)), event_action(page, f, "change"));
             }
         }
         self.committed.clear();
@@ -1548,7 +1555,7 @@ impl Input {
         };
         if v != was {
             rt.set_prop(f, PropKey::Value, Value::VNum(v));
-            self.push_event(rt, events, f, EventKind::Change(Value::VNum(v)), event_action(page, f, "change"));
+            self.push_event(page, rt, events, f, EventKind::Change(Value::VNum(v)), event_action(page, f, "change"));
         }
     }
 
@@ -1560,7 +1567,7 @@ impl Input {
         rt.set_prop(f, PropKey::Value, Value::VNum(if on { 1.0 } else { 0.0 }));
         rt.set_state(f, SELECTED, on);
         if on != was {
-            self.push_event(rt, events, f, EventKind::Change(Value::VBool(on)), event_action(page, f, "change"));
+            self.push_event(page, rt, events, f, EventKind::Change(Value::VBool(on)), event_action(page, f, "change"));
         }
     }
 
@@ -1580,28 +1587,28 @@ impl Input {
                 if res.bool(page, f, PropKey::ToggleMode).unwrap_or(false) {
                     let on = !rt.has(f, SELECTED);
                     rt.set_state(f, SELECTED, on);
-                    self.push_event(rt, events, f, EventKind::Change(Value::VBool(on)), event_action(page, f, "change"));
+                    self.push_event(page, rt, events, f, EventKind::Change(Value::VBool(on)), event_action(page, f, "change"));
                 }
-                self.push_event(rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
+                self.push_event(page, rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
             }
             Kind::ListItem => {
                 if let Some(list) = list_ancestor(page, f) {
                     if rt.tap_select(page, list, f) {
-                        self.push_event(rt, events, list, EventKind::Change(Value::VIdent(page.nodes[f].name)), event_action(page, list, "change"));
+                        self.push_event(page, rt, events, list, EventKind::Change(Value::VIdent(page.nodes[f].name)), event_action(page, list, "change"));
                     }
                 }
-                self.push_event(rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
+                self.push_event(page, rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
             }
             Kind::Check => {
                 let on = !rt.has(f, SELECTED);
                 rt.set_state(f, SELECTED, on);
-                self.push_event(rt, events, f, EventKind::Change(Value::VBool(on)), event_action(page, f, "change"));
-                self.push_event(rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
+                self.push_event(page, rt, events, f, EventKind::Change(Value::VBool(on)), event_action(page, f, "change"));
+                self.push_event(page, rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
             }
             Kind::Toggle => {
                 let was = toggle_on(rt, res, page, f);
                 self.set_toggle(page, rt, res, f, !was, events);
-                self.push_event(rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
+                self.push_event(page, rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
             }
             Kind::Radio => {
                 let already = rt.has(f, SELECTED);
@@ -1616,9 +1623,9 @@ impl Input {
                     change_action = page.choices[choice as usize].action;
                 }
                 if !already {
-                    self.push_event(rt, events, f, EventKind::Change(Value::VIdent(page.nodes[f].name)), change_action);
+                    self.push_event(page, rt, events, f, EventKind::Change(Value::VIdent(page.nodes[f].name)), change_action);
                 }
-                self.push_event(rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
+                self.push_event(page, rt, events, f, EventKind::Activate, event_action(page, f, "activate"));
             }
             _ => {}
         }
@@ -1715,7 +1722,7 @@ impl Input {
         let now: String = text.iter().collect();
         if now != input_text(page, rt, f) {
             rt.set_text(page, f, &now);
-            self.push_event(rt, &mut events, f, EventKind::Edit(text_value(page, rt, f)), event_action(page, f, "edit"));
+            self.push_event(page, rt, &mut events, f, EventKind::Edit(text_value(page, rt, f)), event_action(page, f, "edit"));
         }
         events
     }
@@ -1737,7 +1744,7 @@ impl Input {
         rt.dirty = true;
         let now: String = text.iter().collect();
         rt.set_text(page, f, &now);
-        self.push_event(rt, &mut events, f, EventKind::Edit(text_value(page, rt, f)), event_action(page, f, "edit"));
+        self.push_event(page, rt, &mut events, f, EventKind::Edit(text_value(page, rt, f)), event_action(page, f, "edit"));
         events
     }
 
@@ -1800,7 +1807,7 @@ impl Input {
         rt.dirty = true;
         if new != input_text(page, rt, f) {
             rt.set_text(page, f, &new);
-            self.push_event(rt, &mut events, f, EventKind::Edit(text_value(page, rt, f)), event_action(page, f, "edit"));
+            self.push_event(page, rt, &mut events, f, EventKind::Edit(text_value(page, rt, f)), event_action(page, f, "edit"));
         }
         events
     }
@@ -2058,7 +2065,7 @@ impl Input {
                 let raw = event_action(page, node, "pointer");
                 if let Some(action) = raw {
                     let r = rects[node];
-                    self.push_event(rt, &mut events, node, EventKind::Pointer { phase: Phase::Down, x: t.x - r.x, y: t.y - r.y }, Some(action));
+                    self.push_event(page, rt, &mut events, node, EventKind::Pointer { phase: Phase::Down, x: t.x - r.x, y: t.y - r.y }, Some(action));
                     self.press = Some(Press { node, kind, id: t.id, start: (t.x, t.y), scroll: None, panning: false, last: (t.x, t.y), last_t: t.t, samples: Samples::EMPTY, caught_fling: caught, accum: [0.0; 2], caught_raw: None, value_from: 0.0, behavior: None, registered: 0, toggle_moved: false, release_owed: false, raw });
                     return events;
                 }
@@ -2067,7 +2074,7 @@ impl Input {
                 if pressed {
                     rt.set_state(node, HELD, true);
                     if let Some(action) = event_action(page, node, "press") {
-                        self.push_event(rt, &mut events, node, EventKind::Press, Some(action));
+                        self.push_event(page, rt, &mut events, node, EventKind::Press, Some(action));
                     }
                 }
                 if kind == Kind::Toggle {
@@ -2080,7 +2087,7 @@ impl Input {
                     // whatever the behavior wrote on the press (a slider
                     // jumps under the finger, a toggle writes nothing).
                     if b.drag_started != NO_STR {
-                        self.push_event(rt, &mut events, b.root, EventKind::Signal, Some(Action::Emit(b.drag_started)));
+                        self.push_event(page, rt, &mut events, b.root, EventKind::Signal, Some(Action::Emit(b.drag_started)));
                     }
                     self.land_behavior_write(page, rt, &mut events, &b, value_from, &cx, true);
                 }
@@ -2092,7 +2099,7 @@ impl Input {
                     // current value says nothing.
                     if v != value_from {
                         rt.set_prop(node, PropKey::Value, Value::VNum(v));
-                        self.push_event(rt, &mut events, node, EventKind::Edit(Value::VNum(v)), event_action(page, node, "edit"));
+                        self.push_event(page, rt, &mut events, node, EventKind::Edit(Value::VNum(v)), event_action(page, node, "edit"));
                     }
                 }
                 // A caught overscroll hands its RAW accum to the press, so
@@ -2123,7 +2130,7 @@ impl Input {
                     // otherwise keep its grab until the next touch).
                     if let Some(action) = p.raw {
                         let r = rects[p.node];
-                        self.push_event(rt, &mut events, p.node, EventKind::Pointer { phase: Phase::Cancel, x: t.x - r.x, y: t.y - r.y }, Some(action));
+                        self.push_event(page, rt, &mut events, p.node, EventKind::Pointer { phase: Phase::Cancel, x: t.x - r.x, y: t.y - r.y }, Some(action));
                     }
                     self.release(page, rt, &mut events, &mut p);
                     self.restore_press(page, rt, &mut events, &p);
@@ -2132,7 +2139,7 @@ impl Input {
                 }
                 if let Some(action) = p.raw {
                     let r = rects[p.node];
-                    self.push_event(rt, &mut events, p.node, EventKind::Pointer { phase: Phase::Move, x: t.x - r.x, y: t.y - r.y }, Some(action));
+                    self.push_event(page, rt, &mut events, p.node, EventKind::Pointer { phase: Phase::Move, x: t.x - r.x, y: t.y - r.y }, Some(action));
                     p.last = (t.x, t.y);
                     p.last_t = t.t;
                     self.press = Some(p);
@@ -2200,7 +2207,7 @@ impl Input {
                     // sample (GPAR6).
                     if v != value_of(rt, res, page, p.node) {
                         rt.set_prop(p.node, PropKey::Value, Value::VNum(v));
-                        self.push_event(rt, &mut events, p.node, EventKind::Edit(Value::VNum(v)), event_action(page, p.node, "edit"));
+                        self.push_event(page, rt, &mut events, p.node, EventKind::Edit(Value::VNum(v)), event_action(page, p.node, "edit"));
                     }
                 } else if p.kind == Kind::Toggle && !p.panning && (p.toggle_moved || (t.x - p.start.0).abs() >= TOGGLE_DRAG_THRESHOLD) {
                     // Past the wobble the knob follows the finger; `selected`
@@ -2287,7 +2294,7 @@ impl Input {
                 self.press = None;
                 if let Some(action) = p.raw {
                     let r = rects[p.node];
-                    self.push_event(rt, &mut events, p.node, EventKind::Pointer { phase: t.phase, x: t.x - r.x, y: t.y - r.y }, Some(action));
+                    self.push_event(page, rt, &mut events, p.node, EventKind::Pointer { phase: t.phase, x: t.x - r.x, y: t.y - r.y }, Some(action));
                     return events;
                 }
                 rt.set_state(p.node, HELD, false);
@@ -2348,12 +2355,12 @@ impl Input {
                     self.registry.get(p.registered).ended(&mut cx, t.x - r.x, t.y - r.y);
                     let v = self.land_behavior_write(page, rt, &mut events, &b, shown, &cx, false);
                     if changed(&b, p.value_from, v) {
-                        self.push_event(rt, &mut events, b.root, EventKind::Change(change_value(&b, v)), event_action(page, b.root, "change"));
+                        self.push_event(page, rt, &mut events, b.root, EventKind::Change(change_value(&b, v)), event_action(page, b.root, "change"));
                     }
                     // The closing edge, after the commit (the
                     // change-then-activate order's cousin).
                     if b.drag_ended != NO_STR {
-                        self.push_event(rt, &mut events, b.root, EventKind::Signal, Some(Action::Emit(b.drag_ended)));
+                        self.push_event(page, rt, &mut events, b.root, EventKind::Signal, Some(Action::Emit(b.drag_ended)));
                     }
                 }
                 match p.kind {
@@ -2362,7 +2369,7 @@ impl Input {
                         // finger found reports nothing.
                         let v = value_of(rt, res, page, p.node);
                         if v != p.value_from {
-                            self.push_event(rt, &mut events, p.node, EventKind::Change(Value::VNum(v)), event_action(page, p.node, "change"));
+                            self.push_event(page, rt, &mut events, p.node, EventKind::Change(Value::VNum(v)), event_action(page, p.node, "change"));
                         }
                     }
                     // Order on every toggling surface: `change` first, then
@@ -2372,9 +2379,9 @@ impl Input {
                         if res.bool(page, p.node, PropKey::ToggleMode).unwrap_or(false) {
                             let on = !rt.has(p.node, SELECTED);
                             rt.set_state(p.node, SELECTED, on);
-                            self.push_event(rt, &mut events, p.node, EventKind::Change(Value::VBool(on)), event_action(page, p.node, "change"));
+                            self.push_event(page, rt, &mut events, p.node, EventKind::Change(Value::VBool(on)), event_action(page, p.node, "change"));
                         }
-                        self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
+                        self.push_event(page, rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                     }
                     Kind::ListItem if inside => {
                         // Selection is the mode's side effect (spec §5, the
@@ -2384,16 +2391,16 @@ impl Input {
                         // toggling-surface order above).
                         if let Some(list) = list_ancestor(page, p.node) {
                             if rt.tap_select(page, list, p.node) {
-                                self.push_event(rt, &mut events, list, EventKind::Change(Value::VIdent(page.nodes[p.node].name)), event_action(page, list, "change"));
+                                self.push_event(page, rt, &mut events, list, EventKind::Change(Value::VIdent(page.nodes[p.node].name)), event_action(page, list, "change"));
                             }
                         }
-                        self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
+                        self.push_event(page, rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                     }
                     Kind::Check if inside => {
                         let on = !rt.has(p.node, SELECTED);
                         rt.set_state(p.node, SELECTED, on);
-                        self.push_event(rt, &mut events, p.node, EventKind::Change(Value::VBool(on)), event_action(page, p.node, "change"));
-                        self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
+                        self.push_event(page, rt, &mut events, p.node, EventKind::Change(Value::VBool(on)), event_action(page, p.node, "change"));
+                        self.push_event(page, rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                     }
                     // A release ALWAYS settles a Toggle (the shipped
                     // input_ended takes no rect test, GPAR8): slide off in
@@ -2408,9 +2415,9 @@ impl Input {
                         rt.set_prop(p.node, PropKey::Value, Value::VNum(if on { 1.0 } else { 0.0 }));
                         rt.set_state(p.node, SELECTED, on);
                         if on != was {
-                            self.push_event(rt, &mut events, p.node, EventKind::Change(Value::VBool(on)), event_action(page, p.node, "change"));
+                            self.push_event(page, rt, &mut events, p.node, EventKind::Change(Value::VBool(on)), event_action(page, p.node, "change"));
                         }
-                        self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
+                        self.push_event(page, rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                     }
                     Kind::Radio if inside => {
                         // One of N across the whole `choice` scope (nested
@@ -2429,9 +2436,9 @@ impl Input {
                             change_action = page.choices[choice as usize].action;
                         }
                         if !already {
-                            self.push_event(rt, &mut events, p.node, EventKind::Change(Value::VIdent(page.nodes[p.node].name)), change_action);
+                            self.push_event(page, rt, &mut events, p.node, EventKind::Change(Value::VIdent(page.nodes[p.node].name)), change_action);
                         }
-                        self.push_event(rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
+                        self.push_event(page, rt, &mut events, p.node, EventKind::Activate, event_action(page, p.node, "activate"));
                     }
                     _ => {}
                 }
@@ -2706,7 +2713,7 @@ mod tests {
     /// one wired handler must not eat the tap meant for the Button under it.
     #[test]
     fn passive_node_with_handler_stays_transparent() {
-        let mut fx = Fx::new("View v { Layers z { Button b width=100, height=40, halign=left, valign=top, on:activate=go_home; Panel cover width=fill, height=fill, on:show=shown } }");
+        let mut fx = Fx::new("anim fade { cover.opacity to=1, duration=0.1 }\nView v { Layers z { Button b width=100, height=40, halign=left, valign=top, on:activate=go_home; Panel cover width=fill, height=fill, on:show=play(fade) } }");
         let b = fx.page.find("b").unwrap();
         fx.touch(Phase::Down, 10.0, 10.0, 0.0);
         assert!(fx.rt.has(b, HELD), "the tap lands on the Button, not the covering Panel");

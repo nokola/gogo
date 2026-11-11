@@ -445,6 +445,23 @@ visited only when that control's value is written
 (`Page::value_follows`). A `when` response is one fixed value, so
 reading `$value` there is refused (G0083).
 
+Actions and anims (decided 2026-11-11). A file wires three actions by
+itself, with no code in the host: `go(x)`, `toggle(x)` and `play(x)`; a
+tap on `Button on:activate=play(pulse)` plays the anim. `on:show` and
+`on:hide` are hooks with one job, `play(…)`: a node shows and hides
+inside the runtime, where no event leaves for a host, so any other
+action there is refused (G0084). An anim line on a size, a margin or a
+padding moves the box, as a `transition` on it does (one list of words,
+two doors); the box is laid out again on every frame of the play, and
+`scale`, `translate` and `reveal` are the words that need no layout. A
+rule borrowed for the way back gives its timing and never its `anim=`.
+`each .Style` runs its wearers in file order. A written `from=` starts
+its step there, also on a later step, and two steps that pin one
+property are refused only when they run at the same time. `offset=`
+shifts any step that starts something. Every word on an anim line is
+known or refused (G0066), and a `transition` rule that could never time
+or play anything is refused (G0034, G4003, G4004).
+
 Kept: `arrangement` (user's call — a `state` unification was proposed and
 declined), snake_case keys, `#RRGGBBAA`, `text="x"/key`, `when` /
 `transition` / `anim`, widgets + `$params`, `uses`, styles, Grid/Tiles,

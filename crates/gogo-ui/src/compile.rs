@@ -1425,11 +1425,15 @@ impl<'a> Compiler<'a> {
     /// contributes directives).
     fn document(&mut self, doc: &Document, is_main: bool) {
         // Pass 0: arrangements, so a `transition a -> b` may sit above its
-        // `arrangement` lines (files written that way exist).
+        // `arrangement` lines (files written that way exist). The file's
+        // anims too, so a `play(x)` or a rule's `anim=x` may sit above
+        // `anim x`: the name is looked up where it is written.
         for item in &doc.items {
             if let AstItem::Node(n) = item {
-                if n.type_word == "arrangement" {
-                    self.arrangement(n);
+                match n.type_word.as_str() {
+                    "arrangement" => self.arrangement(n),
+                    "anim" => self.anim(n),
+                    _ => {}
                 }
             }
         }
@@ -1478,8 +1482,7 @@ impl<'a> Compiler<'a> {
                     "theme" => self.theme(n),
                     "style" => self.style(n),
                     "widget" | "control" => self.widget(n),
-                    "anim" => self.anim(n),
-                    "arrangement" | "atlas" => {}
+                    "arrangement" | "atlas" | "anim" => {}
                     "transition" if is_property_transition(n) => self.deferred_prop_transitions.push(n.clone()),
                     "transition" => {
                         let t = self.transition(n, NO_NODE);
@@ -2872,11 +2875,15 @@ impl<'a> Compiler<'a> {
                 return self.intern(&format!("{scope}/{name}"));
             }
         }
-        // A play naming no declared anim is a build error (the shipped
-        // bake refuses it; GPAR84) — a silent no-op loses the tap.
+        // A name that is no anim of the enclosing widgets and no anim of
+        // the page is a build error (the shipped bake refuses it; GPAR84)
+        // — a silent no-op loses the tap. A widget's own anim is not
+        // visible from outside it: the bare name is no anim out here.
         // Slash-qualified names address another scope's copy and pass.
-        if !name.contains('/') && !self.anim_decls.iter().any(|(_, a)| a.name.as_deref() == Some(name)) {
-            self.error("G4004", line, format!("unknown anim `{name}` — `play`/`stop` name a declared `anim`"));
+        if !name.contains('/') && !self.anim_decls.iter().any(|(s, a)| s.is_empty() && a.name.as_deref() == Some(name)) {
+            let inside = self.anim_decls.iter().any(|(_, a)| a.name.as_deref() == Some(name));
+            let why = if inside { " — a widget declares one, and a widget's own anims are not visible outside it" } else { " — `play(…)` and `anim=` name a declared `anim`" };
+            self.error("G4004", line, format!("unknown anim `{name}`{why}"));
         }
         self.intern(name)
     }
@@ -2978,12 +2985,16 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// Two steps that both pin `from=` on one property hold two different
-    /// start values from play start (the capture rule holds a pin through
-    /// its wait) — they'd fight from frame one. Load-time error, as
-    /// shipped.
+    /// Refuses two steps that write `from=` on one property and run at the
+    /// same time, and one property animated under two spellings.
+    ///
+    /// Needed because such a pair gives the property two start values at
+    /// once: the two steps would fight on every frame they share. Two
+    /// steps one after the other are fine (a blink): each starts at its
+    /// own `from=` when its turn comes.
     fn double_pin_check(&mut self, anim: StrId, line: u32) {
-        let mut seen: Vec<(NodeId, StrId)> = Vec::new();
+        // (node, channel, start, end) of every step that writes `from=`.
+        let mut pinned: Vec<(NodeId, StrId, f32, f32)> = Vec::new();
         let mut errs: Vec<String> = Vec::new();
         // GP40: `background` and `background.a` in one anim would both
         // own the (node, property) lane and fight — one spelling per
@@ -3007,13 +3018,13 @@ impl<'a> Compiler<'a> {
             if t.from.is_none() {
                 continue;
             }
-            if seen.contains(&(t.node, t.channel)) {
+            let end: f32 = t.start + t.duration * if t.autoreverse { 2.0 } else { 1.0 };
+            if pinned.iter().any(|(n, c, s, e)| *n == t.node && *c == t.channel && (*s == t.start || (*s < end && t.start < *e))) {
                 let nm = self.page.str(self.page.nodes[t.node].name).to_string();
                 let ch = self.page.str(t.channel).to_string();
-                errs.push(format!("two steps pin `from=` on {nm}.{ch} — both hold from play start and would fight from frame one"));
-            } else {
-                seen.push((t.node, t.channel));
+                errs.push(format!("two steps that run at the same time both write `from=` on {nm}.{ch} — the property would start at two values at once"));
             }
+            pinned.push((t.node, t.channel, t.start, end));
         }
         for e in errs {
             self.error("G0064", line, e);
@@ -3043,7 +3054,13 @@ impl<'a> Compiler<'a> {
             let new_id = match made.get(&(t.anim, node)) {
                 Some(id) => *id,
                 None => {
-                    let wearer = self.page.str(self.page.nodes[node].name).to_string();
+                    // A wearer with no name is told apart by its node
+                    // number: with an empty prefix every such copy was
+                    // called `/<anim>`, and one press played them all.
+                    let wearer = match self.page.nodes[node].name {
+                        NO_STR => format!("#{}", node.index()),
+                        name => self.page.str(name).to_string(),
+                    };
                     let full = format!("{wearer}/{}", self.page.str(t.anim));
                     let new_id = self.intern(&full);
                     if let Some(h) = self.page.anim_heads.iter().find(|h| h.anim == t.anim).copied() {
@@ -3059,6 +3076,51 @@ impl<'a> Compiler<'a> {
                 }
             };
             self.page.transitions[ti].anim = new_id;
+        }
+    }
+
+    /// Every node's place in the order a reader meets the nodes in the
+    /// file: a node before the nodes inside it, siblings top to bottom.
+    ///
+    /// Needed because the page stores a node AFTER the nodes inside it, so
+    /// the stored order is not the file's: `each .Style` staggered its
+    /// wearers in the stored order, and a nested menu popped its buttons
+    /// in an order nobody wrote.
+    ///
+    /// Returns one number per node, indexed by the node's index; a smaller
+    /// number comes first in the file.
+    fn file_order(&self) -> Vec<u32> {
+        let count: usize = self.page.nodes.len();
+        let mut order: Vec<u32> = vec![u32::MAX; count];
+        let mut next: u32 = 0;
+        let mut stack: Vec<NodeId> = (0..count).rev().map(NodeId::from_index).filter(|n| self.page.nodes[*n].parent == NO_NODE).collect();
+        while let Some(id) = stack.pop() {
+            order[id.index()] = next;
+            next += 1;
+            stack.extend(self.page.children(id).rev());
+        }
+        order
+    }
+
+    /// Refuses a word an anim line does not take.
+    ///
+    /// Needed because a word nothing reads is dropped without a sign:
+    /// `repeat=forever` on a step line was accepted and the anim played
+    /// once.
+    ///
+    /// `takes` also lists the words another check on the same line answers
+    /// with its own message, so a line gets one error per word.
+    fn anim_line_words(&mut self, line: &AstNode, what: &str, takes: &[&str], takes_easing: bool, takes_text: &str) {
+        for p in &line.props {
+            let word: &str = p.key.as_str();
+            if takes.contains(&word) || (takes_easing && (word == "easing" || EASING_PARAM_KEYS.contains(&word))) {
+                continue;
+            }
+            if word == "repeat" {
+                self.error("G0066", p.line, "`repeat=` goes on the anim's header line (`anim <name> repeat=forever { … }`) — a step plays once each time the anim runs");
+            } else {
+                self.error("G0066", p.line, format!("`{word}=` is not a word of {what} — it takes {takes_text}"));
+            }
         }
     }
 
@@ -3116,6 +3178,7 @@ impl<'a> Compiler<'a> {
                             _ => {}
                         }
                     }
+                    self.anim_line_words(step, "a group", &["duration_each", "offset", "after", "autoreverse", "duration", "delay"], true, "`duration_each=`, `easing=` (+ its parameters), `offset=`, `after=`, `autoreverse=`");
                     if step.children.is_empty() {
                         self.error("G0062", step.line, "a group with no steps plays nothing — give it lanes or delete it");
                     }
@@ -3145,6 +3208,7 @@ impl<'a> Compiler<'a> {
                     }
                 }
                 "delay" => {
+                    self.anim_line_words(step, "a pause", &["delay"], false, "`delay=` only");
                     let d = step.props.iter().find(|p| p.key == "delay").and_then(|p| p.value.as_num()).unwrap_or(0.0);
                     if d < 0.0 {
                         self.error("G0062", step.line, "a pause can't be negative — overlapping a start is `offset=` on the shifted step");
@@ -3157,12 +3221,26 @@ impl<'a> Compiler<'a> {
                         cluster_start
                     } else {
                         let stagger = step.props.iter().find(|p| p.key == "stagger_by").and_then(|p| p.value.as_num()).unwrap_or(0.0);
+                        self.anim_line_words(step, "an `each`", &["stagger_by", "duration_each", "offset", "autoreverse", "after"], true, "`stagger_by=`, `duration_each=`, `easing=` (+ its parameters), `offset=`, `autoreverse=`");
+                        if has_after {
+                            self.error("G0062", step.line, "`after=` goes on `group` lines — wrap the each: `group <name> after=<anchor> { each … }`");
+                        }
+                        // `offset=` shifts the whole fan-out, as it shifts
+                        // any other step.
+                        let each_start: f32 = (cluster_start + step.props.iter().find(|p| p.key == "offset").and_then(|p| p.value.as_num()).unwrap_or(0.0)).max(0.0);
                         // The wearers: one node, `self`, or everyone
-                        // wearing `.Style` (file order — the shipped
-                        // tree order).
+                        // wearing `.Style`, in file order.
                         let wearers: Vec<NodeId> = if let Some(style) = step.styles.first() {
                             match self.style_wearers.get(style) {
-                                Some(w) if !w.is_empty() => w.clone(),
+                                // The table holds them in the order the
+                                // compiler stored the nodes; a stagger is
+                                // read off the file.
+                                Some(w) if !w.is_empty() => {
+                                    let order: Vec<u32> = self.file_order();
+                                    let mut w: Vec<NodeId> = w.clone();
+                                    w.sort_by_key(|n| order[n.index()]);
+                                    w
+                                }
                                 _ => {
                                     self.error("G0060", step.line, format!("`each .{style}`: no node wears that style — the fan-out would drive nothing"));
                                     Vec::new()
@@ -3189,13 +3267,13 @@ impl<'a> Compiler<'a> {
                             Vec::new()
                         };
                         scopes.push(step);
-                        let mut end = cluster_start;
+                        let mut end = each_start;
                         for (k, w) in wearers.iter().enumerate() {
                             // Each wearer's copy is its own little world:
                             // bare paths target the wearer, group names
                             // don't leak in or out.
                             let mut sub = AnimSt { decls: st.decls, compiled: &mut *st.compiled, stack: &mut *st.stack, names: HashSet::new(), ends: HashMap::new(), deferred: Vec::new(), each_of: Some(*w) };
-                            let e = self.anim_chain(anim, scope, &step.children, &scopes, cluster_start + k as f32 * stagger, &mut sub);
+                            let e = self.anim_chain(anim, scope, &step.children, &scopes, each_start + k as f32 * stagger, &mut sub);
                             let e2 = self.flush_deferred(anim, scope, &mut sub);
                             end = end.max(e).max(e2);
                         }
@@ -3210,6 +3288,13 @@ impl<'a> Compiler<'a> {
                         self.error("G0062", step.line, "`play` doesn't go inside an each — its body is bare property lines for the wearers");
                         cluster_start
                     } else if let Some(pname) = &target {
+                        self.anim_line_words(step, "a `play` step", &["offset", "after"], false, "`offset=` only");
+                        if has_after {
+                            self.error("G0062", step.line, "`after=` goes on `group` lines — wrap the step: `group <name> after=<anchor> { play … }`");
+                        }
+                        // `offset=` shifts the played anim's start, as it
+                        // shifts any other step.
+                        let play_start: f32 = (cluster_start + step.props.iter().find(|p| p.key == "offset").and_then(|p| p.value.as_num()).unwrap_or(0.0)).max(0.0);
                         // The decl table resolves the name (the widget
                         // scope's copy first); a not-yet-compiled target
                         // compiles on demand — forward references are
@@ -3247,12 +3332,12 @@ impl<'a> Compiler<'a> {
                                         for (si, t) in &src {
                                             total = total.max(t.start + t.duration * if t.autoreverse { 2.0 } else { 1.0 });
                                             let idx_new = self.page.anims.len() as u32;
-                                            self.page.anims.push(AnimTrack { anim, start: cluster_start + t.start / speed, duration: t.duration / speed, ..*t });
+                                            self.page.anims.push(AnimTrack { anim, start: play_start + t.start / speed, duration: t.duration / speed, ..*t });
                                             if self.self_lanes.iter().any(|(a, i)| *a == played && i == si) {
                                                 self.self_lanes.push((anim, idx_new));
                                             }
                                         }
-                                        cluster_start + total / speed
+                                        play_start + total / speed
                                     }
                                 }
                             }
@@ -3392,6 +3477,11 @@ impl<'a> Compiler<'a> {
                     let lane_mark = self.page.anims.len();
                     let channel_id = self.intern(&channel);
                     let keys: Vec<&AstNode> = step.children.iter().filter_map(|i| if let AstItem::Node(k) = i { Some(k) } else { None }).filter(|k| k.type_word == "key").collect();
+                    if keys.is_empty() {
+                        self.anim_line_words(step, "a property line", &["to", "from", "duration", "offset", "autoreverse", "delay", "after"], true, "`to=`, `from=`, `duration=`, `offset=`, `easing=` (+ its parameters), `autoreverse=`");
+                    } else {
+                        self.anim_line_words(step, "a property line with `key` children", &["offset", "autoreverse", "duration", "to", "delay", "after"], false, "`offset=` and `autoreverse=`; each `key` carries its own `t=`, `v=`, `easing=`, `jump=`");
+                    }
                     scopes.push(step);
                     let autoreverse = scopes.iter().rev().find_map(|s| s.props.iter().find(|p| p.key == "autoreverse").map(|p| p.value == AstValue::Bool(true))).unwrap_or(false);
                     if !keys.is_empty() {
@@ -3413,9 +3503,13 @@ impl<'a> Compiler<'a> {
                         // `t`, then snaps; a first key past t=0 glides from
                         // the live value; a first key at t=0 is pinned from
                         // play start.
+                        // `offset=` shifts the whole keyed line, as it shifts any
+                        // other step.
+                        let key_start: f32 = (cluster_start + num("offset").unwrap_or(0.0)).max(0.0);
                         let key_num = |k: &AstNode, key: &str| k.props.iter().find(|p| p.key == key).and_then(|p| p.value.as_num());
                         let mut parsed: Vec<(f32, f32, bool, StrId)> = Vec::new();
                         for k in &keys {
+                            self.anim_line_words(k, "a `key` line", &["t", "v", "jump"], true, "`t=`, `v=`, `easing=` (+ its parameters), `jump=`");
                             let t = key_num(k, "t").unwrap_or(0.0);
                             let v = key_num(k, "v").unwrap_or(0.0);
                             let jump = k.props.iter().any(|p| p.key == "jump" && p.value == AstValue::Bool(true));
@@ -3423,12 +3517,12 @@ impl<'a> Compiler<'a> {
                             parsed.push((t, v, jump, easing));
                         }
                         let mut prev: Option<(f32, f32)> = None;
-                        let mut end = cluster_start;
+                        let mut end = key_start;
                         for (t, v, jump, easing) in parsed.iter().copied() {
                             let (from, start, duration) = match prev {
-                                Some((pt, _)) => (None, if jump { cluster_start + t } else { cluster_start + pt }, if jump { 0.0 } else { t - pt }),
-                                None if t <= 0.0 => (Some(v), cluster_start, 0.0),
-                                None => (None, if jump { cluster_start + t } else { cluster_start }, if jump { 0.0 } else { t }),
+                                Some((pt, _)) => (None, if jump { key_start + t } else { key_start + pt }, if jump { 0.0 } else { t - pt }),
+                                None if t <= 0.0 => (Some(v), key_start, 0.0),
+                                None => (None, if jump { key_start + t } else { key_start }, if jump { 0.0 } else { t }),
                             };
                             self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from: from.map(Value::VNum), to: Value::VNum(v), start, duration, easing, current: false, autoreverse: false, from_percent: false, to_percent: false });
                             end = start + duration;
@@ -3444,7 +3538,7 @@ impl<'a> Compiler<'a> {
                             for i in (0..parsed.len().saturating_sub(1)).rev() {
                                 let (t0, v0, _, _) = parsed[i];
                                 let (t1, _, jump, easing) = parsed[i + 1];
-                                let (start, duration) = if jump { (cluster_start + 2.0 * lane - t0, 0.0) } else { (cluster_start + 2.0 * lane - t1, t1 - t0) };
+                                let (start, duration) = if jump { (key_start + 2.0 * lane - t0, 0.0) } else { (key_start + 2.0 * lane - t1, t1 - t0) };
                                 self.page.anims.push(AnimTrack { anim, node, channel: channel_id, from: None, to: Value::VNum(v0), start, duration, easing, current: false, autoreverse: false, from_percent: false, to_percent: false });
                                 end = end.max(start + duration);
                             }
@@ -3572,6 +3666,11 @@ impl<'a> Compiler<'a> {
             self.error("G3007", n.line, "a property transition sits at the file's top level, naming its node — `transition commandBar.opacity duration=0.4` (inside a block, `transition` times state changes)");
             return t;
         }
+        // A rule is one line. Words inside braces were never read, so the
+        // rule timed nothing.
+        if !n.children.is_empty() {
+            self.error("G0034", n.line, "a transition rule is one line — write its words on the line (`transition base -> edit duration=0.25`), not in a `{ }` block");
+        }
         // One arrow, one endpoint each side. A lone endpoint used to read
         // as `s -> any` and `-> held` as `any -> held`, silently (GPAR23).
         let ends: Vec<&str> = n.args.iter().filter_map(|a| a.as_ident()).collect();
@@ -3597,7 +3696,12 @@ impl<'a> Compiler<'a> {
             match p.key.as_str() {
                 "duration" => t.duration = p.value.as_num().unwrap_or(0.0),
                 "easing" => t.easing = self.easing_spec(&n.props, p.line).unwrap_or(NO_STR),
-                "anim" => t.anim = self.intern(p.value.as_ident().unwrap_or("")),
+                // The lookup `play(…)` uses: the enclosing widget instance's
+                // own anim first, then the page's, and an unknown name is
+                // refused. Needed because an instance's anim is stored as
+                // `<instance>/<name>`: the bare word named nothing, so a
+                // widget's own press rule played nothing.
+                "anim" => t.anim = self.anim_ref(p.value.as_ident().unwrap_or(""), p.line),
                 other if EASING_PARAM_KEYS.contains(&other) => {}
                 other => self.error("G0034", p.line, format!("`transition` takes duration=, easing= (+ its parameters), anim= — not `{other}`")),
             }
@@ -6018,6 +6122,14 @@ impl<'a> Compiler<'a> {
                 return None;
             }
         };
+        // `on:show` and `on:hide` play an anim and nothing else. A node
+        // shows or hides inside the runtime (a `when`, `Runtime::show`),
+        // where no event leaves for a host and nothing flips an
+        // arrangement, so any other action would sit there and never run.
+        if matches!(event, "show" | "hide") && !matches!(action, Action::Play(_)) {
+            self.error("G0084", p.line, format!("`on:{event}` takes `play(<anim>)` only — a node that shows or hides sends no event, so `{}` would never run", spell(&p.value)));
+            return None;
+        }
         let event_id = self.intern(event);
         Some(OnHandler { event: event_id, action })
     }
@@ -7169,8 +7281,9 @@ impl<'a> Compiler<'a> {
     }
 
     /// D63's one-writer guard (Godot G4003): a `when` in a scope holds a
-    /// motion word on a target while a `transition … anim=` in the SAME
-    /// scope drives the same channel on it — two writers would fight on
+    /// motion word or a look property (`background`) on a target while a
+    /// `transition … anim=` in the SAME scope drives the same word on it —
+    /// two writers would fight on
     /// every flip and the loser flickers, so the file is refused. Only the
     /// static pair is visible here; an anim a code `play()` starts over a
     /// standing `when` is ordered by the runtime instead (the anim is the
@@ -7182,7 +7295,14 @@ impl<'a> Compiler<'a> {
                 continue;
             }
             for lane in self.page.anims.iter().filter(|a| a.anim == t.anim) {
-                let Some(channels) = Channel::parse(self.page.str(lane.channel)) else { continue };
+                // A motion word names its channels; any other lane names
+                // one look property (`background`, `background.a`).
+                let lane_word: &str = self.page.str(lane.channel);
+                let channels: Option<Vec<Channel>> = Channel::parse(lane_word);
+                let look_key: Option<PropKey> = if channels.is_none() { prop_lane(lane_word).map(|(key, _)| key) } else { None };
+                if channels.is_none() && look_key.is_none() {
+                    continue;
+                }
                 let target = &self.page.nodes[lane.node];
                 for w in &self.page.whens[target.whens.0 as usize..(target.whens.0 + target.whens.1) as usize] {
                     let owner = if w.of == NO_NODE { lane.node } else { w.of };
@@ -7191,7 +7311,10 @@ impl<'a> Compiler<'a> {
                     if !same_scope {
                         continue;
                     }
-                    let holds = self.page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize].iter().any(|p| Channel::of_key(p.key).iter().any(|c| channels.contains(c)));
+                    let holds = self.page.props[w.props.0 as usize..(w.props.0 + w.props.1) as usize].iter().any(|p| match &channels {
+                        Some(channels) => Channel::of_key(p.key).iter().any(|c| channels.contains(c)),
+                        None => Some(p.key) == look_key,
+                    });
                     if holds {
                         // The channel's head word, the way the file spells
                         // the property ('scale', not 'scale.x').
@@ -7348,8 +7471,18 @@ impl<'a> Compiler<'a> {
         let is_named_arr = |st: &State| matches!(st, State::Arrangement(i) if *i != BASE);
         let mut errs: Vec<(u32, String)> = Vec::new();
         let mut seen: Vec<(NodeId, Option<State>, Option<State>)> = Vec::new();
+        let is_screen = |st: &State| matches!(st, State::ScreenOrientation(_) | State::ScreenClass(_) | State::ArrangementScreen(..) | State::ScreenPair(..));
         for t in &self.page.transitions {
             let live_node = t.node != NO_NODE && t.node.index() < self.page.nodes.len();
+            // A screen flip lands at once: nothing looks a rule up for it,
+            // so a rule that ends on a screen word would time nothing.
+            if t.node == NO_NODE || live_node {
+                for e in [t.from, t.to].into_iter().flatten() {
+                    if is_screen(&e) {
+                        errs.push((t.line, format!("`{}` cannot end a transition rule — a screen change lands at once; rules time arrangement and control-state changes", state_word(&self.page, e))));
+                    }
+                }
+            }
             if t.node == NO_NODE {
                 for e in [t.from, t.to].into_iter().flatten() {
                     if is_state(&e) {
@@ -7360,7 +7493,14 @@ impl<'a> Compiler<'a> {
                 match (t.from, t.to) {
                     // The endpoint-less rule is the scope's default feel.
                     (None, None) => {}
-                    (Some(a), Some(b)) if is_arr(&a) && is_arr(&b) => {}
+                    // A node's rule between two arrangements times that
+                    // node's own move. The anim of an arrangement change
+                    // is played from the view's rules only.
+                    (Some(a), Some(b)) if is_arr(&a) && is_arr(&b) => {
+                        if t.anim != NO_STR {
+                            errs.push((t.line, format!("`anim=` on a node's arrangement rule never plays — write the rule at the top level (`transition {} -> {} anim=…`)", state_word(&self.page, a), state_word(&self.page, b))));
+                        }
+                    }
                     (Some(a), Some(b)) if is_state(&a) && is_state(&b) => {
                         errs.push((t.line, format!("control states stack — time them one side at a time (`any -> {}` enters, `{}` -> any` leaves)", state_word(&self.page, b), state_word(&self.page, a))));
                     }

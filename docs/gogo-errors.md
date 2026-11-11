@@ -215,6 +215,16 @@ duration=0.1`); only the listed keys ride it (duration, easing and its
 parameters, anim). A `control` declaration's own `transition` line is
 its default feel and takes NO endpoints.
 
+Three more forms are refused, because each would build and time nothing:
+
+- a rule written as a block (`transition base -> edit { duration=0.25 }`):
+  a rule is one line, and its words go on the line;
+- a `screen.` word as an endpoint (`transition any -> screen.landscape
+  duration=0.3`): a screen change lands at once;
+- `anim=` on a node's rule between two arrangements: an arrangement
+  change plays the anim of a top-level rule only (`transition base -> edit
+  anim=open`).
+
 ## G0035 — misspelled word, with the spelling
 
 A word gogo knows under another spelling (`pressed` → `held`, `max=` →
@@ -368,7 +378,9 @@ a declared anim that ends (not `repeat=forever`) and does not play
 itself. `each <node>` or `each .Style` names who it drives, never sits
 inside another `each`, and its lines are bare (`opacity to=0`). A
 `then` cannot wait on an `each … stagger_by=`, a pause (`delay=`) is
-never negative, and `key` lines sit inside a property line.
+never negative, and `key` lines sit inside a property line. `after=` is
+a `group` word only: an `each` or a `play` step that should wait on a
+group is wrapped in one (`group late after=intro { play pop }`).
 
 ## G0063 — anim lane shape
 
@@ -385,13 +397,53 @@ never assignments: `box.opacity from=1, to=0, duration=0.2` — a bare
 A journey without a destination; `from=` is optional (the current value
 fills in), `to=` is not.
 
+Two steps that write `from=` on one property and run at the same time are
+refused too: the property would start at two values at once. One after
+the other is fine, each step starts at its own `from=` (a blink).
+
 ## G0065 — `easing=` takes a name
 
 An easing word (`cubic_out`, `bounce_out`, …), not a number.
 
-## G0066 — `repeat=` takes `forever`
+## G0066 — the words of an anim line
 
-A one-shot anim just omits it; there is no repeat count.
+An anim's header line takes `repeat=forever` (a one-shot anim just omits
+it; there is no repeat count), `speed=` above 0, `duration_each=`,
+`easing=` and `autoreverse=`.
+
+A step line takes its own words and nothing else. A word no line reads
+would be dropped without a sign, so it is refused:
+
+| Line | Takes |
+|------|-------|
+| a property line (`box.opacity …`) | `to=`, `from=`, `duration=`, `offset=`, `easing=`, `autoreverse=` |
+| a property line with `key` children | `offset=`, `autoreverse=` |
+| a `key` line | `t=`, `v=`, `easing=`, `jump=` |
+| a `group` | `duration_each=`, `easing=`, `offset=`, `after=`, `autoreverse=` |
+| an `each` | `stagger_by=`, `duration_each=`, `easing=`, `offset=`, `autoreverse=` |
+| a `play` step | `offset=` |
+| a pause | `delay=` |
+
+`repeat=` on a step line gets a pointer to the header: a step plays once
+each time the anim runs.
+
+Wrong:
+
+```kdl error=G0066
+anim flash {
+    badge.opacity from=1, to=0, duration=0.3, repeat=forever
+}
+View page { Panel badge width=20, height=20 }
+```
+
+Fix:
+
+```kdl
+anim flash repeat=forever {
+    badge.opacity from=1, to=0, duration=0.3
+}
+View page { Panel badge width=20, height=20 }
+```
 
 ## G0067 — `a..b` only after `in` on a slot line
 
@@ -535,6 +587,36 @@ control Dimmer $value=0.5, $min=0, $max=1 {
 }
 
 View v { Dimmer d }
+```
+
+## G0084 — `on:show` and `on:hide` take `play(…)` only
+
+`on:show` and `on:hide` are hooks, not events: when a node shows or
+hides, gogo plays the anim the hook names, and that is all it does. No
+event leaves for the host and no arrangement flips. So
+`on:show=go(edit)`, `on:show=toggle(edit)`, `on:show=emit(Shown)` and a
+handler name (`on:show=Shown`) would sit on the line and never run, and
+they are refused.
+
+The code that shows a node already knows it did: run the handler's work
+where the host calls `rt.show(…)`, or where it sets the state that shows
+the node.
+
+Wrong:
+
+```kdl error=G0084
+View page {
+    Panel sheet width=200, height=100, on:show=Opened
+}
+```
+
+Right:
+
+```kdl
+anim appear { sheet.opacity from=0, to=1, duration=0.2 }
+View page {
+    Panel sheet width=200, height=100, on:show=play(appear)
+}
 ```
 
 ## G1002 — grid track bookkeeping
@@ -931,7 +1013,9 @@ the property rule, or move its value out of the `when`.
 
 A `when` holds a property while a `transition … anim=` (or the
 control's `$value`) drives the same one on the same node — they would fight on every flip
-and the loser flickers. The message names both writers; keep one.
+and the loser flickers. The message names both writers; keep one. It
+holds for a motion word (`scale`) and for a look property (`background`)
+alike.
 
 Wrong:
 
@@ -956,7 +1040,12 @@ Button newGame .MenuButton text="New Game"
 
 ## G4004 — unknown anim
 
-`play(x)` / `anim=x` names no declared `anim x`.
+`play(x)` / `anim=x` names no declared `anim x`. The name is looked up
+in the enclosing widget first, then among the page's anims, and the anim
+may be written above or below the line that names it.
+
+A widget's own anim is not visible from outside the widget: `play(pop)`
+on a page cannot start the `pop` a widget declares.
 
 ## G5001 — widget naming / `for=` host contract
 

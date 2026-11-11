@@ -386,7 +386,7 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
   `edit`, `show`, `hide`, `pointer` (see Input vocabulary); any other word
   after `on:` is refused (G0049). Also takes `play(animName)`, `go(name)`,
   `toggle(name)`, `emit(Name)`; `on:show`/`on:hide` are the visibility
-  pair (see Animations).
+  pair and take `play(animName)` only (G0084; see Animations).
 - **Look properties**: `opacity` (the whole node's alpha),
   `font_size` (epx), `font_color` (`icon=` and `icon_size=` are accepted
   on a Button for old files; no icon is drawn),
@@ -1033,7 +1033,7 @@ no moves into a node's own subtree.
 The smooth-slide primitive: the node's LAYOUT SPACE as a 0..1 fraction.
 `visibility` is a word and words snap; making the space a float puts it on
 the same rails as every other response — poses flip it, `transition` rules
-tween it, anims may drive it (the one layout channel an anim may own). The
+tween it, anims may drive it. The
 node's box itself shrinks to the fraction. It is not a clip mask, so a
 Label lays out again in the smaller box. The rules:
 
@@ -1150,8 +1150,9 @@ anim entrance duration_each=0.2 {              // each: wearers + stagger
   `translate.x/.y` (epx), `scale` (uniform or `.x`/`.y`, center-pivoted),
   `rotate` (degrees) and `opacity` are a transform the renderer applies
   (visual-only; each may also be declared on a node line as its resting
-  value). Layout geometry
-  (sizes, margins, alignment) is not animatable.
+  value). Sizes, margins and paddings are not on this channel: an anim
+  that moves one moves the box itself (prop lanes, below). Alignment
+  words are not animatable.
   `pivot=` — a 0..1 box
   point (`pivot=0x0`, the Gradient `from=` spelling) — places the fixed
   point `scale` and `rotate` transform about; unset = the center, the
@@ -1161,10 +1162,13 @@ anim entrance duration_each=0.2 {              // each: wearers + stagger
   finger un-rotates about the nearest rotating ancestor-or-self, so
   look and touch agree.
 
-- **Prop lanes and the color-mixing law**: any word a `transition` rule can move, layout geometry aside
-  (sizes, margins, paddings), is an anim target
+- **Prop lanes and the color-mixing law**: any word a `transition` rule can move is an anim target
   too — `b.background to=#FF3B30FF`, `card.corner_radius from=4,
-  to=12`, the live `stop_N_color`/`stop_N_offset` family — and `.a` on
+  to=12`, `card.width to=200`, the live `stop_N_color`/`stop_N_offset`
+  family. A lane on a size, a margin or a padding moves the box itself,
+  as `transition card.width` does: the box and what is around it are
+  laid out again on every frame of the play. `scale`, `translate.x/.y`
+  and `reveal_x/_y` move a box with no new layout. `.a` on
   any color word moves alpha alone while the hue keeps following its
   ladder. ONE ownership law with the motion channels: a playing anim
   owns its (node, property) lane — `when` and code writes yield, a
@@ -1200,23 +1204,26 @@ anim entrance duration_each=0.2 {              // each: wearers + stagger
   hatch: only named `group`s can be referenced, names are anim-flat
   (forward references legal, wrappers reachable-into), unknown names and
   cycles refuse at build. `delay=N` is a PAUSE step, always positive; a
-  shift is `offset=` (signed; negative overlaps, the final start clamps
+  shift is `offset=`, on any step but a pause (signed; negative overlaps,
+  the final start clamps
   at 0). `play <anim>` inlines another anim as one step at bake (speed
   folded in, internal names private, `repeat=forever` refused — it never
   completes). The old `track` block and the delay ATTRIBUTE retired with
   this grammar (big bang, no legacy machinery).
 - `each <node|.Style> [stagger_by=N]` names wearers (a `.Style` = every
-  wearer in the page — wearers side by side in file order, one nested in
-  another box after all the boxes beside that box; `stagger_by` shifts
+  wearer in the page, in file order — a wearer before the wearers
+  inside it; `stagger_by` shifts
   successive copies); its body is a step chain in BARE paths (the each
   names the target — prefixing is a routed error; dotted paths belong at
   anim/group level). With `stagger_by` > 0 the each's length only exists
   at play time, so nothing may sequence after it — refused, not guessed
   (`and` beside it is fine: that shares its start).
 - **Capture rule**: `to=` alone starts from the LIVE value when the step
-  begins; `from=` (or a key at t=0) pins the start and HOLDS it from play
-  start (staggered entrances never flash their base). Two pinned steps on
-  one property = build error. **`from=current`** pins the live value
+  begins; `from=` (or a key at t=0) pins the start. On the first step
+  that moves a property the pin HOLDS from play start (staggered
+  entrances never flash their base); on a later step it is where that
+  step starts. Two pinned steps on one property that run at the same
+  time = build error. **`from=current`** pins the live value
   read at PLAY start (the `to=`-alone capture, made spellable and pinned —
   it holds through a delay window where an open start would flash the
   base). `current` is `from=`-only — `to=current` is refused (an open

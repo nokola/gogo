@@ -2203,8 +2203,8 @@ catches big PORTRAIT tablets, because `lotsOfSpace` covers both shapes.
 - **Flips are instant** by design — a rotation is the OS snapping the
   window, and a tween here would show panels sliding to their landscape
   seats after the screen already turned. `transition` rules don't apply
-  (a rule that names a class or an orientation as an endpoint builds and
-  times nothing).
+  (a rule that names a class or an orientation as an endpoint is a build
+  error, G0034).
 - Placement keys are the arrangement set (`margin_*`, `width`, `height`,
   `min_width`, `min_height`) PLUS `halign`/`valign` — an alignment key
   RE-DECLARES that axis: the base's pins and size mode drop and the pose's
@@ -2318,7 +2318,7 @@ anim openMenu {                                  // groups share timing and
 }
 
 anim appear duration_each=0.2 {                  // each: who / when / what
-    each .MenuButton stagger_by=0.1 {            // every wearer, tree order
+    each .MenuButton stagger_by=0.1 {            // every wearer, file order
         translate.y from=40, to=0, easing=back_out
         and opacity from=0, to=1
         then scale.x to=1.05, duration=0.08, autoreverse=true
@@ -2335,8 +2335,9 @@ anim appear duration_each=0.2 {                  // each: who / when / what
   them there is an error).
 - **Prop lanes**: any word a `transition` rule can move is
   an anim target — `b.background to=#FF3B30FF`, `card.corner_radius
-  from=4, to=12`, `g.stop_1_color.a to=0.42` (the live stop family
-  included). `.a` on any color word moves alpha alone; the hue keeps
+  from=4, to=12`, `card.width to=200`, `g.stop_1_color.a to=0.42` (the
+  live stop family included). `.a` on any color word moves alpha alone;
+  the hue keeps
   following its ladder, so a `when` can restyle the color mid-fade. One
   ownership law with the motion channels: a playing anim owns its lane —
   `when`/code writes yield, a `transition` on an owned lane spawns no
@@ -2375,14 +2376,17 @@ anim appear duration_each=0.2 {                  // each: who / when / what
   `speed=` folds in, its internal names stay private, and a
   `repeat=forever` anim never completes so it can't be a step.
 - **`each <node|.Style> [stagger_by=N]`** is a step whose chain every
-  wearer copies (tree order), shifted by `stagger_by`. With `stagger_by` >
+  wearer copies (file order: a wearer before the wearers inside it),
+  shifted by `stagger_by`. With `stagger_by` >
   0 its length only exists at play time — nothing may sequence after it
   (`and` beside it is fine: that shares its start).
 - **The capture rule**: `to=` alone starts from the LIVE value when the
   step begins (WPF "To" animations — perfect for interruptible fades).
-  Adding `from=` pins the start **and holds it from play start**, so
-  staggered entrances never flash their base. Two from-pinned steps on one
-  property = build error.
+  Adding `from=` pins the start. On the first step that moves a
+  property the pin **holds from play start**, so staggered entrances
+  never flash their base; on a later step it is where that step starts
+  (a blink is two steps with the same `from=`). Two from-pinned steps on
+  one property that run at the same time = build error.
 - **`from=current`** pins the live value read at PLAY start — the open
   start made spellable, and HELD through a delay window (an open start
   would flash the base there). `from=`-only. Pose-flip motion doesn't ride
@@ -2400,7 +2404,7 @@ anim appear duration_each=0.2 {                  // each: who / when / what
 
 ### Motion — layout is declared, motion is transformed
 
-Anims move a **visual-only channel** — layout never budges, containers
+The motion words move a **visual-only channel** — layout never budges, containers
 can't stomp it, and hover/press state survives. The vocabulary:
 
 | Word | Notes |
@@ -2419,11 +2423,18 @@ a moved, scaled or rotated box takes touches where it is drawn. Because
 motion works on any node — container children included — never
 restructure a tree to animate it.
 
-**Layout geometry is not animatable** (`position`, `offset_*`, `size`,
-`rotation`, minimums, `width`/`height` — build errors point back here):
-layout re-derives those every pass, so an anim would fight it. Transient pulse → `scale.x`/`scale.y`; changing and staying →
-`arrangement` + `when` + `transition`. A finished anim holds its end
-pose, so an anim meant as a pulse is written to end where it began.
+**A size, a margin or a padding moves the box itself.** An anim line on
+`width`, `height`, `min_width`, `min_height`, a `margin_*` or a
+`padding_*` (`card.width to=200`) changes the box, as `transition
+card.width` does, so the box and what is around it are laid out again on
+every frame of the play. Where only the picture has to move, a motion
+word (`scale`, `translate.x/.y`) or `reveal_x/_y` does it with no new
+layout: transient pulse → `scale.x`/`scale.y`; changing and staying →
+`arrangement` + `when` + `transition`. A side written `fill` or `hug`
+starts from the size the box has. Engine words (`position`, `offset_*`,
+`rotation`) are not gogo words and are refused (G0063). A finished anim
+holds its end pose, so an anim meant as a pulse is written to end where
+it began.
 
 ### Easing
 
@@ -2624,7 +2635,9 @@ What `on:` takes:
   and the pose are two separate on/off states — style it with
   `when <pose> { ... }`.
 - **Visibility pair**: `on:show=play(appear)`,
-  `on:hide=play(disappear)`. The hide plays first and hides on finish
+  `on:hide=play(disappear)`. The two hooks take `play(…)` only: any
+  other action or a handler name is a build error (G0084), since nothing
+  would carry it out. The hide plays first and hides on finish
   (deferred hide), then restores the base look; showing during a hide cancels
   it and plays the show anim from current values. A control that is
   already visible when the page first shows plays its show anim once as an

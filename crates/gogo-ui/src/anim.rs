@@ -557,7 +557,10 @@ impl Player {
                     set_pval(pvals, t.node, key, t_from.unwrap_or(shown));
                     t_from
                 } else {
-                    None
+                    // A later step on the lane: a written `from=` starts
+                    // the step there; with none it goes on from where the
+                    // lane is when the step starts (`apply_at`).
+                    t_from
                 };
                 let lead_in_from = if first { Some(if t.current { shown } else { t_from.unwrap_or(shown) }) } else { None };
                 ptracks.push(PropTrack { node: t.node, key, from, to: t_to, start: t.start, duration: t.duration, easing, autoreverse: t.autoreverse, base: shown, base_held, lead_in_from });
@@ -595,7 +598,10 @@ impl Player {
                     layer[t.node].set(channel, track_from.unwrap_or(shown));
                     track_from
                 } else {
-                    None
+                    // A later step on the channel: a written `from=` starts
+                    // the step there; with none it goes on from where the
+                    // channel is when the step starts (`apply_at`).
+                    track_from
                 };
                 let lead_in_from = if first_on_channel { Some(if t.current { shown } else { track_from.unwrap_or(shown) }) } else { None };
                 tracks.push(Track { node: t.node, channel, from, to: track_to, start: t.start, duration: t.duration, easing, autoreverse: t.autoreverse, base: shown, base_held, lead_in_from, pending_percent });

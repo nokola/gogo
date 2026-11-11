@@ -780,6 +780,18 @@ impl Runtime {
                     Value::VNum(r.color(page, node, key).map(|c| c.0[3] as f32 / 255.0).unwrap_or(1.0))
                 } else if key.is_color() {
                     Value::VColor(r.color(page, node, key).unwrap_or(Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT))
+                } else if key.is_placement() {
+                    // What the layout holds: the written number; for a
+                    // `fill` or `hug` side the size the box was last laid
+                    // out at; else 0 (a margin or padding nobody wrote).
+                    let laid_out: Option<&Rect> = self.last_rects.get(node.index());
+                    placement_value(&r.placement[node.index()], key)
+                        .or_else(|| match key {
+                            PropKey::Width => laid_out.map(|b| Value::VNum(b.w)),
+                            PropKey::Height => laid_out.map(|b| Value::VNum(b.h)),
+                            _ => None,
+                        })
+                        .unwrap_or(Value::VNum(0.0))
                 } else {
                     r.prop(page, node, key).unwrap_or(Value::VNum(0.0))
                 };
@@ -2981,6 +2993,13 @@ impl Resolved {
         if page.repeats.iter().any(|r| r.template == node) {
             return true;
         }
+        // Mid deferred hide (GP19): the `when` or the presence state
+        // already says gone but the `on:hide` anim still plays — the node
+        // stays until it finishes. Asked BEFORE the presence state, so a
+        // presence slot leaves the way every other node does.
+        if self.hiding.contains(&node) {
+            return false;
+        }
         if let Auto::Presence(baked) = page.nodes[node].auto {
             // GP33: the mark exists iff its driving state holds — live,
             // through `set_custom` on the control root.
@@ -2988,11 +3007,6 @@ impl Resolved {
             if !on {
                 return true;
             }
-        }
-        // Mid deferred hide (GP19): the `when` already says gone but the
-        // `on:hide` anim still plays — the node stays until it finishes.
-        if self.hiding.contains(&node) {
-            return false;
         }
         self.ident(page, node, PropKey::Visibility) == Some("gone")
     }
@@ -3150,6 +3164,14 @@ fn compose_anim(page: &Page, rt: &Runtime, r: &mut Resolved, touched: &mut Vec<N
 /// alpha-only lane arrives as a `VNum` on a color key: the ladder's hue
 /// with the anim's alpha, so a `when` can restyle the hue mid-play.
 fn apply_prop_lane(page: &Page, r: &mut Resolved, node: NodeId, key: PropKey, v: Value) {
+    // A size, a margin or a padding lives in the placement the layout
+    // reads, not among the look's values: written there the box follows
+    // the lane, the road a `transition card.width` tween takes.
+    if key.is_placement() {
+        apply_placement(&mut r.placement[node], page, Prop { key, value: v });
+        r.anim_owned_props.push((node, key));
+        return;
+    }
     let value = match v {
         Value::VNum(a) if key.is_color() => match r.color(page, node, key) {
             Some(c) => Value::VColor(c.with_opacity(a)),
@@ -3541,7 +3563,9 @@ fn baked_frac(page: &Page, node: NodeId) -> f32 {
 
 /// The rule for a change on `node` (built-in state) or the view
 /// (arrangements): exact pair > entering > leaving > bare. Going home with
-/// no rule of its own mirrors the entering rule's timing.
+/// no rule of its own mirrors the entering rule's timing, never its
+/// `anim=`: an anim describes one journey, and played again on the way
+/// back it would end at the far end.
 fn find_rule(page: &Page, node: NodeId, from: Option<State>, to: Option<State>) -> Option<Transition> {
     // Needed so `transition base -> held` on a node matches a press: a
     // built-in flip comes in as from/to NOTHING (`None`), and `base` written
@@ -3570,12 +3594,12 @@ fn find_rule(page: &Page, node: NodeId, from: Option<State>, to: Option<State>) 
     if best.is_none() {
         // Home (base) with no rule: mirror the entering rule of where we came from.
         if let Some(State::Arrangement(BASE)) = to {
-            return rules.iter().find(|t| from_rest(t) && same(t.to, from)).map(|t| **t);
+            return rules.iter().find(|t| from_rest(t) && same(t.to, from)).map(|t| Transition { anim: NO_STR, ..**t });
         }
         // Leaving a built-in state with no rule: mirror its entering rule
         // (`any -> held` or `base -> held`).
         if to.is_none() {
-            return rules.iter().find(|t| from_rest(t) && same(t.to, from)).map(|t| **t);
+            return rules.iter().find(|t| from_rest(t) && same(t.to, from)).map(|t| Transition { anim: NO_STR, ..**t });
         }
     }
     best

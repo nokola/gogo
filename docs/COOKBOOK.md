@@ -915,13 +915,15 @@ anim appear duration_each=0.5, easing=cubic_out {
 
 Motion words (`translate`/`scale`/`rotate`/`opacity`) use a visual-only
 channel — layout never moves, containers can't stomp it, and it works on any
-node (no restructuring a tree to animate it). Layout words (sizes, margins,
-paddings) do not move under an anim: such a line compiles, but the box stays
-where the layout put it — layout is declared, motion is transformed.
+node (no restructuring a tree to animate it). An anim line on a size, a
+margin or a padding (`card.width to=200`) moves the box itself, and the
+box and what is around it are laid out again on every frame of the play;
+where only the picture has to move, a motion word does it with no new
+layout.
 
 - `from`/`to` is shorthand for two keys. `to=` alone starts from the LIVE
-  value when the step begins (interruptible fades); `from=` pins the start
-  and holds it from play start.
+  value when the step begins (interruptible fades); `from=` pins the start,
+  and on the first step that moves a property it holds from play start.
 - Key `t` is in seconds; a keyframed line's duration **is** its last key's `t`.
 - `jump=true` sets the value instantly (no interpolation into that key).
 - `then` waits for the whole `and`-cluster before it (longest member,
@@ -984,7 +986,7 @@ anim openMenu {
 
 ## How do I stagger buttons into a menu? (slide, settle, pop)
 
-`each` names the wearers (every wearer of a style, tree order), its body is
+`each` names the wearers (every wearer of a style, in file order), its body is
 a step chain every wearer copies, and `stagger_by` shifts each successive
 copy:
 
