@@ -1431,8 +1431,9 @@ with **no input tuning**:
 - **`bars=` paints the scrolling axes' bars** (D138):
   `auto|never|always|reserve` — `never` hides the bar, the axis still pans
   (the handheld look); `reserve` shows like auto but always holds the
-  bar's space, so content doesn't shift when it appears. Inert on a
-  non-scrolling axis.
+  bar's space, so content doesn't shift when it appears; `always` holds
+  the space and shows the bar with nothing to scroll too. Inert on a
+  non-scrolling axis. A `List` reads the word the same way.
 - **A capped hug axis scrolls PAST its cap** (D138 — the List D124
   doctrine on Scroll): `height=hug, max_height=300` follows the content up
   to 300 epx, then the axis scrolls; `max_*=fill` is accepted and caps
@@ -1745,9 +1746,8 @@ fn task(id: i64, title: &str) -> Item {
 ```
 
 - **The line**: `repeat <name> [as $binding] by <key-path> { ... }` — the
-  name is required (it's the `set_items` address, unique per view; the
-  Rust compiler does not refuse a repeat without one yet — it builds and
-  can never be given rows); clauses
+  name is required (it's the `set_items` address, unique per view; a repeat
+  without one is a build error, G9002); clauses
   are keyword-anchored and COMMA-FREE (the arrow-endpoint precedent), `as`
   before `by`; looks belong on the parent or the template, not on the
   line. Omitted `as` is defined sugar for `as $item`;
@@ -1767,31 +1767,37 @@ fn task(id: i64, title: &str) -> Item {
 - **`$binding.field` reads the item's data** — a STATIC value re-applied at
   each assignment (it does not change between two assignments).
   Dots on any other `$ref` are an error: reading one is G6001 (no such
-  value), naming a value or a parameter with a dot is G9008. Fields must
-  hold what the property can take (String, number, bool, Color) —
-  structures don't bind whole.
+  value), naming a value or a parameter with a dot is G9008. A field may
+  feed any property: text, a number, true or false, a color, a word
+  (`visibility=$item.vis`) or a size (`width=$item.w`), also through a
+  widget's parameter (`TaskRow done=$item.done`). The field must hold
+  what the property takes; structures don't bind whole.
 - **Reconcile by key** on every `set_items`: a kept key with equal data
   keeps its row untouched (focus, states, anim positions survive), changed
   data re-binds its row in place, an absent key frees its row for reuse,
-  order follows the collection.
+  order follows the collection. A row follows its KEY: after a re-sort
+  or an edit, a row's pressed, selected or focused look stays with its
+  item.
 - **Refusals, never halts**: a duplicate key, a missing `by` field, a key
   that is neither text nor a whole number, mixed key types, and data the
-  template cannot take each refuse the WHOLE assignment — `set_items`
+  template cannot take (a missing field, or a field of another type
+  than its property takes: a whole number in `text=`, text in `color=`,
+  a word the property does not have) each refuse the WHOLE assignment — `set_items`
   returns an error carrying the code (G9101/G9102/G9103) and the last
   good rows stay. An empty list clears legitimately.
 - **`empty { ... }`** — zero-items content (initial state included):
   nothing on its line, one child (G9007). Write at most one, first in the
-  body (the Godot addon refused a second or a late one; the Rust compiler
-  does not check that yet, and a second one shows beside the first). A
+  body: a second one, one after the row, and an `empty { }` outside a
+  repeat or a List are build errors (G9007). A
   literal `empty { }` says "considered: show nothing". A plain repeat may
   leave it out; a `List` must have one (on the List's body, G9016).
   Replaces only the repeat's own expansion; statics stay.
 - **Inside the body**: names are per-row local. An event from inside a
   row carries that row's node, and `Runtime::item_key(&page, ev.node)` is
   the row's key.
-- **Not supported**: a repeat inside another repeat's template. (The Godot
-  addon refused it at build; the Rust compiler does not check it yet, and
-  the inner repeat's rows cannot be set.) A repeat inside a widget or
+- **Not supported**: a repeat inside another repeat's template. It is
+  a build error (G9018): code fills a repeat by its one name, and every
+  outer row would hold one. A repeat inside a widget or
   control body works: every instance has its own, found as
   `<instance>/<repeat>` (`page.find("toolbar/marks")`). Selection,
   keyboard and activation belong to the `List` control (next section).
@@ -1906,6 +1912,9 @@ List picker select=many, spacing=4 {
   (`rt.set_prop(list, PropKey::Select, …)`): the next tap follows it at
   once, and at the next `tick` the selection does too: `off` lets every
   row go, `one` keeps the first selected row in the List's order.
+- **One handler on the List**: `List picker on:activate=pick` — a row
+  that names no `on:activate=` of its own reports `pick`, and the event
+  still carries the row (`item_key` gives its key).
 - **Gestures** (user call, 2026-07-15): tap or Enter/Space on an item
   ALWAYS fires `activate` on the row; selection is the mode's side effect
   — `one` selects it (tapping the selected item never deselects — radio

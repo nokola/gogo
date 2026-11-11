@@ -1420,16 +1420,10 @@ impl<'a> Lay<'a> {
     /// content overflows that axis and `bars=` is not `never` — 8 device
     /// px on the phone theme, 4 epx here.
     fn scroll_bars(&self, id: NodeId, inner: Rect) -> (f32, f32) {
-        let mode = self.res.ident(self.page, id, PropKey::Bars);
-        if mode == Some("never") {
-            return (0.0, 0.0);
-        }
         let (sx, sy) = self.scroll_axes(id);
-        // `always`/`reserve` hold the lane on every scrolling axis even
-        // with nothing overflowing (GP36) — content never shifts when the
-        // bar appears.
-        if matches!(mode, Some("always") | Some("reserve")) {
-            return (if sx { SCROLL_BAR_EPX } else { 0.0 }, if sy { SCROLL_BAR_EPX } else { 0.0 });
+        if let Some(held) = lane_by_word(self.res.ident(self.page, id, PropKey::Bars)) {
+            let lane: f32 = if held { SCROLL_BAR_EPX } else { 0.0 };
+            return (if sx { lane } else { 0.0 }, if sy { lane } else { 0.0 });
         }
         let (mut content_w, mut content_h) = (0.0f32, 0.0f32);
         for c in self.visible_children(id) {
@@ -1471,9 +1465,14 @@ impl<'a> Lay<'a> {
         let offset = self.res_scroll(id);
         // bars= (D138): the words a Scroll takes; an overflowing axis
         // reserves the bar's lane unless `never` (the AUTO mode).
-        let probe = self.stack_min(id, Axis::Y, if horizontal { None } else { Some(inner.w) });
-        let overflow = if horizontal { probe.0 > inner.w } else { probe.1 > inner.h };
-        let lane = if overflow && self.res.ident(self.page, id, PropKey::Bars) != Some("never") { SCROLL_BAR_EPX } else { 0.0 };
+        let held: bool = match lane_by_word(self.res.ident(self.page, id, PropKey::Bars)) {
+            Some(held) => held,
+            None => {
+                let probe = self.stack_min(id, Axis::Y, if horizontal { None } else { Some(inner.w) });
+                if horizontal { probe.0 > inner.w } else { probe.1 > inner.h }
+            }
+        };
+        let lane: f32 = if held { SCROLL_BAR_EPX } else { 0.0 };
         let inner = if horizontal {
             Rect::new(inner.x, inner.y, inner.w, (inner.h - lane).max(0.0))
         } else {
@@ -2736,6 +2735,23 @@ mod tests {
 /// the viewport) never count.
 /// A List whose rows sit in a `layout Row` strip — the one form that
 /// pans sideways (D128). The strip is the Row child holding the repeat.
+/// Whether a scrolling box holds its bar's lane, as far as its `bars=`
+/// word alone says: `never` holds none; `always` and `reserve` hold it on
+/// every axis the box scrolls, with nothing overflowing too (GP36).
+///
+/// Needed so a Scroll and a List read the word the same way, and so the
+/// content keeps its width when a bar comes or goes under `reserve`.
+///
+/// Returns `None` for no word or `auto`: the lane is held while the
+/// content overflows, which the caller measures.
+fn lane_by_word(mode: Option<&str>) -> Option<bool> {
+    match mode {
+        Some("never") => Some(false),
+        Some("always") | Some("reserve") => Some(true),
+        _ => None,
+    }
+}
+
 fn list_is_row(page: &Page, id: NodeId) -> bool {
     page.children(id).any(|c| page.nodes[c].kind == Kind::Row && page.children(c).any(|g| page.nodes[g].kind == Kind::Repeat))
 }

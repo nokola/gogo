@@ -204,6 +204,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G9015", "a viewport List its ancestors provably starve (warning)"),
     ("G9016", "a List declares one `empty { }` zero-items view, at the List level"),
     ("G9017", "`layout` block rules — inside a List, a closed kind set, rows only"),
+    ("G9018", "a `repeat` inside another repeat's row"),
     // Runtime refusals: carried in `Err` strings from `Runtime::set_items`
     // / `set_selected`, not compile diagnostics — registered so the code a
     // host prints is findable in docs/gogo-errors.md like any other.

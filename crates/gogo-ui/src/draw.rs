@@ -1120,14 +1120,19 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
         let (content_w, content_h) = if any { (hi[0] - lo[0], hi[1] - lo[1]) } else { (0.0, 0.0) };
         let grabber = mul_alpha(SCROLL_GRABBER, opacity);
         let offset = res.scroll.get(id.index()).copied().unwrap_or([0.0, 0.0]);
-        if content_h > rect.h {
-            let len = (rect.h * rect.h / content_h).max(8.0);
-            let y = rect.y + (rect.h - len) * (offset[1] / (content_h - rect.h)).clamp(0.0, 1.0);
+        // `bars=always` shows a bar on every axis the box scrolls, with
+        // nothing to scroll too: the grabber then fills its lane.
+        let (always_x, always_y) = if res.ident(page, id, PropKey::Bars) == Some("always") { crate::layout::scroll_axes_of(page, res, id) } else { (false, false) };
+        if content_h > rect.h || (always_y && rect.h > 0.0) {
+            let len = (rect.h * rect.h / content_h.max(rect.h)).max(8.0).min(rect.h);
+            let travel: f32 = content_h - rect.h;
+            let y = rect.y + (rect.h - len) * if travel > 0.0 { (offset[1] / travel).clamp(0.0, 1.0) } else { 0.0 };
             push_shown(out, Draw::Quad { rect: Rect::new(rect.right() - SCROLL_BAR_EPX, y + 1.0, SCROLL_BAR_EPX, len - 1.0), color: grabber, corner: 0.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
         }
-        if content_w > rect.w {
-            let len = (rect.w * rect.w / content_w).max(8.0);
-            let x = rect.x + (rect.w - len) * (offset[0] / (content_w - rect.w)).clamp(0.0, 1.0);
+        if content_w > rect.w || (always_x && rect.w > 0.0) {
+            let len = (rect.w * rect.w / content_w.max(rect.w)).max(8.0).min(rect.w);
+            let travel: f32 = content_w - rect.w;
+            let x = rect.x + (rect.w - len) * if travel > 0.0 { (offset[0] / travel).clamp(0.0, 1.0) } else { 0.0 };
             push_shown(out, Draw::Quad { rect: Rect::new(x + 1.0, rect.bottom() - SCROLL_BAR_EPX, len - 1.0, SCROLL_BAR_EPX), color: grabber, corner: 0.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
         }
     }

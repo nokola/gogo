@@ -131,6 +131,11 @@ impl Placement {
             }
         }
         let v: Value = prop.value;
+        // An item's field (`width=$item.w` in a row): the row's value
+        // arrives with its item and is written through here then.
+        if matches!(v, Value::VItem(_)) {
+            return None;
+        }
         let mut slip: Option<PlacementSlip> = None;
         match prop.key {
             PropKey::Width => self.width = or(size_of(page, v), Len::Unset, &mut slip),

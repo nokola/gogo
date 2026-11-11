@@ -495,6 +495,20 @@ selected row. A seat written from code is checked where its name is
 looked up, since `set_prop` holds no page: a debug build stops with a
 message, a release build leaves the node at home.
 
+Lists and items (decided 2026-11-11). An item's field may feed any
+property; the build cannot know an item's types, so `set_items` checks
+them, in the pass that already visits every bound field, and refuses the
+whole call. The compiler and `set_items` read one table of property
+types (`PropKey::is_bool`, `PropKey::closed_words`). A row follows its
+key: the same key keeps its row and is bound again when its data
+changed. The matching reads each row once when the order is kept and
+sorts once when it is not, and the duplicate-key check sorts once: 1000
+unchanged rows took 1.26 s in a debug build and take under a
+millisecond. A row with no handler of its own reports its List's. A
+List holds its bar's lane as a Scroll does, from one function. A repeat
+nobody could fill (no name, or inside another repeat's row) and an
+`empty { }` nothing could hide are build errors.
+
 Kept: `arrangement` (user's call — a `state` unification was proposed and
 declined), snake_case keys, `#RRGGBBAA`, `text="x"/key`, `when` /
 `transition` / `anim`, widgets + `$params`, `uses`, styles, Grid/Tiles,

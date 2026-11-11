@@ -638,24 +638,42 @@ fn run_script(name: &str, page: Page) -> (usize, usize) {
         if info.keyed {
             let by: String = if info.by == NO_STR { String::new() } else { roads.page().str(info.by).to_string() };
             let (s0, sc) = info.sites;
-            let mut fields: Vec<String> = roads.page().bind_sites[s0 as usize..(s0 + sc) as usize].iter().map(|s| roads.page().str(s.field).to_string()).collect();
-            fields.sort();
-            fields.dedup();
+            // Each bound field with the property it feeds: a field must
+            // hold what that property takes, or `set_items` refuses the
+            // call.
+            let mut fields: Vec<(String, PropKey)> = roads.page().bind_sites[s0 as usize..(s0 + sc) as usize]
+                .iter()
+                .map(|s| {
+                    let page: &Page = roads.page();
+                    let node: NodeId = NodeId::from_index(info.template.index() + s.node_off as usize);
+                    (page.str(s.field).to_string(), page.props[(page.nodes[node.index()].props.0 + s.prop_off) as usize].key)
+                })
+                .collect();
+            fields.sort_by(|a, b| a.0.cmp(&b.0));
+            fields.dedup_by(|a, b| a.0 == b.0);
             // `by $item` takes plain values (every site binds the whole
             // item); `by $item.<field>` takes records (every site binds a
             // field). Any other shape would be refused, so skip it.
-            let shape_ok = if by.is_empty() { fields.iter().all(String::is_empty) } else { fields.iter().all(|f| !f.is_empty()) };
+            let shape_ok = if by.is_empty() { fields.iter().all(|(f, _)| f.is_empty()) } else { fields.iter().all(|(f, _)| !f.is_empty()) };
             if !shape_ok {
                 continue;
             }
+            // A key is text or a whole number: text where the key also
+            // feeds a text property.
+            let key_of = |i: i64| -> ItemValue {
+                match fields.iter().find(|(f, _)| *f == by).map(|(_, key)| field_value(*key, i)) {
+                    Some(v @ ItemValue::Str(_)) => v,
+                    _ => ItemValue::Int(i),
+                }
+            };
             let item = |i: i64| -> Item {
                 if by.is_empty() {
-                    return Item::Value(ItemValue::Int(i));
+                    return Item::Value(key_of(i));
                 }
-                let mut rec: Vec<(String, ItemValue)> = vec![(by.clone(), ItemValue::Int(i))];
-                for f in &fields {
+                let mut rec: Vec<(String, ItemValue)> = vec![(by.clone(), key_of(i))];
+                for (f, key) in &fields {
                     if *f != by && !f.is_empty() {
-                        rec.push((f.clone(), ItemValue::Str(format!("row {i}"))));
+                        rec.push((f.clone(), field_value(*key, i)));
                     }
                 }
                 Item::Record(rec)
@@ -876,5 +894,21 @@ fn a_button_flip_on_the_effect_page_stays_local() {
     for (when, l, d) in [("press", lay, dr), ("tick", lay_tick, dr_tick), ("release", lay_rel, dr_rel)] {
         assert!(!l.full && l.measured < 100, "the {when} took the layout road for {} measures (full: {}) — the change is not local", l.measured, l.full);
         assert!(!d.full && d.emitted < 100, "the {when} re-emitted {} draw commands (full: {}) — the change is not local", d.emitted, d.full);
+    }
+}
+
+/// A value an item's field can hold to feed the property `key`, another
+/// one for every `i` where the type allows it.
+fn field_value(key: PropKey, i: i64) -> ItemValue {
+    if key.is_color() {
+        ItemValue::Color(gogo_ui::Color_Straight_Srgb_4xU8_RGBA([(i * 40) as u8, 0, 0, 255]))
+    } else if key.is_bool() {
+        ItemValue::Bool(i % 2 == 0)
+    } else if let Some(words) = key.closed_words() {
+        ItemValue::Str(words[0].to_string())
+    } else if key.is_number() || key.is_placement() || key == PropKey::Value {
+        ItemValue::Int(i)
+    } else {
+        ItemValue::Str(format!("row {i}"))
     }
 }

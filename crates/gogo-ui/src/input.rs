@@ -431,10 +431,30 @@ pub struct Input {
     committed: String,
 }
 
+/// The action the file wires to `event` on `node`.
+///
+/// A List's row with no handler of its own answers with the handler its
+/// List names (`List picker on:activate=pick`): one line on the List
+/// serves every row, and the event still names the row.
 fn event_action(page: &Page, node: NodeId, event: &str) -> Option<Action> {
-    let n = &page.nodes[node];
     let id = page.intern_lookup(event);
-    page.handlers[n.handlers.0 as usize..(n.handlers.0 + n.handlers.1) as usize].iter().find(|h| h.event == id).map(|h| h.action)
+    let wired = |n: NodeId| -> Option<Action> {
+        let (first, count) = page.nodes[n].handlers;
+        page.handlers[first as usize..(first + count) as usize].iter().find(|h| h.event == id).map(|h| h.action)
+    };
+    let own: Option<Action> = wired(node);
+    if own.is_some() || page.nodes[node].kind != Kind::ListItem {
+        return own;
+    }
+    // The List that WROTE the row, by the file's nesting.
+    let mut a: NodeId = page.declared_parent(node);
+    while a != NO_NODE {
+        if page.nodes[a].kind == Kind::List {
+            return wired(a);
+        }
+        a = page.declared_parent(a);
+    }
+    None
 }
 
 /// Keyboard-reachable RIGHT NOW: the compile-baked `focusable` flag

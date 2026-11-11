@@ -4263,7 +4263,9 @@ impl<'a> Compiler<'a> {
         }
         // A number key given a word, color or string: refused, never read
         // as "unset" (`opacity=red`, `when held scale=big`).
-        if key.is_number() && !matches!(value, Value::VNum(_) | Value::VRef { .. } | Value::VCall { .. }) {
+        // An item's field passes every type check here: its type is known
+        // when the items arrive, and `set_items` checks it then (G9101).
+        if key.is_number() && !matches!(value, Value::VNum(_) | Value::VRef { .. } | Value::VCall { .. } | Value::VItem(_)) {
             self.error("G0058", p.line, format!("`{}=` wants a number, not `{}`", p.key, spell(&p.value)));
             return None;
         }
@@ -4286,26 +4288,7 @@ impl<'a> Compiler<'a> {
         // silently reads as unset. Alignment words are per-axis and
         // physical (the invented `start`/`end` wait for the RTL
         // milestone, G14). References pass; the runtime maps them.
-        let closed_words: Option<&[&str]> = match key {
-            PropKey::Halign | PropKey::TextHalign => Some(&["left", "center", "right"]),
-            PropKey::Valign | PropKey::TextValign => Some(&["top", "center", "bottom"]),
-            PropKey::Visibility => Some(&["visible", "space_only", "gone"]),
-            PropKey::Fit => Some(&["contain", "cover", "distort"]),
-            PropKey::TextFit => Some(&["none", "stretch"]),
-            PropKey::TextFlip => Some(&["none", "horizontal", "vertical", "both"]),
-            PropKey::Allow => Some(&["horizontal", "vertical", "both"]),
-            PropKey::Bars => Some(&["auto", "never", "always", "reserve"]),
-            PropKey::Cells => Some(&["lattice", "natural"]),
-            PropKey::Orientation => Some(&["horizontal", "vertical"]),
-            PropKey::Select => Some(&["one", "many", "off"]),
-            PropKey::TouchTarget | PropKey::KeyboardTarget => Some(&["off"]),
-            PropKey::GradientFill => Some(&["linear", "radial", "conic"]),
-            PropKey::GradientRepeat => Some(&["none", "repeat", "mirror"]),
-            PropKey::Loading => Some(&["lazy", "eager"]),
-            PropKey::Release => Some(&["unused"]),
-            PropKey::Sampling => Some(&["smooth", "pixel"]),
-            _ => None,
-        };
+        let closed_words: Option<&[&str]> = key.closed_words();
         if let Some(words) = closed_words {
             let ok = match value {
                 Value::VIdent(id) => {
@@ -4324,7 +4307,7 @@ impl<'a> Compiler<'a> {
                     }
                     canon.is_some()
                 }
-                Value::VRef { .. } => true,
+                Value::VRef { .. } | Value::VItem(_) => true,
                 _ => false,
             };
             if !ok {
@@ -4334,15 +4317,14 @@ impl<'a> Compiler<'a> {
         }
         // Bool keys take true/false — without the check `overlay=maybe`
         // reads as not-overlay with a clean build.
-        let is_bool = matches!(key, PropKey::Overlay | PropKey::Interactive | PropKey::Wrap | PropKey::ClipText | PropKey::ClipContents | PropKey::Disabled | PropKey::SelectedProp | PropKey::FullRow | PropKey::ToggleMode);
-        if is_bool && !matches!(value, Value::VBool(_) | Value::VRef { .. } | Value::VCall { .. }) {
+        if key.is_bool() && !matches!(value, Value::VBool(_) | Value::VRef { .. } | Value::VCall { .. } | Value::VItem(_)) {
             self.error("G0078", p.line, format!("`{}=` is true or false — got `{}`", p.key, spell(&p.value)));
             return None;
         }
         if matches!(key, PropKey::RevealX | PropKey::RevealY) {
             match value {
                 Value::VNum(v) if (0.0..=1.0).contains(&v) => {}
-                Value::VRef { .. } | Value::VCall { .. } => {}
+                Value::VRef { .. } | Value::VCall { .. } | Value::VItem(_) => {}
                 Value::VNum(_) => {
                     self.error("G0078", p.line, format!("`{}=` is the SHOWN fraction — 0..1 (0 concealed, 1 whole)", p.key));
                     return None;
@@ -4967,9 +4949,40 @@ impl<'a> Compiler<'a> {
             if n.name.is_some() || !n.args.is_empty() || !n.props.is_empty() {
                 self.error("G9007", n.line, "`empty { … }` takes nothing on its line — its look lives on the child");
             }
+            // The zero-items view of a repeat or of a List: anywhere else
+            // nothing ever hides it.
+            if !matches!(parent_kind, Some(Kind::Repeat) | Some(Kind::List)) {
+                self.error("G9007", n.line, "`empty { }` is the zero-items view of a `repeat` (written first in it) or of a List — here nothing would ever hide it; a plain box shows the same");
+            }
         }
         if kind == Kind::Repeat {
             self.repeat_clauses(n);
+            // A repeat nobody can fill builds dead: its name is how code
+            // hands it its rows, and inside another repeat's row every
+            // outer row would hold one with that name.
+            if n.name.is_none() {
+                self.error("G9002", n.line, "a `repeat` needs a name — `repeat <name> by $item.<field>`; the name is how code hands it its rows");
+            }
+            if self.repeat_binding.is_some() {
+                self.error("G9018", n.line, "a `repeat` inside another repeat's row — code fills a repeat by its one name, and every outer row would hold one; put the data into one repeat");
+            }
+            // One `empty { }`, written first: a second one shows beside
+            // the first, and one after the row reads as part of the row.
+            let kids: Vec<&AstNode> = n
+                .children
+                .iter()
+                .filter_map(|c| match c {
+                    AstItem::Node(k) if !matches!(k.type_word.as_str(), "when" | "transition" | "theme") => Some(k),
+                    _ => None,
+                })
+                .collect();
+            let empties: Vec<usize> = kids.iter().enumerate().filter(|(_, k)| k.type_word == "empty").map(|(i, _)| i).collect();
+            if let Some(second) = empties.get(1) {
+                self.error("G9007", kids[*second].line, "one `empty { }` per repeat — the zero-items view is a single seat");
+            }
+            if let Some(first) = empties.first().filter(|i| **i > 0) {
+                self.error("G9007", kids[*first].line, "a repeat's `empty { }` is written first, before the row");
+            }
         }
 
         // Props: style base → node props → instance props (later wins on lookup).
@@ -5246,6 +5259,12 @@ impl<'a> Compiler<'a> {
                 continue;
             }
             if prop.key.is_placement() {
+                // An item's field in a placement word (`width=$item.w`):
+                // the row's number arrives with its item, through the prop
+                // kept here for the row's bind site.
+                if matches!(prop.value, Value::VItem(_)) {
+                    tmp.props.push(prop);
+                }
                 placement_props.push(prop);
             } else {
                 tmp.props.push(prop);
@@ -6579,6 +6598,10 @@ impl<'a> Compiler<'a> {
             let mut sliver = false;
             while a != NO_NODE {
                 let ap = self.page.nodes[a].placement;
+                // A floor is a real width: the label wraps at it.
+                if ap.min_width > 0.0 {
+                    break;
+                }
                 match ap.width {
                     Len::Exact(_) | Len::Fill(_) => break,
                     Len::Hug(_) => {
@@ -7011,8 +7034,10 @@ impl<'a> Compiler<'a> {
             // G9015 (advisory): a viewport List whose ancestors provably
             // hand it its minimum — near zero — before any sized box.
             let pl = &self.page.nodes[list].placement;
-            let hug_scroll = matches!(pl.height, Len::Hug(_));
-            if !hug_scroll {
+            // A List whose own line sizes it (a height, `hug`, a floor) is
+            // not starved: a height is the fix the warning names.
+            let sized: bool = matches!(pl.height, Len::Hug(_) | Len::Exact(_)) || pl.min_height > 0.0;
+            if !sized {
                 let mut a = self.page.nodes[list].parent;
                 while a != NO_NODE {
                     let an = &self.page.nodes[a];

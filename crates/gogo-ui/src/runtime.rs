@@ -148,6 +148,13 @@ struct Pool {
     /// The next `live` is built here and swapped in — the buffer keeps
     /// its capacity, so a steady `set_items` allocates nothing.
     scratch: Vec<u32>,
+    /// Per slot, during one `set_items`: an item of the call took it.
+    /// Kept here for its capacity, like `scratch`.
+    taken: Vec<bool>,
+    /// The slots that hold a key, sorted by that key, during one
+    /// `set_items` whose items came in another order than the rows shown.
+    /// Kept here for its capacity, like `scratch`.
+    by_key: Vec<u32>,
     /// The repeat's `empty { }` children (found once — the per-call scan
     /// would allocate).
     empties: Vec<NodeId>,
@@ -168,7 +175,7 @@ fn new_pool(page: &Page, repeat: NodeId) -> Pool {
         }
         a = page.declared_parent(a);
     }
-    Pool { repeat, slots: Vec::new(), live: Vec::new(), keyed: Vec::new(), scratch: Vec::new(), empties }
+    Pool { repeat, slots: Vec::new(), live: Vec::new(), keyed: Vec::new(), scratch: Vec::new(), taken: Vec::new(), by_key: Vec::new(), empties }
 }
 
 /// The key leaf of `item` (validated by `set_items` before use).
@@ -176,6 +183,30 @@ fn key_leaf<'a>(page: &'a Page, by: StrId, item: &'a Item) -> &'a ItemValue {
     match item {
         Item::Value(v) => v,
         Item::Record(r) => r.iter().find(|(k, _)| *k == page.str(by)).map(|(_, v)| v).expect("validated by set_items"),
+    }
+}
+
+/// An order over row keys: whole numbers before strings, each by its own
+/// value. Any total order would do; it lets `set_items` find a key's row
+/// by a search and not by reading every row.
+fn key_order(a: &ItemKey, b: &ItemKey) -> std::cmp::Ordering {
+    match (a, b) {
+        (ItemKey::Int(x), ItemKey::Int(y)) => x.cmp(y),
+        (ItemKey::Str(x), ItemKey::Str(y)) => x.cmp(y),
+        (ItemKey::Int(_), ItemKey::Str(_)) => std::cmp::Ordering::Less,
+        (ItemKey::Str(_), ItemKey::Int(_)) => std::cmp::Ordering::Greater,
+    }
+}
+
+/// `key_order` of a stored key against an item's key leaf (a leaf that is
+/// no key sorts after every key; `set_items` has refused those by then).
+fn leaf_order(k: &ItemKey, leaf: &ItemValue) -> std::cmp::Ordering {
+    match (k, leaf) {
+        (ItemKey::Int(x), ItemValue::Int(y)) => x.cmp(y),
+        (ItemKey::Str(x), ItemValue::Str(y)) => x.as_str().cmp(y.as_str()),
+        (ItemKey::Int(_), ItemValue::Str(_)) => std::cmp::Ordering::Less,
+        (ItemKey::Str(_), ItemValue::Int(_)) => std::cmp::Ordering::Greater,
+        _ => std::cmp::Ordering::Less,
     }
 }
 
@@ -203,6 +234,47 @@ fn assign_item(dst: &mut Item, src: &Item) {
         }
         (d, s) => *d = s.clone(),
     }
+}
+
+/// Whether an item's field can feed the property `key`: text for a text
+/// word, a number for a number, true or false for a switch, a color for
+/// a color, one of its words for a word key.
+///
+/// Needed because a field of another type shows nothing (a whole number
+/// in `text=`, text in `color=`), with no word about it; `set_items`
+/// refuses the whole call instead. A property with no fixed type
+/// (`value=`) takes any field.
+///
+/// Returns what is wrong, naming the field and the property.
+fn item_fits(key: PropKey, field: &str, v: &ItemValue) -> Result<(), String> {
+    let is: &str = match v {
+        ItemValue::Str(_) => "text",
+        ItemValue::Int(_) => "a whole number",
+        ItemValue::Num(_) => "a number",
+        ItemValue::Bool(_) => "true or false",
+        ItemValue::Color(_) => "a color",
+    };
+    let number: bool = matches!(v, ItemValue::Int(_) | ItemValue::Num(_));
+    let (takes, fits): (&str, bool) = if key.is_color() {
+        ("a color", matches!(v, ItemValue::Color(_)))
+    } else if key.is_bool() {
+        ("true or false", matches!(v, ItemValue::Bool(_)))
+    } else if let Some(words) = key.closed_words() {
+        return match v {
+            ItemValue::Str(s) if words.contains(&s.as_str()) => Ok(()),
+            ItemValue::Str(s) => Err(format!("field `{field}` is `{s}` where `{}=` takes {}", key.word(), words.join("/"))),
+            _ => Err(format!("field `{field}` is {is} where `{}=` takes {}", key.word(), words.join("/"))),
+        };
+    } else if key.is_number() {
+        ("a number", number)
+    } else if key.is_placement() {
+        ("a number or a size word", number || matches!(v, ItemValue::Str(_)))
+    } else if matches!(key, PropKey::Text | PropKey::PlaceholderText | PropKey::AccessibilityName | PropKey::Font | PropKey::Source) {
+        ("text", matches!(v, ItemValue::Str(_)))
+    } else {
+        return Ok(());
+    };
+    if fits { Ok(()) } else { Err(format!("field `{field}` is {is} where `{}=` takes {takes}", key.word())) }
 }
 
 fn assign_value(d: &mut ItemValue, s: &ItemValue) {
@@ -1029,21 +1101,54 @@ impl Runtime {
                 (Item::Value(_), by) => Err(format!("G9102: repeat `{}` refused items — `by` walks `{}` into a plain value; field access needs a record", page.str(page.nodes[repeat].name), page.str(by))),
             }
         };
+        // The first item whose key is wrong, and why. A duplicate among
+        // the items before it is reported first, as when the items were
+        // read one by one.
+        let mut stop: Option<(usize, String)> = None;
         for i in 0..items.len() {
-            let v = leaf(i)?;
-            match v {
-                ItemValue::Str(_) | ItemValue::Int(_) => {}
-                ItemValue::Num(_) => return Err(format!("G9102: repeat `{}` refused items — item {i}'s key is a float; keys are strings or whole numbers", page.str(page.nodes[repeat].name))),
-                _ => return Err(format!("G9102: repeat `{}` refused items — item {i}'s key must be a string or a whole number", page.str(page.nodes[repeat].name))),
+            let wrong: Option<String> = match leaf(i) {
+                Err(why) => Some(why),
+                Ok(ItemValue::Str(_)) | Ok(ItemValue::Int(_)) if i > 0 && std::mem::discriminant(leaf(0)?) != std::mem::discriminant(leaf(i)?) => Some(format!("G9102: repeat `{}` refused items — mixed key types (strings and whole numbers)", page.str(page.nodes[repeat].name))),
+                Ok(ItemValue::Str(_)) | Ok(ItemValue::Int(_)) => None,
+                Ok(ItemValue::Num(_)) => Some(format!("G9102: repeat `{}` refused items — item {i}'s key is a float; keys are strings or whole numbers", page.str(page.nodes[repeat].name))),
+                Ok(_) => Some(format!("G9102: repeat `{}` refused items — item {i}'s key must be a string or a whole number", page.str(page.nodes[repeat].name))),
+            };
+            if let Some(why) = wrong {
+                stop = Some((i, why));
+                break;
             }
-            if i > 0 && std::mem::discriminant(leaf(0)?) != std::mem::discriminant(v) {
-                return Err(format!("G9102: repeat `{}` refused items — mixed key types (strings and whole numbers)", page.str(page.nodes[repeat].name)));
+        }
+        // Duplicates: the items with a good key, sorted by key once, then
+        // neighbours compared. Reading every pair took a second for 1000
+        // rows in a debug build.
+        let checked: usize = stop.as_ref().map_or(items.len(), |(i, _)| *i);
+        let pi = self.pool_of(page, repeat);
+        let mut order: Vec<u32> = std::mem::take(&mut self.pools[pi].by_key);
+        order.clear();
+        order.extend(0..checked as u32);
+        let leaf_cmp = |x: u32, y: u32| -> std::cmp::Ordering {
+            match (leaf(x as usize), leaf(y as usize)) {
+                (Ok(ItemValue::Int(a)), Ok(ItemValue::Int(b))) => a.cmp(b),
+                (Ok(ItemValue::Str(a)), Ok(ItemValue::Str(b))) => a.as_str().cmp(b.as_str()),
+                _ => std::cmp::Ordering::Equal,
             }
-            for j in 0..i {
-                if leaf(j)? == v {
-                    return Err(format!("G9103: repeat `{}` refused items — duplicate key {v:?} (items {j} and {i}); every row keys uniquely", page.str(page.nodes[repeat].name)));
-                }
+        };
+        order.sort_unstable_by(|x, y| leaf_cmp(*x, *y).then(x.cmp(y)));
+        // Of every pair that shares a key, the one whose second item
+        // comes first in the list.
+        let mut twice: Option<(u32, u32)> = None;
+        for pair in order.windows(2) {
+            if leaf_cmp(pair[0], pair[1]) == std::cmp::Ordering::Equal && twice.is_none_or(|(_, i)| pair[1] < i) {
+                twice = Some((pair[0], pair[1]));
             }
+        }
+        self.pools[pi].by_key = order;
+        if let Some((j, i)) = twice {
+            let v: &ItemValue = leaf(i as usize)?;
+            return Err(format!("G9103: repeat `{}` refused items — duplicate key {v:?} (items {j} and {i}); every row keys uniquely", page.str(page.nodes[repeat].name)));
+        }
+        if let Some((_, why)) = stop {
+            return Err(why);
         }
         // Every bound field must resolve on every item — the shipped
         // detached build: one failed item refuses the assignment whole.
@@ -1059,29 +1164,94 @@ impl Runtime {
                     let why = if fname.is_empty() { "structures don't bind whole — bind a field (`$item.<field>`)".to_string() } else { format!("no field `{fname}`") };
                     return Err(format!("G9101: repeat `{}` refused items — the item template failed for item {i}: {why}", page.str(page.nodes[repeat].name)));
                 }
+                // The field is of the type its property takes. Checked
+                // here, the one place every bound field of every item
+                // passes, because the build cannot know an item's types.
+                let site: BindSite = page.bind_sites[si as usize];
+                let node: NodeId = info.template.offset(site.node_off);
+                let key: PropKey = page.props[(page.nodes[node].props.0 + site.prop_off) as usize].key;
+                let value: &ItemValue = match item {
+                    Item::Record(r) => &r.iter().find(|(k, _)| *k == fname).expect("the field is there, checked above").1,
+                    Item::Value(v) => v,
+                };
+                if let Err(why) = item_fits(key, fname, value) {
+                    return Err(format!("G9101: repeat `{}` refused items — the item template failed for item {i}: {why}", page.str(page.nodes[repeat].name)));
+                }
             }
         }
-        // Commit — cannot fail. Kept keys with kept data keep their slot.
-        let pi = self.pool_of(page, repeat);
-        let mut next = std::mem::take(&mut self.pools[pi].scratch);
+        // Commit — cannot fail. A row follows its KEY: an item whose key
+        // is on a row keeps that row, bound again when its data changed,
+        // so what is on the row (a pressed, selected or focused look)
+        // stays with its item through an edit or a re-sort. A new key
+        // takes a free row.
+        let mut next: Vec<u32> = std::mem::take(&mut self.pools[pi].scratch);
+        let mut taken: Vec<bool> = std::mem::take(&mut self.pools[pi].taken);
+        let mut by_key: Vec<u32> = std::mem::take(&mut self.pools[pi].by_key);
         next.clear();
-        for item in items {
-            let lv = key_leaf(page, info.by, item);
-            let kept = (0..self.pools[pi].slots.len() as u32).find(|s| !next.contains(s) && self.pools[pi].keyed[*s as usize].as_ref().is_some_and(|(k, d)| key_matches(k, lv) && d == item));
-            next.push(kept.unwrap_or(u32::MAX));
-        }
-        for i in 0..items.len() {
-            if next[i] != u32::MAX {
-                continue;
+        taken.clear();
+        taken.resize(self.pools[pi].slots.len(), false);
+        by_key.clear();
+        let mut sorted: bool = false;
+        for (i, item) in items.iter().enumerate() {
+            let lv: &ItemValue = key_leaf(page, info.by, item);
+            let pool: &Pool = &self.pools[pi];
+            let key_of = |s: u32| -> &ItemKey { &pool.keyed[s as usize].as_ref().expect("a slot in the index holds a key").0 };
+            // First guess: the row shown at this place last time. Items
+            // that kept their order are matched in one pass, with no
+            // search.
+            let mut found: Option<u32> = pool.live.get(i).copied().filter(|s| pool.keyed[*s as usize].as_ref().is_some_and(|(k, _)| key_matches(k, lv)));
+            if found.is_none() {
+                // Another order: the rows that hold a key, sorted once,
+                // and one search per item.
+                if !sorted {
+                    by_key.extend((0..pool.slots.len() as u32).filter(|s| pool.keyed[*s as usize].is_some()));
+                    by_key.sort_unstable_by(|x, y| key_order(key_of(*x), key_of(*y)));
+                    sorted = true;
+                }
+                found = by_key.binary_search_by(|s| leaf_order(key_of(*s), lv)).ok().map(|at| by_key[at]);
             }
-            let free = (0..self.pools[pi].slots.len() as u32).find(|s| !next.contains(s));
-            let s = match free {
-                Some(s) => s,
-                None => self.grow_pool(page, pi, &info),
+            match found.filter(|s| !taken[*s as usize]) {
+                Some(s) => {
+                    taken[s as usize] = true;
+                    next.push(s);
+                }
+                None => next.push(u32::MAX),
+            }
+        }
+        let mut free: usize = 0;
+        for i in 0..items.len() {
+            let s: u32 = if next[i] != u32::MAX {
+                // The key's own row: untouched when the data is the same.
+                if self.pools[pi].keyed[next[i] as usize].as_ref().is_some_and(|(_, d)| d == &items[i]) {
+                    continue;
+                }
+                next[i]
+            } else {
+                while free < taken.len() && taken[free] {
+                    free += 1;
+                }
+                let s: u32 = if free < taken.len() {
+                    free as u32
+                } else {
+                    let s: u32 = self.grow_pool(page, pi, &info);
+                    taken.resize(self.pools[pi].slots.len(), false);
+                    s
+                };
+                taken[s as usize] = true;
+                next[i] = s;
+                s
             };
-            next[i] = s;
             self.bind_slot(page, pi, s, &info, &items[i]);
         }
+        // A row no item took is free and forgets its key, so a key is
+        // on one row at most.
+        for (s, was_taken) in taken.iter().enumerate() {
+            if !*was_taken {
+                self.pools[pi].keyed[s] = None;
+            }
+        }
+        self.pools[pi].taken = taken;
+        self.pools[pi].by_key = by_key;
         let zero = next.is_empty();
         let prev = std::mem::replace(&mut self.pools[pi].live, next);
         self.pools[pi].scratch = prev;
@@ -1294,7 +1464,10 @@ impl Runtime {
                         self.set_text(page, node, s);
                     } else {
                         let id = page.intern(s);
-                        self.set_prop(node, key, Value::VText { text: id, key: NO_KEY });
+                        // A word key (`visibility=`, `halign=`) and a size
+                        // word (`width=fill`) take a bare word, not text.
+                        let word: bool = key.closed_words().is_some() || key.is_placement();
+                        self.set_prop(node, key, if word { Value::VIdent(id) } else { Value::VText { text: id, key: NO_KEY } });
                     }
                 }
                 ItemValue::Int(v) => self.set_prop(node, key, Value::VNum(*v as f32)),

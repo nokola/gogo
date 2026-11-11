@@ -1073,6 +1073,44 @@ impl PropKey {
         matches!(self, PropKey::Background | PropKey::Color | PropKey::BorderColor | PropKey::FontColor | PropKey::SelectionColor | PropKey::StopColor(_))
     }
 
+    /// Keys that are true or false: `overlay=maybe` is refused (G0078)
+    /// where it would read as "not an overlay" with a clean build.
+    pub fn is_bool(self) -> bool {
+        matches!(self, PropKey::Overlay | PropKey::Interactive | PropKey::Wrap | PropKey::ClipText | PropKey::ClipContents | PropKey::Disabled | PropKey::SelectedProp | PropKey::FullRow | PropKey::ToggleMode)
+    }
+
+    /// The words a word key takes, when the set is closed (`halign=`,
+    /// `visibility=`, `fit=` …). Alignment words are per axis and physical.
+    ///
+    /// Needed because a typo in such a word (`visibility=maybe`) would
+    /// read as "no word": the compiler refuses it on a file's line
+    /// (G0057) and `set_items` refuses it in an item's field (G9101),
+    /// from this one table.
+    ///
+    /// Returns `None` for a key that takes no fixed set of words.
+    pub fn closed_words(self) -> Option<&'static [&'static str]> {
+        match self {
+            PropKey::Halign | PropKey::TextHalign => Some(&["left", "center", "right"]),
+            PropKey::Valign | PropKey::TextValign => Some(&["top", "center", "bottom"]),
+            PropKey::Visibility => Some(&["visible", "space_only", "gone"]),
+            PropKey::Fit => Some(&["contain", "cover", "distort"]),
+            PropKey::TextFit => Some(&["none", "stretch"]),
+            PropKey::TextFlip => Some(&["none", "horizontal", "vertical", "both"]),
+            PropKey::Allow => Some(&["horizontal", "vertical", "both"]),
+            PropKey::Bars => Some(&["auto", "never", "always", "reserve"]),
+            PropKey::Cells => Some(&["lattice", "natural"]),
+            PropKey::Orientation => Some(&["horizontal", "vertical"]),
+            PropKey::Select => Some(&["one", "many", "off"]),
+            PropKey::TouchTarget | PropKey::KeyboardTarget => Some(&["off"]),
+            PropKey::GradientFill => Some(&["linear", "radial", "conic"]),
+            PropKey::GradientRepeat => Some(&["none", "repeat", "mirror"]),
+            PropKey::Loading => Some(&["lazy", "eager"]),
+            PropKey::Release => Some(&["unused"]),
+            PropKey::Sampling => Some(&["smooth", "pixel"]),
+            _ => None,
+        }
+    }
+
     /// The word a key is written as (`PropKey::FontColor` → `font_color`);
     /// `Other` has no fixed spelling and gives "".
     pub fn word(self) -> &'static str {

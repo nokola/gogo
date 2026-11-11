@@ -1256,6 +1256,8 @@ the table still holds the old string.
 `as $binding` names the item binding (sigil and all, no dots), `as`
 comes before `by`, and each clause is written once. `by` is optional: a
 repeat without it is a counted one, filled by the host's `set_count`.
+A repeat has a name (`repeat tasks …`): the name is how code hands it
+its rows, so one without a name could never show any.
 
 Wrong:
 
@@ -1296,7 +1298,9 @@ Column { repeat tasks as $task by $task.id { Label text="x" } }
 ## G9007 — `empty { }` block rules
 
 The zero-items view holds ONE child (wrap several in a Column or
-Layers) and takes nothing on its own line.
+Layers) and takes nothing on its own line. A repeat has one, written
+first, before the row. Outside a repeat or a List an `empty { }` is
+refused: nothing would ever hide it.
 
 Wrong:
 
@@ -1457,6 +1461,27 @@ Wrong:
 
 ```kdl error=G9017
 Column { layout Flow { Label a text="x" } }
+```
+
+## G9018 — a `repeat` inside another repeat's row
+
+Code fills a repeat by its name, once for the page. Inside another
+repeat's row every outer row would hold a repeat with that one name, and
+none of them could be given rows. Put the data into one repeat: a header
+item and its member items in one list, each kind of row drawn by what
+its fields say.
+
+Wrong:
+
+```kdl error=G9018
+Column {
+    repeat groups by $item.id {
+        Column {
+            Label text=$item.title
+            repeat members by $item.id { Label text=$item.name }
+        }
+    }
+}
 ```
 
 ## G9101 — `set_items` refused whole (runtime)
