@@ -57,7 +57,7 @@ const FADER_SRC: &str = "control Fader $value=0, $min=0, $max=100, $step=0 {
             slot progress automatic=length by $value in $min..$max { Rectangle color=#4488FFFF }
             slot thumb automatic=position by $value in $min..$max { Circle 12x12, color=#FFFFFFFF }
         }
-        slot label { Label text=live($value) }
+        slot label { Label text=$value }
     }
 }
 ";

@@ -199,9 +199,10 @@ struct TmpNode {
     /// PATH plus min/max (value couplings) or the state word (presence),
     /// resolved to `Page::drivers` once the arena ids exist.
     driver: Option<(String, f32, f32, String)>,
-    /// A `text=live($value)` label: (control root path, display step) —
-    /// resolved to `Page::live_texts` once the arena ids exist.
-    live: Option<(String, f32)>,
+    /// The properties of this node that read a control's `$value`: (the
+    /// property, the control root's path, the rounding step) — resolved
+    /// to `Page::value_follows` once the arena ids exist.
+    follows: Vec<(PropKey, String, f32)>,
 }
 
 /// The slot names in a control body whose `automatic=` is a radial kind
@@ -556,6 +557,32 @@ pub struct Compiler<'a> {
     palette_links_dark: HashMap<String, String>,
     /// Widget param scopes, innermost last.
     scopes: Vec<HashMap<String, AstValue>>,
+    /// For each scope in `scopes`: the path of the control instance it
+    /// belongs to, or `None` for a plain widget's scope.
+    ///
+    /// Needed to tell a control's own `$value` (which changes while the
+    /// page runs, so a property reading it must follow it) from any other
+    /// `$name`. Pushed and popped together with `scopes`; a lookup that
+    /// sets the inner scopes aside reads it by the same index.
+    scope_roots: Vec<Option<String>>,
+    /// Set by `value()` when the value just compiled read a control's
+    /// `$value`: that control's path.
+    ///
+    /// Needed because `value()` returns the number alone, and its caller
+    /// has to learn that this number moves while the page runs.
+    ///
+    /// `prop_checked` clears it before the call and takes it after;
+    /// other callers of `value()` leave a stale one behind, which the
+    /// next `prop_checked` clears.
+    value_read: Option<String>,
+    /// Set by `value()` when the value just compiled was `round(…)`: its
+    /// step. Needed for the same reason as `value_read`, and cleared the
+    /// same way: a text shows as many digits as the step has.
+    round_step: Option<f32>,
+    /// Set by `prop_checked` for the property it just compiled, when that
+    /// property follows a control's `$value`: (control path, rounding
+    /// step). `node()` moves it onto the TmpNode.
+    prop_follow: Option<(String, f32)>,
     /// Widget-scoped styles, alive while that widget's body builds
     /// (innermost last). Lookups walk this before the page styles, so a
     /// scoped `Row` shadows a page `Row` and vanishes when the body is
@@ -622,14 +649,13 @@ pub struct Compiler<'a> {
     /// Set by `automatic()` for the slot being compiled; `node()` moves it
     /// onto the TmpNode (GP33).
     pending_driver: Option<(String, f32, f32, String)>,
-    /// Set by `value()` when a `live($value)` bakes into a text prop
-    /// inside a control scope; `node()` moves it onto the TmpNode.
-    pending_live: Option<(String, f32)>,
     /// (node, root path, min, max, state) rows awaiting arena lookups.
     pending_drivers: Vec<(NodeId, String, f32, f32, String)>,
     /// GP52 `behavior slider` rows awaiting arena ids.
     pending_behaviors: Vec<PendingBehavior>,
-    pending_lives: Vec<(NodeId, String, f32)>,
+    /// (node, property, control root path, rounding step) rows awaiting
+    /// arena lookups — `Page::value_follows`.
+    pending_follows: Vec<(NodeId, PropKey, String, f32)>,
     fills: Vec<Fills>,
     /// Per widget instance being expanded: the instance's `on:` props still
     /// waiting for the body's `signals` node (`None` = the root took them).
@@ -749,6 +775,10 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         palette_dark: HashMap::new(),
         palette_links_dark: HashMap::new(),
         scopes: Vec::new(),
+        scope_roots: Vec::new(),
+        value_read: None,
+        round_step: None,
+        prop_follow: None,
         style_scopes: Vec::new(),
         control_scopes: HashSet::new(),
         custom_state_stack: Vec::new(),
@@ -769,10 +799,9 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         unnamed_instances: 0,
         widget_stack: Vec::new(),
         pending_driver: None,
-        pending_live: None,
         pending_drivers: Vec::new(),
         pending_behaviors: Vec::new(),
-        pending_lives: Vec::new(),
+        pending_follows: Vec::new(),
         choice_depth: 0,
         fills: Vec::new(),
         instance_on: Vec::new(),
@@ -3771,6 +3800,35 @@ impl<'a> Compiler<'a> {
         Some((depth, self.scopes[depth][name].clone()))
     }
 
+    /// The control whose `$value` the written value `v` reads, straight
+    /// or passed along through widget params (`Inner value=$value`,
+    /// `Inner value=$n` where the enclosing widget got `n=$value`).
+    ///
+    /// Needed for a control placed inside another control's body: its
+    /// `value=` is a param, never compiled as a property, so
+    /// `prop_checked` does not see it — and without a row the inner
+    /// control would start at the outer value and then stay there.
+    ///
+    /// Reads the scopes only: compiles nothing, reports nothing.
+    ///
+    /// Returns the control's path, or `None` when `v` reads no control's
+    /// value.
+    fn control_value_read_by(&self, v: &AstValue) -> Option<String> {
+        let mut v: AstValue = v.clone();
+        let mut top: usize = self.scopes.len();
+        loop {
+            let AstValue::Ref { name, .. } = &v else { return None };
+            let depth: usize = self.scopes[..top].iter().rposition(|s| s.contains_key(name.as_str()))?;
+            if name == "value" {
+                if let Some(Some(root)) = self.scope_roots.get(depth) {
+                    return Some(root.clone());
+                }
+            }
+            v = self.scopes[depth][name.as_str()].clone();
+            top = depth;
+        }
+    }
+
     fn value(&mut self, v: &AstValue, line: u32, key: Option<PropKey>) -> Value {
         match v {
             AstValue::Bool(b) => Value::VBool(*b),
@@ -3843,6 +3901,18 @@ impl<'a> Compiler<'a> {
                     let above: Vec<HashMap<String, AstValue>> = self.scopes.drain(depth..).collect();
                     let inner = self.value(&p, line, key);
                     self.scopes.extend(above);
+                    // A control's own `$value` is the one `$name` that
+                    // changes while the page runs: whoever asked for this
+                    // value is told which control it read, so the
+                    // property can follow it. Set AFTER the param's own
+                    // value is compiled: `Inner value=$value` inside
+                    // another control reads the outer value to start
+                    // with, and what Inner's body shows is Inner's.
+                    if name == "value" {
+                        if let Some(Some(root)) = self.scope_roots.get(depth) {
+                            self.value_read = Some(root.clone());
+                        }
+                    }
                     let v = match (inner, opacity) {
                         (Value::VColor(c), Some(o)) => Value::VColor(c.with_opacity(*o)),
                         (Value::VRef { name, .. }, Some(o)) => Value::VRef { name, opacity: Some(*o) },
@@ -3905,40 +3975,38 @@ impl<'a> Compiler<'a> {
             // A named call argument: the value passes through; the name
             // is the call site's to read (GPAR32 — none does yet, GP40).
             AstValue::Named { value, .. } => self.value(value, line, key),
-            AstValue::Call { name, args } if name == "live" && !args.is_empty() => {
-                // `live($value)` — a control prop the host drives; the
-                // value here is its start. In a TEXT position the number
-                // SHOWS, so display rounding applies: 0.1 by default
-                // (the addon's user-caught drag that printed
-                // 10.234235), `round($value, step)` picks the step.
-                let (inner, step) = match &args[0] {
-                    AstValue::Call { name: rname, args: rargs } if rname == "round" && !rargs.is_empty() => {
-                        let step = rargs.get(1).map(|v| self.value(v, line, None)).and_then(|v| if let Value::VNum(x) = v { Some(x) } else { None }).unwrap_or(1.0);
-                        (self.value(&rargs[0], line, key), step)
-                    }
-                    a => (self.value(a, line, key), 0.1),
-                };
-                if key == Some(PropKey::Text) {
-                    if let Value::VNum(x) = crate::runtime::deref(&self.page, NO_STR, inner) {
-                        let text = crate::page::live_text(x, step);
-                        let id = self.intern(&text);
-                        // A later code write of the control's value
-                        // rewrites this label (GP33 live-label follow).
-                        if let Some(root) = self.control_root_path() {
-                            self.pending_live = Some((root, step));
-                        }
-                        return Value::VText { text: id, key: NO_KEY };
-                    }
-                }
-                inner
+            AstValue::Call { name, args } if (name == "live" || name == "bind") && !args.is_empty() => {
+                // Retired wrappers: a `$value` follows the control's value
+                // with no word around it. The inner value still compiles,
+                // so the rest of the file is checked in the same build.
+                self.error("G0081", line, format!("`{name}()` is gone — a `$value` follows the control's value by itself: write `{}`", spell(&args[0])));
+                self.value(&args[0], line, key)
             }
             AstValue::Call { name, args } if name == "round" && !args.is_empty() => {
-                self.error("G0080", line, "`round()` goes inside live() — it picks the display step (`text=live(round($value, 1))`)");
-                self.value(&args[0], line, key)
-            }
-            AstValue::Call { name, args } if name == "bind" && !args.is_empty() => {
-                self.error("G0081", line, "`bind()` is gone — write `live($value)`");
-                self.value(&args[0], line, key)
+                // `round(<number>, <step>)`: the number rounded to a
+                // multiple of the step (1 when no step is written). On a
+                // `text=` it also picks how many digits show; around a
+                // control's `$value` the property follows at that step
+                // (`prop_checked` reads `round_step`).
+                let step: f32 = match args.get(1).map(|v| self.value(v, line, None)) {
+                    None => 1.0,
+                    Some(Value::VNum(s)) if s > 0.0 => s,
+                    Some(_) => {
+                        self.error("G0058", line, format!("the step of `round()` is a number above 0 — `round($value, 0.5)`; got `{}`", spell(&args[1])));
+                        1.0
+                    }
+                };
+                let inner = self.value(&args[0], line, key);
+                match crate::runtime::deref(&self.page, NO_STR, inner) {
+                    Value::VNum(x) => {
+                        self.round_step = Some(step);
+                        Value::VNum(crate::page::snap_to_step(x, step))
+                    }
+                    _ => {
+                        self.error("G0058", line, format!("`round()` rounds a number — `round($value, 0.5)`; got `{}`", spell(&args[0])));
+                        inner
+                    }
+                }
             }
             AstValue::Range(a, _) => {
                 self.error("G0067", line, "`a..b` is only legal after `in` on a slot line");
@@ -4054,7 +4122,14 @@ impl<'a> Compiler<'a> {
         if key == PropKey::Window {
             self.check_window(&p.value, p.line);
         }
+        self.value_read = None;
+        self.round_step = None;
+        self.prop_follow = None;
         let mut value = self.value(&p.value, p.line, Some(key));
+        // What `value()` noted about this value: the control whose
+        // `$value` it read, and the step of a `round(…)` around it.
+        let value_of: Option<String> = self.value_read.take();
+        let round_step: Option<f32> = self.round_step.take();
         // `pivot=` is a 0..1 box point — the fixed spot `scale` and
         // `rotate` transform about. A bare number or an out-of-box point
         // would silently transform about nowhere.
@@ -4154,11 +4229,38 @@ impl<'a> Compiler<'a> {
                 }
             }
         }
-        // `text=25` / `text=live($value)` with a number: the digits, so a
-        // value label needs no code to show its number.
+        // A property that reads a control's `$value` follows it: the
+        // number here is where it starts, and every write of the control's
+        // value writes the property again (`Page::value_follows`).
+        // Needed because `$value` is the one `$name` that changes while
+        // the page runs; without the row a label would show the starting
+        // number forever. A text follows at the display step (0.1 unless
+        // `round($value, step)` picked one), a number as it is.
+        let is_number: bool = matches!(value, Value::VNum(_));
+        if let (Some(root), true) = (value_of, is_number) {
+            if self.in_when > 0 {
+                // A `when` response is one fixed value, held while the
+                // state is on: it cannot follow, and the starting number
+                // would stand there looking right until the value moves.
+                self.error("G0083", p.line, format!("`{}` reads the control's `$value`, which moves while the page runs — a `when` response is one fixed value; write the property on the node line (`{}={}`) and it follows", p.key, p.key, spell(&p.value)));
+                return None;
+            }
+            let step: f32 = round_step.unwrap_or(if key == PropKey::Text { 0.1 } else { 0.0 });
+            self.prop_follow = Some((root, step));
+        }
+        // `text=25` / `text=$value` with a number: the digits, so a value
+        // label needs no code to show its number. A followed or rounded
+        // number shows at its step ("10.2", never 10.234235). A theme
+        // number (`$x = 5`, `text=$x`) is read here too: a Label draws
+        // text, and a number left as a reference would draw nothing.
         if key == PropKey::Text {
-            if let Value::VNum(n) = value {
-                let digits: String = if n.fract() == 0.0 { format!("{}", n as i64) } else { format!("{n}") };
+            if let Value::VNum(n) = crate::runtime::deref(&self.page, NO_STR, value) {
+                let digits: String = match (&self.prop_follow, round_step) {
+                    (Some((_, step)), _) => crate::page::value_text(n, *step),
+                    (None, Some(step)) => crate::page::value_text(n, step),
+                    (None, None) if n.fract() == 0.0 => format!("{}", n as i64),
+                    (None, None) => format!("{n}"),
+                };
                 value = Value::VText { text: self.intern(&digits), key: NO_KEY };
             }
         }
@@ -4348,7 +4450,7 @@ impl<'a> Compiler<'a> {
             if self.widget_stack.iter().any(|w| w == &n.type_word) {
                 let path = self.widget_stack.join(" -> ");
                 self.error("G5003", n.line, format!("widget cycle: {path} -> {} — a widget cannot contain itself", n.type_word));
-                return TmpNode { node: Node::fresh(Kind::Layers, n.line), props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new(), key_claim: 0, wearing: Vec::new(), driver: None, live: None };
+                return TmpNode { node: Node::fresh(Kind::Layers, n.line), props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new(), key_claim: 0, wearing: Vec::new(), driver: None, follows: Vec::new() };
             }
             // A `for=` widget fills its host's body and nothing else —
             // anywhere else its `when` lines would answer the wrong node.
@@ -4366,7 +4468,14 @@ impl<'a> Compiler<'a> {
                     scope.insert(p.key.clone(), p.value.clone());
                 }
             }
+            // A control placed in another control's body with
+            // `value=$value`: its own value follows the outer one. Asked
+            // before this instance's scope goes on, where the instance
+            // line was written.
+            let value_from: Option<String> = if def.control { n.props.iter().find(|p| p.key == "value").and_then(|p| self.control_value_read_by(&p.value)) } else { None };
             self.scopes.push(scope);
+            // Filled in below for a control, once its path is known.
+            self.scope_roots.push(None);
             let mut fills = Fills::default();
             let mut inst_states: Vec<AstNode> = Vec::new();
             for c in &n.children {
@@ -4402,7 +4511,11 @@ impl<'a> Compiler<'a> {
             self.widget_stack.push(n.type_word.clone());
             self.slot_writes.push(HashMap::new());
             if def.control {
-                self.control_scopes.insert(self.prefix.join("/"));
+                let root: String = self.prefix.join("/");
+                if let Some(slot) = self.scope_roots.last_mut() {
+                    *slot = Some(root.clone());
+                }
+                self.control_scopes.insert(root);
             }
             self.custom_state_stack.push(if def.control { def.states.clone() } else { Vec::new() });
             // The body root's own name stays addressable (`a/root` IS the
@@ -4436,6 +4549,9 @@ impl<'a> Compiler<'a> {
                 &body_baked
             };
             let mut t = self.node(body, parent_kind, Some(n));
+            if let Some(root) = value_from {
+                t.follows.push((PropKey::Value, root, 0.0));
+            }
             // The body's own responses are the definition's DEFAULTS
             // relative to this instance: an instance-site `when`
             // overriding one per state is the normal pattern, not a
@@ -4561,6 +4677,7 @@ impl<'a> Compiler<'a> {
             self.prefix.pop();
             self.fills.pop();
             self.scopes.pop();
+            self.scope_roots.pop();
             let _ = def.line;
             return t;
         }
@@ -4702,7 +4819,7 @@ impl<'a> Compiler<'a> {
             self.names.insert(name.clone());
             node.name = self.intern(name);
         }
-        let mut tmp = TmpNode { node, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new(), key_claim: 0, wearing: n.styles.iter().cloned().chain(instance.iter().flat_map(|i| i.styles.iter().cloned())).collect(), driver: None, live: None };
+        let mut tmp = TmpNode { node, props: Vec::new(), handlers: Vec::new(), whens: Vec::new(), transitions: Vec::new(), children: Vec::new(), custom_states: Vec::new(), key_claim: 0, wearing: n.styles.iter().cloned().chain(instance.iter().flat_map(|i| i.styles.iter().cloned())).collect(), driver: None, follows: Vec::new() };
 
         if kind == Kind::Gap {
             self.gap(&mut tmp.node, n, parent_kind);
@@ -4956,20 +5073,6 @@ impl<'a> Compiler<'a> {
 
         let mut placement_props: Vec<Prop> = Vec::new();
         for p in &all_props {
-            // `live()` drives this prop from code; a `when` on the
-            // same node holding the same key is a second writer — they
-            // would fight on every flip (the shipped G4003).
-            if let AstValue::Call { name: cname, .. } = &p.value {
-                if cname == "live" {
-                    let fights = n.children.iter().any(|c| match c {
-                        AstItem::Node(k) if k.type_word == "when" => k.props.iter().any(|wp| wp.key == p.key) || k.children.iter().any(|ci| matches!(ci, AstItem::Assign { key, dollar: false, .. } if *key == p.key)),
-                        _ => false,
-                    });
-                    if fights {
-                        self.error("G4003", p.line, format!("'{}' is driven by `live(...)` AND held by a `when` on this node — two writers would fight on every flip", p.key));
-                    }
-                }
-            }
             if p.key == "seat" {
                 // Re-parenting is view geometry, not a node's own look
                 // (GPAR73, the shipped rule).
@@ -4994,6 +5097,19 @@ impl<'a> Compiler<'a> {
                 continue;
             }
             let Some(prop) = self.prop(p, kind) else { continue };
+            if let Some((root, step)) = self.prop_follow.take() {
+                // The control's value writes this property; a `when` on
+                // the same node holding the same key is a second writer —
+                // they would fight on every flip (G4003).
+                let fights = n.children.iter().any(|c| match c {
+                    AstItem::Node(k) if k.type_word == "when" => k.props.iter().any(|wp| wp.key == p.key) || k.children.iter().any(|ci| matches!(ci, AstItem::Assign { key, dollar: false, .. } if *key == p.key)),
+                    _ => false,
+                });
+                if fights {
+                    self.error("G4003", p.line, format!("'{}' follows the control's `$value` AND is held by a `when` on this node — two writers would fight on every flip", p.key));
+                }
+                tmp.follows.push((prop.key, root, step));
+            }
             // Cell words belong to the PARENT's lattice. Needed because a
             // cell word off its lattice lays out nothing — refused, naming
             // the parent it sits in.
@@ -5031,7 +5147,6 @@ impl<'a> Compiler<'a> {
         }
         tmp.node.placement = self.placement(&placement_props, n.line, parent_kind, kind);
         tmp.driver = self.pending_driver.take();
-        tmp.live = self.pending_live.take();
         self.container_child_guard(n, &tmp.node.placement, parent_kind, kind);
         if kind == Kind::List {
             // The List self-scrolls on its layout's axis (D121/D128): a
@@ -5616,6 +5731,7 @@ impl<'a> Compiler<'a> {
     /// fill content is written one scope out.
     fn outer<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
         let scope = self.scopes.pop();
+        let scope_root = self.scope_roots.pop();
         let prefix = self.prefix.pop();
         let fills = self.fills.pop();
         let styles = self.style_scopes.pop();
@@ -5623,6 +5739,9 @@ impl<'a> Compiler<'a> {
         let r = f(self);
         if let Some(s) = scope {
             self.scopes.push(s);
+        }
+        if let Some(root) = scope_root {
+            self.scope_roots.push(root);
         }
         if let Some(p) = prefix {
             self.prefix.push(p);
@@ -5710,12 +5829,12 @@ impl<'a> Compiler<'a> {
     /// children (contiguous), then each child's own children — so
     /// `children` is a range and `subtree_end` bounds the descendants.
     fn flatten(&mut self, root: TmpNode) {
-        let id = self.push_slot(root.node, root.props, root.handlers, root.whens, root.transitions, root.custom_states, root.key_claim, root.wearing, root.driver, root.live, NO_NODE);
+        let id = self.push_slot(root.node, root.props, root.handlers, root.whens, root.transitions, root.custom_states, root.key_claim, root.wearing, root.driver, root.follows, NO_NODE);
         self.place_children(id, root.children);
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn push_slot(&mut self, mut node: Node, props: Vec<Prop>, handlers: Vec<OnHandler>, whens: Vec<WhenTmp>, transitions: Vec<Transition>, custom_states: Vec<StrId>, key_claim: u8, wearing: Vec<String>, driver: Option<(String, f32, f32, String)>, live: Option<(String, f32)>, parent: NodeId) -> NodeId {
+    fn push_slot(&mut self, mut node: Node, props: Vec<Prop>, handlers: Vec<OnHandler>, whens: Vec<WhenTmp>, transitions: Vec<Transition>, custom_states: Vec<StrId>, key_claim: u8, wearing: Vec<String>, driver: Option<(String, f32, f32, String)>, follows: Vec<(PropKey, String, f32)>, parent: NodeId) -> NodeId {
         // Keyboard reach bakes here (GP26): the kinds that answer a tap
         // answer the keyboard — plus a control root whose contract said
         // so (above); `keyboard_target=off` is the deliberate opt-out
@@ -5726,8 +5845,8 @@ impl<'a> Compiler<'a> {
         if let Some((root, min, max, state)) = driver {
             self.pending_drivers.push((id, root, min, max, state));
         }
-        if let Some((root, step)) = live {
-            self.pending_lives.push((id, root, step));
+        for (key, root, step) in follows {
+            self.pending_follows.push((id, key, root, step));
         }
         for cs in custom_states {
             self.page.custom_states.push((id, cs));
@@ -5779,7 +5898,7 @@ impl<'a> Compiler<'a> {
         let count = children.len() as u32;
         let mut slots: Vec<(NodeId, Vec<TmpNode>)> = Vec::new();
         for child in children {
-            let cid = self.push_slot(child.node, child.props, child.handlers, child.whens, child.transitions, child.custom_states, child.key_claim, child.wearing, child.driver, child.live, id);
+            let cid = self.push_slot(child.node, child.props, child.handlers, child.whens, child.transitions, child.custom_states, child.key_claim, child.wearing, child.driver, child.follows, id);
             slots.push((cid, child.children));
         }
         self.page.nodes[id].children = (first, count);
@@ -6972,9 +7091,14 @@ impl<'a> Compiler<'a> {
                 self.page.drivers.push(AutoDriver { node, root: rid, min, max, state: sid });
             }
         }
-        for (node, root, step) in std::mem::take(&mut self.pending_lives) {
+        for (node, key, root, step) in std::mem::take(&mut self.pending_follows) {
             if let Some(rid) = self.page.find(&root) {
-                self.page.live_texts.push(LiveText { node, root: rid, step });
+                // A control's root reading its own value has nothing to
+                // follow (`control K $value=0 { Slider value=$value }`:
+                // the Slider IS the instance).
+                if rid != node {
+                    self.page.value_follows.push(ValueFollow { node, root: rid, key, step });
+                }
             }
         }
         // GP52/GP53: the contracts' `behavior` rows — the instance roots

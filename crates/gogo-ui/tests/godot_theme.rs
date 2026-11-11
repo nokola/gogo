@@ -728,7 +728,7 @@ control Fader $value=0, $min=0, $max=100, $step=0 {
             slot progress automatic=length by $value in $min..$max { Rectangle color=#4488FFFF }
             slot thumb automatic=position by $value in $min..$max { Circle 12x12, color=#FFFFFFFF }
         }
-        slot label { Label text=live($value) }
+        slot label { Label text=$value }
     }
 }
 "#;
@@ -899,7 +899,7 @@ control Knob $value=0, $min=0, $max=1, $step=0, min_size=48x48 {
                 Circle 8x8, color=#FFFFFFFF
             }
         }
-        slot label { Label text=live($value), halign=center, valign=center }
+        slot label { Label text=$value, halign=center, valign=center }
     }
 }
 "#;

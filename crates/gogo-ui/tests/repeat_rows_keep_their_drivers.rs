@@ -1,7 +1,7 @@
 //! A pooled repeat row is a CLONE of the template (`Runtime::set_count`
 //! → `Page::clone_subtree`), and a clone must carry everything a
 //! control's contract baked per instance: its driven slots, its
-//! `live($value)` labels, its own `transition` feel. Found 2026-09-06
+//! `text=$value` labels, its own `transition` feel. Found 2026-09-06
 //! (todo-bugs.md #6): the effect page's slider rows are such clones, and
 //! their fill stayed at the template's baked fraction while the value
 //! moved — the read-out changed, the bar stood still, on every device
@@ -14,7 +14,7 @@ use gogo_ui::layout::{FixedAdvance, Rect, layout};
 use gogo_ui::page::{NodeId, Page, PropKey, Value};
 use gogo_ui::runtime::{Runtime, resolve_animated};
 
-const BARS: &str = "control Bar $value=0, $min=0, $max=10 {\n    behavior slider by $value in $min..$max\n    state_builtin focused, held\n    transition duration=0.2\n    Layers width=fill, height=20 {\n        slot track width=fill, height=fill {\n            slot progress automatic=length by $value in $min..$max { Rectangle width=fill, height=fill, color=#FF0000FF }\n        }\n        Label lab text=live($value)\n    }\n}\nView v {\n    Column width=fill {\n        repeat rows capacity=2 { Bar b width=fill }\n    }\n}\n";
+const BARS: &str = "control Bar $value=0, $min=0, $max=10 {\n    behavior slider by $value in $min..$max\n    state_builtin focused, held\n    transition duration=0.2\n    Layers width=fill, height=20 {\n        slot track width=fill, height=fill {\n            slot progress automatic=length by $value in $min..$max { Rectangle width=fill, height=fill, color=#FF0000FF }\n        }\n        Label lab text=$value\n    }\n}\nView v {\n    Column width=fill {\n        repeat rows capacity=2 { Bar b width=fill }\n    }\n}\n";
 
 struct Fx {
     page: Page,
@@ -67,9 +67,9 @@ fn a_cloned_rows_fill_follows_its_own_value_and_lands_once() {
     assert!(!fx.rt.is_moving(), "a landed glide must not re-arm (the clone's rest was missing once)");
 }
 
-/// The clone's `live($value)` label rewrites on its own root's write.
+/// The clone's `text=$value` label rewrites on its own root's write.
 #[test]
-fn a_cloned_rows_live_label_follows() {
+fn a_cloned_rows_value_label_follows() {
     let mut fx = Fx::new();
     let root1 = fx.page.find("rows/1/b").unwrap();
     let lab1 = fx.page.find("rows/1/b/lab").unwrap();

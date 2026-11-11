@@ -128,9 +128,9 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G0077", "control-body lines in a widget body"),
     ("G0078", "a bool key / `overlay` with `space_only`"),
     ("G0079", "unknown unit on a number"),
-    ("G0080", "`round()` goes inside `live()`"),
-    ("G0081", "`bind()` is gone — write `live(...)`"),
+    ("G0081", "`live()` and `bind()` are gone — a `$value` follows the control's value by itself"),
     ("G0082", "the `behavior` line's rules — machine name, wiring, one owner per key group"),
+    ("G0083", "a `when` response reads the control's `$value` — it cannot follow it"),
     ("G1002", "grid track bookkeeping — arity, spans and the skip they owe"),
     ("G1003", "areas-form rules — rectangles, one name per child, tracks per line"),
     ("G1004", "`wrap=true` with no width to wrap at (lint)"),
@@ -222,5 +222,7 @@ pub const SHARED_WITH_ADDON: &[&str] = &[
 
 /// Numbers this crate once used and vacated (or skipped) in the GPAR61
 /// renumber — kept so they never come back: an old log or doc citing one
-/// must never match a new, different error.
-pub const RETIRED: &[&str] = &["G0010", "G0042", "G0053", "G1007", "G1008", "G1012", "G5104"];
+/// must never match a new, different error. G0080 ("`round()` goes
+/// inside `live()`") went with `live()` itself: `round()` is written
+/// by itself now.
+pub const RETIRED: &[&str] = &["G0010", "G0042", "G0053", "G0080", "G1007", "G1008", "G1012", "G5104"];

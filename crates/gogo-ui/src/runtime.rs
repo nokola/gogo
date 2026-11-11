@@ -320,11 +320,19 @@ pub struct Runtime {
     /// Finished prop lanes' end poses still standing (WPF HoldEnd) — the
     /// prop half of `held`. An alpha-only lane holds a `VNum`.
     pub held_props: Vec<(NodeId, PropKey, Value)>,
-    /// Roots whose `live($value)` labels are owed a rewrite: the input
-    /// machine writes values holding only `&Page` (`set_value_deferred`),
-    /// so the label follow waits for `tick`, the frame door that has
-    /// `&mut Page`. One frame late at most — a drag streams anyway.
-    pub live_follow: Vec<NodeId>,
+    /// Control roots whose value was written and whose readers (the
+    /// properties written `$value` in the control's body,
+    /// `Page::value_follows`) have not been written yet.
+    ///
+    /// Needed because a value is written by callers holding only `&Page`
+    /// (the input machine, a plain `set_prop`), and rewriting a label
+    /// needs `&mut Page`: the readers wait for `tick`, the frame door
+    /// that has it. One frame late at most — a drag streams anyway.
+    pub value_follow: Vec<NodeId>,
+    /// The string a following label's number is written into before it
+    /// is copied to the label. Kept so a value written on every finger
+    /// move of a drag allocates nothing.
+    follow_text: String,
     /// Live repeat rows, one pool per touched repeat (`set_count` /
     /// `set_items`).
     pools: Vec<Pool>,
@@ -494,7 +502,8 @@ impl Runtime {
             held: Vec::new(),
             prop_anim: Vec::new(),
             held_props: Vec::new(),
-            live_follow: Vec::new(),
+            value_follow: Vec::new(),
+            follow_text: String::new(),
             shown: vec![Motion::IDENTITY; page.nodes.len()],
             players: Vec::new(),
             state_anims: Vec::new(),
@@ -588,7 +597,8 @@ impl Runtime {
             held: _,
             prop_anim: _,
             held_props: _,
-            live_follow: _,
+            value_follow: _,
+            follow_text: _,
             state_anims: _,
             finished: _,
             pulses: _,
@@ -1495,11 +1505,20 @@ impl Runtime {
 
     pub fn tick(&mut self, page: &mut Page, dt: f32) -> bool {
         let mut moving = false;
-        // GP52: the deferred `live($value)` follows (`set_value_deferred`).
-        for root in std::mem::take(&mut self.live_follow) {
-            let v = self.writes.iter().find(|(n, w)| *n == root && w.key == PropKey::Value).and_then(|(_, w)| if let Value::VNum(v) = w.value { Some(v) } else { None });
-            if let Some(v) = v {
-                self.follow_live(page, root, v);
+        // The controls whose value was written since the last tick: their
+        // `$value` readers are written now (`value_follow`).
+        if !self.value_follow.is_empty() {
+            let mut roots: Vec<NodeId> = std::mem::take(&mut self.value_follow);
+            for root in roots.drain(..) {
+                let v = self.writes.iter().find(|(n, w)| *n == root && w.key == PropKey::Value).and_then(|(_, w)| if let Value::VNum(v) = w.value { Some(v) } else { None });
+                if let Some(v) = v {
+                    self.follow_value(page, root, v);
+                }
+            }
+            // The emptied list goes back, so its room is kept for the
+            // next write.
+            if self.value_follow.is_empty() {
+                self.value_follow = roots;
             }
         }
         if !self.changes.is_empty() {
@@ -1644,6 +1663,13 @@ impl Runtime {
         // have changed) and its shown values are re-read.
         self.retained.write_flips.push(node);
         self.dirty = true;
+        // A changed value: the properties written `$value` in this
+        // control's body are owed a write, at the next `tick`. Needed so
+        // every road that writes a value moves its readers, not only
+        // `set_value`.
+        if key == PropKey::Value && !self.value_follow.contains(&node) {
+            self.value_follow.push(node);
+        }
     }
 
     /// A theme color as the page shows it now — the active variant's value
@@ -1827,35 +1853,70 @@ impl Runtime {
         sid != NO_STR && self.customs.iter().any(|e| *e == (root, sid))
     }
 
-    /// The control seam behind a code write of `$value` (GP33, the
-    /// addon's behavior -> driver pipeline): the value prop lands (reads
-    /// and `when` conditions see it), every `live($value)` label inside
-    /// the control rewrites at its baked display step, and the automatic
-    /// slots' fractions re-derive on the next `resolve_animated`, gliding
-    /// by the control's default feel.
+    /// Writes a control's value from code, and everything that shows it
+    /// at once.
+    ///
+    /// Needed when the code reads the page back in the same frame (a
+    /// test, a layout it measures): the value lands (reads and `when`
+    /// conditions see it), and every property written `$value` in the
+    /// control's body is written now, not at the next `tick`.
+    ///
+    /// The automatic slots' fractions follow on the next
+    /// `resolve_animated`, gliding by the control's default feel.
     pub fn set_value(&mut self, page: &mut Page, root: NodeId, v: f32) {
         self.set_prop(root, PropKey::Value, Value::VNum(v));
-        self.follow_live(page, root, v);
+        self.follow_value(page, root, v);
+        // Followed here, so the `tick` owes this control nothing.
+        self.value_follow.retain(|n| *n != root);
     }
 
-    /// See `set_value` — the label half, shared with `tick`'s deferred
-    /// follow (GP52).
-    fn follow_live(&mut self, page: &mut Page, root: NodeId, v: f32) {
-        let labels: Vec<LiveText> = page.live_texts.iter().filter(|lt| lt.root == root).copied().collect();
-        for lt in labels {
-            self.set_text(page, lt.node, &crate::page::live_text(v, lt.step));
+    /// Writes every property that reads `root`'s `$value`
+    /// (`Page::value_follows`): a `text=` gets the number as a label
+    /// shows it, any other property gets the number.
+    ///
+    /// Used by `set_value` and by `tick` for the values written since
+    /// the last one. Allocates nothing once each label has its own
+    /// string: the rows are read by index and the text is built in
+    /// `follow_text`.
+    fn follow_value(&mut self, page: &mut Page, root: NodeId, v: f32) {
+        let mut text: String = std::mem::take(&mut self.follow_text);
+        self.follow_value_with(page, root, v, &mut text);
+        self.follow_text = text;
+    }
+
+    /// `follow_value` with the text buffer passed in, so a control that
+    /// follows another control's value (`Inner value=$value` in a control
+    /// body) passes the write on to its own readers with the same buffer.
+    fn follow_value_with(&mut self, page: &mut Page, root: NodeId, v: f32, text: &mut String) {
+        for i in 0..page.value_follows.len() {
+            let f: ValueFollow = page.value_follows[i];
+            // A row naming its own control would pass the write on forever.
+            if f.root != root || f.node == root {
+                continue;
+            }
+            let shown: f32 = crate::page::snap_to_step(v, f.step);
+            match f.key {
+                PropKey::Text => {
+                    crate::page::value_text_into(v, f.step, text);
+                    self.set_text(page, f.node, text);
+                }
+                PropKey::Value => {
+                    self.set_prop(f.node, f.key, Value::VNum(shown));
+                    self.follow_value_with(page, f.node, shown, text);
+                    // Followed here, so the `tick` owes that control nothing.
+                    self.value_follow.retain(|n| *n != f.node);
+                }
+                _ => self.set_prop(f.node, f.key, Value::VNum(shown)),
+            }
         }
     }
 
     /// `set_value` for a caller holding only `&Page` — the touch and
-    /// wheel paths (GP52): the prop lands now (reads, `when` conditions
-    /// and the automatic slots see it), the `live($value)` labels follow
-    /// at the next `tick`.
+    /// wheel paths: the value lands now (reads, `when` conditions and
+    /// the automatic slots see it), and the properties written `$value`
+    /// in the control's body follow at the next `tick`.
     pub fn set_value_deferred(&mut self, root: NodeId, v: f32) {
         self.set_prop(root, PropKey::Value, Value::VNum(v));
-        if !self.live_follow.contains(&root) {
-            self.live_follow.push(root);
-        }
     }
 
     pub fn set_state(&mut self, node: NodeId, bit: u8, on: bool) {

@@ -468,15 +468,13 @@ are read as units too: `px` is retired (G0038); `%` is retired as a
 length (G0038) and lives on in `key_unit=5%` and in an anim's
 `translate.x`/`translate.y` values (`to=100%`). Anything else is a typo.
 
-## G0080 — `round()` goes inside live()
+## G0081 — `live()` and `bind()` are gone
 
-`round($value, step)` picks a live number's display step:
-`text=live(round($value, 1))`. Outside `live()` it has nothing to
-format.
-
-## G0081 — `bind()` is gone
-
-The old binding call; write `live($value)`.
+Both wrapped a control's value so that a label would follow it. A
+`$value` follows by itself now, on any property: write
+`Label text=$value`, not `Label text=live($value)`. To pick how a shown
+number is rounded, write `text=round($value, 1)`. The message names the
+spelling to write.
 
 ## G0082 — the `behavior` line
 
@@ -493,6 +491,51 @@ per control; and the behavior OWNS the key groups its spec lists
 one is a second owner, refused. The Godot addon's `script "x.gd"` line
 is refused here too, naming `behavior` (a line dropped without a word
 would leave the control deaf to taps).
+
+## G0083 — a `when` response reads the control's `$value`
+
+Inside a `control`, `$value` moves while the page runs: a drag, a key
+or code writes it, and a property that reads it on a node line follows
+(`Rectangle opacity=$value`). A `when` response is different: it is one
+fixed value, held while its state is on, so it cannot follow.
+`when hovered opacity=$value` would keep the number the control started
+with and look right until the value moved, so it is refused.
+
+Write the property on the node line and it follows. A `$param` that is
+not the control's value never changes after the build, and stays legal
+in a `when`.
+
+Wrong:
+
+```kdl error=G0083
+control Dimmer $value=0.5, $min=0, $max=1 {
+    behavior slider by $value in $min..$max
+    state_builtin focused, held
+    Layers width=100, height=20 {
+        slot track width=fill, height=fill { Rectangle color=#333333FF }
+        Rectangle glow color=white {
+            when held opacity=$value
+        }
+    }
+}
+
+View v { Dimmer d }
+```
+
+Right:
+
+```kdl
+control Dimmer $value=0.5, $min=0, $max=1 {
+    behavior slider by $value in $min..$max
+    state_builtin focused, held
+    Layers width=100, height=20 {
+        slot track width=fill, height=fill { Rectangle color=#333333FF }
+        Rectangle glow color=white, opacity=$value
+    }
+}
+
+View v { Dimmer d }
+```
 
 ## G1002 — grid track bookkeeping
 
@@ -886,8 +929,8 @@ the property rule, or move its value out of the `when`.
 
 ## G4003 — two writers on one property
 
-A `when` holds a property while a `transition … anim=` (or `live()`)
-drives the same one on the same node — they would fight on every flip
+A `when` holds a property while a `transition … anim=` (or the
+control's `$value`) drives the same one on the same node — they would fight on every flip
 and the loser flickers. The message names both writers; keep one.
 
 Wrong:

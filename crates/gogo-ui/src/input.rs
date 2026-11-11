@@ -626,7 +626,7 @@ fn snap_step(page: &Page, res: &Resolved, node: NodeId, v: f32) -> f32 {
 /// finger swallowed), `edit` per changed write and `change` on a changed
 /// release, the restore on a cancelled or reclaimed gesture, the
 /// declared `drag_started`/`drag_ended` edges, `selected` derived from
-/// the value when the contract declares it, and the `live($value)`
+/// the value when the contract declares it, and the `$value`
 /// label follow. A behavior never sees nodes: geometry arrives as
 /// control-local rects (`Cx::slot`), and its only output is
 /// `Cx::set_value`/`Cx::set_fraction`.
@@ -1057,7 +1057,7 @@ impl Input {
     }
 
     /// One behavior call's write, landed: the value prop (the
-    /// `live($value)` labels follow at the tick), `selected` derived
+    /// `$value` readers follow at the tick), `selected` derived
     /// when the contract declares it, and an `edit` when asked and the
     /// value moved. Returns the value shown now.
     fn land_behavior_write(&self, page: &Page, rt: &mut Runtime, events: &mut Vec<Event>, b: &Behavior_, shown: f32, cx: &Cx, edit: bool) -> f32 {

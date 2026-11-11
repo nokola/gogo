@@ -15,7 +15,7 @@ control Fader $value=0, $min=0, $max=100, $step=0 {
             slot progress automatic=length by $value in $min..$max { Rectangle color=$accent }
             slot thumb automatic=position by $value in $min..$max { Circle 12x12 }
         }
-        slot label { Label text=live($value) }
+        slot label { Label text=$value }
     }
 }
 

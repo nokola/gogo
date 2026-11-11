@@ -7,5 +7,5 @@ the default is 1.
 Slider volume value=30, min=0, max=100, step=5
 ```
 
-The same word appears inside `live(round($value, step))` — there it is
-just the rounding unit for the displayed text, not this property.
+The same word appears inside `round($value, step)` — there it is the
+unit a shown number is rounded to, not this property.

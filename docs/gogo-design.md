@@ -421,12 +421,29 @@ Code-behind values (decided 2026-08-29; NOT built — as of 2026-11 the
 compiler has no `export` word, and code writes a value with
 `Runtime::set_prop`):
 `export $barWidth = 480` at page scope; reads are plain `$barWidth`; the
-build emits a typed setter per exported value; `live()` is not needed
+build emits a typed setter per exported value; no wrapper is needed
 for it (a `$ref` is dereferenced at resolve, every frame). A code-owned AXIS
 no longer exists — code hands the layout a value, the layout stays the one
 writer. Example (toolbar): portrait `appBar width=fill`; `when
 screen.landscape { appBar.width = $barWidth; appBar.halign = center }`
 with `export $barWidth` computed by code from min(w, h).
+
+A control's value (decided 2026-11-10): inside a `control` body a bare
+`$value` follows the control's value on every property
+(`Label text=$value`, `Rectangle opacity=$value`), also when it is
+passed along to a widget or a control placed in the body, and
+`round($value, step)` is written by itself, with no `live()` around it.
+`live()` is retired (G0081 names the bare spelling). Until that day `live($value)` followed on `text=`
+only and did nothing anywhere else, and a bare `text=$value` built
+clean and kept the number the control started with. Why no wrapper:
+`$value` is the one `$name` that changes while the page runs, and the
+compiler can tell it by its name; a read that does not follow has no
+use (it is the number written on the instance line, stale after the
+first drag); and `by $value in $min..$max` already followed with no
+word around it. A property that follows costs one row in a list that is
+visited only when that control's value is written
+(`Page::value_follows`). A `when` response is one fixed value, so
+reading `$value` there is refused (G0083).
 
 Kept: `arrangement` (user's call — a `state` unification was proposed and
 declined), snake_case keys, `#RRGGBBAA`, `text="x"/key`, `when` /
@@ -437,7 +454,7 @@ Accepted Godot forms (round 3, so the copied files build): a node line may
 break right after its name when the next line opens with a size or a
 `key=` member; `res://` paths (`res://` = the folder the host names in
 `BuildOptions::res_root`, assets checked and embedded by the build);
-`slot`/`seat`/`control`/`live()`/`automatic=` from the
+`slot`/`seat`/`control`/`automatic=` from the
 control-customization spec; `choice` erased into its parent;
 `layout <Kind>` inside a List; `color.a` as an opacity-like key
 (`modulate.a` is refused, G0075: write `opacity`). Godot's render facts
@@ -496,7 +513,7 @@ now takes the first `/` it meets, the slot's. Refusing a second `/` was
 built and taken out the same day: the radial flash gradients fade a
 translucent disc with a `/0` stop, and refusing made the RGB get written
 twice — change the hue, forget the edge stop. A code write
-(`Runtime::set_prop`) replaces the whole value; a `/o` on a `live($x)`
+(`Runtime::set_prop`) replaces the whole value; a `/o` on a `$value`
 read parses in neither engine today — when it does, the same rule holds
 and a debug warning names the code-written alpha it replaces.
 
@@ -867,7 +884,7 @@ call: option C over the closed enum):
   switch's 0.3 s feel trailed the finger by a glide per sample.
 - Two rules a host's pooled rows forced the same day: a pooled repeat
   row is a CLONE and `Page::clone_subtree` carries the automatic-slot
-  drivers, the `live($value)` labels and the control's `transition`
+  drivers, the `$value` readers and the control's `transition`
   feel (the clone had behaviors only — its fill never followed its
   value); and the frame loop asks `Runtime::is_moving` AFTER the layout
   pass, where glides are armed — the addon's `gogo_anims` group, kept

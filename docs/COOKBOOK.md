@@ -726,7 +726,7 @@ control Fader $value=0, $min=0, $max=100, $step=0 {
         slot track width=fill, height=24, background=$chrome {
             slot progress automatic=length by $value in $min..$max { Rectangle color=$accent }
         }
-        slot label { Label text=live($value) }  // updates as it drags
+        slot label { Label text=$value }  // updates as it drags
         slot thumb automatic=position by $value in $min..$max { Circle width=20, height=fill, color=white }
     }
 }
@@ -822,10 +822,9 @@ value directly; a tap's settle, a key step or a code write glides through
 the `transition` rule. The arrows, Home/End AND the mouse wheel all reach
 the behavior as logical actions — a vertical wheel tick is
 `Increment`/`Decrement` on the instance under the pointer, no focus
-needed. `live($value)` keeps the label current — a bare `$value` in the
-body compiles too, but its label keeps the value the instance started with
-and never follows a drag. Float displays round
-to 0.1 by default; `live(round($value, 1))` picks another step. The
+needed. `text=$value` keeps the label current: any property in the body
+that reads `$value` follows a drag, a key step and a code write. A shown
+number rounds to 0.1 by default; `round($value, 1)` picks another step. The
 position thumb takes its width from its content — give the Circle a real
 width (`width=20`), not `width=fill`.
 
@@ -1251,7 +1250,7 @@ list line like `state_builtin`:
 control Stepper $value=0, $min=0, $max=10 {
     state_builtin focused, disabled
     keys arrows, home_end          // claimable: arrows, home_end, enter, space
-    Row { Label text=live($value) }
+    Row { Label text=$value }
 }
 ```
 

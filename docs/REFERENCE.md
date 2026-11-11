@@ -455,7 +455,7 @@ control Fader $value=0, $min=0, $max=100, $step=0 {
         slot track width=fill, height=24 {
             slot progress automatic=length by $value in $min..$max { Rectangle color=$accent }
         }
-        slot label { Label text=live($value) }  // live read of a contract prop
+        slot label { Label text=$value }  // follows the control's value
         slot thumb automatic=position by $value in $min..$max { Circle width=20, height=fill, color=white }
     }
 }
@@ -489,15 +489,23 @@ its spec lists (`slider`: arrows, home_end; `toggle`: all four), and a
 precedence. This is the built-ins' own law (a Slider claims its arrows
 unconditionally) extended to user controls.
 
-- **`$params` are LIVE props**: code writes the value with
-  `Runtime::set_value(&mut page, root, 50.0)` and everything that follows
-  it moves. In the body, show a param with `live($value)`. (The Godot
-  addon refused a bare `$param` read in a body, G5103; the Rust compiler
-  does not check this.) Theme refs (`$accent`) stay static and legal.
-  `live()` is a WRITER of the property it sits on — a `when` holding the
-  same property is a two-writers error.
-  Float displays round to 0.1 by default; `live(round($value, 1))` picks
-  the step.
+- **`$value` follows the control's value**: a property in the body
+  that reads it (`Label text=$value`, `Rectangle opacity=$value`) starts
+  at the control's value and is written again on every write of it — a
+  drag, a key step, or code. `Runtime::set_value(&mut page, root, 50.0)`
+  writes those properties at once; after any other write of the value
+  they follow at the next `tick`. The same holds when the value is
+  passed along: `Readout r n=$value` to a widget whose label says
+  `text=$n`, or `value=$value` on a control placed in the body. Every
+  other `$param` is fixed when the page is built. Theme refs (`$accent`)
+  stay static and legal.
+  The control is the WRITER of a property that reads `$value` — a `when`
+  on the same node holding the same property is a two-writers error
+  (G4003), and a `when` response cannot read `$value` at all (G0083: a
+  response is one fixed value).
+  A shown number rounds to 0.1 by default; `round($value, 1)` picks the
+  step, on a `text=` and on a number property alike. (`live($value)`,
+  the wrapper the Godot addon needed, is gone: G0081.)
 - **The behavior's law** — what the runtime does around ANY behavior, so a
   behavior is only pointer math: a press anywhere on the instance is the
   behavior's (`held` on the root, focus parked there, a second finger
@@ -509,7 +517,7 @@ unconditionally) extended to user controls.
   found (a number for `slider`, `true`/`false` at the midpoint for
   `toggle`), and a cancel restores that value; `selected` derives from the
   value live when the contract declares it (`state_builtin selected`);
-  a `live($value)` label follows every write. Keys reach the behavior only
+  a property that reads `$value` follows every write. Keys reach the behavior only
   through focus (declare `state_builtin focused`); the wheel reaches the
   instance under the pointer with no focus and parks focus there. A
   disabled instance answers nothing; disabling mid-drag cancels the
@@ -1754,7 +1762,7 @@ fn task(id: i64, title: &str) -> Item {
   them itself (`set_text`, `set_prop`). `capacity=` reserves rows up front
   and is never a ceiling: a bigger count grows past it.
 - **`$binding.field` reads the item's data** — a STATIC value re-applied at
-  each assignment (no `live()` inside repeat; bare-`$`-is-static holds).
+  each assignment (it does not change between two assignments).
   Dots on any other `$ref` are an error: reading one is G6001 (no such
   value), naming a value or a parameter with a dot is G9008. Fields must
   hold what the property can take (String, number, bool, Color) —
@@ -2840,7 +2848,7 @@ is always the typo for `interactive=true`).
 
 String interpolation, expressions (the call forms gogo reads are `play()`,
 `go()`, `toggle()`, `emit()` on `on:` lines, sizing `fill(n)` and `hug(n)`,
-`live()` with `round()` inside it, and a slot's `automatic=arc(...)` /
+`round()` around a number, and a slot's `automatic=arc(...)` /
 `angle(...)`), required parameters, block comments, general
 arrays (the list kind exists but only Grid's `cols=`/`areas=`, Gradient's
 `stops=`, `border_dash=`, an Arc's `dash=` and an Image's `window=` accept

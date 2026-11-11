@@ -19,7 +19,7 @@ use gogo_ui::layout::{FixedAdvance, Rect};
 use gogo_ui::page::{NodeId, Page, PropKey, Value};
 use gogo_ui::runtime::{DISABLED, Resolved, Runtime, resolve};
 
-const SLIDER_PHONE: &str = "control SliderPhone $value=3, $min=0, $max=10, $step=0 {\n    behavior slider by $value in $min..$max, step=$step, key_unit=5%\n    state_builtin hovered, focused, disabled, held\n    signal drag_started, drag_ended\n    Layers width=fill, height=60 {\n        slot track height=11, valign=bottom, margin_left=18, margin_right=18, margin_bottom=16 {\n            Rectangle width=fill, height=fill, color=#FFFFFF33\n            slot progress automatic=length by $value in $min..$max { Rectangle width=fill, height=fill, color=#1BA1E2FF }\n        }\n        Label lab text=live($value)\n    }\n}\n";
+const SLIDER_PHONE: &str = "control SliderPhone $value=3, $min=0, $max=10, $step=0 {\n    behavior slider by $value in $min..$max, step=$step, key_unit=5%\n    state_builtin hovered, focused, disabled, held\n    signal drag_started, drag_ended\n    Layers width=fill, height=60 {\n        slot track height=11, valign=bottom, margin_left=18, margin_right=18, margin_bottom=16 {\n            Rectangle width=fill, height=fill, color=#FFFFFF33\n            slot progress automatic=length by $value in $min..$max { Rectangle width=fill, height=fill, color=#1BA1E2FF }\n        }\n        Label lab text=$value\n    }\n}\n";
 
 struct Fx {
     page: Page,
@@ -170,7 +170,7 @@ fn the_wheel_steps_the_row_under_the_pointer() {
 }
 
 /// The visual halves follow a drag: the `automatic=length` fill slot
-/// re-derives its fraction, and a `live($value)` label rewrites at the
+/// re-derives its fraction, and a `text=$value` label rewrites at the
 /// next `tick` (the input behavior holds only `&Page`, so the label
 /// follow rides the frame door).
 #[test]

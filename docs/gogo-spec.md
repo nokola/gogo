@@ -85,7 +85,7 @@ painting) is in REFERENCE.md, "Host API".
 | ref    | `$name`                 | Reads a widget parameter (innermost scope) or theme value. |
 | ident  | `center_bottom`         | Bare word: enum member or handler name; validated by resolver per property type. |
 | size   | `220x110`, `220x`, `x110` | Shorthand for an exact size on both axes (the `size=` prop: exactly that size). Components are epx only (no units inside). Omitted component = unset. `min_size=` is the minimum-only spelling. |
-| call   | `play(appear)`, `fill(2)` | Ident + parenthesized args. Callees are closed per position: `play`/`go`/`toggle`/`emit` on `on:` keys, `fill(n)`/`hug(n)` in sizing positions (weights — n may be fractional). The controlled on-ramp for v2 expressions. |
+| call   | `play(appear)`, `fill(2)` | Ident + parenthesized args. Callees are closed per position: `play`/`go`/`toggle`/`emit` on `on:` keys, `fill(n)`/`hug(n)` in sizing positions (weights — n may be fractional), `round(n, step)` where a number or a text goes (n rounded to a multiple of step; step is 1 when not written). The controlled on-ramp for v2 expressions. |
 | list   | `[80, hug, fill(2)]`    | Ordinary values in brackets; newlines are free inside the brackets (the list cousin of trailing-comma continuation). Six props accept one: Grid's `cols=`/`areas=`, Gradient's `stops=`, `border_dash=`, an Arc's `dash=` and an Image's `window=`; a list on any other prop is refused (G0040). |
 
 **Attached dots form a path**: `listBrush.translate.x` (no spaces) lexes as ONE
@@ -349,9 +349,11 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
   only; a claimed key arrives as a `Key` event on the instance root and
   never moves focus, Tab is never claimable), and a bare
   `transition` rule (the control's default FEEL: it times state flips and
-  the fraction glide when no style or node block overrides). `$params` are
-  LIVE props (code writes the value with `Runtime::set_value`);
-  default content shows one with `live($param)`. Slots may declare
+  the fraction glide when no style or node block overrides). A property
+  in the body that reads `$value` follows the control's value, written
+  bare (`Label text=$value`, `Rectangle opacity=$value`; code writes the
+  value with `Runtime::set_value`); every other `$param` is fixed when
+  the page is built. Slots may declare
   an automatic coupling, fully spelled — nothing defaults invisibly
   (D134): `automatic=<kind> by <driver>`. Kinds: `length`/`position`
   (linear), `arc`/`angle` (radial — config REQUIRED in the kind's parens:
@@ -1676,7 +1678,7 @@ build error. Widget bodies and repeat items are scoped per instance
 
 String interpolation (`"Size: $value"`), expressions (`$spacing*2` —
 `play()`/`go()`/`toggle()`/`emit()` on an `on:` key, `fill(n)`/`hug(n)` in a
-size, `live()` with `round()` inside it, and `arc()`/`angle()` after
+size, `round()` around a number, and `arc()`/`angle()` after
 `automatic=` are the only call forms), required
 parameters, block comments, general arrays (the list
 kind ships but only Grid's `cols=`/`areas=`, Gradient's `stops=`,

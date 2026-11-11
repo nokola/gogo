@@ -128,7 +128,7 @@ const ANIM_MIX: &str = "anim pop { bar.translate.x from=-40, to=0, duration=0.5\
 
 /// godot_widgets.rs `FADER_SRC` with an instance: a control with a
 /// behavior, custom state, drivers and a lane anim.
-const FADER: &str = "control Fader $value=0, $min=0, $max=100, $step=0 {\n    behavior slider by $value in $min..$max, step=$step\n    state_builtin hovered, focused, disabled\n    state dragging\n    signal drag_started, drag_ended\n    transition duration=0.12, easing=cubic_out\n    anim releasePop {\n        slot.thumb.translate.y from=-3, to=0, duration=0.2\n    }\n    Layers {\n        slot track width=fill, height=24 {\n            slot progress automatic=length by $value in $min..$max { Rectangle color=#4488FFFF }\n            slot thumb automatic=position by $value in $min..$max { Circle 12x12, color=#FFFFFFFF }\n        }\n        slot label { Label text=live($value) }\n    }\n}\nView v {\n Column col {\n  Fader gain 200x24, value=25 {\n   when dragging opacity=0.4\n  }\n  Label note text=\"volume\"\n  Check tick text=\"on\"\n  Toggle sw text=\"sw\"\n }\n}\n";
+const FADER: &str = "control Fader $value=0, $min=0, $max=100, $step=0 {\n    behavior slider by $value in $min..$max, step=$step\n    state_builtin hovered, focused, disabled\n    state dragging\n    signal drag_started, drag_ended\n    transition duration=0.12, easing=cubic_out\n    anim releasePop {\n        slot.thumb.translate.y from=-3, to=0, duration=0.2\n    }\n    Layers {\n        slot track width=fill, height=24 {\n            slot progress automatic=length by $value in $min..$max { Rectangle color=#4488FFFF }\n            slot thumb automatic=position by $value in $min..$max { Circle 12x12, color=#FFFFFFFF }\n        }\n        slot label { Label text=$value }\n    }\n}\nView v {\n Column col {\n  Fader gain 200x24, value=25 {\n   when dragging opacity=0.4\n  }\n  Label note text=\"volume\"\n  Check tick text=\"on\"\n  Toggle sw text=\"sw\"\n }\n}\n";
 
 /// godot_scroll_input.rs `TALL_LIST` and `FOCUS_WITHIN`: a Scroll, a
 /// `focus_within` response.
@@ -149,7 +149,7 @@ const KEYED: &str = r#"View v {
 
 /// repeat_rows_keep_their_drivers.rs `BARS`: a counted repeat of a
 /// control with drivers.
-const BARS: &str = "control Bar $value=0, $min=0, $max=10 {\n    behavior slider by $value in $min..$max\n    state_builtin focused, held\n    transition duration=0.2\n    Layers width=fill, height=20 {\n        slot track width=fill, height=fill {\n            slot progress automatic=length by $value in $min..$max { Rectangle width=fill, height=fill, color=#FF0000FF }\n        }\n        Label lab text=live($value)\n    }\n}\nView v {\n    Column width=fill {\n        repeat rows capacity=2 { Bar b width=fill }\n        Label after text=\"after\"\n    }\n}\n";
+const BARS: &str = "control Bar $value=0, $min=0, $max=10 {\n    behavior slider by $value in $min..$max\n    state_builtin focused, held\n    transition duration=0.2\n    Layers width=fill, height=20 {\n        slot track width=fill, height=fill {\n            slot progress automatic=length by $value in $min..$max { Rectangle width=fill, height=fill, color=#FF0000FF }\n        }\n        Label lab text=$value\n    }\n}\nView v {\n    Column width=fill {\n        repeat rows capacity=2 { Bar b width=fill }\n        Label after text=\"after\"\n    }\n}\n";
 
 /// A Panel seated elsewhere by an arrangement, with a Button deep inside
 /// it that has its own `when held`: a flip on a node inside a seated

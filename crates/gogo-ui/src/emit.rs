@@ -434,7 +434,7 @@ pub fn emit_rust(page: &Page, module: &str) -> Result<String, String> {
     out.push_str(&format!("        repeats: {},\n", slice(&page.repeats)));
     out.push_str(&format!("        bind_sites: {},\n", slice(&page.bind_sites)));
     out.push_str(&format!("        drivers: {},\n", slice(&page.drivers)));
-    out.push_str(&format!("        live_texts: {},\n", slice(&page.live_texts)));
+    out.push_str(&format!("        value_follows: {},\n", slice(&page.value_follows)));
     // The build's one slice table (`build_pages` emits it beside
     // `IMAGES`): every page points at it, so a slice id code sets draws
     // on any page and no page copies it.

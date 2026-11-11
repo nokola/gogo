@@ -428,19 +428,35 @@ pub enum Auto {
     Angle { from: f32, sweep: f32, frac: f32 },
 }
 
-/// The shown form of a `live()` number in a text position: snapped to
-/// the display step (0.1 unless `round($v, step)` picked one), trailing
-/// zeros trimmed — "10.2", "11", "80" (the addon's display rounding,
-/// user-caught when a drag printed the raw float).
-pub(crate) fn live_text(v: f32, step: f32) -> String {
-    let snapped = if step > 0.0 { (v / step).round() * step } else { v };
+/// Rounds `v` to a multiple of `step`; a step of 0 or less leaves it as
+/// it is.
+///
+/// Needed so the build (the number a property starts with) and the
+/// running page (each write of a control's value) round the same way.
+pub(crate) fn snap_to_step(v: f32, step: f32) -> f32 {
+    if step > 0.0 { (v / step).round() * step } else { v }
+}
+
+/// Writes a control's value as a label shows it into `out`: rounded to
+/// the display step, trailing zeros cut — "10.2", "11", "80".
+///
+/// Needed so a float never prints its raw digits (a drag once showed
+/// 10.234235). The step is 0.1 unless the file wrote
+/// `round($value, step)`.
+///
+/// Writes into a string the caller keeps, so a value written on every
+/// finger move of a drag allocates nothing once that string has grown.
+pub(crate) fn value_text_into(v: f32, step: f32, out: &mut String) {
+    use std::fmt::Write;
+    let snapped: f32 = snap_to_step(v, step);
     let mut d = 0usize;
     let mut s = step;
     while d < 4 && (s - s.round()).abs() > 1e-4 {
         s *= 10.0;
         d += 1;
     }
-    let mut out = format!("{snapped:.d$}");
+    out.clear();
+    let _ = write!(out, "{snapped:.d$}");
     if out.contains('.') {
         while out.ends_with('0') {
             out.pop();
@@ -449,6 +465,13 @@ pub(crate) fn live_text(v: f32, step: f32) -> String {
             out.pop();
         }
     }
+}
+
+/// `value_text_into` into a new string, for the compiler (the text a
+/// label starts with).
+pub(crate) fn value_text(v: f32, step: f32) -> String {
+    let mut out = String::new();
+    value_text_into(v, step, &mut out);
     out
 }
 
@@ -565,13 +588,28 @@ pub struct Behavior {
     pub drag_ended: StrId,
 }
 
-/// A `text=live($value)` label inside a control body: a code write of the
-/// control's value rewrites the shown string at the baked display step
-/// (`Runtime::set_value` -- the addon's live-label follow).
+/// One property inside a control's body that reads the control's
+/// `$value` (`Label text=$value`, `Rectangle opacity=$value`): a write of
+/// the control's value writes this property too.
+///
+/// Needed because `$value` is the one `$name` that changes while the
+/// page runs; without this row the property would keep the number the
+/// control started with.
+///
+/// Visited only when that control's value is written
+/// (`Runtime::set_value`, or the next `tick` after any other write of
+/// it); a page at rest pays nothing for it.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct LiveText {
+pub struct ValueFollow {
+    /// The node whose property follows.
     pub node: NodeId,
+    /// The control instance whose value it follows.
     pub root: NodeId,
+    /// The property written: `Text` gets the number as text, any other
+    /// key gets the number.
+    pub key: PropKey,
+    /// The value is rounded to a multiple of this first; 0 = not rounded.
+    /// A text follows at 0.1 unless the file wrote `round($value, step)`.
     pub step: f32,
 }
 
@@ -1841,7 +1879,7 @@ pub struct StaticPage {
     pub drivers: &'static [AutoDriver],
     /// See `Behavior` (GP52/GP53).
     pub behaviors: &'static [Behavior],
-    pub live_texts: &'static [LiveText],
+    pub value_follows: &'static [ValueFollow],
     /// The build's atlas slices (`SLICES`, one table every page points
     /// at), so a slice id set by code draws on any page.
     pub slices: &'static [ImageSlice],
@@ -1872,7 +1910,7 @@ pub struct Page {
     pub drivers: Vec<AutoDriver>,
     /// See `Behavior` (GP52/GP53).
     pub behaviors: Vec<Behavior>,
-    pub live_texts: Vec<LiveText>,
+    pub value_follows: Vec<ValueFollow>,
     /// See `StaticPage::slices`. Borrowed from the build (no copy per
     /// page); owned only by a standalone compile.
     pub slices: std::borrow::Cow<'static, [ImageSlice]>,
@@ -1976,7 +2014,7 @@ impl Page {
             key_claims: s.key_claims.to_vec(),
             drivers: s.drivers.to_vec(),
             behaviors: s.behaviors.to_vec(),
-            live_texts: s.live_texts.to_vec(),
+            value_follows: s.value_follows.to_vec(),
             slices: std::borrow::Cow::Borrowed(s.slices),
         }
     }
@@ -2040,7 +2078,7 @@ impl Page {
         self.key_claims.extend(claims);
         let behaviors: Vec<Behavior> = self.behaviors.iter().filter(|b| b.root >= src && b.root < end).map(|b| Behavior { root: shift(b.root), slots: b.slots.map(|n| if n == NO_NODE { NO_NODE } else { shift(n) }), ..*b }).collect();
         self.behaviors.extend(behaviors);
-        // A cloned control's driven slots, `live($value)` labels and its
+        // A cloned control's driven slots, `$value` readers and its
         // own `transition` feel come along too. Needed because a pooled
         // row IS a clone (the effect page's slider rows, `repeat …
         // capacity=`): without its driver a row's fill stayed at the
@@ -2048,8 +2086,8 @@ impl Page {
         // the read-out change and the bar stand still (todo-bugs.md #6).
         let drivers: Vec<AutoDriver> = self.drivers.iter().filter(|d| d.node >= src && d.node < end).map(|d| AutoDriver { node: shift(d.node), root: shift(d.root), ..*d }).collect();
         self.drivers.extend(drivers);
-        let lives: Vec<LiveText> = self.live_texts.iter().filter(|l| l.node >= src && l.node < end).map(|l| LiveText { node: shift(l.node), root: shift(l.root), ..*l }).collect();
-        self.live_texts.extend(lives);
+        let follows: Vec<ValueFollow> = self.value_follows.iter().filter(|l| l.node >= src && l.node < end).map(|l| ValueFollow { node: shift(l.node), root: shift(l.root), ..*l }).collect();
+        self.value_follows.extend(follows);
         let feels: Vec<Transition> = self.transitions.iter().filter(|t| t.node != NO_NODE && t.node >= src && t.node < end).map(|t| Transition { node: shift(t.node), ..*t }).collect();
         self.transitions.extend(feels);
         let slides: Vec<PropTransition> = self.prop_transitions.iter().filter(|t| t.node >= src && t.node < end).map(|t| PropTransition { node: shift(t.node), ..*t }).collect();

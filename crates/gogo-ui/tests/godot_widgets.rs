@@ -5,7 +5,7 @@
 //! - `_slot_tests` 3177-3406 (28 checks): named slot regions, fills,
 //!   box props, padding, minimums, nested slots, the fill error family.
 //! - `_control_tests` 3406-3760 (67 checks): the `control` construct, the
-//!   `automatic=` fraction pipeline, `live()`, presence, the D134 coupling
+//!   `automatic=` fraction pipeline, `$value` readers, presence, the D134 coupling
 //!   grammar and the diagnostics family.
 //!
 //! Dialect notes (translated before compiling, per the port brief):
@@ -97,7 +97,7 @@ const LABELED_SLIDER: &str = "widget LabeledSlider $label=\"\", $min=0, $max=100
 const LOOKUP_WIDGETS: &str = "widget MiniSlider $caption=\"\" {\n Layers root interactive=true, touch_target=off, height=40 {\n  Label captionLabel text=$caption\n  Label valueLabel\n }\n}\nwidget Outer {\n Column o {\n  MiniSlider innerInst caption=\"in\"\n }\n}\n";
 
 /// The Godot suite's `FADER_SRC` verbatim (run_tests.gd 3383-3403).
-const FADER_SRC: &str = "control Fader $value=0, $min=0, $max=100, $step=0 {\n    behavior slider by $value in $min..$max, step=$step\n    state_builtin hovered, focused, disabled\n    state dragging\n    signal drag_started, drag_ended\n    transition duration=0.12, easing=cubic_out\n    anim releasePop {\n        slot.thumb.translate.y from=-3, to=0, duration=0.2\n    }\n    Layers {\n        slot track width=fill, height=24 {\n            slot progress automatic=length by $value in $min..$max { Rectangle color=#4488FFFF }\n            slot thumb automatic=position by $value in $min..$max { Circle 12x12, color=#FFFFFFFF }\n        }\n        slot label { Label text=live($value) }\n    }\n}\n";
+const FADER_SRC: &str = "control Fader $value=0, $min=0, $max=100, $step=0 {\n    behavior slider by $value in $min..$max, step=$step\n    state_builtin hovered, focused, disabled\n    state dragging\n    signal drag_started, drag_ended\n    transition duration=0.12, easing=cubic_out\n    anim releasePop {\n        slot.thumb.translate.y from=-3, to=0, duration=0.2\n    }\n    Layers {\n        slot track width=fill, height=24 {\n            slot progress automatic=length by $value in $min..$max { Rectangle color=#4488FFFF }\n            slot thumb automatic=position by $value in $min..$max { Circle 12x12, color=#FFFFFFFF }\n        }\n        slot label { Label text=$value }\n    }\n}\n";
 
 /// `FADER_SRC` without the `slot.thumb` anim lane (GP32 owes the lane).
 fn fader_static() -> String {
@@ -500,7 +500,7 @@ fn fader_source_builds_verbatim() {
 
 /// `ctl.param-live-read`, `ctl.live-initial` 3415-3417 and
 /// `ctl.fraction-initial` 3421-3423: `value=25` on the instance reaches
-/// the `live($value)` label as "25" and the two couplings as a 0.25
+/// the `text=$value` label as "25" and the two couplings as a 0.25
 /// fraction — the length slot is a quarter of the 200 track (50), the
 /// position slot sits a quarter along the free run (200 - 12) * 0.25 = 47.
 #[test]
@@ -526,7 +526,7 @@ fn value_param_reaches_the_label_and_the_slot_fractions() {
 /// 3465: a write of `$value` moves the couplings — the label at once, the
 /// fractions gliding by the control's default feel (0.12 s) and landing.
 /// The Rust seam is `Runtime::set_value` (the addon's behavior -> driver
-/// pipeline): the prop lands, live labels rewrite, the fractions glide.
+/// pipeline): the prop lands, `$value` labels rewrite, the fractions glide.
 #[test]
 fn value_write_moves_the_couplings_with_a_glide() {
     let c = ok(&format!("{}Fader gain 200x24, value=25\n", fader_static()));
@@ -645,39 +645,55 @@ fn presence_follows_the_state() {
 
 /// `ctl.live-default-round` 3542, `ctl.live-round-step` 3548 (PORT: both
 /// build) and `ctl.live-default-round-text` 3545,
-/// `ctl.live-round-step-text` 3551 (NEW): a float shown through `live()`
-/// prints at 0.1 by default ("10.2"), `live(round($value, 1))` picks the
-/// step ("11"). (GPAR95, round 5: the display rounding is applied at
-/// compile — `live()` in a text position bakes the shown string.)
+/// `ctl.live-round-step-text` 3551 (NEW): a control's value shown in a
+/// label prints at 0.1 by default ("10.2"), `round($value, 1)` picks the
+/// step ("11"). FLIP 2026-11-10 (user): Godot spells both through
+/// `live()`; here both are written by themselves, with nothing around
+/// them.
 #[test]
-fn live_float_display_rounding() {
+fn value_label_display_rounding() {
     let c = ok(&format!("{}Fader fr 100x24, value=10.234235\n", fader_static()));
     let texts = drawn_texts(&c.page);
     assert_eq!(texts, vec!["10.2".to_string()], "{texts:?}");
-    let c = ok(&format!("{}Fader fr 100x24, value=10.6\n", fader_static().replace("live($value)", "live(round($value, 1))")));
+    let c = ok(&format!("{}Fader fr 100x24, value=10.6\n", fader_static().replace("text=$value", "text=round($value, 1)")));
     let texts = drawn_texts(&c.page);
     assert_eq!(texts, vec!["11".to_string()], "{texts:?}");
-    // a THEME number through live() shows too (it used to draw nothing)
-    let c = ok("$x = 5\nView v { Label l text=live($x) }");
+    // a THEME number shows too (left as a reference it drew nothing)
+    let c = ok("$x = 5\nView v { Label l text=$x }");
     assert_eq!(drawn_texts(&c.page), vec!["5".to_string()]);
+    // a number that is neither followed nor rounded keeps the digits the file wrote
+    let c = ok("$x = 3.14159\nView v { Label l text=$x }");
+    assert_eq!(drawn_texts(&c.page), vec!["3.14159".to_string()]);
 }
 
 /// `ctl.live-default-round` 3542, `ctl.live-round-step` 3548 alone: the
 /// two sources build and show a number.
 #[test]
-fn live_and_live_round_sources_build() {
+fn value_and_rounded_value_sources_build() {
     let c = ok(&format!("{}Fader fr 100x24, value=10.234235\n", fader_static()));
     assert_eq!(drawn_texts(&c.page).len(), 1);
-    let c = ok(&format!("{}Fader fr 100x24, value=10.6\n", fader_static().replace("live($value)", "live(round($value, 1))")));
+    let c = ok(&format!("{}Fader fr 100x24, value=10.6\n", fader_static().replace("text=$value", "text=round($value, 1)")));
     assert_eq!(drawn_texts(&c.page).len(), 1);
 }
 
-/// `ctl.err-bare-round` 3553-3555: `round($value, 0.1)` outside `live()`
-/// is refused ("goes inside live()") — G0080 (GPAR95, round 5).
+/// `ctl.err-bare-round` 3553-3555: Godot refuses `round($value, 0.1)`
+/// outside `live()`. FLIP 2026-11-10 (user): `live()` is gone, so
+/// `round()` is written by itself — a number rounded to a multiple of
+/// its step (1 when no step is written); G0080 is retired. What it
+/// rounds must be a number, and so must the step (G0058).
 #[test]
-fn bare_round_outside_live_is_refused() {
-    let text = err_text(&format!("{}Fader fr 100x24\n", fader_static().replace("live($value)", "round($value, 0.1)")));
-    assert!(text.contains("goes inside live()"), "{text}");
+fn round_works_without_live() {
+    let c = ok(&format!("{}Fader fr 100x24, value=10.26\n", fader_static().replace("text=$value", "text=round($value, 0.5)")));
+    assert!(c.diags.is_empty(), "{:#?}", c.diags);
+    assert_eq!(drawn_texts(&c.page), vec!["10.5".to_string()]);
+    // no step = whole numbers; a plain number rounds at build
+    let c = ok("View v { Label l text=round(2.6) }");
+    assert_eq!(drawn_texts(&c.page), vec!["3".to_string()]);
+    let c = ok("View v { Rectangle r 10x10, opacity=round(0.26, 0.5) }");
+    assert_eq!(c.page.prop(find(&c.page, "r"), PropKey::Opacity), Some(Value::VNum(0.5)));
+    assert!(codes("View v { Label l text=round(\"abc\", 1) }").contains(&"G0058".to_string()));
+    assert!(codes("View v { Label l text=round(2.6, 0) }").contains(&"G0058".to_string()));
+    assert!(!codes("View v { Label l text=round(2.6, 0.5) }").contains(&"G0080".to_string()));
 }
 
 /// `ctl.set-fraction-ok` 3558: the `step=5` instance builds
@@ -722,55 +738,65 @@ fn builtin_name_under_state_is_refused() {
 
 /// `ctl.err-d17-code`, `ctl.err-d17-fixit` 3604-3610: Godot refuses a
 /// bare `text=$value` in a control body (G5103 "freeze", fixit →
-/// `live($value)`). FLIP — gogo-design.md §7 "Code-behind values":
-/// `live()` is not a FanRust word, every `$ref` is dereferenced at
-/// resolve, so `text=$value` is the plain spelling: it builds clean and
-/// shows the value. (todo-gogo.md Decisions 2026-08-29 `export $x`: "every
-/// `$ref` is live in FanRust".)
+/// `live($value)`). FLIP 2026-11-10 (user): a bare `$value` IS the
+/// spelling — it builds clean, shows the value, and follows every write
+/// of it. (Until that day it built clean and kept the starting number
+/// forever.)
 #[test]
-fn bare_param_ref_is_live_by_decision() {
-    let src = format!("{}Fader f 100x24\n", fader_static().replace("text=live($value)", "text=$value"));
+fn bare_value_ref_is_live_by_decision() {
+    let src = format!("{}Fader f 100x24\n", fader_static());
     let c = ok(&src);
     assert!(c.diags.is_empty(), "{:#?}", c.diags);
     assert!(!codes(&src).contains(&"G5103".to_string()));
     assert_eq!(drawn_texts(&c.page), vec!["0".to_string()]);
+    let mut page = c.page;
+    let mut rt = Runtime::new(&page);
+    let root = find(&page, "f");
+    rt.set_value(&mut page, root, 42.0);
+    assert_eq!(shown_texts(&page, &mut rt), vec!["42".to_string()]);
 }
 
 /// `ctl.err-live-nonparam` 3611-3613, `ctl.err-live-outside` 3614-3615:
 /// Godot allows `live()` only around a contract prop inside a control's
-/// default tree. FLIP — gogo-design.md §7: `live()` is accepted as a
-/// Godot form and means nothing extra (a `$ref` is always live), so
-/// `live($theme_value)` and a `live()` outside any control both build;
-/// an UNDEFINED `$ref` inside it is the ordinary G6001.
+/// default tree. FLIP 2026-11-10 (user): `live()` is gone everywhere —
+/// G0081 names the bare spelling to write, whatever was inside; the
+/// inner value still compiles, so an UNDEFINED `$ref` inside it is
+/// reported in the same build (G6001).
 #[test]
-fn live_is_a_plain_ref_read_anywhere() {
-    let c = ok(&format!("$accent = #FF0000FF\n{}Fader f 100x24\n", fader_static().replace("live($value)", "live($accent)")));
-    assert!(c.diags.is_empty(), "{:#?}", c.diags);
-    let c = ok("$x = \"five\"\nView v { Label l text=live($x) }");
+fn live_is_refused_naming_the_bare_spelling() {
+    let text = err_text(&format!("{}Fader f 100x24\n", fader_static().replace("text=$value", "text=live($value)")));
+    assert!(text.contains("G0081") && text.contains("write `$value`"), "{text}");
+    let text = err_text(&format!("{}Fader f 100x24\n", fader_static().replace("text=$value", "text=live(round($value, 1))")));
+    assert!(text.contains("write `round($value, 1)`"), "{text}");
+    let text = err_text("$x = \"five\"\nView v { Label l text=live($x) }");
+    assert!(text.contains("write `$x`"), "{text}");
+    let both = codes("View v { Label l text=live($x) }");
+    assert!(both.contains(&"G0081".to_string()) && both.contains(&"G6001".to_string()), "{both:?}");
+    // the bare spellings build clean
+    let c = ok("$x = \"five\"\nView v { Label l text=$x }");
     assert!(c.diags.is_empty(), "{:#?}", c.diags);
     assert_eq!(drawn_texts(&c.page), vec!["five".to_string()]);
-    assert!(codes(&format!("{}Fader f 100x24\n", fader_static().replace("live($value)", "live($accent)"))).contains(&"G6001".to_string()));
-    assert!(codes("View v { Label l text=live($x) }").contains(&"G6001".to_string()));
 }
 
 /// `ctl.err-bind-redirect` 3616-3618: `bind($value)` is refused naming
-/// `live($value)` — G0081 (GPAR95, round 5; an unknown call used to
-/// compile to a `VCall` the Label cannot show: nothing drew, no word).
+/// the spelling to write — G0081 (GPAR95, round 5; an unknown call used
+/// to compile to a `VCall` the Label cannot show: nothing drew, no word).
+/// Godot's message names `live($value)`; here it names the bare `$value`.
 #[test]
 fn unknown_call_in_text_is_refused() {
-    let src = format!("{}Fader f 100x24\n", fader_static().replace("live($value)", "bind($value)"));
+    let src = format!("{}Fader f 100x24\n", fader_static().replace("text=$value", "text=bind($value)"));
     let text = err_text(&src);
-    assert!(text.contains("live($value)"), "{text}; drawn {:?}", drawn_texts(&compile(&src, &|_| None).page));
+    assert!(text.contains("write `$value`"), "{text}; drawn {:?}", drawn_texts(&compile(&src, &|_| None).page));
 }
 
 /// `ctl.err-relayout-local` 3619-3628 (G5105: a position slot needs a free
 /// host — a Column re-lays out) and `ctl.err-two-writers` 3717-3721
-/// (G4003: `live()` and a `when` on one prop). Both fences are listed as
+/// (G4003: a property that follows `$value` and a `when` on it). Both fences are listed as
 /// untracked in GPAR62; Rust builds both silently.
 #[test]
 fn relayout_and_two_writer_fences() {
     assert!(codes("control Bad $value=0, $min=0, $max=1 {\n Column {\n  slot p automatic=position by $value in $min..$max { Circle 6x6 }\n }\n}\nBad b\n").contains(&"G5105".to_string()));
-    let text = err_text(&format!("{}Fader f 100x24\n", fader_static().replace("Label text=live($value)", "Label text=\"x\", opacity=live($value) { when hovered opacity=0.5 }")));
+    let text = err_text(&format!("{}Fader f 100x24\n", fader_static().replace("Label text=$value", "Label text=\"x\", opacity=$value { when hovered opacity=0.5 }")));
     assert!(text.contains("two writers"), "{text}");
 }
 
@@ -883,4 +909,100 @@ fn slot_lanes_outside_motion_or_outside_a_control_are_refused() {
 fn undeclared_contract_state_is_refused_listing_the_available_ones() {
     let text = err_text(&format!("{}View v {{ Fader f 100x24 {{ when held opacity=0.5 }} }}\n", fader_static()));
     assert!(text.contains("isn't available") && text.contains("`dragging`"), "{text}");
+}
+
+/// The texts the page shows now, with what code wrote since the build.
+fn shown_texts(page: &Page, rt: &mut Runtime) -> Vec<String> {
+    let f = KeptFrame::fresh(page, resolve_animated(page, rt), Rect::new(0.0, 0.0, 400.0, 800.0), &FixedAdvance);
+    draw(page, f.frame()).iter().filter_map(|d| if let Draw::Text { text, .. } = d { Some(page.str(*text).to_string()) } else { None }).collect()
+}
+
+/// A control with a number property and a rounded one that read its
+/// value (decided 2026-11-10, user: a bare `$value` follows on EVERY
+/// property, not on `text=` only).
+const DIMMER: &str = "control Dimmer $value=0.25, $min=0, $max=1 {\n    behavior slider by $value in $min..$max\n    state_builtin focused, held\n    Layers width=100, height=20 {\n        slot track width=fill, height=fill { Rectangle width=fill, height=fill, color=#333333FF }\n        Rectangle glow width=fill, height=fill, color=#FFFFFFFF, opacity=$value\n        Rectangle half width=fill, height=fill, color=#FFFFFFFF, opacity=round($value, 0.5)\n    }\n}\nView v { Dimmer d }\n";
+
+/// `opacity=$value` in a control body starts at the control's value and
+/// follows every write of it; `round($value, 0.5)` follows in halves.
+/// Before this the property kept the number the control started with.
+#[test]
+fn a_number_property_follows_the_value() {
+    let c = ok(DIMMER);
+    assert!(c.diags.is_empty(), "{:#?}", c.diags);
+    let mut page = c.page;
+    let (root, glow, half) = (find(&page, "d"), find(&page, "d/glow"), find(&page, "d/half"));
+    let mut rt = Runtime::new(&page);
+    let opacity = |page: &Page, rt: &Runtime, n: NodeId| lay(page, rt).look().num(page, n, PropKey::Opacity);
+    assert_eq!(opacity(&page, &rt, glow), Some(0.25), "the start value");
+    assert_eq!(opacity(&page, &rt, half), Some(0.5), "0.25 rounds to the nearer half upward");
+    rt.set_value(&mut page, root, 0.8);
+    assert_eq!(opacity(&page, &rt, glow), Some(0.8), "the property follows the write");
+    assert_eq!(opacity(&page, &rt, half), Some(1.0), "the rounded one follows in halves");
+    assert_eq!(page.value_follows.len(), 2, "one row per property that reads the value: {:?}", page.value_follows);
+}
+
+/// Any write of a control's value moves its readers, not only
+/// `set_value`: a plain `set_prop` of `value` (and the input machine's
+/// write) lands in the readers at the next `tick`.
+#[test]
+fn a_plain_write_of_the_value_moves_its_readers_at_the_next_tick() {
+    let c = ok(&format!("{}Fader f 100x24\n", fader_static()));
+    let mut page = c.page;
+    let root = find(&page, "f");
+    let mut rt = Runtime::new(&page);
+    rt.set_prop(root, PropKey::Value, Value::VNum(60.0));
+    rt.tick(&mut page, 0.016);
+    assert_eq!(shown_texts(&page, &mut rt), vec!["60".to_string()]);
+    // The same value again owes nothing: the list of controls to follow stays empty.
+    rt.set_prop(root, PropKey::Value, Value::VNum(60.0));
+    assert!(rt.value_follow.is_empty(), "{:?}", rt.value_follow);
+}
+
+/// A `when` response is one fixed value, so it cannot follow the
+/// control's value: `when hovered opacity=$value` is refused (G0083)
+/// with the node-line spelling, where it would have built and kept the
+/// starting number.
+#[test]
+fn a_when_response_cannot_read_the_value() {
+    let src = format!("{}Fader f 100x24\n", fader_static().replace("Label text=$value", "Label text=\"x\" { when hovered opacity=$value }"));
+    let text = err_text(&src);
+    assert!(text.contains("G0083") && text.contains("write the property on the node line"), "{text}");
+    // a param that is not the control's value is fixed at build, and stays legal there
+    let c = ok("widget Chip $dim=0.5 {\n Label l text=\"x\" { when hovered opacity=$dim }\n}\nView v { Chip c }\n");
+    assert!(c.diags.is_empty(), "{:#?}", c.diags);
+}
+
+/// The value passed along to a plain widget inside the control body
+/// (`Readout r n=$value`, whose label says `text=$n`) follows too: what
+/// the label reads is still the control's value.
+#[test]
+fn a_value_passed_to_a_widget_inside_the_control_follows() {
+    let src = "widget Readout $n=0 {\n Label out text=$n\n}\ncontrol Meter $value=5, $min=0, $max=10 {\n    behavior slider by $value in $min..$max\n    state_builtin focused, held\n    Layers width=100, height=20 {\n        slot track width=fill, height=fill { Rectangle width=fill, height=fill, color=#333333FF }\n        Readout r n=$value\n    }\n}\nView v { Meter m }\n";
+    let c = ok(src);
+    assert!(c.diags.is_empty(), "{:#?}", c.diags);
+    assert_eq!(drawn_texts(&c.page), vec!["5".to_string()]);
+    let mut page = c.page;
+    let root = find(&page, "m");
+    let mut rt = Runtime::new(&page);
+    rt.set_value(&mut page, root, 7.0);
+    assert_eq!(shown_texts(&page, &mut rt), vec!["7".to_string()]);
+    // the same widget outside a control reads a fixed number: no row
+    let c = ok("widget Readout $n=0 {\n Label out text=$n\n}\nView v { Readout r n=3 }\n");
+    assert!(c.page.value_follows.is_empty(), "{:?}", c.page.value_follows);
+}
+
+/// A control placed in another control's body with `value=$value`
+/// follows the outer value, and its own readers follow it in the same
+/// write.
+#[test]
+fn a_control_inside_a_control_follows_the_outer_value() {
+    let src = format!("{}control Pair $value=10, $min=0, $max=100 {{\n    behavior slider by $value in $min..$max\n    state_builtin focused, held\n    Layers width=200, height=24 {{\n        slot track width=fill, height=fill {{ Rectangle width=fill, height=fill, color=#333333FF }}\n        Fader inner 200x24, value=$value\n    }}\n}}\nView v {{ Pair p }}\n", fader_static());
+    let c = ok(&src);
+    assert_eq!(drawn_texts(&c.page), vec!["10".to_string()], "the inner label starts at the outer value");
+    let mut page = c.page;
+    let (outer, inner) = (find(&page, "p"), find(&page, "p/inner"));
+    let mut rt = Runtime::new(&page);
+    rt.set_value(&mut page, outer, 40.0);
+    assert_eq!(lay(&page, &rt).look().num(&page, inner, PropKey::Value), Some(40.0), "the inner control's value");
+    assert_eq!(shown_texts(&page, &mut rt), vec!["40".to_string()], "and the inner control's label");
 }
