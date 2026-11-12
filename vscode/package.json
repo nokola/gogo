@@ -7,11 +7,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/nokola/gogo",
+    "url": "https://github.com/nokola/storvald",
     "directory": "vscode"
   },
   "bugs": {
-    "url": "https://github.com/nokola/gogo/issues"
+    "url": "https://github.com/nokola/storvald/issues"
   },
   "engines": {
     "vscode": "^1.80.0"
