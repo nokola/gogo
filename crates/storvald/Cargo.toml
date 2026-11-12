@@ -1,0 +1,10 @@
+[package]
+name = "storvald"
+description = "Storvald: an AI-first creative environment for unslop games and apps. In development: this version holds the name and the `storvald` command, and runs nothing yet."
+keywords = ["gamedev", "ai", "agent", "ide", "tooling"]
+categories = ["development-tools", "game-development"]
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
