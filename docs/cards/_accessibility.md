@@ -12,7 +12,9 @@ two things an author adds.
   descendant holds focus (the settings-row pattern). Text fields indicate
   on any focus — the caret is coming.
 - **The keyboard reaches everything a tap reaches** — Tab and Shift-Tab
-  walk the page in file order, the arrows move to the nearest control in
+  walk the page in file order (a control inside a Panel before the
+  control written after that Panel; a list's rows where the list is
+  written), the arrows move to the nearest control in
   their direction, Enter/Space activate. A focused Slider steps with the
   arrows and Home/End; a focused Toggle takes them as its two sides.
   `keyboard_target=off` takes a control out of that walk (a touch-only

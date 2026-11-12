@@ -457,13 +457,14 @@ fn event_action(page: &Page, node: NodeId, event: &str) -> Option<Action> {
     None
 }
 
-/// Keyboard-reachable RIGHT NOW: the compile-baked `focusable` flag
-/// minus the runtime facts — disabled (an ancestor's counts) and hidden
-/// (own or an ancestor's — the tap path's `gone`/`hidden` pair, so a
-/// repeat's template and unshown rows and a presence mark are skipped
-/// exactly like a `visibility=` word).
+/// Keyboard-reachable RIGHT NOW: a node that takes the keyboard focus
+/// (`Runtime::takes_keys`: the compile-baked `focusable` flag and a
+/// `keyboard_target=off` code wrote) minus the runtime facts — disabled
+/// (an ancestor's counts) and hidden (own or an ancestor's — the tap
+/// path's `gone`/`hidden` pair, so a repeat's template and unshown rows
+/// and a presence mark are skipped exactly like a `visibility=` word).
 fn reachable(page: &Page, rt: &Runtime, res: &Resolved, node: NodeId) -> bool {
-    if !page.nodes[node].focusable || rt.disabled(page, node) {
+    if !rt.takes_keys(page, node) || rt.disabled(page, node) {
         return false;
     }
     // Placed parents: a seated box is reachable under its host, not
@@ -479,6 +480,16 @@ fn reachable(page: &Page, rt: &Runtime, res: &Resolved, node: NodeId) -> bool {
         }
         n = p;
     }
+}
+
+/// Does the focused `node` answer a key: it is not disabled, and it is
+/// still a keyboard target.
+///
+/// Needed because both can change while the node holds the focus (code
+/// disables it, or writes `keyboard_target=off` on it): the node keeps
+/// its place, so Tab goes on from it, and every other key does nothing.
+fn hears_keys(page: &Page, rt: &Runtime, node: NodeId) -> bool {
+    !rt.disabled(page, node) && rt.takes_keys(page, node)
 }
 
 /// Writes a state bit on `node` and every PLACED ancestor — the
@@ -1271,7 +1282,7 @@ impl Input {
         // claim off them, so no second owner); a refused action goes on
         // to traversal.
         if let Some(f) = self.focus {
-            if !rt.disabled(page, f) {
+            if hears_keys(page, rt, f) {
                 if let Some(bi) = page.behaviors.iter().position(|b| b.root == f) {
                     let b = live_behavior(page, res, bi as u32);
                     if let Some(mi) = self.registry.find(page.str(b.name)) {
@@ -1293,7 +1304,7 @@ impl Input {
         // INSTANCE ROOT id (an instance wears its body root's kind, so
         // there is no kind to test).
         if let Some(f) = self.focus {
-            if !rt.disabled(page, f) {
+            if hears_keys(page, rt, f) {
                 let mask = page.key_claim(f);
                 let claimed = match k {
                     Key::Left | Key::Right | Key::Up | Key::Down => mask & crate::page::KEYS_ARROWS != 0,
@@ -1319,21 +1330,21 @@ impl Input {
             // way off a Slider or Toggle, matching the shipped router).
             Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End if focus_kind == Some(Kind::Slider) => {
                 let f = self.focus.unwrap();
-                if !rt.disabled(page, f) {
+                if hears_keys(page, rt, f) {
                     self.step_slider(page, rt, res, f, k, &mut events);
                 }
                 return events;
             }
             Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End if focus_kind == Some(Kind::Toggle) => {
                 let f = self.focus.unwrap();
-                if !rt.disabled(page, f) {
+                if hears_keys(page, rt, f) {
                     self.set_toggle(page, rt, res, f, matches!(k, Key::Right | Key::Up | Key::End), &mut events);
                 }
                 return events;
             }
             Key::Enter | Key::Char(' ') if matches!(focus_kind, Some(kk) if kk.is_press_surface()) => {
                 let f = self.focus.unwrap();
-                if !rt.disabled(page, f) {
+                if hears_keys(page, rt, f) {
                     self.activate_focused(page, rt, res, f, &mut events);
                 }
                 return events;
@@ -1356,7 +1367,7 @@ impl Input {
             }
             _ => {}
         }
-        let Some(f) = self.focus.filter(|_| in_field) else { return events };
+        let Some(f) = self.focus.filter(|f| in_field && hears_keys(page, rt, *f)) else { return events };
         let mut text: Vec<char> = input_text(page, rt, f).chars().collect();
         self.caret = self.caret.min(text.len());
         self.anchor = self.anchor.map(|a| a.min(text.len())).filter(|a| *a != self.caret);
@@ -1866,17 +1877,45 @@ impl Input {
         rt.dirty = true;
     }
 
-    /// Tab's next stop: the reachable boxes in FILE order, wrapping;
-    /// nothing focused enters at the first (Shift-Tab at the last).
+    /// Tab's next stop: the next box that can take the focus, in the
+    /// order of the FILE, wrapping at the end; with nothing focused Tab
+    /// enters at the first and Shift-Tab at the last.
+    ///
+    /// The order is the placed tree's walk: a box before the boxes inside
+    /// it, a seated box where its seat is, a repeat's rows where the
+    /// repeat is written and in the order they show. Needed because the
+    /// node table is no such order: it holds a box's children before
+    /// their own children, so in table order an Input written after a
+    /// Panel comes before the Slider inside that Panel, and the rows a
+    /// repeat makes come after everything.
+    ///
+    /// Tab steps from the focused box to its next stop; Shift-Tab walks
+    /// from the top once and keeps the last stop before the focused box.
+    /// Neither makes a list.
     fn tab_target(&self, page: &Page, rt: &Runtime, res: &Resolved, back: bool) -> Option<NodeId> {
-        let list: Vec<NodeId> = page.node_ids().filter(|n| reachable(page, rt, res, *n)).collect();
-        let pos = self.focus.and_then(|f| list.iter().position(|n| *n == f));
-        match (pos, back) {
-            (Some(i), false) => Some(list[(i + 1) % list.len()]),
-            (Some(i), true) => Some(list[(i + list.len() - 1) % list.len()]),
-            (None, false) => list.first().copied(),
-            (None, true) => list.last().copied(),
+        if page.nodes.is_empty() {
+            return None;
         }
+        let root = NodeId::new(0);
+        let stops = |n: &NodeId| reachable(page, rt, res, *n);
+        // The focused box, when the walk shows it (a repeat row that is
+        // not shown has no place in the walk).
+        let from: Option<NodeId> = self.focus.filter(|f| !res.tree.is_off(*f) && res.tree.is_under(*f, root));
+        if !back {
+            let after: Option<NodeId> = from.and_then(|f| res.tree.subtree_from(root, f).skip(1).find(stops));
+            return after.or_else(|| res.tree.subtree(root).find(stops));
+        }
+        let mut before: Option<NodeId> = None;
+        let mut last: Option<NodeId> = None;
+        for n in res.tree.subtree(root) {
+            if Some(n) == from {
+                before = last;
+            }
+            if stops(&n) {
+                last = Some(n);
+            }
+        }
+        before.or(last)
     }
 
     /// An arrow's next stop: the nearest reachable box whose center lies
@@ -2061,7 +2100,7 @@ impl Input {
                 // D129 — only caret controls warrant a tap ring), off
                 // to nothing otherwise (GPAR112 — the focus-loss commit
                 // door: Enter, blur; once per genuine change).
-                self.grant(page, rt, res, rects, Some(node).filter(|n| page.nodes[*n].focusable), false, &mut events);
+                self.grant(page, rt, res, rects, Some(node).filter(|n| rt.takes_keys(page, *n)), false, &mut events);
                 if kind == Kind::Input && self.focus == Some(node) {
                     // The press puts the caret where it LANDED (it used
                     // to jump to the end of the text); a second press
@@ -2285,10 +2324,13 @@ impl Input {
                         self.expected = Some((scroll, rt.scroll[scroll]));
                     }
                 }
-                if p.kind.is_press_surface() && !p.panning && !p.caught_fling {
+                if p.kind.is_press_surface() && p.kind != Kind::Toggle && !p.panning && !p.caught_fling {
                     // Slide-off clears the press, slide-back re-arms it. The
                     // node's OWN rect decides, not the top-most hit — a
                     // plate opening over it mid-press is not a slide-off.
+                    // A Toggle is left out: its drag leaves its box on
+                    // purpose and its release settles it wherever the
+                    // finger is, so it stays held until the finger lifts.
                     let inside = rects[p.node].contains(t.x, t.y);
                     rt.set_state(p.node, HELD, inside);
                 }

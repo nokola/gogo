@@ -542,6 +542,24 @@ out of styles. `spacing=` works on Tiles, a Button has no icon words, an
 anim line names a gradient stop that exists, `row_height=` takes `fill`.
 A Button's 12/6 padding fills each side the file did not write.
 
+Input and controls (decided 2026-11-11). A built-in Toggle's knob glides
+to the other end in 0.12 s (`cubic_out`) on a tap, a key or a write from
+code; the Toggle's own bare `transition` rule sets another time and
+`duration=0` is the jump; under a finger the knob follows at once. The
+glide is the one a control's `automatic=` parts have, and it lays out
+nothing. A Toggle stays `held` until the finger lifts: its drag leaves
+its box on purpose. Tab steps through the placed tree, so it follows the
+file: a box before the boxes inside it, a seated box where its seat is,
+a repeat's rows where the repeat is written; no list is made per press.
+One compass for every angle: 0 = up, clockwise, for an `Arc`, a
+Gradient's `angle=` and the wedge of `automatic=arc(…)` and `angle(…)`.
+`keyboard_target=off` may be written from code (`Runtime::takes_keys`);
+a control switched off while it has the focus keeps its place and
+answers no key, as a control disabled while focused does. `wrap=true`
+folds the own text of a Button, a Check, a Radio and a Toggle by the
+Label's rule. An Input's plate is drawn by the code every plate uses,
+so it takes `border_dash=` and the four corner radii.
+
 Hot reload (decided 2026-11-11). One entry point for every host
 (`reload::Reloader`: `open`, `refresh`), switched by the cargo feature
 `hot-reload`. A runtime flag would leave the compiler linked into the
@@ -869,7 +887,8 @@ Changed 2026-09-02 (GP26 step 1, user decision — Tab AND arrows):
   press surfaces (Button/Check/Toggle/Radio/ListItem), Slider, Input,
   and a `control` whose contract declares `state_builtin focused`;
   `keyboard_target=off` opts out (baked as `Node::focusable` at
-  compile; disabled/hidden checked at traversal). Tab/Shift-Tab walk
+  compile; a code write of the word is asked through
+  `Runtime::takes_keys`; disabled/hidden checked at traversal). Tab/Shift-Tab walk
   FILE order, wrapping; an arrow moves to the nearest reachable box in
   its direction (aligned neighbors beat nearer diagonal ones) — unless
   the focused control claims the key (an Input's caret claims

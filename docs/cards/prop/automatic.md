@@ -117,8 +117,8 @@ A kind names what the value *does* to the part, not a property. On a horizontal 
 slot fill  automatic=length by $value in $min..$max
 slot thumb automatic=position by $value in $min..$max
 slot mark  automatic=presence by selected
-slot wedge automatic=arc(from=-225, sweep=270) by $value in $min..$max
-slot dot   automatic=angle(from=-225, sweep=270) by $value in $min..$max
+slot wedge automatic=arc(from=-135, sweep=270) by $value in $min..$max
+slot dot   automatic=angle(from=-135, sweep=270) by $value in $min..$max
 ```
 
 Two grammar rules cover all five: parens after the kind carry the kind's own config (only the radial kinds have any, and `from=`/`sweep=` are required there — nothing defaults invisibly), and `by` carries the driver — a `$param` with its `in` range for the four value kinds, a state name for `presence` (a bool has no range). Each kind takes over specific properties of its slot, which styles then can't touch:
@@ -136,7 +136,7 @@ Two grammar rules cover all five: parens after the kind carry the kind's own con
 
 ## Loops are animations, not automatic
 
-There is no kind for a spinner going round or a caret blinking, on purpose. The rule that decides: **if the geometry displays data, it's `automatic=`; if it's presentational motion, it's an animation.** A spinner and a caret display nothing — no value you could read or drag — so they use the anim channel, which already loops: `anim spin repeat=forever { self.rotate …, duration=1.2 }` for the spinner, an opacity loop for the caret. An indeterminate progress bar is the same call: "still working" is a state, not an amount — a `when` shows the marquee part and a `repeat=forever` anim moves it. And when something loops *and* means something — a clock face's second hand — the meaning is a value, so it's data again: a Clock control with `$value=0, $min=0, $max=60` and `automatic=angle(from=-90, sweep=360) by $value in $min..$max`, with your code writing the seconds into `value` on a timer.
+There is no kind for a spinner going round or a caret blinking, on purpose. The rule that decides: **if the geometry displays data, it's `automatic=`; if it's presentational motion, it's an animation.** A spinner and a caret display nothing — no value you could read or drag — so they use the anim channel, which already loops: `anim spin repeat=forever { self.rotate …, duration=1.2 }` for the spinner, an opacity loop for the caret. An indeterminate progress bar is the same call: "still working" is a state, not an amount — a `when` shows the marquee part and a `repeat=forever` anim moves it. And when something loops *and* means something — a clock face's second hand — the meaning is a value, so it's data again: a Clock control with `$value=0, $min=0, $max=60` and `automatic=angle(from=0, sweep=360) by $value in $min..$max`, with your code writing the seconds into `value` on a timer.
 
 ## One more: a knob, to see `arc` and `angle`
 
@@ -147,11 +147,11 @@ control Knob $value=0, $min=0, $max=1, min_size=48x48 {
     transition duration=0.15, easing=cubic_out
     Circle color=#333333FF {
         slot track width=fill, height=fill {
-            slot progress automatic=arc(from=-225, sweep=270),
+            slot progress automatic=arc(from=-135, sweep=270),
                     by $value in $min..$max {
                 Arc thickness=4, color=#4488FFFF
             }
-            slot thumb automatic=angle(from=-225, sweep=270),
+            slot thumb automatic=angle(from=-135, sweep=270),
                     by $value in $min..$max {
                 Circle 8x8, color=#FFFFFFFF
             }
@@ -164,7 +164,7 @@ control Knob $value=0, $min=0, $max=1, min_size=48x48 {
 
 This knob shows a value that code sets. To turn under a finger it needs a `behavior` line: turning is not what the stock `slider` behavior does, so that is a behavior the host program registers (the `behavior` card).
 
-`from=` and `sweep=` are degrees; 0° points right and positive turns clockwise (the screen's convention). Value at min: the dot sits at `-225` — lower-left, the 7:30 mark on a clock face. The value sweeps it 270° clockwise to the 4:30 mark — the classic amp-knob range; at half, the dot points straight up. The arc's wedge opens over the same range, and it clips hits too: taps only land on the revealed part.
+`from=` and `sweep=` are degrees on the compass, the dial an `Arc` is drawn on: 0° points up and positive turns clockwise. Value at min: the dot sits at `-135` — lower-left, the 7:30 mark on a clock face. The value sweeps it 270° clockwise to the 4:30 mark — the classic amp-knob range; at half, the dot points straight up. The arc's wedge opens over the same range, and it clips hits too: taps only land on the revealed part.
 
 ## Two placement rules the compiler holds you to
 

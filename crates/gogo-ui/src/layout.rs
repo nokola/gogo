@@ -715,61 +715,70 @@ impl<'a> Lay<'a> {
         ((w + mw).max(0.0), (h + mh).max(0.0))
     }
 
+    /// The room `id`'s own `text` asks for: its one line, or with
+    /// `wrap=true` its lines folded where a width binds it. `avail_w` is
+    /// the width offered to the node and `taken` the part of it that is
+    /// not the text's: the node's padding and border, and a native mark
+    /// with its gap.
+    ///
+    /// Needed so a Label and the press controls (Button, Check, Radio,
+    /// Toggle) fold their text by one rule.
+    fn text_extent(&self, id: NodeId, text: &str, avail_w: Option<f32>, taken: f32) -> (f32, f32) {
+        let wrap = self.res.bool(self.page, id, PropKey::Wrap).unwrap_or(false);
+        let p = self.placement(id);
+        let room: Option<f32> = avail_w.map(|w| (w - taken).max(0.0));
+        // Wrapping happens only where a width BINDS the text: `fill`
+        // asks the parent for space, an exact number IS the box, an
+        // UNALIGNED axis with no width word stretches over the frame
+        // (the tip dialogs' paragraphs), and a cap (`max_width=`)
+        // stops a hug. Only a HUG axis — declared, or an aligned
+        // axis with no width — measures UNWRAPPED, "size to the
+        // text", staying one line until a cap binds it: the caller
+        // (`size_at_uncached`) asks a capped hug with no width for
+        // its one line, and with the cap's width once the cap
+        // binds, so a number cap and `max_width=fill` fold the
+        // text at the same place.
+        let hugs = matches!(p.width, Len::Hug(_)) || (matches!(p.width, Len::Unset) && p.halign != Align::AlignUnset);
+        let bound = if !wrap {
+            None
+        } else if !hugs {
+            match p.width {
+                Len::Exact(n) => Some(room.map_or(n - taken, |r| r.min(n - taken)).max(0.0)),
+                _ => room,
+            }
+        } else if p.max_width.is_some() || p.max_width_fill {
+            room
+        } else {
+            None
+        };
+        // A hair of slack on the bound: a box that took its width
+        // FROM this text (a natural Tiles cell, a hugging Flow
+        // item, a hug chain) hands back a bound equal to the text
+        // to the last float digit, and the sums arrive in another
+        // order — without the slack the compare flips and a name
+        // that fits exactly folds to two lines (D112, the
+        // "Red Eyes Fix" chip).
+        let bound = bound.map(|b| b + WRAP_SLACK_EPX);
+        let (w, h) = self.text.measure(text, self.font_size(id), bound, self.font_key(id));
+        // A wrapping text that FILLS its width bends to the box but
+        // never below Godot's autowrap minimum, the longest word
+        // (GPAR77): a hug Row's leftover then shows a sliver, not
+        // nothing.
+        let w = if wrap && matches!(p.width, Len::Fill(_)) { self.text.narrowest_wrap(text, self.font_size(id), self.font_key(id)) } else { w };
+        (w, h)
+    }
+
     fn content_min(&self, id: NodeId, avail_w: Option<f32>) -> (f32, f32) {
         let node = self.node(id);
         let inset = self.inner_inset(id);
         let inner_w = avail_w.map(|w| (w - inset[0] - inset[2]).max(0.0));
         let (cw, ch) = match node.kind {
             Kind::Label => {
-                let wrap = self.res.bool(self.page, id, PropKey::Wrap).unwrap_or(false);
-                let text = self.text_of(id).unwrap_or("");
-                let p = self.placement(id);
-                // Wrapping happens only where a width BINDS the text: `fill`
-                // asks the parent for space, an exact number IS the box, an
-                // UNALIGNED axis with no width word stretches over the frame
-                // (the tip dialogs' paragraphs), and a cap (`max_width=`)
-                // stops a hug. Only a HUG axis — declared, or an aligned
-                // axis with no width — measures UNWRAPPED, "size to the
-                // text", staying one line until a cap binds it: the caller
-                // (`size_at_uncached`) asks a capped hug with no width for
-                // its one line, and with the cap's width once the cap
-                // binds, so a number cap and `max_width=fill` fold the
-                // text at the same place.
-                let hugs = matches!(p.width, Len::Hug(_)) || (matches!(p.width, Len::Unset) && p.halign != Align::AlignUnset);
-                let bound = if !wrap {
-                    None
-                } else if !hugs {
-                    match p.width {
-                        Len::Exact(n) => Some(inner_w.map_or(n - inset[0] - inset[2], |i| i.min(n - inset[0] - inset[2])).max(0.0)),
-                        _ => inner_w,
-                    }
-                } else if p.max_width.is_some() || p.max_width_fill {
-                    inner_w
-                } else {
-                    None
-                };
-                // A hair of slack on the bound: a box that took its width
-                // FROM this text (a natural Tiles cell, a hugging Flow
-                // item, a hug chain) hands back a bound equal to the text
-                // to the last float digit, and the sums arrive in another
-                // order — without the slack the compare flips and a name
-                // that fits exactly folds to two lines (D112, the
-                // "Red Eyes Fix" chip).
-                let bound = bound.map(|b| b + WRAP_SLACK_EPX);
-                let (w, h) = self.text.measure(text, self.font_size(id), bound, self.font_key(id));
+                let (w, h) = self.text_extent(id, self.text_of(id).unwrap_or(""), avail_w, inset[0] + inset[2]);
                 // A `clip_text=true` label demands no width — it cuts
                 // itself to whatever it gets (the effect captions in
-                // tiles). A wrapping label that FILLS its width bends to
-                // the box but never below Godot's autowrap minimum, the
-                // longest word (GPAR77): a hug Row's leftover then shows
-                // a sliver, not nothing.
-                let w = if self.res.bool(self.page, id, PropKey::ClipText).unwrap_or(false) {
-                    0.0
-                } else if wrap && matches!(p.width, Len::Fill(_)) {
-                    self.text.narrowest_wrap(text, self.font_size(id), self.font_key(id))
-                } else {
-                    w
-                };
+                // tiles).
+                let w = if self.res.bool(self.page, id, PropKey::ClipText).unwrap_or(false) { 0.0 } else { w };
                 (w, h)
             }
             // A seat's minimum is its occupant's, margins never counted (the
@@ -795,9 +804,22 @@ impl<'a> Lay<'a> {
                 (w, h)
             }
             Kind::Button | Kind::Check | Kind::Toggle | Kind::Radio => {
+                // The native mark (spec "Default look"); a templated one (a
+                // body) is a blank surface sized by its body alone.
+                let marked: bool = matches!(node.kind, Kind::Check | Kind::Toggle | Kind::Radio) && node.children.1 == 0;
+                let (mark_w, mark_h) = if !marked {
+                    (0.0, 0.0)
+                } else if node.kind == Kind::Toggle {
+                    (TOGGLE_PILL.0, TOGGLE_TOUCH_EPX)
+                } else {
+                    (CHECK_BOX_EPX, CHECK_BOX_EPX)
+                };
+                let text: Option<&str> = self.text_of(id);
+                // The width the mark and its gap take beside the text.
+                let beside: f32 = if marked { mark_w + if text.is_some() { MARK_TEXT_GAP } else { 0.0 } } else { 0.0 };
                 let (mut w, mut h) = (0.0f32, 0.0f32);
-                if let Some(text) = self.text_of(id) {
-                    let (tw, th) = self.text.measure(text, self.font_size(id), None, self.font_key(id));
+                if let Some(text) = text {
+                    let (tw, th) = self.text_extent(id, text, avail_w, inset[0] + inset[2] + beside);
                     w = tw;
                     h = th;
                 }
@@ -806,14 +828,7 @@ impl<'a> Lay<'a> {
                     w = w.max(cw);
                     h = h.max(ch);
                 }
-                // The native mark (spec "Default look"); a templated one (a
-                // body) is a blank surface sized by its body alone.
-                if matches!(node.kind, Kind::Check | Kind::Toggle | Kind::Radio) && node.children.1 == 0 {
-                    let (mw, mh) = if node.kind == Kind::Toggle { (TOGGLE_PILL.0, TOGGLE_TOUCH_EPX) } else { (CHECK_BOX_EPX, CHECK_BOX_EPX) };
-                    w += mw + if self.text_of(id).is_some() { MARK_TEXT_GAP } else { 0.0 };
-                    h = h.max(mh);
-                }
-                (w, h)
+                (w + beside, h.max(mark_h))
             }
             Kind::Column | Kind::Choice => self.stack_min(id, Axis::Y, inner_w),
             Kind::List => {
@@ -1152,8 +1167,7 @@ impl<'a> Lay<'a> {
             // GP33 `automatic=angle` (the knob-thumb seat): the slot's
             // CENTER sits on the circle centered in its host, inside the
             // rim by half the slot's own extent, at from + fraction x
-            // sweep (degrees, Godot's screen convention: 0 = right,
-            // clockwise positive).
+            // sweep (degrees on the compass: 0 = up, clockwise positive).
             Auto::Angle { from, sweep, .. } => {
                 let f = self.res.auto_frac(self.page, id);
                 let (ow, oh) = self.size_at(id, Some(frame.w));
@@ -1161,7 +1175,7 @@ impl<'a> Lay<'a> {
                 let theta = (from + f * sweep).to_radians();
                 p.width = Len::Hug(0.0);
                 p.height = Len::Hug(0.0);
-                Rect::new(frame.x + frame.w / 2.0 + theta.cos() * radius - ow / 2.0, frame.y + frame.h / 2.0 + theta.sin() * radius - oh / 2.0, ow, oh)
+                Rect::new(frame.x + frame.w / 2.0 + theta.sin() * radius - ow / 2.0, frame.y + frame.h / 2.0 - theta.cos() * radius - oh / 2.0, ow, oh)
             }
             _ => frame,
         };

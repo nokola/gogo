@@ -144,7 +144,7 @@ A list `[…` reached the end of the file unclosed.
 
 A property position holds something that is not a value (a stray
 symbol, or nothing: the line ends after `=`). Inside calls, named
-arguments are legal grammar: `arc(from=-225, sweep=270)`.
+arguments are legal grammar: `arc(from=-135, sweep=270)`.
 
 ## G0022 — `key = …` is only legal inside a `when` block
 
@@ -1201,7 +1201,7 @@ Dot d 200x8
 
 The driver set is closed (`position`, `length`, `presence`, `arc`,
 `angle`; the last two take their aperture in parentheses:
-`automatic=arc(from=-225, sweep=270)`); `by` couples it to a value or
+`automatic=arc(from=-135, sweep=270)`); `by` couples it to a value or
 state and `in a..b` gives the value's range — each form's message names
 what is missing or extra.
 

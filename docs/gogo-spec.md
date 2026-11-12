@@ -365,7 +365,8 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
   an automatic coupling, fully spelled — nothing defaults invisibly
   (D134): `automatic=<kind> by <driver>`. Kinds: `length`/`position`
   (linear), `arc`/`angle` (radial — config REQUIRED in the kind's parens:
-  `arc(from=-225, sweep=270)`, degrees, 0° right, clockwise positive),
+  `arc(from=-135, sweep=270)`, degrees on the compass as an `Arc`'s: 0°
+  up, clockwise positive),
   `presence` (existence). The fraction kinds drive
   `by $value in $min..$max` (v1: exactly those params — the fraction
   `(value-min)/(max-min)`); presence drives `by <state>` (a bool has no
@@ -460,7 +461,9 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
     written width like any box and folds its text there, inside a word
     where a word is wider than the box. Where the room is no written number
     (a Row's leftover, a chain of unwritten boxes) a wrapping `fill` Label
-    is never narrower than its longest word.
+    is never narrower than its longest word. The own text of a Button, a
+    Check, a Radio and a Toggle folds by the Label's rule with
+    `wrap=true`; such a control takes a written width like any box.
     (The Godot addon let the engine grow the filler to its minimum —
     a recorded difference.) `width=host` / `height=host`, the addon's word
     for an axis the host's code sizes, are gone (G0055): a layout that
@@ -1675,13 +1678,18 @@ Sizes are epx. `accent` and `gray` are the palette's words.
 - **Toggle** — a 44×22 pill, `gray` off / `accent` on, with a white 18
   knob at the off/on end. A bare Toggle's BOX is at least 44 tall — a
   finger target — with the pill centered in it; the drag reads x only,
-  so the tall box changes no math.
+  so the tall box changes no math. A tap, a key or a write from code
+  glides the knob to the other end in 0.12 s (`cubic_out`); a bare
+  `transition` line in the Toggle's block sets another time, and
+  `duration=0` is the jump. Under a finger the knob follows at once.
 - **Slider** — a 4-tall `#5A5A5A` track, white 0.6 fill to the value, a
   white 16 knob. A bare Slider's strip is 32 tall.
 - **Input** — a bare Input is 36 tall; the text sits 8 inside the padding
   on the left and right,
   the caret is a thin bar at the typing point, and `placeholder_text=`
-  draws at half the ink's alpha while the field is empty.
+  draws at half the ink's alpha while the field is empty. Its plate is
+  drawn as any box's: `border_dash=` and the four `corner_radius_*`
+  words work on it.
 - **List rows** — a bare `ListItem` shows selection, the press and the
   keyboard cursor out of the box: the selected fill is white at 0.3,
   a held row shades at half that, the cursor echo is a quarter of it.

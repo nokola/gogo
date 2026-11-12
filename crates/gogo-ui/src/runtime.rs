@@ -338,11 +338,22 @@ fn assign_key(k: &mut ItemKey, leaf: &ItemValue) {
     }
 }
 
+/// How long the knob of a built-in Toggle takes to the other end, with
+/// `cubic_out`, when the Toggle has no bare `transition` rule of its own.
+pub const TOGGLE_GLIDE_SEC: f32 = 0.12;
+
+/// Does this Toggle draw its own pill and knob: a built-in Toggle with no
+/// body of its own?
+fn draws_own_knob(node: &crate::page::Node) -> bool {
+    node.kind == Kind::Toggle && node.children.1 == 0
+}
+
 #[derive(Clone, Debug)]
 /// One automatic slot's fraction glide (GP33, the addon's GogoDriver):
 /// a value flip travels in FRACTION space by the control's default feel;
 /// landing writes the rest truth (disarm HOLDS — the driven layout keeps
-/// its last value, because it is truth, not displacement).
+/// its last value, because it is truth, not displacement). The knob of a
+/// built-in Toggle glides the same way, under the Toggle's own node.
 struct AutoGlide {
     node: NodeId,
     from: f32,
@@ -530,6 +541,10 @@ pub struct Runtime {
     /// Per node: is it a Toggle — its `selected` and value derive from
     /// each other on code writes (GP37).
     toggle: Vec<bool>,
+    /// The built-in Toggles that draw their own knob (`draws_own_knob`).
+    /// Each resolve steers their knobs (`steer_glide`), so the list keeps
+    /// that off the other nodes.
+    knobs: Vec<NodeId>,
     /// Arrangements flipped by `go_instant` whose changes have not yet
     /// resolved — their flip arms no tweens, glides or rule anims.
     instant_flips: Vec<ArrangementId>,
@@ -603,6 +618,7 @@ impl Runtime {
             auto_glides: Vec::new(),
             radio_choice: page.nodes.iter().map(|n| if n.kind == Kind::Radio { n.choice } else { NO_CHOICE }).collect(),
             toggle: page.nodes.iter().map(|n| n.kind == Kind::Toggle).collect(),
+            knobs: page.node_ids().filter(|n| draws_own_knob(&page.nodes[*n])).collect(),
             instant_flips: Vec::new(),
             pending_settle: None,
             dirty: true,
@@ -701,6 +717,7 @@ impl Runtime {
             arrangement_count: _,
             radio_choice: _,
             toggle: _,
+            knobs: _,
             auto_rest: _,
             owned_text: _,
             // Reset — derived again by the next resolve, layout and draw.
@@ -1206,6 +1223,7 @@ impl Runtime {
         self.radio_choice.extend(page.nodes[from..].iter().map(|nd| if nd.kind == Kind::Radio { nd.choice } else { NO_CHOICE }));
         let from = self.toggle.len();
         self.toggle.extend(page.nodes[from..].iter().map(|nd| nd.kind == Kind::Toggle));
+        self.knobs.extend((from..page.nodes.len()).map(NodeId::from_index).filter(|n| draws_own_knob(&page.nodes[*n])));
         // The new rows take the static rule like the template did — the
         // clone copies the template's `when`s, shares its props and
         // handlers, and the slot's anims and drivers are already pushed
@@ -1993,9 +2011,6 @@ impl Runtime {
             PropKey::SelectedProp => return self.set_state(node, SELECTED, value == Value::VBool(true)),
             _ => {}
         }
-        // `keyboard_target` is read when the page is built and nothing
-        // reads it after: a write here would be accepted and dropped.
-        debug_assert!(key != PropKey::KeyboardTarget, "`keyboard_target` is read when the page is built — a write while the page runs changes nothing; write it in the `.gogo` file");
         // GP37: `selected` DERIVES from a Toggle's value — a code write
         // of `value=1` selects (the shipped tgl.derive-on).
         if key == PropKey::Value && self.toggle.get(node.index()).copied().unwrap_or(false) {
@@ -2359,6 +2374,21 @@ impl Runtime {
             self.raised.push((node, raise));
         }
         self.dirty = true;
+    }
+
+    /// Can `node` take the keyboard focus: what the build decided for it
+    /// (`Node::focusable`: its kind, with the file's `keyboard_target=off`
+    /// counted), unless code wrote `keyboard_target=off` on it. Asked when
+    /// Tab or an arrow moves the focus, when a tap gives it, and when a
+    /// key goes to the focused node.
+    ///
+    /// Needed so code can take a control out of the Tab order without
+    /// disabling it, which would also dim it and block touch.
+    ///
+    /// The file has the one word `off`, so a write can only switch a node
+    /// off; `clear_prop` gives the file's answer back.
+    pub fn takes_keys(&self, page: &Page, node: NodeId) -> bool {
+        page.nodes[node].focusable && !self.writes.iter().any(|(n, w)| *n == node && w.key == PropKey::KeyboardTarget && matches!(w.value, Value::VIdent(word) if page.str(word) == "off"))
     }
 
     /// EFFECTIVE `disabled`: the node's own flag or any PLACED ancestor's
@@ -3169,6 +3199,10 @@ pub struct Resolved {
     pub auto: Vec<(NodeId, f32)>,
     /// GP33: each presence slot and whether its driving state holds.
     pub presence: Vec<(NodeId, bool)>,
+    /// The knobs of built-in Toggles on their way to the other end: how
+    /// far along each shows, 0 at the off end and 1 at the on end. A
+    /// Toggle that is not listed shows its knob at its value.
+    pub knob: Vec<(NodeId, f32)>,
     /// The focused Input's caret (copied from the Runtime).
     pub caret: Option<(NodeId, u32)>,
     /// The focused Input's selected span (copied from the Runtime).
@@ -3208,6 +3242,7 @@ impl Clone for Resolved {
         self.tree.clone_from(&from.tree);
         self.hiding.clone_from(&from.hiding);
         self.auto.clone_from(&from.auto);
+        self.knob.clone_from(&from.knob);
         self.presence.clone_from(&from.presence);
         self.caret = from.caret;
         self.selection = from.selection;
@@ -3607,7 +3642,7 @@ impl Resolved {
 }
 
 fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
-    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], anim_owned_props: Vec::new(), placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), override_span: Vec::with_capacity(page.nodes.len()), override_tail: 0, variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), tree: PlacedTree::default(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), auto: Vec::new(), presence: Vec::new(), caret: rt.caret, selection: rt.selection, sel_handles: rt.sel_handles };
+    let mut r = Resolved { anim_owned: vec![0; page.nodes.len()], anim_owned_props: Vec::new(), placement: Vec::with_capacity(page.nodes.len()), overrides: Vec::new(), override_span: Vec::with_capacity(page.nodes.len()), override_tail: 0, variant: rt.variant, scroll: rt.scroll.clone(), safe: rt.safe, motion: vec![Motion::IDENTITY; page.nodes.len()], seat: vec![NO_NODE; page.nodes.len()], states: rt.states.clone(), raised: rt.raised.clone(), locale: rt.locale.clone(), repeat_rows: rt.pools.iter().map(|p| (p.repeat, p.live.iter().map(|s| p.slots[*s as usize]).collect())).collect(), tree: PlacedTree::default(), hiding: rt.players.iter().filter(|p| !p.stopped).filter_map(|p| match p.finish { Finish::HideWhen(n) => Some(n), _ => None }).collect(), auto: Vec::new(), presence: Vec::new(), knob: Vec::new(), caret: rt.caret, selection: rt.selection, sel_handles: rt.sel_handles };
     for i in 0..page.nodes.len() {
         let id = NodeId::from_index(i);
         let span_start: u32 = r.overrides.len() as u32;
@@ -3643,6 +3678,7 @@ fn resolve_ladder(page: &Page, rt: &Runtime) -> Resolved {
         auto.push((d.node, shown));
     }
     r.auto = auto;
+    knobs_in_flight(rt, &mut r.knob);
     fold_seats_and_motion(page, rt, &mut r);
     settle_seats(page, rt, &mut r.seat, &mut Vec::new(), &mut Vec::new());
     r
@@ -3965,6 +4001,86 @@ fn placement_value(p: &Placement, key: PropKey) -> Option<Value> {
 /// control serves every filter's range, written at open. Colorize's
 /// Saturation runs 0..1, and against the contract's baked 0..10 the
 /// fill showed 7% at 70% (todo-bugs.md #6).
+/// Fills `out` with the built-in Toggle knobs on their way
+/// (`Resolved::knob`): the glides in flight whose node is a Toggle.
+fn knobs_in_flight(rt: &Runtime, out: &mut Vec<(NodeId, f32)>) {
+    out.clear();
+    out.extend(rt.auto_glides.iter().filter(|g| rt.toggle.get(g.node.index()).copied().unwrap_or(false)).map(|g| (g.node, g.shown)));
+}
+
+/// The bare `transition` rule written on `node` (no `from -> to`), as
+/// its duration and easing: a control's default feel.
+fn bare_rule(page: &Page, node: NodeId) -> Option<(f32, Easing)> {
+    let rule = page.transitions.iter().find(|t| t.node == node && t.from.is_none() && t.to.is_none())?;
+    let easing = if rule.easing == NO_STR { Easing::LINEAR } else { Easing::parse(page.str(rule.easing)).unwrap_or(Easing::LINEAR) };
+    Some((rule.duration, easing))
+}
+
+/// Records `f` as where the value-driven part `node` rests.
+fn set_rest(rt: &mut Runtime, node: NodeId, f: f32) {
+    match rt.auto_rest.iter_mut().find(|(n, _)| *n == node) {
+        Some(e) => e.1 = f,
+        None => rt.auto_rest.push((node, f)),
+    }
+}
+
+/// Sends one value-driven part toward `target`, the fraction its
+/// control's value asks for now. The part is `node`: an automatic slot,
+/// or a built-in Toggle standing for its knob.
+///
+/// Needed so a value that changes in one step (a tap, a key, a code
+/// write) moves its part over a few frames, while a part under a finger
+/// stays under it.
+///
+/// - `held`, the finger is on the control: the part is at the target at
+///   once and a glide in flight ends there.
+/// - A glide in flight turns toward a target that moved, from where it
+///   shows.
+/// - A target that moved off the part's rest starts a glide by `feel`
+///   (a duration over 0 and an easing); with no `feel` the part is at
+///   the target at once.
+///
+/// `first` is the rest of a part this function has not seen before.
+///
+/// Returns the fraction the part shows this frame when the look does not
+/// hold it yet: the target under a finger, and the rest on the frame a
+/// glide starts.
+fn steer_glide(rt: &mut Runtime, node: NodeId, target: f32, held: bool, first: f32, feel: impl FnOnce() -> Option<(f32, Easing)>) -> Option<f32> {
+    if held {
+        rt.auto_glides.retain(|g| g.node != node);
+        set_rest(rt, node, target);
+        return Some(target);
+    }
+    if let Some(g) = rt.auto_glides.iter_mut().find(|g| g.node == node) {
+        if (g.to - target).abs() > 1e-6 {
+            g.from = g.shown;
+            g.to = target;
+            g.elapsed = 0.0;
+        }
+        return None;
+    }
+    let rest: f32 = match rt.auto_rest.iter().find(|(n, _)| *n == node) {
+        Some((_, f)) => *f,
+        None => {
+            rt.auto_rest.push((node, first));
+            first
+        }
+    };
+    if (target - rest).abs() <= 1e-6 {
+        return None;
+    }
+    match feel().filter(|(duration, _)| *duration > 0.0) {
+        Some((duration, easing)) => {
+            rt.auto_glides.push(AutoGlide { node, from: rest, to: target, elapsed: 0.0, duration, easing, shown: rest });
+            Some(rest)
+        }
+        None => {
+            set_rest(rt, node, target);
+            None
+        }
+    }
+}
+
 fn driver_fraction(page: &Page, r: &Resolved, d: &crate::page::AutoDriver, v: f32) -> f32 {
     let min = r.num(page, d.root, PropKey::Min).unwrap_or(d.min);
     let max = r.num(page, d.root, PropKey::Max).unwrap_or(d.max);
@@ -4529,46 +4645,29 @@ fn resolve_into(page: &Page, rt: &mut Runtime, r: &mut Resolved) {
         // rule: "mid-drag writes land directly, discrete changes
         // glide"). Without this the effect page's switch, feel 0.3 s,
         // trailed the finger by a glide per sample.
-        if rt.has(d.root, HELD) {
-            rt.auto_glides.retain(|g| g.node != d.node);
-            if let Some(e) = rt.auto_rest.iter_mut().find(|(n, _)| *n == d.node) {
-                e.1 = target;
-            }
-            if let Some(e) = r.auto.iter_mut().find(|(n, _)| *n == d.node) {
-                e.1 = target;
-            }
-            continue;
-        }
-        if let Some(g) = rt.auto_glides.iter_mut().find(|g| g.node == d.node) {
-            if (g.to - target).abs() > 1e-6 {
-                g.from = g.shown;
-                g.to = target;
-                g.elapsed = 0.0;
-            }
-            continue;
-        }
-        let rest = rt.auto_rest.iter().find(|(n, _)| *n == d.node).map(|(_, f)| *f).unwrap_or_else(|| baked_frac(page, d.node));
-        if (target - rest).abs() <= 1e-6 {
-            continue;
-        }
-        let feel = page.transitions.iter().find(|t| t.node == d.root && t.from.is_none() && t.to.is_none());
-        match feel {
-            Some(rule) if rule.duration > 0.0 => {
-                let easing = if rule.easing == NO_STR { Easing::LINEAR } else { Easing::parse(page.str(rule.easing)).unwrap_or(Easing::LINEAR) };
-                rt.auto_glides.push(AutoGlide { node: d.node, from: rest, to: target, elapsed: 0.0, duration: rule.duration, easing, shown: rest });
-                // This frame still shows the rest value — the glide owns
-                // the travel from here.
-                if let Some(e) = r.auto.iter_mut().find(|(n, _)| *n == d.node) {
-                    e.1 = rest;
-                }
-            }
-            _ => {
-                if let Some(e) = rt.auto_rest.iter_mut().find(|(n, _)| *n == d.node) {
-                    e.1 = target;
-                }
-            }
+        let held: bool = rt.has(d.root, HELD);
+        let shows: Option<f32> = steer_glide(rt, d.node, target, held, baked_frac(page, d.node), || bare_rule(page, d.root));
+        // Under a finger the slot is at its target; on the frame a glide
+        // starts it still shows its rest — the glide owns the travel
+        // from there.
+        if let (Some(f), Some(e)) = (shows, r.auto.iter_mut().find(|(n, _)| *n == d.node)) {
+            e.1 = f;
         }
     }
+    // The knob of a built-in Toggle travels the same way. Its target is
+    // the Toggle's value, or the selected end where no value is written;
+    // the Toggle's own bare `transition` rule times it (`duration=0` is
+    // the jump), and without one it takes `TOGGLE_GLIDE_SEC`. A knob seen
+    // for the first time, and one on a Toggle that does not show, is at
+    // its target at once.
+    for k in 0..rt.knobs.len() {
+        let t: NodeId = rt.knobs[k];
+        let target: f32 = r.num(page, t, PropKey::Value).map(|v| v.clamp(0.0, 1.0)).unwrap_or(if rt.has(t, SELECTED) { 1.0 } else { 0.0 });
+        let shows: bool = rt.vis_seen.get(t.index()).copied().unwrap_or(false);
+        let held: bool = rt.has(t, HELD);
+        steer_glide(rt, t, target, held, target, || if shows { bare_rule(page, t).or(Some((TOGGLE_GLIDE_SEC, Easing::CUBIC_OUT))) } else { None });
+    }
+    knobs_in_flight(rt, &mut r.knob);
     // The tail, second half. In-flight tweens overlay (they retarget
     // from live values by construction); a motion tween lands in the
     // node's transform as it is pushed.

@@ -424,8 +424,8 @@ pub enum Auto {
     /// Content exists iff the named state holds.
     Presence(bool),
     /// The region's angular wedge [from, from + frac x sweep] reveals its
-    /// content -- drawing and hits agree (spec 4.6). Degrees, Godot's
-    /// screen convention: 0 = right, clockwise positive.
+    /// content -- drawing and hits agree (spec 4.6). Degrees on the
+    /// compass: 0 = up, clockwise positive.
     Arc { from: f32, sweep: f32, frac: f32 },
     /// The region SEATS on the circle centered in its host, at
     /// from + frac x sweep (an angular position, never a rotation).
@@ -1880,7 +1880,6 @@ pub const UNREAD_BY_DESIGN: &[(PropKey, &str)] = &[
     (PropKey::Release, "read at compile into the build's `RELEASE_UNUSED` list (`Images::release_lines`); the host frees those pictures when no live page names them"),
     (PropKey::TouchTarget, "accepted: `touch_target=off` silences the 44-epx finger-target lint; the lint is not built here yet (GP41), and hit testing always uses the node's own rect"),
     (PropKey::AccessibilityName, "host-read: no screen-reader bridge here yet"),
-    (PropKey::KeyboardTarget, "read at compile into `Node.focusable`, not as a prop: `keyboard_target=off` keeps keyboard focus off the node"),
     (PropKey::Automatic, "read at compile into `Node.auto`, not as a prop"),
     (PropKey::SeatOf, "read at resolve through `Resolved.seat`, not as a prop"),
     (PropKey::Areas, "read at compile: `Compiler::grid_areas` expands it into `row { }` structure before the node builds"),

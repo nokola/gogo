@@ -235,6 +235,12 @@ impl PlacedTree {
         Subtree { tree: self, root: id, cur: if id.index() < self.len() { id } else { NO_NODE }, paint: false, all: false }
     }
 
+    /// The walk of `subtree(root)` picked up at `start`, a shown node
+    /// under `root`: `start` first, then every node after it.
+    pub fn subtree_from(&self, root: NodeId, start: NodeId) -> Subtree<'_> {
+        Subtree { tree: self, root, cur: if start.index() < self.len() { start } else { NO_NODE }, paint: false, all: false }
+    }
+
     /// `subtree` with siblings in paint order.
     pub fn paint_subtree(&self, id: NodeId) -> Subtree<'_> {
         Subtree { tree: self, root: id, cur: if id.index() < self.len() { id } else { NO_NODE }, paint: true, all: false }

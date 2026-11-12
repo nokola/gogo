@@ -362,7 +362,7 @@ impl<'a> Parser<'a> {
                     self.error("G0019", format!("missing `)` in `{name}(`"));
                     break;
                 }
-                // `arc(from=-225, sweep=270)` — a named argument
+                // `arc(from=-135, sweep=270)` — a named argument
                 // (GPAR32: the production; the call site owns the names).
                 Tok::Ident { word, opacity: None, pos: None } if self.peek_at(1) == &Tok::Eq => {
                     let aname = word.clone();

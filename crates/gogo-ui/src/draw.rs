@@ -110,8 +110,8 @@ pub enum Draw {
     ClipPop,
     /// GP33 `automatic=arc`: everything until the pop shows only inside
     /// the angular wedge [from, from + span] about (cx, cy) — the fan
-    /// mask behind a Knob's progress ring. Degrees, Godot's screen
-    /// convention (0 = right, clockwise positive); span <= 0 hides all.
+    /// mask behind a Knob's progress ring. Degrees on the compass (0 =
+    /// up, clockwise positive), as an `Arc`'s; span <= 0 hides all.
     WedgePush { cx: f32, cy: f32, from: f32, span: f32 },
     WedgePop,
     /// Everything until the matching `RotatePop` turns `angle` degrees
@@ -777,9 +777,11 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
                         let pill = if selected { accent } else { mul_alpha(TOGGLE_OFF, opacity) };
                         push_shown(out, Draw::Quad { rect: mark, color: pill, corner: mh / 2.0, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
                         let inset = (mh - TOGGLE_KNOB_EPX) / 2.0;
-                        // The knob sits where the finger left it (`value=` 0..1,
-                        // written by a drag); with no value, at the selected end.
-                        let fraction = res.num(page, id, PropKey::Value).map(|v| v.clamp(0.0, 1.0)).unwrap_or(if selected { 1.0 } else { 0.0 });
+                        // A knob on its way to the other end shows where its
+                        // glide is (`Resolved::knob`). Otherwise it sits at
+                        // the Toggle's value (`value=` 0..1, written by a
+                        // drag); with no value, at the selected end.
+                        let fraction = res.knob.iter().find(|(n, _)| *n == id).map(|(_, f)| *f).unwrap_or_else(|| res.num(page, id, PropKey::Value).map(|v| v.clamp(0.0, 1.0)).unwrap_or(if selected { 1.0 } else { 0.0 }));
                         let x = mark.x + inset + (mark.right() - inset - TOGGLE_KNOB_EPX - (mark.x + inset)) * fraction;
                         push_shown(out, Draw::Circle { rect: Rect::new(x, mark.y + inset, TOGGLE_KNOB_EPX, TOGGLE_KNOB_EPX), color: white, border: 0.0, border_color: Color_Straight_Srgb_4xU8_RGBA::TRANSPARENT });
                     }
@@ -796,7 +798,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
                     color: text_color(),
                     halign: text_align(page, res, id, PropKey::TextHalign, halign_default),
                     valign: text_align(page, res, id, PropKey::TextValign, TextAlign::Center),
-                    wrap: false,
+                    wrap: res.bool(page, id, PropKey::Wrap).unwrap_or(false),
                     font: res.font(page, id).unwrap_or(NO_STR),
                 });
             }
@@ -1047,7 +1049,7 @@ fn walk(page: &Page, res: &Resolved, rects: &[Rect], id: NodeId, opacity: f32, s
         Kind::Input => {
             // Godot's default LineEdit plate: (0.1, 0.1, 0.1) at 0.6, no border.
             let bg = color(PropKey::Background).unwrap_or(mul_alpha(Color_Straight_Srgb_4xU8_RGBA([0x1A, 0x1A, 0x1A, 0x99]), opacity));
-            push_shown(out, Draw::Quad { rect, color: bg, corner, border, border_color });
+            plate_quad(out, rect, bg, border, border_color);
             // The selection highlight, under the glyphs
             // (`selection_color=`; unset = white at 25% over the dark
             // chrome).
@@ -1331,8 +1333,10 @@ pub(crate) fn moved_rects(page: &Page, res: &Resolved, rects: &[Rect]) -> Option
 }
 
 /// The shared wedge formula (drawing and hits agree by construction): is
-/// the point's angle within [from_deg, from_deg + span_deg]? Degrees,
-/// Godot's screen convention (0 = right, clockwise positive).
+/// the point's angle within [from_deg, from_deg + span_deg]? Degrees on
+/// the compass (0 = up, clockwise positive): the dial an `Arc`'s `from=`
+/// and a Gradient's `angle=` are read on, so a ring and the wedge that
+/// reveals it take the same two numbers.
 pub(crate) fn wedge_contains(dx: f32, dy: f32, from_deg: f32, span_deg: f32) -> bool {
     if span_deg <= 0.0 {
         return false;
@@ -1340,7 +1344,7 @@ pub(crate) fn wedge_contains(dx: f32, dy: f32, from_deg: f32, span_deg: f32) -> 
     if span_deg >= 360.0 || dx * dx + dy * dy < 1e-6 {
         return true;
     }
-    (dy.atan2(dx).to_degrees() - from_deg).rem_euclid(360.0) <= span_deg
+    (dx.atan2(-dy).to_degrees() - from_deg).rem_euclid(360.0) <= span_deg
 }
 
 /// The node under (`x`, `y`) on the DRAWN frame `f`; `any` = count the
@@ -1516,6 +1520,7 @@ pub struct DrawCache {
     hiding: Vec<NodeId>,
     presence: Vec<(NodeId, bool)>,
     auto: Vec<(NodeId, f32)>,
+    knob: Vec<(NodeId, f32)>,
     scroll: Vec<[f32; 2]>,
     caret: Option<(NodeId, u32)>,
     selection: Option<(NodeId, u32, u32)>,
@@ -1562,6 +1567,7 @@ impl Default for DrawCache {
             hiding: Vec::new(),
             presence: Vec::new(),
             auto: Vec::new(),
+            knob: Vec::new(),
             scroll: Vec::new(),
             caret: None,
             selection: None,
@@ -1656,6 +1662,7 @@ impl DrawCache {
         crate::layout::sym_diff_nodes(&self.hiding, &res.hiding, &mut changed);
         crate::layout::diff_pairs(&self.presence, &res.presence, &mut changed);
         crate::layout::diff_pairs(&self.auto, &res.auto, &mut changed);
+        crate::layout::diff_pairs(&self.knob, &res.knob, &mut changed);
         if self.caret != res.caret {
             changed.extend(self.caret.iter().chain(&res.caret).map(|(node, _)| *node));
         }
@@ -1817,6 +1824,7 @@ impl DrawCache {
         self.hiding.clone_from(&res.hiding);
         self.presence.clone_from(&res.presence);
         self.auto.clone_from(&res.auto);
+        self.knob.clone_from(&res.knob);
         self.scroll.clone_from(&res.scroll);
         self.caret = res.caret;
         self.selection = res.selection;

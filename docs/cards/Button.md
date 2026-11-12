@@ -7,6 +7,8 @@ fires `change(bool)`.
 Content minimums derive from free children, positive margins included
 (an exact size clamps; a negative margin takes that much off the child's
 claim, never below zero).
+`wrap=true` folds the Button's own text where its width binds it, as on
+a Label, and the Button grows as tall as its lines.
 
 ```
 style ToolButton min_height=36 {

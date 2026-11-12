@@ -883,7 +883,9 @@ fn for_style_extends_matrix() {
 
 // ----------------------------------------------------------------- _radial_tests
 
-/// The Godot suite's `KNOB_SRC` (run_tests.gd 3958-3979), verbatim.
+/// The Godot suite's `KNOB_SRC` (run_tests.gd 3958-3979), with its two
+/// `from=` on the compass: Godot counts -225 from the right, which is
+/// -135 from the top.
 const KNOB_SRC: &str = r#"
 control Knob $value=0, $min=0, $max=1, $step=0, min_size=48x48 {
     state_builtin hovered, focused, disabled
@@ -892,10 +894,10 @@ control Knob $value=0, $min=0, $max=1, $step=0, min_size=48x48 {
     transition duration=0.15, easing=cubic_out
     Circle color=#333333FF {
         slot track width=fill, height=fill {
-            slot progress automatic=arc(from=-225, sweep=270) by $value in $min..$max {
+            slot progress automatic=arc(from=-135, sweep=270) by $value in $min..$max {
                 Arc thickness=4, color=#4488FFFF
             }
-            slot thumb automatic=angle(from=-225, sweep=270) by $value in $min..$max {
+            slot thumb automatic=angle(from=-135, sweep=270) by $value in $min..$max {
                 Circle 8x8, color=#FFFFFFFF
             }
         }
@@ -922,7 +924,9 @@ fn arc_primitive_builds_with_its_props() {
 /// `_radial_tests` 3993-3997 (`radial.wedge-inside`, `radial.wedge-outside`,
 /// `radial.wedge-full`, `radial.wedge-empty`): one wedge formula serves
 /// drawing and hits. The four Godot cases, as (point, from°, sweep°) →
-/// inside: ((-1,0), -225, 135) → true; ((1,0), -225, 135) → false;
+/// inside, in Godot's angles (counted from the right; here the same
+/// wedge starts at -135 from the top): ((-1,0), -225, 135) → true;
+/// ((1,0), -225, 135) → false;
 /// ((1,0), -225, 360) → true; ((-1,0), -225, 0) → false. Rust has no arc
 /// wedge yet; the body pins the precondition (an `automatic=arc` slot
 /// compiles) and the four cases wait for the helper's name.
@@ -935,7 +939,7 @@ fn wedge_formula_serves_draw_and_hit() {
 /// `_radial_tests` 3999-4015 (`radial.zero-ok`, `radial.zero-wedge-fraction`,
 /// `radial.zero-wedge-hits-nothing`): at `value=0` the arc wedge is armed
 /// with fraction 0 (the first driver write lands) and a point on the arc
-/// (24, 4 in a 48 box — the -90° point) hits nothing.
+/// (24, 4 in a 48 box — the top point) hits nothing.
 #[test]
 fn knob_at_zero_reveals_nothing() {
     let fx = Fx::new(&with_knob("Knob z 48x48, value=0, halign=left, valign=top"));
@@ -945,10 +949,10 @@ fn knob_at_zero_reveals_nothing() {
 
 /// `_radial_tests` 4017-4056 (`radial.knob-ok`, `radial.aperture`,
 /// `radial.wedge-armed`, `radial.wedge-clips-children`, `radial.seat-mid`,
-/// `radial.live-label`): at `value=0.5` the wedge runs -225° for 270° at
-/// fraction 0.5 and clips its children; the `angle` slot seats the 8x8
-/// thumb on the host circle at -90° (center (24, 4), box at (20, 0)); the
-/// live label shows "0.5".
+/// `radial.live-label`): at `value=0.5` the wedge runs from -135° for 270°
+/// at fraction 0.5 and clips its children; the `angle` slot seats the 8x8
+/// thumb on the host circle at 0°, the top (center (24, 4), box at
+/// (20, 0)); the live label shows "0.5".
 #[test]
 fn knob_mid_value_geometry() {
     let fx = Fx::new(&with_knob("Knob k 48x48, value=0.5, halign=left, valign=top"));
@@ -986,7 +990,7 @@ fn instance_line_size_arg_sizes_the_instance() {
 /// an aperture on a widget slot teaches `control`.
 #[test]
 fn radial_error_family() {
-    let off = errors(&with_knob("Knob k 48x48").replace("automatic=arc(from=-225, sweep=270)", "automatic=length(from=-225)"));
+    let off = errors(&with_knob("Knob k 48x48").replace("automatic=arc(from=-135, sweep=270)", "automatic=length(from=-135)"));
     assert!(off.iter().any(|d| d.message.contains("radial")), "{off:#?}");
     let sweep = build(&with_knob("style Wide for=Knob, slot.progress.sweep=90\nKnob k 48x48"));
     assert!(sweep.diags.iter().any(|d| d.code == "G3002"), "{:#?}", sweep.diags);

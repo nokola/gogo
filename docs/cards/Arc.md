@@ -11,3 +11,5 @@ Arc gauge 48x48, from=-90, sweep=180, thickness=3, color=red
 Inside a `control`, an arc slot's default content is typically a bare full
 ring — the slot's WEDGE (`automatic=arc(from=..., sweep=...) by $value in $min..$max`)
 does the revealing, so the aperture is written once, as the kind's config.
+The wedge counts its angles as the `Arc` does: a ring drawn over exactly
+the knob's range takes the same `from=` and `sweep=`.

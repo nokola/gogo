@@ -160,6 +160,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Arc-wedge mask: only fragments whose angle about the wedge center
     // sits within [from, from + span] survive (the shared wedge formula:
     // gogo-ui's `wedge_contains` in draw.rs; hits use the same test).
+    // The angle is on the compass (0 = up, clockwise), as the Arc
+    // stroke's below.
     if (in.wedge.w >= 0.0) {
         let d = in.pos.xy - in.wedge.xy;
         if (in.wedge.w <= 0.0) {
@@ -167,7 +169,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         }
         if (in.wedge.w < 6.2831853 && dot(d, d) > 0.000001) {
             let tau = 6.28318530718;
-            var a = (atan2(d.y, d.x) - in.wedge.z) % tau;
+            var a = (atan2(d.x, -d.y) - in.wedge.z) % tau;
             if (a < 0.0) { a = a + tau; }
             if (a > in.wedge.w) {
                 discard;

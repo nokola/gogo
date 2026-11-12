@@ -57,6 +57,8 @@ pub struct Easing {
 
 impl Easing {
     pub const LINEAR: Easing = Easing { curve: Curve::Linear, mode: Mode::Out, params: [None, None] };
+    /// `cubic_out`: fast off the mark, easing into the end.
+    pub const CUBIC_OUT: Easing = Easing { curve: Curve::Cubic, mode: Mode::Out, params: [None, None] };
 
     /// `cubic_out`, `back_in_out`, bare `cubic` = ease-out (spec). A
     /// parameter list may follow: `bounce_out(1,2.4)` — the form the

@@ -7,8 +7,7 @@ previous leg left the property). On a `Gradient`, `from=`/`to=` are box points (
 stays centered). On an `Arc`, `from=` is the start ANGLE in degrees on the
 compass: 0° points up, positive turns clockwise (`sweep=` says how far it
 goes). Inside a radial kind's config,
-`automatic=arc(from=-225, sweep=270)`, 0° points right instead, still
-clockwise.
+`automatic=arc(from=-135, sweep=270)`, `from=` is on the same compass.
 
 ```
 anim slideIn { card.translate.x from=-40, to=0, duration=0.25 }

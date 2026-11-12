@@ -574,7 +574,7 @@ fn wrong_kind(key: PropKey, kind: Kind) -> String {
         PropKey::Source | PropKey::Fit | PropKey::Loading | PropKey::Release => format!("`{word}=` is an Image word — a {name} shows no picture"),
         PropKey::TextFit | PropKey::TextFlip => format!("`{word}=` stretches a Label's one glyph over its box — a {name} has no glyph to stretch"),
         PropKey::Stops | PropKey::GradientFill | PropKey::Angle | PropKey::GradientRepeat => format!("`{word}=` is a Gradient word — a {name}'s one color is `background=`"),
-        PropKey::From | PropKey::Sweep if kind == Kind::Slot => format!("`{word}=` is a radial kind's config — it goes inside the kind: `automatic=arc(from=-225, sweep=270) by $value in $min..$max`, in a `control`"),
+        PropKey::From | PropKey::Sweep if kind == Kind::Slot => format!("`{word}=` is a radial kind's config — it goes inside the kind: `automatic=arc(from=-135, sweep=270) by $value in $min..$max`, in a `control`"),
         PropKey::From | PropKey::To => format!("`{word}=` aims a Gradient (0..1 box points) or an Arc (degrees) — a {name} takes neither"),
         PropKey::Sweep | PropKey::Thickness => format!("`{word}=` is an Arc word — a {name} sweeps nothing"),
         PropKey::Dash => format!("`dash=` dashes an Arc's stroke — a {name}'s ring or border dashes with `border_dash=`"),
@@ -5883,7 +5883,7 @@ impl<'a> Compiler<'a> {
                     if name == "presence" {
                         self.error("G5107", kind_prop.line, "presence takes no config — `by` picks the driver (`automatic=presence by selected`)");
                     } else {
-                        self.error("G5107", kind_prop.line, "config arguments are named — they say what they set (`automatic=arc(from=-225, sweep=270) by $value in $min..$max`)");
+                        self.error("G5107", kind_prop.line, "config arguments are named — they say what they set (`automatic=arc(from=-135, sweep=270) by $value in $min..$max`)");
                     }
                     return Auto::NoAuto;
                 }
@@ -5909,14 +5909,14 @@ impl<'a> Compiler<'a> {
         if is_radial {
             for (key, _) in &cfg {
                 if key != "from" && key != "sweep" {
-                    self.error("G5107", n.line, format!("`{kind}` config is `from=`/`sweep=` — not '{key}' (`automatic={kind}(from=-225, sweep=270) by $value in $min..$max`)"));
+                    self.error("G5107", n.line, format!("`{kind}` config is `from=`/`sweep=` — not '{key}' (`automatic={kind}(from=-135, sweep=270) by $value in $min..$max`)"));
                     return Auto::NoAuto;
                 }
             }
             for (i, key) in ["from", "sweep"].iter().enumerate() {
                 match cfg.iter().find(|(k, _)| k == key) {
                     None => {
-                        self.error("G5107", n.line, format!("`{kind}` spells its aperture — `{key}=` is missing (`automatic={kind}(from=-225, sweep=270) by $value in $min..$max`)"));
+                        self.error("G5107", n.line, format!("`{kind}` spells its aperture — `{key}=` is missing (`automatic={kind}(from=-135, sweep=270) by $value in $min..$max`)"));
                         return Auto::NoAuto;
                     }
                     Some((_, AstValue::Num { value, unit })) if unit.is_empty() => aperture[i] = *value,

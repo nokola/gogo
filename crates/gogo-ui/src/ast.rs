@@ -13,7 +13,7 @@ pub enum AstValue {
     /// (GPAR99).
     Str { text: String, key: Option<String>, line: u32 },
     Ref { name: String, opacity: Option<f32>, pos: Option<f32> },
-    /// A named call argument (`arc(from=-225, sweep=270)`) — the grammar
+    /// A named call argument (`arc(from=-135, sweep=270)`) — the grammar
     /// production (GPAR32); which calls READ the names is each call
     /// site's own business (GP40/GP33 track the features).
     Named { name: String, value: Box<AstValue> },

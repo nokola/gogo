@@ -745,8 +745,8 @@ parens for the radial kinds), the driver after `by`, the range after
 slot fill  automatic=length by $value in $min..$max
 slot thumb automatic=position by $value in $min..$max
 slot mark  automatic=presence by selected
-slot wedge automatic=arc(from=-225, sweep=270) by $value in $min..$max
-slot dot   automatic=angle(from=-225, sweep=270) by $value in $min..$max
+slot wedge automatic=arc(from=-135, sweep=270) by $value in $min..$max
+slot dot   automatic=angle(from=-135, sweep=270) by $value in $min..$max
 ```
 
 A switch is the other stock behavior — `behavior toggle by $value in
@@ -1536,6 +1536,13 @@ A Label that hugs its own width (`width=hug`, or `halign=` and no width),
 or sits in a `Row` with no width word, renders its wrap-text single-line at
 its full text width (hug = natural size, D254). `wrap=true` beside
 `width=hug` with no `max_width` is linted (G1004).
+
+A Button, a Check, a Radio and a Toggle fold the text on their line the
+same way, and each grows as tall as its lines:
+
+```kdl
+Button saveCopy text="Save a copy to the gallery", wrap=true, width=140
+```
 
 ---
 
@@ -2577,6 +2584,15 @@ glide to the other end; drags settle on the side they land — `change(bool)`
 fires on settle, and only when the settled side differs from where the
 gesture began (wiggling across the middle is zero changes). The `Change`
 event carries the new side as a bool.
+
+The knob takes 0.12 s to the other end. A `transition` line in the
+Toggle's block sets another time, and `duration=0` makes it jump:
+
+```kdl
+Toggle slowSwitch text="Slow" {
+    transition duration=0.3, easing=cubic_out
+}
+```
 
 A Toggle answers to the states like any control, so a style can respond to
 `selected`, `held`, `focused` and `disabled`:

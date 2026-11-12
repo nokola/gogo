@@ -3,7 +3,9 @@ Single-line text entry, with `placeholder_text=` for the hint and
 within the field's box (WPF TextBox Padding, verbatim). Each keystroke
 fires `edit` (the live stream); Enter or focus loss commits and fires
 `change(String)` — once per genuine change. A text written from code
-(`Runtime::set_text`) shows and fires nothing at the write.
+(`Runtime::set_text`) shows and fires nothing at the write. The field's
+plate takes the box words of a Panel: `background=`, a border,
+`border_dash=`, `corner_radius=` and the four corner radii.
 
 ```
 Input nameInput placeholder_text="Painting name", width=fill

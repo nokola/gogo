@@ -726,20 +726,30 @@ fn motion_pumps_run_exactly_while_something_moves() {
 }
 
 /// `_motion_group_tests` 9894-9912 (`mgroup.driver-build`, `driver-joins`,
-/// `driver-leaves`). FLIP for `driver-joins` (todo-gogo.md GP23 SHIPPED:
-/// "the glide is the file's `transition` timing"): Godot's Toggle driver
-/// glides the thumb 0.12 s on every value write; here a value write with
-/// no `transition` in the file snaps and nothing pumps, and with one the
-/// flip's tween pumps while it runs and leaves when it lands.
+/// `driver-leaves`): a value write on a Toggle glides its knob 0.12 s, as
+/// Godot's Toggle driver does, so the page pumps while the knob travels
+/// and stops when it lands. A bare `transition duration=0` in the
+/// Toggle's block is the jump, and nothing pumps. A state rule in the
+/// file times the flip's own tween, which pumps while it runs and leaves
+/// when it lands.
 #[test]
-fn a_toggle_value_write_pumps_only_by_the_files_transition() {
+fn a_toggle_value_write_pumps_while_its_knob_travels() {
     let mut fx = Fx::new("View v { Toggle mute }");
     let t = fx.id("mute");
     let _ = resolve_animated(&fx.page, &mut fx.rt);
     fx.rt.set_prop(t, PropKey::Value, Value::VNum(1.0));
     fx.rt.set_state(t, SELECTED, true);
     let _ = resolve_animated(&fx.page, &mut fx.rt);
-    assert!(!fx.rt.animating(), "no transition in the file: the write snaps, nothing pumps");
+    assert!(fx.rt.animating(), "the knob is on its way: the page pumps");
+    fx.rt.tick(&mut fx.page, 0.5);
+    assert!(!fx.rt.animating(), "the knob landed: the pump leaves");
+    let mut fx = Fx::new("View v { Toggle mute { transition duration=0 } }");
+    let t = fx.id("mute");
+    let _ = resolve_animated(&fx.page, &mut fx.rt);
+    fx.rt.set_prop(t, PropKey::Value, Value::VNum(1.0));
+    fx.rt.set_state(t, SELECTED, true);
+    let _ = resolve_animated(&fx.page, &mut fx.rt);
+    assert!(!fx.rt.animating(), "`duration=0` in the Toggle's block: the knob jumps, nothing pumps");
     let mut fx = Fx::new("View v { Toggle mute background=#000000FF { when selected background=#FF0000FF\n transition any -> selected duration=0.12 } }");
     let t = fx.id("mute");
     let _ = resolve_animated(&fx.page, &mut fx.rt);

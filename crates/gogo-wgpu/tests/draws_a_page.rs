@@ -1,15 +1,16 @@
 //! End to end on a real GPU: a `.gogo` page compiled, laid out with
 //! real text measures, drawn into a texture by `UiRenderer`, read back.
-//! One test draws a plate and its text. The other uploads pictures the
-//! way a host does, several times over, and reads them back.
+//! One test draws a plate and its text. Another uploads pictures the
+//! way a host does, several times over, and reads them back. A third
+//! draws the wedge of a dial and checks it against the hit test.
 //!
 //! Needed because nothing else in this repository runs the shader: the
 //! unit tests cover the gradient tables only, and a renderer whose quads
 //! are right but whose pipeline draws nothing would pass them all.
 //!
-//! Ignored unless asked for: both need a GPU adapter, which a hosted test
-//! machine may not have, and a test that returned early there would count
-//! as passed without having run. On a machine with a GPU:
+//! Ignored unless asked for: all three need a GPU adapter, which a hosted
+//! test machine may not have, and a test that returned early there would
+//! count as passed without having run. On a machine with a GPU:
 //!
 //!     cargo test -p gogo-wgpu -- --include-ignored
 
@@ -237,4 +238,68 @@ fn a_picture_uploaded_again_keeps_its_one_texture_slot() {
     ui.write_image_texture_only(&device, &queue, photo_key, &solid(RED, 2, 2), 2, 2);
     assert_eq!(ui.debug_texture_slot_count(), slots, "the emptied slot is taken again");
     assert_eq!(shown(&mut ui), [RED, RED, YELLOW, YELLOW], "the photo is back, a square again");
+}
+
+/// A dial 80 x 80 at the tile's top left. Its wedge opens from 0 for a
+/// quarter turn, and at `value=1` it is fully open over a green square
+/// that fills the dial.
+const DIAL: &str = r#"
+control Dial $value=0, $min=0, $max=1, $step=0, min_size=80x80 {
+    state_builtin hovered, focused, disabled
+    Layers body {
+        slot track width=fill, height=fill {
+            slot wedge automatic=arc(from=0, sweep=90) by $value in $min..$max {
+                Rectangle green color=#00FF00, width=fill, height=fill
+            }
+        }
+    }
+}
+View card {
+    Dial d 80x80, value=1, halign=left, valign=top
+}
+"#;
+
+/// The shader cuts a wedge where the hit test says it is: `from=0` is 12
+/// o'clock and the sweep runs clockwise, so a quarter wedge from 0 shows
+/// the upper right quarter of its box and nothing of the other three.
+///
+/// Needed because the wedge is worked out twice, in `gogo-ui` for
+/// touches and in the shader for pixels, and only a drawn frame shows
+/// that the two agree.
+#[test]
+#[ignore = "needs a GPU adapter: run with --include-ignored on a machine that has one"]
+fn a_wedge_is_drawn_where_it_takes_touches() {
+    const GREEN: [u8; 4] = [0, 255, 0, 255];
+    const CLEAR: [u8; 4] = [0, 0, 0, 0];
+    // The middle of each quarter of the dial: upper right, lower right,
+    // lower left, upper left.
+    const QUARTERS: [(u32, u32); 4] = [(60, 20), (60, 60), (20, 60), (20, 20)];
+
+    let compiled: Compiled = compile(DIAL, &|_| None);
+    assert!(!has_errors(&compiled.diags), "{:?}", compiled.diags);
+    let page: Page = compiled.page;
+
+    let font: Vec<u8> = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/Fonts/Roboto Regular.ttf")).expect("the font");
+    let text: RefCell<TextEngine> = RefCell::new(TextEngine::new(&[(FONT_KEY, font)]));
+    let runtime: Runtime = Runtime::new(&page);
+    let screen: Rect = Rect::new(0.0, 0.0, TILE.0 as f32, TILE.1 as f32);
+    let measure = EpxMeasure { engine: &text, epx: 1.0, font: None, images: &[] };
+    let kept: KeptFrame = KeptFrame::fresh(&page, resolve(&page, &runtime), screen, &measure);
+    let wedge = page.find("d/wedge").expect("the wedge");
+    let dial: Rect = kept.frame().rects()[wedge.index()];
+    assert_eq!((dial.x, dial.y, dial.w, dial.h), (0.0, 0.0, 80.0, 80.0));
+    let draws: Vec<Draw> = draw(&page, kept.frame());
+
+    let (device, queue) = device();
+    let mut ui: UiRenderer = UiRenderer::new(&device, wgpu::TextureFormat::Rgba8Unorm);
+    let tile: Tex_Tile_Premul_Srgb_4xU8_RGBA = ui.render_to_texture(&device, &queue, &draws, &page, &mut text.borrow_mut(), None, 1.0, (0.0, 0.0), TILE);
+    let pixels: Vec<u8> = read_back(&device, &queue, &tile);
+    let at = |x: u32, y: u32| -> [u8; 4] {
+        let i: usize = ((y * TILE.0 + x) * 4) as usize;
+        [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+    };
+
+    assert_eq!(QUARTERS.map(|(x, y)| at(x, y)), [GREEN, CLEAR, CLEAR, CLEAR], "only the upper right quarter is drawn");
+    let touched: [bool; 4] = QUARTERS.map(|(x, y)| gogo_ui::hit(&page, kept.frame(), x as f32, y as f32, true).is_some_and(|n| kept.look().placed_is_under(&page, n, wedge)));
+    assert_eq!(touched, [true, false, false, false], "and only that quarter takes a touch");
 }
