@@ -48,6 +48,9 @@ List picker {
 - **One tap surface.** The row claims taps wherever the finger lands;
   interactive children (the `Button` above) take their own presses first —
   tapping the button fires the button, not the row.
+- **Where a row sits is the List's to say.** `valign=`, `aspect=`,
+  `overlay=` and the margins are build errors on a ListItem; a row takes
+  `halign=`, `width=`, `max_width=` and `max_height=`.
 - Names inside are per-item local; an event from inside the row carries
   the node it happened on, and `Runtime::item_key(&page, ev.node)` gives
   the row's key.

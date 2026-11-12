@@ -560,6 +560,23 @@ folds the own text of a Button, a Check, a Radio and a Toggle by the
 Label's rule. An Input's plate is drawn by the code every plate uses,
 so it takes `border_dash=` and the four corner radii.
 
+Build checks (decided 2026-11-11). A line that builds and does nothing
+is refused where it is written. A slot fill is checked against the
+widget (G5004). The calls a value takes are a closed list (G0085). A
+widget's name is no keyword, by one list the parser and the compiler
+share (`parser::KEYWORDS`), which a test holds equal to the words the
+editor grammar colors. A shape holds no children (G7014): a child in a
+shape's block was placed as in a `Layers` while a shape with no size of
+its own did not grow to hold it. A word of a group that one kind takes
+no notice of is left out of that kind's row (`page::left_out`):
+`clip_text=` on the four press controls; `wrap=`, `clip_text=` and the
+two text alignment words on an Input; `valign=`, `aspect=` and
+`overlay=` on a ListItem. An Input has no `value=`. A `when` sets no
+state: `selected=`, and `value=` on a Toggle, are refused in one.
+`color.a=` is written live, like a Gradient's `stop_<n>_color`, and is
+refused on a line. `disabled_opacity=` has one home, the `theme { }`
+block. A key that leaves an Input's text as it was raises no `edit`.
+
 Hot reload (decided 2026-11-11). One entry point for every host
 (`reload::Reloader`: `open`, `refresh`), switched by the cargo feature
 `hot-reload`. A runtime flag would leave the compiler linked into the
@@ -1340,17 +1357,17 @@ A Grid cell adds `col_span`, `row_span`; a Tiles cell adds `span`, `full_row`.
 | `Grid` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `cols`, `areas`, `row_height`, `spacing` |
 | `Tiles` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `cols`, `cells`, `spacing` |
 | `Label` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `text`, `font_size`, `font_color`, `wrap`, `clip_text`, `horizontal_alignment`, `vertical_alignment`, `text_fit`, `text_flip` |
-| `Button` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `text`, `font_size`, `font_color`, `wrap`, `clip_text`, `horizontal_alignment`, `vertical_alignment`, `tap_pulse`, `toggle`, `selected` |
+| `Button` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `text`, `font_size`, `font_color`, `wrap`, `horizontal_alignment`, `vertical_alignment`, `tap_pulse`, `toggle`, `selected` |
 | `Image` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `source`, `fit`, `loading`, `release`, `window`, `sampling` |
 | `Rectangle` | `color`, `color.a`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash` |
 | `Circle` | `color`, `color.a`, `border_thickness`, `border_color`, `border_dash` |
 | `Arc` | `color`, `color.a`, `from`, `sweep`, `thickness`, `dash` |
 | `Gradient` | `stops`, `fill`, `angle`, `repeat`, `from`, `to`, `corner_radius` |
 | `Slider` | `background`, `corner_radius`, `color`, `value`, `min`, `max`, `step` |
-| `Input` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `text`, `font_size`, `font_color`, `wrap`, `clip_text`, `horizontal_alignment`, `vertical_alignment`, `value`, `placeholder_text`, `max_length`, `selection_color` |
-| `Check` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `text`, `font_size`, `font_color`, `wrap`, `clip_text`, `horizontal_alignment`, `vertical_alignment`, `tap_pulse`, `selected` |
-| `Toggle` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `text`, `font_size`, `font_color`, `wrap`, `clip_text`, `horizontal_alignment`, `vertical_alignment`, `tap_pulse`, `selected`, `value` |
-| `Radio` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `text`, `font_size`, `font_color`, `wrap`, `clip_text`, `horizontal_alignment`, `vertical_alignment`, `tap_pulse`, `selected` |
+| `Input` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `text`, `font_size`, `font_color`, `placeholder_text`, `max_length`, `selection_color` |
+| `Check` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `text`, `font_size`, `font_color`, `wrap`, `horizontal_alignment`, `vertical_alignment`, `tap_pulse`, `selected` |
+| `Toggle` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `text`, `font_size`, `font_color`, `wrap`, `horizontal_alignment`, `vertical_alignment`, `tap_pulse`, `selected`, `value` |
+| `Radio` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `text`, `font_size`, `font_color`, `wrap`, `horizontal_alignment`, `vertical_alignment`, `tap_pulse`, `selected` |
 | `choice` | `value`, `spacing` |
 | `List` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `select`, `spacing`, `bars` |
 | `ListItem` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `tap_pulse`, `selected` |

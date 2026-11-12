@@ -1,7 +1,8 @@
 Single-line text entry, with `placeholder_text=` for the hint and
 `max_length=` for a limit (code may write it: typing, a paste and the phone keyboard stop at the last number written). `padding=` insets the text
 within the field's box (WPF TextBox Padding, verbatim). Each keystroke
-fires `edit` (the live stream); Enter or focus loss commits and fires
+that changes the text fires `edit` (the live stream; a letter typed into
+a full field changes nothing and fires nothing); Enter or focus loss commits and fires
 `change(String)` — once per genuine change. A text written from code
 (`Runtime::set_text`) shows and fires nothing at the write. The field's
 plate takes the box words of a Panel: `background=`, a border,

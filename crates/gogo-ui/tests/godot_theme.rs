@@ -892,7 +892,8 @@ control Knob $value=0, $min=0, $max=1, $step=0, min_size=48x48 {
     state dragging
     signal drag_started, drag_ended
     transition duration=0.15, easing=cubic_out
-    Circle color=#333333FF {
+    Layers {
+        Circle color=#333333FF
         slot track width=fill, height=fill {
             slot progress automatic=arc(from=-135, sweep=270) by $value in $min..$max {
                 Arc thickness=4, color=#4488FFFF

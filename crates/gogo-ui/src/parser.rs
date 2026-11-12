@@ -5,6 +5,29 @@ use crate::ast::{AstItem, AstNode, AstProp, AstValue, Document};
 use crate::diag::Diagnostic;
 use crate::lexer::{Tok, Token, lex};
 
+/// Every word gogo reads for itself: the words that open a line, the
+/// clause and step words, the state words, the value words and the action
+/// names.
+///
+/// Needed so the parser and the compiler agree on what a keyword is: a
+/// widget cannot be named one (G5001), because the name would be read as
+/// the keyword wherever an instance is written. The parser's own word
+/// lists below are parts of it (`the_parsers_words_are_keywords`).
+pub(crate) const KEYWORDS: &[&str] = &[
+    // Lines that are not nodes.
+    "when", "transition", "anim", "repeat", "uses", "widget", "control", "style", "theme", "atlas", "slice", "arrangement", "allow", "layout", "choice", "empty", "key",
+    // Lines of a widget or control body.
+    "slot", "seat", "gap", "row", "skip", "script", "behavior", "keys", "signal", "state", "state_builtin",
+    // Clause and step words.
+    "as", "by", "in", "and", "then", "play", "each", "group", "delay",
+    // States, and the two words that stand for one.
+    "held", "hovered", "focused", "focus_within", "disabled", "selected", "base", "any", "screen",
+    // Values and flags.
+    "true", "false", "fill", "hug", "signals", "interactive",
+    // Actions.
+    "go", "toggle", "emit",
+];
+
 /// Reserved words that are never a node name.
 const FLAGS: &[&str] = &["signals"];
 /// Line heads that carry a NAME LIST, never a single node name
@@ -92,7 +115,7 @@ impl<'a> Parser<'a> {
             Tok::Ref { name, .. } => {
                 // `$name = value`
                 if self.next() != Tok::Eq {
-                    self.error("G0012", format!("`${name}` needs `= value` here"));
+                    self.diags.push(Diagnostic::error("G0012", line, format!("`${name}` needs `= value` here")));
                     self.recover();
                     return None;
                 }
@@ -173,9 +196,9 @@ impl<'a> Parser<'a> {
                     // A trailing comma continues onto the next line.
                     if *self.peek() == Tok::Newline {
                         self.skip_newlines();
-                        if *self.peek() == Tok::LBrace {
-                            self.error("G0015", "a comma before `{` is not allowed".to_string());
-                        }
+                    }
+                    if *self.peek() == Tok::LBrace {
+                        self.error("G0015", "a comma before `{` is not allowed — the block opens after the line's last word (`Button ok text=\"OK\" {`)".to_string());
                     }
                     continue;
                 }
@@ -247,7 +270,7 @@ impl<'a> Parser<'a> {
                     // ends a pose rule's endpoints.
                     let transition_payload = node.type_word == "transition" && next_is_eq && node.props.is_empty();
                     if need_comma && !step_name && !when_condition && !transition_payload {
-                        self.error("G0017", format!("missing `,` before `{word}`"));
+                        self.missing_comma(&node, format!("`{word}`"));
                     }
                     self.pos += 1;
                     if step_name || when_condition {
@@ -257,6 +280,11 @@ impl<'a> Parser<'a> {
                     }
                     if *self.peek() == Tok::Eq {
                         self.pos += 1;
+                        // The parameters are kept apart from the other
+                        // words, so their order is known here alone.
+                        if word == "for" && node.type_word == "widget" && !node.params.is_empty() {
+                            self.error("G5001", "`for=` comes first — the reader knows the host before the parameters; reorder: `widget Name for=…, $param=…`".to_string());
+                        }
                         let Some(value) = self.value() else { break };
                         node.props.push(AstProp { key: word, value, line: self.line() });
                     } else if FLAGS.contains(&word.as_str()) {
@@ -269,7 +297,7 @@ impl<'a> Parser<'a> {
                         continue;
                     } else if *self.peek() == Tok::LParen {
                         node.args.push(self.call(word));
-                    } else if word == "interactive" {
+                    } else if word == "interactive" && !matches!(node.type_word.as_str(), "widget" | "control") {
                         // The bare-word typo net (D103): `Button interactive`
                         // would silently become the node's NAME, and the
                         // input switch would stay off.
@@ -285,7 +313,7 @@ impl<'a> Parser<'a> {
                 }
                 Tok::Ref { name, opacity, pos } => {
                     if need_comma {
-                        self.error("G0017", format!("missing `,` before `${name}`"));
+                        self.missing_comma(&node, format!("`${name}`"));
                     }
                     self.pos += 1;
                     if *self.peek() == Tok::Eq {
@@ -306,7 +334,7 @@ impl<'a> Parser<'a> {
                 _ => {
                     if need_comma {
                         let d = describe(self.peek());
-                        self.error("G0017", format!("missing `,` before {d}"));
+                        self.missing_comma(&node, d);
                     }
                     let Some(v) = self.value() else { break };
                     node.args.push(v);
@@ -328,6 +356,21 @@ impl<'a> Parser<'a> {
             }
         }
         Some(node)
+    }
+
+    /// The error for a member written after another with no comma between
+    /// them; `before` is the member, as the message shows it.
+    ///
+    /// A node whose first word is `x` and a number (`Rectangle x0 10x10`)
+    /// is told what that word is: the size shorthand for "0 tall".
+    /// Needed because a reader who meant `x0` as the node's name looks
+    /// for a missing comma, and the comma is not the mistake.
+    fn missing_comma(&mut self, node: &AstNode, before: String) {
+        if let (None, [AstValue::Size { w: None, h: Some(h) }], true) = (&node.name, node.args.as_slice(), node.props.is_empty() && node.styles.is_empty()) {
+            self.error("G0017", format!("missing `,` before {before} — `x{h}` is read as a size ({h} tall); meant as the node's name, it needs another one: a name cannot be `x` and a number"));
+            return;
+        }
+        self.error("G0017", format!("missing `,` before {before}"));
     }
 
     /// `Layers wheelTouchTarget` alone on its line, members on the next
@@ -435,7 +478,7 @@ impl<'a> Parser<'a> {
                 AstValue::List(items)
             }
             other => {
-                self.error("G0021", format!("expected a value, found {}", describe(&other)));
+                self.diags.push(Diagnostic::error("G0021", line, format!("expected a value, found {}", describe(&other))));
                 self.recover();
                 return None;
             }
@@ -615,6 +658,19 @@ Panel visibility=gone, halign=center, valign=bottom, margin_bottom=72 {
             _ => panic!(),
         };
         assert_eq!(row.children.len(), 2);
+    }
+
+    /// The words the parser treats specially are all in `KEYWORDS`, the
+    /// list the compiler refuses as widget names.
+    #[test]
+    fn the_parsers_words_are_keywords() {
+        let own = FLAGS.iter().chain(LIST_HEADS).chain(&["any", "base", "true", "false", "fill", "hug", "as", "by", "in", "and", "then", "group", "each", "play", "interactive", "repeat", "slot", "behavior", "when", "transition", "gap"]);
+        for word in own {
+            assert!(KEYWORDS.contains(word), "`{word}` is read by the parser and is not in KEYWORDS");
+        }
+        for (i, word) in KEYWORDS.iter().enumerate() {
+            assert!(!KEYWORDS[..i].contains(word), "`{word}` is in KEYWORDS twice");
+        }
     }
 
     #[test]

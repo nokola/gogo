@@ -1464,9 +1464,13 @@ impl Input {
         if matches!(k, Key::Left | Key::Right | Key::Home | Key::End) || mods.ctrl {
             return events;
         }
+        // A key that left the text as it was (a letter typed into a full
+        // field, Backspace at the start) is no edit.
         let now: String = text.iter().collect();
-        rt.set_text(page, f, &now);
-        self.push_event(page, rt, &mut events, f, EventKind::Edit(text_value(page, rt, f)), event_action(page, f, "edit"));
+        if now != input_text(page, rt, f) {
+            rt.set_text(page, f, &now);
+            self.push_event(page, rt, &mut events, f, EventKind::Edit(text_value(page, rt, f)), event_action(page, f, "edit"));
+        }
         events
     }
 

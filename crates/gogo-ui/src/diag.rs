@@ -92,7 +92,6 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G0039", "`/` and `@` suffixes are for colors and strings"),
     ("G0040", "`@pos` / a list where none belongs"),
     ("G0041", "retired placement words"),
-    ("G0043", "unknown flag"),
     ("G0044", "node name used twice"),
     ("G0045", "`gap` takes one size word"),
     ("G0046", "a reserved word cannot name a node"),
@@ -102,7 +101,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G0050", "`toggle(base)` — use `go(base)`"),
     ("G0051", "unknown arrangement in an action"),
     ("G0052", "not an action"),
-    ("G0054", "a `when` block sets properties, not theme values"),
+    ("G0054", "a `when` block sets properties — not a theme value, and not a state (`selected=`, a Toggle's `value=`)"),
     ("G0055", "`=host` is gone"),
     ("G0056", "a size is a number, `fill`, `hug`, `fill(n)`"),
     ("G0057", "cross-axis alignment word"),
@@ -126,12 +125,13 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G0075", "`modulate.a` is an engine word — write `opacity`"),
     ("G0076", "a name-list head needs at least one name"),
     ("G0077", "control-body lines in a widget body"),
-    ("G0078", "a bool key / `overlay` with `space_only`"),
+    ("G0078", "a true/false word given something else; `reveal_x`/`reveal_y` outside 0..1; `overlay` with `space_only`, or with a `fill` side nothing sizes"),
     ("G0079", "unknown unit on a number"),
     ("G0081", "`live()` and `bind()` are gone — a `$value` follows the control's value by itself"),
     ("G0082", "the `behavior` line's rules — machine name, wiring, one owner per key group"),
     ("G0083", "a `when` response reads the control's `$value` — it cannot follow it"),
     ("G0084", "`on:show` and `on:hide` take `play(…)` only"),
+    ("G0085", "a call gogo does not have, or a size call (`fill(n)`, `hug(n)`) where no size is written"),
     ("G1002", "grid track bookkeeping — arity, spans and the skip they owe"),
     ("G1003", "areas-form rules — rectangles, one name per child, tracks per line"),
     ("G1004", "`wrap=true` with no width to wrap at (lint)"),
@@ -148,11 +148,11 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G1020", "a Scroll that is 0 long on a side it pans, or that can never reach what it cuts"),
     ("G1021", "a Scroll that hugs both sides never scrolls (warning)"),
     ("G2001", "unknown property"),
-    ("G2002", "a property spelled in another dialect / another kind's word"),
+    ("G2002", "a gogo word on a kind that does not take it"),
     ("G2003", "a one-stop gradient renders as a solid"),
     ("G2004", "invisible pigment — alpha 00 under color channels (the XAML #AARRGGBB copy trap)"),
-    ("G2005", "`stops=` takes the gradient's color list"),
-    ("G2006", "`transparent` in `stops=` hides the fade's color"),
+    ("G2005", "`stops=` takes the gradient's color list; `pivot=` is a 0..1 box point; a live-only word (`stop_<n>_color`, `color.a`) written on a line"),
+    ("G2006", "`transparent` in `stops=` — a stop is written as a color with its alpha (`white/0`)"),
     ("G2007", "the word is not a color"),
     ("G2008", "a variant-flipping color inside `stops=`"),
     ("G2009", "`border_dash=` / `dash=` takes dash/gap lengths"),
@@ -179,6 +179,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G5001", "widget naming / `for=` host contract"),
     ("G5002", "unknown style"),
     ("G5003", "widget cycle"),
+    ("G5004", "a slot fill that would never show — a slot the widget lacks, a word on the fill line, a slot filled twice, bare children with no default slot, a second default slot"),
     ("G5105", "an automatic slot in a host that measures children — driven layout must stay relayout-local"),
     ("G5106", "an `automatic=position` slot takes its width from its content"),
     ("G5107", "`automatic=` driver coupling"),
@@ -192,6 +193,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G7011", "unknown node type"),
     ("G7012", "`View` is the screen root only"),
     ("G7013", "a code-drawn control — an empty box (warning)"),
+    ("G7014", "a child inside a shape (Rectangle, Circle, Arc, Gradient, Image)"),
     ("G8001", "a translation key carries different English"),
     ("G8002", "displayed text with no translation key (`CompileOptions::require_keys`)"),
     ("G8003", "`allow` takes one word: `allow untranslated`"),
@@ -200,7 +202,7 @@ pub const REGISTRY: &[(&str, &str)] = &[
     ("G9003", "`by` keys the item binding"),
     ("G9004", "the item binding shadows a `$` value"),
     ("G9007", "`empty { }` block rules"),
-    ("G9008", "a dotted `$ref` outside a repeat item binding"),
+    ("G9008", "a `.` in the name of a `$value` or a widget parameter being defined"),
     ("G9010", "a List holds exactly one `repeat`"),
     ("G9011", "a List row's root is a `ListItem`"),
     ("G9013", "`ListItem` belongs at a List repeat's root; a List has no slots"),
@@ -230,5 +232,7 @@ pub const SHARED_WITH_ADDON: &[&str] = &[
 /// renumber — kept so they never come back: an old log or doc citing one
 /// must never match a new, different error. G0080 ("`round()` goes
 /// inside `live()`") went with `live()` itself: `round()` is written
-/// by itself now.
-pub const RETIRED: &[&str] = &["G0010", "G0042", "G0053", "G0080", "G1007", "G1008", "G1012", "G5104"];
+/// by itself now. G0043 ("unknown flag") had a site nothing reached: the
+/// parser knows one flag, `signals`, and reads any other bare word as a
+/// name or reports it as G0046.
+pub const RETIRED: &[&str] = &["G0010", "G0042", "G0043", "G0053", "G0080", "G1007", "G1008", "G1012", "G5104"];

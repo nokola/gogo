@@ -82,6 +82,10 @@ const EVENTS: &[&str] = &["activate", "press", "release", "change", "edit", "sho
 /// (G0071), so the two lists and the check stay one rule.
 pub(crate) const IMAGE_EXTS: &[&str] = &[".png", ".jpg", ".jpeg"];
 pub(crate) const FONT_EXTS: &[&str] = &[".ttf", ".otf"];
+/// Picture files the build neither reads nor embeds (a host that shows
+/// one loads it itself). A literal naming one is still an asset path, so
+/// it writes the `res://` scheme like the others (G0071).
+const HOST_PICTURE_EXTS: &[&str] = &[".svg"];
 
 /// Which of the three `atlas` forms a line is: a grid (`cell=`), named
 /// slices (a block or a `from=` import), or the whole picture.
@@ -241,6 +245,38 @@ fn slot_contract(body: &AstNode, widgets: &HashMap<String, WidgetDef>) -> Vec<(S
         }
     }
     out
+}
+
+/// The slots a widget's body declares: the names of its named slots, and
+/// the lines of its bare default `slot`s.
+///
+/// Needed to tell an instance what it may fill: a block for a slot the
+/// widget does not have, and bare children with no default slot to go to,
+/// are built nowhere.
+///
+/// A `slot name { … }` directly under an instance of another widget FILLS
+/// that widget, so it is no slot of this body. What the fill holds is
+/// still walked: a bare `slot` in there is this body's own.
+fn declared_slots(body: &AstNode, widgets: &HashMap<String, WidgetDef>) -> (Vec<String>, Vec<u32>) {
+    fn walk(n: &AstNode, is_fill: bool, widgets: &HashMap<String, WidgetDef>, named: &mut Vec<String>, defaults: &mut Vec<u32>) {
+        if n.type_word == "slot" && !is_fill {
+            match &n.name {
+                Some(name) => named.push(name.clone()),
+                None if n.props.is_empty() && n.clauses.is_empty() => defaults.push(n.line),
+                None => {}
+            }
+        }
+        let holds_fills: bool = widgets.contains_key(&n.type_word);
+        for c in &n.children {
+            if let AstItem::Node(k) = c {
+                walk(k, holds_fills && k.type_word == "slot" && k.name.is_some(), widgets, named, defaults);
+            }
+        }
+    }
+    let mut named: Vec<String> = Vec::new();
+    let mut defaults: Vec<u32> = Vec::new();
+    walk(body, false, widgets, &mut named, &mut defaults);
+    (named, defaults)
 }
 
 /// The built-in kinds that declare contract slots. A built-in draws its
@@ -530,6 +566,7 @@ fn unknown_property(word: &str, kind: Kind) -> String {
         "orientation" => Some("direction is the kind: `Column` runs down, `Row` runs across"),
         "flat" => Some("a plain button is `background=transparent`"),
         "visible" => Some("presence is `visibility=visible|space_only|gone`"),
+        "style" => Some("a node wears a style with a dot, after its name: `Button ok .Primary`"),
         "horizontal_scroll_mode" | "vertical_scroll_mode" | "scroll_horizontal" | "scroll_vertical" => Some("a Scroll's pan axes are `allow=horizontal|vertical|both`"),
         _ => None,
     };
@@ -556,7 +593,18 @@ fn wrong_kind(key: PropKey, kind: Kind) -> String {
     let name = kind_name(kind);
     let shows_text = legal(kind, PropKey::Text);
     let leaf = matches!(kind, Kind::Rectangle | Kind::Circle | Kind::Gradient | Kind::Image);
+    // A kind with words of its own and neither a fill nor a plate: a
+    // seat, a Grid's `row`, a choice.
+    let draws_nothing = !legal(kind, PropKey::Background) && !legal(kind, PropKey::Color) && kind != Kind::Gradient && !kind_words(kind).is_empty();
+    let is_press = matches!(kind, Kind::Button | Kind::Check | Kind::Radio | Kind::Toggle | Kind::ListItem);
     match key {
+        PropKey::ClipText if matches!(kind, Kind::Button | Kind::Check | Kind::Radio | Kind::Toggle) => format!("`clip_text=` cuts a Label's text — a {name} folds its own text with `wrap=true`; to cut it, give the {name} a Label (`{name} {{ Label text=\"…\", clip_text=true }}`)"),
+        PropKey::Wrap | PropKey::ClipText if kind == Kind::Input => format!("`{word}=` is a Label's word — an Input shows one line of text"),
+        PropKey::TextHalign | PropKey::TextValign if kind == Kind::Input => format!("`{word}=` places a Label's text in its box — an Input's text starts at its left edge, centered top to bottom"),
+        PropKey::Value if kind == Kind::Input => "`value=` on an Input — the field's text is `text=`".to_string(),
+        PropKey::Valign | PropKey::Aspect | PropKey::Overlay if kind == Kind::ListItem => format!("`{word}=` on a ListItem moves nothing — a List places its rows itself; a row takes `halign=`, `width=`, `max_width=` and `max_height=`"),
+        PropKey::Background | PropKey::Color | PropKey::ColorA if draws_nothing && kind == Kind::Seat => format!("`{word}=` on a seat — a seat draws nothing: it is an empty socket, and the plate belongs to the node that sits in it"),
+        PropKey::Background | PropKey::Color | PropKey::ColorA if draws_nothing => format!("`{word}=` on a {name} — a {name} draws nothing of its own; a plate is a Panel's `background=`, around it or inside it"),
         PropKey::Color if shows_text => format!("`color=` on a {name} — text is `font_color=`, the plate is `background=`"),
         PropKey::Color if kind == Kind::Gradient => "`color=` on a Gradient — a Gradient paints its `stops=`".to_string(),
         PropKey::StopColor(_) | PropKey::StopOffset(_) => format!("`stop_<n>_color`/`stop_<n>_offset` keep a Gradient's declared stops live — a {name} has no stops"),
@@ -578,8 +626,10 @@ fn wrong_kind(key: PropKey, kind: Kind) -> String {
         PropKey::From | PropKey::To => format!("`{word}=` aims a Gradient (0..1 box points) or an Arc (degrees) — a {name} takes neither"),
         PropKey::Sweep | PropKey::Thickness => format!("`{word}=` is an Arc word — a {name} sweeps nothing"),
         PropKey::Dash => format!("`dash=` dashes an Arc's stroke — a {name}'s ring or border dashes with `border_dash=`"),
-        PropKey::Value | PropKey::Min | PropKey::Max | PropKey::Step => format!("`{word}=` belongs to a Slider, Input, Toggle or choice — a {name} holds no value"),
-        PropKey::SelectedProp | PropKey::ToggleMode | PropKey::TapPulse => format!("`{word}=` belongs to a press surface (Button, Check, Toggle, Radio, ListItem) — a {name} is not pressed"),
+        PropKey::Value | PropKey::Min | PropKey::Max | PropKey::Step => format!("`{word}=` belongs to a Slider, a Toggle or a choice — a {name} holds no value"),
+        PropKey::ToggleMode if is_press => format!("`toggle=` is a Button's word (a Button that stays down until the next tap) — a {name} keeps its state from tap to tap already"),
+        PropKey::ToggleMode => format!("`toggle=` is a Button's word (a Button that stays down until the next tap) — a {name} takes no taps"),
+        PropKey::SelectedProp | PropKey::TapPulse => format!("`{word}=` belongs to a press surface (Button, Check, Toggle, Radio, ListItem) — a {name} is not pressed"),
         PropKey::Select => format!("`select=` is a List word — a {name} selects nothing"),
         PropKey::Automatic => format!("`automatic=` is a slot word — a {name} is not a slot"),
         PropKey::DisabledOpacity => "`disabled_opacity=` is page-wide — write it in the top `theme { }` block".to_string(),
@@ -750,6 +800,9 @@ pub struct Compiler<'a> {
     /// pigment) guards STATIC pigment only — a `when` endpoint keeps its
     /// alpha-0 value (fading a color out is the point).
     in_when: u32,
+    /// The widgets and controls the file being read declares, each with
+    /// whether it is a control and its line (`document`).
+    declared_here: Vec<(String, bool, u32)>,
     /// Theme entry kinds seen per variant — a second `theme { Slider … }`
     /// prototype for one kind is a silent first-wins without this.
     theme_entry_kinds: Vec<(String, StrId)>,
@@ -882,6 +935,7 @@ pub fn compile_with<'a>(source: &str, loader: Loader<'a>, options: CompileOption
         stops_ctx: None,
         repeat_binding: None,
         in_when: 0,
+        declared_here: Vec::new(),
         theme_entry_kinds: Vec::new(),
         entry_styles: HashMap::new(),
         palette_links: std::collections::HashMap::new(),
@@ -977,7 +1031,7 @@ fn untranslated_in_value(v: &AstValue, found: &mut Vec<(u32, String)>) {
         AstValue::Str { text, key: None, line } => {
             let lower = text.to_ascii_lowercase();
             // A path or a host picture address (`res://`, `collage://before`).
-            let is_asset = text.contains("://") || IMAGE_EXTS.iter().chain(FONT_EXTS).any(|e| lower.ends_with(e));
+            let is_asset = text.contains("://") || IMAGE_EXTS.iter().chain(FONT_EXTS).chain(HOST_PICTURE_EXTS).any(|e| lower.ends_with(e));
             if !is_asset && text.chars().any(char::is_alphabetic) {
                 found.push((*line, text.clone()));
             }
@@ -1587,6 +1641,14 @@ impl<'a> Compiler<'a> {
                 }
             }
         }
+        // The widgets and controls this file declares: (name, is it a
+        // control, its line). A `for=` style written above its control
+        // is told where the control is.
+        let declared: Vec<(String, bool, u32)> = doc.items.iter().filter_map(|i| match i {
+            AstItem::Node(n) if matches!(n.type_word.as_str(), "widget" | "control") => n.name.clone().map(|name| (name, n.type_word == "control", n.line)),
+            _ => None,
+        }).collect();
+        let declared_outside: Vec<(String, bool, u32)> = std::mem::replace(&mut self.declared_here, declared);
         // Pass 1: directives, in order (uses first so later lines can override).
         for item in &doc.items {
             match item {
@@ -1649,6 +1711,7 @@ impl<'a> Compiler<'a> {
                 },
             }
         }
+        self.declared_here = declared_outside;
         if !is_main {
             return;
         }
@@ -1680,6 +1743,11 @@ impl<'a> Compiler<'a> {
         if let Some(AstValue::Str { key: Some(k), .. }) = n.args.first() {
             self.error("G0023", n.line, format!("`uses` takes one quoted path — `/{k}` is a translation key, and a path is never translated"));
             return;
+        }
+        // One file per line. Needed because nothing reads a second path
+        // on the line.
+        if let Some(extra) = n.args.get(1) {
+            self.error("G0023", n.line, format!("`uses` takes one quoted path — write `uses {}` on a line of its own", spell(extra)));
         }
         // A nested `uses` resolves against the INCLUDING file's
         // directory (GPAR35, the addon's rule): `sub/widgets.gogo`
@@ -1880,10 +1948,7 @@ impl<'a> Compiler<'a> {
                             }
                         }
                         None => {
-                            let pool: Vec<String> = self.palette.keys().cloned().collect();
-                            let hint = suggest(key, &pool);
-                            let tail = if hint.is_empty() { String::new() } else { format!(" — {hint}") };
-                            self.error("G6004", *line, format!("`{key} = …` needs a color{tail}"));
+                            self.error("G6004", *line, format!("`{key} = …` needs a color written here — a hex (`{key} = #E51400`) or another palette word (`{key} = blue`), not `{}`", spell(value)));
                         }
                     }
                 }
@@ -1909,6 +1974,24 @@ impl<'a> Compiler<'a> {
                     if let Some(wp) = kn.props.iter().find(|p| p.key.starts_with("on:")) {
                         self.error("G3006", wp.line, format!("wiring belongs to instances — a theme entry has no name to wire; drop `{}`", wp.key));
                         continue;
+                    }
+                    // An entry is one line of defaults. Needed because
+                    // nothing reads a block under it: a line written there
+                    // shows nowhere.
+                    match kn.children.first() {
+                        Some(AstItem::Node(c)) if matches!(c.type_word.as_str(), "when" | "transition") => {
+                            self.error("G3006", c.line, format!("a theme entry is one line of defaults — a `{}` line under it is never read; put it in a style the entry wears (`style Look for={} {{ … }}`, then `theme {{ {} .Look }}`)", c.type_word, kn.type_word, kn.type_word));
+                            continue;
+                        }
+                        Some(AstItem::Node(c)) => {
+                            self.error("G3006", c.line, format!("a theme entry holds no children — it is the defaults of EVERY {}, written on one line; `{}` here would never show", kn.type_word, c.type_word));
+                            continue;
+                        }
+                        Some(AstItem::Assign { key, line, .. }) => {
+                            self.error("G3006", *line, format!("a theme entry is one line of defaults — `{key} = …` under it is never read; write it on the entry's line (`{} {key}=…`)", kn.type_word));
+                            continue;
+                        }
+                        None => {}
                     }
                     const ENTRY_PLACEMENT_KEYS: &[&str] = &["width", "height", "min_width", "min_height", "max_width", "max_height", "size", "min_size", "x", "y", "position", "halign", "valign", "margin", "margin_left", "margin_top", "margin_right", "margin_bottom", "overlay"];
                     if let Some(pp) = kn.props.iter().find(|p| ENTRY_PLACEMENT_KEYS.contains(&p.key.as_str())) {
@@ -2037,7 +2120,11 @@ impl<'a> Compiler<'a> {
                 Some(word) if self.widgets.contains_key(word) => {
                     self.error("G3006", fp.line, format!("`{word}` is a widget — widgets are styled through their own body's nodes, not `for=`"));
                 }
-                Some(word) => self.error("G3006", fp.line, format!("unknown control `{word}` — `for=` names a control kind (`for=Button`)")),
+                Some(word) => match self.declared_here.iter().find(|(name, _, _)| name == word).cloned() {
+                    Some((_, true, at)) => self.error("G3006", fp.line, format!("`{word}` is declared below, on line {at} — a `for=` style reads its control's slots, so it goes after the `control {word}` declaration")),
+                    Some((_, false, _)) => self.error("G3006", fp.line, format!("`{word}` is a widget — widgets are styled through their own body's nodes, not `for=`")),
+                    None => self.error("G3006", fp.line, format!("unknown control `{word}` — `for=` names a control kind (`for=Button`)")),
+                },
                 None => self.error("G3006", fp.line, format!("`for=` names a control kind (`for=Button`), not `{}`", spell(&fp.value))),
             }
         }
@@ -2817,13 +2904,27 @@ impl<'a> Compiler<'a> {
 
     fn widget(&mut self, n: &AstNode) {
         let Some(name) = n.name.clone() else {
-            self.error("G0027", n.line, "`widget` needs a name");
+            // `any`, `base`, `true` and `false` are values wherever they
+            // stand and `signals` is a flag, so the parser never reads one
+            // of them as the name.
+            let word: Option<&str> = n.args.first().and_then(AstValue::as_ident).or(n.flags.first().map(String::as_str));
+            match word.filter(|w| crate::parser::KEYWORDS.contains(w)) {
+                Some(w) => self.error("G5001", n.line, format!("`{w}` is a gogo keyword — a {} needs a name of its own (`{} Card {{ … }}`)", n.type_word, n.type_word)),
+                None => self.error("G0027", n.line, format!("`{}` needs a name", n.type_word)),
+            }
             return;
         };
         // A widget wearing a built-in word's name is dead: the built-in
         // is matched first, so the widget could never be instantiated.
-        if Kind::from_word(&name).is_some() || matches!(name.as_str(), "when" | "transition" | "theme" | "style" | "anim" | "widget" | "control" | "uses" | "allow" | "layout" | "gap" | "choice" | "slot" | "empty" | "repeat") {
+        if Kind::from_word(&name).is_some() {
             self.error("G5001", n.line, format!("widget name `{name}` shadows a built-in — pick another name"));
+            return;
+        }
+        // A keyword as the name is read as the keyword wherever an
+        // instance would be written (`state w` is a control's state list,
+        // `each w` an anim step).
+        if crate::parser::KEYWORDS.contains(&name.as_str()) {
+            self.error("G5001", n.line, format!("`{name}` is a gogo keyword — a {} needs a name of its own (`{} Card {{ … }}`)", n.type_word, n.type_word));
             return;
         }
         // The `widget` line declares a name and its `$params`; it is not a
@@ -2921,8 +3022,20 @@ impl<'a> Compiler<'a> {
                     // built-in name here reads as claiming the engine's
                     // state (the addon's d9 check).
                     for word in b.args.iter().filter_map(|a| a.as_ident()) {
-                        if matches!(word, "held" | "hovered" | "focused" | "focus_within" | "selected" | "disabled" | "pressed" | "hover" | "focus" | "checked") {
-                            self.error("G0077", b.line, format!("`state {word}` names a built-in — declare it `state_builtin {word}`; `state` declares the control's own words"));
+                        // The other-dialect spellings of a built-in, with
+                        // the word that builds.
+                        let builtin: Option<&str> = match word {
+                            "held" | "hovered" | "focused" | "focus_within" | "selected" | "disabled" => Some(word),
+                            "pressed" => Some("held"),
+                            "hover" => Some("hovered"),
+                            "focus" => Some("focused"),
+                            "checked" => Some("selected"),
+                            _ => None,
+                        };
+                        match builtin {
+                            Some(b_word) if b_word == word => self.error("G0077", b.line, format!("`state {word}` names a built-in — declare it `state_builtin {word}`; `state` declares the control's own words")),
+                            Some(b_word) => self.error("G0077", b.line, format!("`state {word}` — the built-in is spelled `{b_word}` and is declared `state_builtin {b_word}`; `state` declares the control's own words")),
+                            None => {}
                         }
                     }
                 }
@@ -2933,6 +3046,11 @@ impl<'a> Compiler<'a> {
         if bodies.len() != 1 {
             self.error("G0028", n.line, format!("widget `{name}` needs exactly one root node in its body"));
             return;
+        }
+        // An instance's bare children are spliced in at the default slot;
+        // with two of them the same children are built twice.
+        if let [first, second, ..] = declared_slots(bodies[0], &self.widgets).1.as_slice() {
+            self.error("G5004", *second, format!("a second default `slot` in `{name}` — an instance's bare children go to ONE place, the default slot on line {first}; give this one a name (`slot footer`)"));
         }
         let whens: Vec<AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "when").cloned().collect();
         let anims: Vec<AstNode> = n.children.iter().filter_map(|i| if let AstItem::Node(b) = i { Some(b) } else { None }).filter(|b| b.type_word == "anim").cloned().collect();
@@ -3628,7 +3746,7 @@ impl<'a> Compiler<'a> {
                             self.error("G0063", step.line, format!("`.a` moves a color's alpha alone — `{base_word}` isn't a color word"));
                             continue;
                         }
-                        if !self.check_prop_kind(&base_word, key, self.page.nodes[node].kind, step.line) {
+                        if !self.check_prop_kind(&base_word, key, self.page.nodes[node].kind, step.line, false) {
                             continue;
                         }
                         // A stop lane names a DECLARED stop, as a `when`
@@ -3803,7 +3921,13 @@ impl<'a> Compiler<'a> {
 
     fn arrangement(&mut self, n: &AstNode) {
         let Some(name) = n.name.clone() else {
-            self.error("G0031", n.line, "`arrangement` needs a name");
+            // `base` and `any` are values wherever they stand, so the
+            // parser never reads one of them as the name.
+            match n.args.first().and_then(AstValue::as_ident) {
+                Some("base") => self.error("G0032", n.line, "`base` is reserved — it is the page as the file writes it, with no arrangement on"),
+                Some("any") => self.error("G0032", n.line, "`any` is reserved — in a `transition` it stands for every arrangement"),
+                _ => self.error("G0031", n.line, "`arrangement` needs a name"),
+            }
             return;
         };
         if name == "base" || name == "any" {
@@ -4135,11 +4259,13 @@ impl<'a> Compiler<'a> {
                 // build's resource root and embedded" — a bare spelling
                 // would be a second way to write the same thing.
                 let lower = text.to_ascii_lowercase();
-                let is_asset = IMAGE_EXTS.iter().chain(FONT_EXTS).any(|e| lower.ends_with(e));
+                let is_asset = IMAGE_EXTS.iter().chain(FONT_EXTS).chain(HOST_PICTURE_EXTS).any(|e| lower.ends_with(e));
                 if !text.starts_with("res://") && is_asset {
                     self.error("G0071", line, format!("`{text}` names an asset — write `res://{text}` (every asset path carries the scheme)"));
                 }
-                if let (Some(k), true) = (term, is_asset) {
+                // Whatever `source=` names is an address: a host picture
+                // (`preview://brush`) has no extension to tell it by.
+                if let (Some(k), true) = (term, is_asset || key == Some(PropKey::Source)) {
                     self.error("G0023", line, format!("`/{k}` on an asset path — a path is never translated; the key goes on text"));
                 }
                 // An image is its own value: whatever `source=` names (a
@@ -4196,6 +4322,9 @@ impl<'a> Compiler<'a> {
                             self.value_read = Some(root.clone());
                         }
                     }
+                    if let (Value::VNum(_), Some(o)) = (inner, opacity) {
+                        self.error("G0039", line, format!("`/{o}` on `${name}` — a `/opacity` suffix fades a color, and `${name}` holds a number"));
+                    }
                     let v = match (inner, opacity) {
                         (Value::VColor(c), Some(o)) => Value::VColor(c.with_opacity(*o)),
                         (Value::VRef { name, .. }, Some(o)) => Value::VRef { name, opacity: Some(*o) },
@@ -4204,6 +4333,11 @@ impl<'a> Compiler<'a> {
                     return self.ref_stop(v, *pos, name, line);
                 }
                 let id = self.intern(name);
+                if let Some(o) = opacity {
+                    if let Value::VNum(_) = crate::runtime::deref(&self.page, NO_STR, Value::VRef { name: id, opacity: None }) {
+                        self.error("G0039", line, format!("`/{o}` on `${name}` — a `/opacity` suffix fades a color, and `${name}` holds a number"));
+                    }
+                }
                 let v = Value::VRef { name: id, opacity: *opacity };
                 self.ref_stop(v, *pos, name, line)
             }
@@ -4220,9 +4354,10 @@ impl<'a> Compiler<'a> {
                 let color_position = key.map(Self::is_color_key).unwrap_or(false);
                 if color_position {
                     if key == Some(PropKey::Stops) && word == "transparent" {
-                        // Straight-alpha blending fades THROUGH the hidden
-                        // RGB; the file says which.
-                        self.error("G2006", line, "`transparent` in `stops=` hides which color the fade passes through — spell it: `white/0` or `black/0`");
+                        // A stop is written as a color. Stops mix
+                        // premultiplied, so a stop at alpha 0 adds no color
+                        // of its own: every `/0` color fades the same.
+                        self.error("G2006", line, "`transparent` in `stops=` — a stop is written as a color with its alpha: `white/0`, or the next stop's color (`red/0`); a stop at alpha 0 adds no color of its own, so each of them fades the same");
                     }
                     if let Some(l) = self.palette_lookup(word, false) {
                         let d = self.palette_lookup(word, true).unwrap_or(l);
@@ -4296,6 +4431,21 @@ impl<'a> Compiler<'a> {
                 self.value(a, line, key)
             }
             AstValue::Call { name, args } => {
+                // The calls a value takes are a closed list. Needed
+                // because any other name is stored and read by nothing:
+                // the line builds and draws nothing. `fill(n)` and
+                // `hug(n)` are sizes, so they are calls where a size is
+                // written and nowhere else; `arc(…)` and `angle(…)` are
+                // an `automatic=` word's.
+                let takes_size: bool = key.is_none_or(|k| matches!(k, PropKey::Width | PropKey::Height | PropKey::Size | PropKey::MinWidth | PropKey::MinHeight | PropKey::MaxWidth | PropKey::MaxHeight | PropKey::MinSize | PropKey::Cols | PropKey::RowHeight));
+                match name.as_str() {
+                    "fill" | "hug" if takes_size => {}
+                    "fill" | "hug" => self.error("G0085", line, format!("`{name}(…)` is a size — it is written where a size goes (`width=fill(2)`, `cols=[fill(2), 80]`, `row_height=fill(2)`)")),
+                    "arc" | "angle" if key == Some(PropKey::Automatic) => {}
+                    "round" => self.error("G0058", line, "`round()` rounds a number — `round($value, 0.5)`; it was given none"),
+                    "live" | "bind" => self.error("G0081", line, format!("`{name}()` is gone — a `$value` follows the control's value by itself")),
+                    _ => self.error("G0085", line, format!("`{name}(…)` is not a call gogo has — a number takes `round(number, step)`, a size takes `fill(n)` or `hug(n)`, `automatic=` takes `arc(…)` or `angle(…)`, and an `on:` word takes an action (`play`, `go`, `toggle`, `emit`)")),
+                }
                 let compiled: Vec<Value> = args.iter().map(|a| self.value(a, line, None)).collect();
                 let first = self.page.values.len() as u32;
                 self.page.values.extend(compiled);
@@ -4330,13 +4480,33 @@ impl<'a> Compiler<'a> {
     /// theme kind defaults, `when` responses (own and child-aimed), code
     /// controls; a path that skips it is a silent drop. `on:` handlers
     /// are `check_event_kind`'s.
-    fn check_prop_kind(&mut self, word: &str, key: PropKey, kind: Kind, line: u32) -> bool {
+    ///
+    /// `in_when`: the word is a `when` response. A `when` answers a state
+    /// and sets none, so `selected=` and a Toggle's `value=` are refused
+    /// there. Needed because, written in a `when`, `selected=` selects
+    /// nothing and a Toggle's `value=` moves the knob while the Toggle
+    /// stays off.
+    fn check_prop_kind(&mut self, word: &str, key: PropKey, kind: Kind, line: u32, in_when: bool) -> bool {
         if word.starts_with("on:") {
             return true;
+        }
+        if in_when && key == PropKey::SelectedProp && legal(kind, key) {
+            self.error("G0054", line, "`selected=` in a `when` — a `when` answers a state, it sets none; `selected` changes by a tap, a key or code (`Runtime::set_state`), and `selected=true` on the node's own line is where it starts");
+            return false;
+        }
+        if in_when && key == PropKey::Value && kind == Kind::Toggle {
+            self.error("G0054", line, "`value=` in a `when` — a `when` does not flip a Toggle; its value changes by a tap, a drag, a key or code (`Runtime::set_value`), and `value=1` on the Toggle's own line is where it starts");
+            return false;
         }
         match key {
             PropKey::Other(_) => {
                 self.error("G2001", line, unknown_property(word, kind));
+                false
+            }
+            // Page-wide, so it has one home: the top `theme { }` block,
+            // which does not come through here.
+            PropKey::DisabledOpacity => {
+                self.error("G2002", line, wrong_kind(key, kind));
                 false
             }
             _ if legal(kind, key) => true,
@@ -4382,9 +4552,16 @@ impl<'a> Compiler<'a> {
         }
         let key = self.prop_key(&p.key);
         if let Some(kind) = kind {
-            if !self.check_prop_kind(&p.key, key, kind, p.line) {
+            if !self.check_prop_kind(&p.key, key, kind, p.line, self.in_when > 0) {
                 return None;
             }
+        }
+        // `color.a` is the LIVE half of a fill's alpha, as `stop_<n>_color`
+        // is of a Gradient's stops. Needed because nothing reads it from a
+        // line: the fill draws at the alpha of `color=`.
+        if key == PropKey::ColorA && self.in_when == 0 {
+            self.error("G2005", p.line, "`color.a=` writes a fill's alpha LIVE (a `when` response, an anim, or code) — on a line the alpha is part of the color: `color=black/0.5` or `color=#00000080`");
+            return None;
         }
         // The list kind ships with Grid's `cols=`/`areas=` and Gradient's
         // `stops=` and nothing else — no prop becomes list-accepting by
@@ -4428,6 +4605,16 @@ impl<'a> Compiler<'a> {
             self.error("G0058", p.line, format!("`{}=` wants a number, not `{}`", p.key, spell(&p.value)));
             return None;
         }
+        // A `$value` that holds a color or a text is no number either; a
+        // name the theme does not have is the undefined-`$ref` check's.
+        if key.is_number() {
+            if let Value::VRef { .. } = value {
+                if !matches!(crate::runtime::deref(&self.page, NO_STR, value), Value::VNum(_) | Value::VRef { .. }) {
+                    self.error("G0058", p.line, format!("`{}=` wants a number — `{}` holds none", p.key, spell(&p.value)));
+                    return None;
+                }
+            }
+        }
         // Alpha 00 under non-zero color channels is a pigment that can
         // never paint, spelled as if it were a color — the classic
         // source is a WPF/XAML #AARRGGBB literal copied verbatim (gogo
@@ -4469,6 +4656,10 @@ impl<'a> Compiler<'a> {
                 Value::VRef { .. } | Value::VItem(_) => true,
                 _ => false,
             };
+            if !ok && key == PropKey::Release {
+                self.error("G2020", p.line, "`release=` takes one word — `release=unused` lets the app free this picture while no page shows it");
+                return None;
+            }
             if !ok {
                 self.error("G0057", p.line, format!("`{}=`: want {}", p.key, words.join("/")));
                 return None;
@@ -4743,13 +4934,45 @@ impl<'a> Compiler<'a> {
             self.scope_roots.push(None);
             let mut fills = Fills::default();
             let mut inst_states: Vec<AstNode> = Vec::new();
+            let (slot_names, default_slots) = declared_slots(&def.body, &self.widgets);
             for c in &n.children {
                 match c {
                     AstItem::Node(k) if k.type_word == "slot" && k.name.is_some() => {
-                        fills.named.insert(k.name.clone().unwrap_or_default(), k.children.clone());
+                        let fill: String = k.name.clone().unwrap_or_default();
+                        // A fill is a name and a block. The slot's size
+                        // and look are the widget's to say, on the slot's
+                        // own line; nothing reads a word written here.
+                        if let Some(p) = k.props.first() {
+                            self.error("G5004", k.line, format!("`slot {fill}` here fills a slot of `{}`: the line takes a name and nothing else — `{}=` goes on the slot's own line in `{}`, or on a box inside the fill", n.type_word, p.key, n.type_word));
+                        } else if !k.args.is_empty() || !k.styles.is_empty() || !k.clauses.is_empty() || !k.flags.is_empty() {
+                            self.error("G5004", k.line, format!("`slot {fill}` here fills a slot of `{}`: the line takes a name and nothing else — the slot's size and look are written on its own line in `{}`", n.type_word, n.type_word));
+                        }
+                        if !slot_names.contains(&fill) {
+                            let hint: String = match nearest_word(&fill, &slot_names.iter().map(String::as_str).collect::<Vec<&str>>()) {
+                                Some(near) => format!("did you mean `{near}`?"),
+                                None if slot_names.is_empty() => format!("`{}` declares no named slot", n.type_word),
+                                None => format!("its slots: {}", slot_names.iter().map(|s| format!("`{s}`")).collect::<Vec<_>>().join(", ")),
+                            };
+                            self.error("G5004", k.line, format!("`slot {fill}` fills no slot of `{}` — {hint}", n.type_word));
+                        } else if fills.named.contains_key(&fill) {
+                            self.error("G5004", k.line, format!("`slot {fill}` is filled twice — one block per slot"));
+                        }
+                        fills.named.insert(fill, k.children.clone());
                     }
                     AstItem::Node(k) if matches!(k.type_word.as_str(), "when" | "transition") => inst_states.push(k.clone()),
                     other => fills.default.push(other.clone()),
+                }
+            }
+            // Bare children go to the widget's default slot. With none,
+            // they are built nowhere.
+            if default_slots.is_empty() {
+                if let Some(first) = fills.default.iter().find_map(|i| if let AstItem::Node(k) = i { Some(k) } else { None }) {
+                    let way: String = if slot_names.is_empty() {
+                        format!("`{}` takes no content: its body declares no `slot`", n.type_word)
+                    } else {
+                        format!("`{}` has no default slot (a bare `slot` line in its body) — fill one of its named slots: {}", n.type_word, slot_names.iter().map(|s| format!("`slot {s} {{ … }}`")).collect::<Vec<_>>().join(", "))
+                    };
+                    self.error("G5004", first.line, format!("`{}` here would never show — {way}", first.type_word));
                 }
             }
             // An instance-line `when` may answer with `slot.` paths —
@@ -5064,11 +5287,6 @@ impl<'a> Compiler<'a> {
             self.error("G0068", n.line, format!("`text=` is the native {}'s label — a bodied {} IS its body; put a `Label` inside instead", n.type_word, n.type_word));
         }
         let signals = n.flags.iter().any(|f| f == "signals");
-        for f in &n.flags {
-            if f != "signals" {
-                self.error("G0043", n.line, format!("unknown flag `{f}`"));
-            }
-        }
         let mut node = Node::fresh(kind, n.line);
         node.type_name = self.intern(&n.type_word);
         // The instance's name wins over the widget body's; body names are
@@ -5625,6 +5843,18 @@ impl<'a> Compiler<'a> {
             tmp.transitions.push(tr);
         }
 
+        // A shape draws itself and holds nothing. Needed because a child
+        // written in its block is placed over the shape, and a shape with
+        // no size of its own does not grow to hold it.
+        if matches!(kind, Kind::Rectangle | Kind::Circle | Kind::Arc | Kind::Gradient | Kind::Image) {
+            let child: Option<&AstNode> = n.children.iter().find_map(|c| match c {
+                AstItem::Node(c) if !matches!(c.type_word.as_str(), "when" | "transition" | "theme") => Some(c),
+                _ => None,
+            });
+            if let Some(c) = child {
+                self.error("G7014", c.line, format!("`{}` holds no children — it draws itself and nothing inside it; put `{}` beside it in a `Layers` (the two stack), or use a `Panel`, which draws a plate and holds content", kind_name(kind), c.type_word));
+            }
+        }
         for c in &n.children {
             match c {
                 AstItem::Node(c) if c.type_word == "when" || c.type_word == "transition" || c.type_word == "theme" => {}
@@ -6155,6 +6385,13 @@ impl<'a> Compiler<'a> {
                 Some(f) => {
                     for item in &f.default {
                         if let AstItem::Node(k) = item {
+                            // A `slot` line among the bare children is a
+                            // slot of the widget this instance is written
+                            // in: its content goes here.
+                            if k.type_word == "slot" {
+                                self.outer(|me| me.slot_child(k, parent_kind, out));
+                                continue;
+                            }
                             let mut child = self.outer(|me| me.node(k, Some(parent_kind), None));
                             // Content of the bare default `slot` is
                             // EXEMPT from the free-fill default (the
@@ -6193,6 +6430,10 @@ impl<'a> Compiler<'a> {
                 let mut tmp = self.node(&region, Some(parent_kind), None);
                 for item in &items {
                     if let AstItem::Node(k) = item {
+                        if k.type_word == "slot" {
+                            self.outer(|me| me.slot_child(k, Kind::Slot, &mut tmp.children));
+                            continue;
+                        }
                         let child = self.outer(|me| me.node(k, Some(Kind::Slot), None));
                         tmp.children.push(child);
                     }
@@ -6392,6 +6633,10 @@ impl<'a> Compiler<'a> {
                         if name == "go" { Action::Go(target) } else { Action::ToggleArrangement(target) }
                     }
                     "play" => Action::Play(self.anim_ref(arg, p.line)),
+                    "emit" if arg.is_empty() => {
+                        self.error("G0052", p.line, "`emit()` names what it raises — `emit(saved)`");
+                        return None;
+                    }
                     "emit" => Action::Emit(self.intern(arg)),
                     other => {
                         self.error("G0052", p.line, format!("`{other}(…)` is not an action (play, go, toggle, emit, or a handler name)"));
@@ -6400,7 +6645,7 @@ impl<'a> Compiler<'a> {
                 }
             }
             other => {
-                self.error("G0052", p.line, format!("`on:{event}` needs a handler name or an action, not {other:?}"));
+                self.error("G0052", p.line, format!("`on:{event}` needs a handler name or an action, not `{}`", spell(other)));
                 return None;
             }
         };
@@ -7036,7 +7281,7 @@ impl<'a> Compiler<'a> {
                         // target's kind is known. Needed so a misspelled
                         // response is a build error, not a silently dead
                         // line (docs/todo-gogo-parity.md GPAR82).
-                        Some(t) if !self.check_prop_kind(&word, prop.key, self.page.nodes[t].kind, line) => {}
+                        Some(t) if !self.check_prop_kind(&word, prop.key, self.page.nodes[t].kind, line, true) => {}
                         Some(t) => moved.push((t, owner, WhenTmp { state: w.state, line: w.line, props: vec![prop], descendants: Vec::new(), host: w.host, styled: w.styled })),
                         None => {
                             let line = self.page.nodes[owner].line;
@@ -7689,7 +7934,7 @@ impl<'a> Compiler<'a> {
                                 continue;
                             }
                             Some(key) if crate::runtime::animatable(key) => {
-                                if !self.check_prop_kind(prop, key, kind, n.line) {
+                                if !self.check_prop_kind(prop, key, kind, n.line, false) {
                                     continue;
                                 }
                                 vec![key]

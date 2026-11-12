@@ -91,7 +91,8 @@ WidgetType name .StyleName property=value, property=value { children }
 - Commas are **required** between properties. A **trailing comma continues the
   line**. A line that holds only the type and the name also continues: the
   next line may open with a size or a `key=value`.
-- `;` separates multiple nodes on one line. `{` must be on the node's line.
+- `;` separates multiple nodes on one line. `{` must be on the node's line,
+  with no comma before it.
 - Duplicate property on one node = error. Duplicate node name per view = error.
 - Property keys are snake_case (`min_height`, `font_size`, `tap_pulse`). `-`
   is not an identifier character.
@@ -412,7 +413,13 @@ Card stats {
 - **Bare `slot`** (unnamed, no props) is the default slot — the shipped
   inline marker: content joins the slot's parent directly. It may now carry
   default content in braces (`slot { <default> }`), replaced entirely when
-  the instance brings bare children. At most one default slot.
+  the instance brings bare children. At most one default slot: a second
+  one is a build error (G5004).
+- **A fill is checked where it is written** (G5004). `slot <name> { … }`
+  at an instance names a slot the widget has, its line takes the name
+  and nothing else, and a slot is filled once. Bare children need the
+  widget's default slot: on a widget without one they are a build
+  error.
 - **`slot <name> ...`** (or any slot with props) declares a named **region**:
   a real node the declaration line places and paints. Its line takes the
   placement vocabulary (`width`/`height`/`min_*`/`halign`/`valign`/margins,

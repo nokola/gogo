@@ -1,5 +1,5 @@
 //! The one color-mixing law: gogo mixes AUTHORED colors in premultiplied
-//! Oklab. Gradient stops mix this way on the GPU (imaging_wgpu's ui.wgsl
+//! Oklab. Gradient stops mix this way on the GPU (gogo-wgpu's `ui.wgsl`
 //! mirrors `rgba_from_oklab_pm` exactly), `transition` and `anim` color
 //! lerps mix this way on the CPU (`anim::lerp_value`).
 //!

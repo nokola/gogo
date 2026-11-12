@@ -367,7 +367,8 @@ fn a_focused_control_switched_off_answers_no_key_and_tab_moves_on() {
 const DIAL: &str = r#"
 control Dial $value=0, $min=0, $max=1, $step=0, min_size=48x48 {
     state_builtin hovered, focused, disabled
-    Circle color=#333333FF {
+    Layers {
+        Circle color=#333333FF
         slot track width=fill, height=fill {
             slot wedge automatic=arc(from=0, sweep=90) by $value in $min..$max {
                 Arc thickness=4, color=#4488FFFF

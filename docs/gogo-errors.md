@@ -114,7 +114,8 @@ line are G0017.)
 ## G0015 — a comma before `{`
 
 The property list ends before the body: `Button b text="x" { … }`, not
-`Button b text="x", { … }`. Drop the trailing comma.
+`Button b text="x", { … }`. Drop the trailing comma. It is refused with
+the `{` on the same line and on the next.
 
 ## G0016 — `->` needs a state name
 
@@ -126,6 +127,11 @@ Both ends are state or arrangement words (`any` matches all).
 Two properties or names ran together without a comma. The message names
 the token where the list broke. (A reserved flag like `signals` is its
 own delimiter — a comma after it is legal but not required.)
+
+A node whose first word is `x` and a number (`Rectangle x0 10x10`) gets
+this error too, with a note: `x0` is the size shorthand for "0 tall", so
+it is read as a size and the word after it looks like a member with no
+comma before it. Give the node another name.
 
 ## G0018 — duplicate parameter / property
 
@@ -155,9 +161,14 @@ node property is `key=value` on the node's own line.
 ## G0023 — `uses` path rules
 
 `uses` takes one quoted path, and a path never carries a translation
-key. Write `uses "widgets.gogo"`. A nested `uses` resolves against the
-INCLUDING file's directory (`sub/widgets.gogo` writing
-`uses "inner.gogo"` loads `sub/inner.gogo`; `..` climbs).
+key. Write `uses "widgets.gogo"`. Two files are two lines: a second path
+on one line (`uses "a.gogo", "b.gogo"`) is refused. A nested `uses`
+resolves against the INCLUDING file's directory (`sub/widgets.gogo`
+writing `uses "inner.gogo"` loads `sub/inner.gogo`; `..` climbs).
+
+The same code answers a translation key on a picture's address:
+`source="preview://brush"/k` and `source="res://a.png"/k`. An address is
+never translated; the key goes on text.
 
 ## G0024 — `uses` file not found
 
@@ -250,7 +261,8 @@ the replacement.
 ## G0039 — `/` and `@` suffixes are for colors and strings
 
 An opacity or position suffix on a word that takes neither
-(`fill/0.5`). Move the suffix to the color it belongs to.
+(`fill/0.5`), or on a `$value` that holds a number (`spacing=$gap/0.5`).
+Move the suffix to the color it belongs to.
 
 ## G0040 — `@pos` / a list where none belongs
 
@@ -266,12 +278,6 @@ Godot property names that gogo spells another way: `anchors`,
 width/height, margins), `stretch_mode`/`expand_mode` (`fit=`),
 `autowrap_mode` (`wrap=true`) and `texture` (`source=`). The message
 names today's word.
-
-## G0043 — unknown flag
-
-Not given today: `signals` is the only flag the parser knows, and any
-other bare word in a node's property list is reported as G0046
-(`unexpected … — a property is key=value`).
 
 ## G0044 — node name used twice
 
@@ -318,7 +324,8 @@ fix the spelling.
 ## G0052 — not an action
 
 `on:` takes `play(name)`, `go(name)`, `toggle(name)`, `emit(name)` or a
-bare handler name for the host.
+bare handler name for the host. `emit()` with nothing in it is refused:
+it names what it raises.
 
 ## G0054 — a `when` block sets properties
 
@@ -326,6 +333,13 @@ Inside `when`: `opacity=0.5` or `node.prop = value` — never `$theme`
 definitions, never nested nodes. An empty top-level `when s { }` is
 refused too (it can never do anything), and two blocks on ONE condition
 may not both set the same property — the loser would silently vanish.
+
+A `when` answers a state and sets none. `selected=` in a `when`, and
+`value=` in a `when` on a Toggle, are refused: `when held selected=true`
+would leave the Button unselected, and `when held value=1` would move a
+Toggle's knob while the Toggle stays off. A state changes by a tap, a
+key or code; `selected=true` or `value=1` on the node's own line is
+where it starts.
 
 ## G0055 — `=host` is gone
 
@@ -347,7 +361,8 @@ alignment word from the other axis (`halign=top`), `visibility=maybe`,
 ## G0058 — a number key given a non-number
 
 `spacing=big` — the key wants epx. (A numeric `$value` is fine:
-`min_width=$rowFont`.)
+`min_width=$rowFont`.) A `$value` that holds a color or a text is
+refused like the word itself: `$c = #ff0000` then `spacing=$c`.
 
 ## G0059 — a top-level `when` writes `node.prop = value`
 
@@ -470,7 +485,9 @@ scope per group).
 ## G0071 — an asset path carries `res://`
 
 Image and font paths are explicit: `source="res://icons/save.png"`. A
-bare file name could be a label or a path — the scheme says which.
+bare file name could be a label or a path — the scheme says which. The
+names it is asked of end in `.png`, `.jpg`, `.jpeg`, `.svg`, `.ttf` or
+`.otf`.
 
 ## G0072 — `on:<event>` fires only on a press surface
 
@@ -505,13 +522,17 @@ names; an empty head declares nothing.
 `state`, `state_builtin`, `signal`, `keys` and `behavior` lines say how
 a `control` behaves; a `widget` has no behavior, so its body refuses
 them (and the Godot addon's `script` line). Under `state`, a built-in's
-name is also refused — `state hover` claims a built-in state; declare
-built-ins with `state_builtin`, your own words with `state`.
+name is also refused — `state held` claims a built-in state; declare
+built-ins with `state_builtin`, your own words with `state`. Another
+dialect's word for a built-in (`hover`, `pressed`, `focus`, `checked`)
+is answered with the spelling that builds: `state_builtin hovered`.
 
 ## G0078 — a bool key / overlay rules
 
-A true/false key got something else, or an `overlay` box's `fill` axis
-sits under a hug parent that nothing sizes.
+A true/false key got something else; `reveal_x=` or `reveal_y=` got a
+number outside 0..1; `overlay=true` sits beside `visibility=space_only`;
+or an `overlay` box's `fill` axis sits under a hug parent that nothing
+sizes.
 
 ## G0079 — unknown unit on a number
 
@@ -616,6 +637,37 @@ Right:
 anim appear { sheet.opacity from=0, to=1, duration=0.2 }
 View page {
     Panel sheet width=200, height=100, on:show=play(appear)
+}
+```
+
+## G0085 — a call gogo does not have
+
+The calls a value takes are few, and each has its place:
+
+- `round(number, step)` on a number.
+- `fill(n)` and `hug(n)` where a size is written: `width=`, `height=`,
+  the floors and caps, an entry of `cols=`, `row_height=`.
+- `arc(…)` and `angle(…)` on a slot's `automatic=`.
+- The actions on an `on:` word: `play(name)`, `go(name)`,
+  `toggle(name)`, `emit(name)` (a wrong one there is G0052).
+
+Any other name would be stored and read by nothing: the line would
+build and draw nothing. A size call where no size goes
+(`opacity=fill(2)`) is refused too.
+
+Wrong:
+
+```kdl error=G0085
+View page {
+    Label title text=upper("hello")
+}
+```
+
+Fix:
+
+```kdl
+View page {
+    Label title text="HELLO"
 }
 ```
 
@@ -826,6 +878,23 @@ The word exists but not HERE: a Grid cell word off its lattice, a
 where it belongs. (A XAML or Godot spelling that is no gogo word at
 all, such as `foreground=` or `visible=`, is G2001.)
 
+Some words belong to a kind's neighbours and not to the kind:
+
+- `clip_text=` on a Button, a Check, a Radio or a Toggle. Their own text
+  folds with `wrap=true`; text that is cut is a Label's
+  (`Button { Label text="…", clip_text=true }`).
+- `wrap=`, `clip_text=`, `horizontal_alignment=` and
+  `vertical_alignment=` on an Input. An Input shows one line of text
+  that starts at its left edge.
+- `value=` on an Input. The field's text is `text=`.
+- `valign=`, `aspect=` and `overlay=` on a ListItem. A List places its
+  rows itself (a margin on a row is G1014).
+- `disabled_opacity=` on any node's line. It is page-wide and has one
+  home, the top `theme { }` block.
+- `background=` or `color=` on a seat, a Grid's `row` or a `choice`.
+  They draw nothing of their own.
+- `toggle=` on anything but a Button.
+
 Wrong:
 
 ```kdl error=G2002
@@ -880,10 +949,18 @@ all-or-none, never decreasing. A `when` or an anim line that writes a
 stop (`g.stop_3_color`) names a stop the list declares: stop 3 of a
 two-stop gradient is refused.
 
+Two words are written LIVE (in a `when`, an anim, or from code) and
+never on a node's line: a Gradient's `stop_<n>_color` / `stop_<n>_offset`
+(the line says `stops=`), and a fill's `color.a` (the line puts the
+alpha in the color: `color=black/0.5`, `color=#00000080`).
+
 ## G2006 — `transparent` in `stops=`
 
-Straight-alpha blending fades THROUGH a color's hidden RGB; spell which
-one: `white/0` or `black/0`.
+A stop is written as a color with its alpha: `white/0`, or the next
+stop's color (`red/0`). Stops mix premultiplied, so a stop at alpha 0
+adds no color of its own and each of these fades the same. The word
+`transparent` stays refused all the same: it names no color, and a stop
+that names one says the same thing however stops are mixed.
 
 ## G2007 — the word is not a color
 
@@ -1077,6 +1154,16 @@ Two more, each a line that used to build and do nothing:
   on it can wear a style. Write `.Big` on the first node of the body
   (every instance wears it) or on an instance line (that one does).
 
+And two more:
+
+- A block under a `theme { Kind … }` entry. An entry is one line of
+  defaults for EVERY node of its kind; nothing reads a child, a `when`
+  or a `transition` written under it. A look that answers a state goes
+  in a style the entry wears (`theme { Button .Look }`).
+- A `for=<control>` style written above the `control` it names. The
+  style reads the control's slots, so it goes after the declaration; the
+  message names the control's line.
+
 ## G3007 — property transition shape
 
 A property transition (`transition commandBar.opacity duration=0.4`)
@@ -1132,11 +1219,14 @@ on a page cannot start the `pop` a widget declares.
 
 ## G5001 — widget naming / `for=` host contract
 
-A widget or control cannot wear a built-in word's name (`widget gap`,
-`control Slider` — the built-in would be unreachable or shadowed). A
+A widget or control cannot wear a built-in kind's name
+(`control Slider` — the built-in would be shadowed) or a gogo keyword
+(`widget each`, `widget state`, `widget held`, `widget fill`): the name
+would be read as the keyword wherever an instance is written. A
 `for=Radio` widget dresses a Radio: used outside one, inside the wrong
 control, or with widget-scope `when`/`transition` and no `for=`, the
-contract breaks — the message names which way.
+contract breaks — the message names which way. On the `widget` line
+`for=` comes first, before the `$params`.
 
 ## G5002 — unknown style
 
@@ -1153,6 +1243,58 @@ Button ok .NoSuchStyle text="OK"
 `A` contains `B` contains `A` — the expansion would never end. The
 message spells the cycle; break one link. (A widget MAY fill its own
 slot from an instance site — that pops one level and ends.)
+
+## G5004 — a slot fill that would never show
+
+An instance fills a widget's slots: `slot header { … }` fills the slot
+named `header`, and bare children go to the widget's default slot (the
+bare `slot` line in its body). Without the check each of these builds
+and shows nothing, or shows twice:
+
+- A fill for a slot the widget does not have (`slot heder { … }`).
+- Bare children on a widget with no default slot.
+- A word on the fill's line (`slot header spacing=4 { … }`). A fill is a
+  name and a block; the slot's size and look are written on the slot's
+  own line in the widget.
+- One slot filled twice.
+- A second default `slot` in the widget's body. Bare children go to one
+  place.
+
+Wrong:
+
+```kdl error=G5004
+widget Card {
+    Panel {
+        Column {
+            slot header { Label text="Untitled" }
+            slot
+        }
+    }
+}
+View page {
+    Card stats {
+        slot heder { Label text="Run stats" }
+    }
+}
+```
+
+Fix:
+
+```kdl
+widget Card {
+    Panel {
+        Column {
+            slot header { Label text="Untitled" }
+            slot
+        }
+    }
+}
+View page {
+    Card stats {
+        slot header { Label text="Run stats" }
+    }
+}
+```
 
 ## G5105 — an automatic slot in a host that measures children
 
@@ -1277,6 +1419,35 @@ placement) or `Panel` (a styled box).
 
 The host declared this word as code-drawn; gogo lays out an empty box
 of its declared size and the host paints it.
+
+## G7014 — a child inside a shape
+
+A Rectangle, a Circle, an Arc, a Gradient and an Image draw themselves
+and hold nothing. A child written in a shape's block would be placed
+over the shape, and a shape with no size of its own would not grow to
+hold it. Put the two side by side in a `Layers` (they stack), or use a
+`Panel`, which draws a plate and holds content. A shape's block still
+takes its `when` and `transition` lines.
+
+Wrong:
+
+```kdl error=G7014
+View page {
+    Rectangle badge 80x24, color=red {
+        Label text="New"
+    }
+}
+```
+
+Fix:
+
+```kdl
+View page {
+    Panel badge 80x24, background=red {
+        Label text="New"
+    }
+}
+```
 
 ## G8001 — a translation key carries different English
 

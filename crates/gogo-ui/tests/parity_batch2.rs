@@ -70,11 +70,11 @@ fn an_anim_assigns_opacity_instead_of_multiplying() {
 }
 
 /// GPAR2: `scrim.color.a` in an anim moves the FILL's alpha; the node's
-/// opacity — and so its child's text — stays untouched (the file-ops dim
-/// landed at 0.69 × 0.69 before).
+/// opacity stays untouched, and so does the text over it (the file-ops
+/// dim landed at 0.69 × 0.69 before).
 #[test]
 fn color_a_fades_the_fill_not_the_node() {
-    let c = ok("anim appear {\n scrim.color.a from=0, to=0.69, duration=0\n}\nView v {\n Rectangle scrim color=#000000B0, width=200, height=100, halign=left, valign=top { Label l text=\"x\", font_size=12, halign=left, valign=top }\n}\n");
+    let c = ok("anim appear {\n scrim.color.a from=0, to=0.69, duration=0\n}\nView v {\n Layers box width=200, height=100, halign=left, valign=top {\n Rectangle scrim color=#000000B0, width=fill, height=fill\n Label l text=\"x\", font_size=12, halign=left, valign=top\n }\n}\n");
     let page = c.page;
     let mut rt = Runtime::new(&page);
     rt.play_id(&page, anim_id(&page, "appear"), Finish::Nothing);
@@ -93,7 +93,7 @@ fn color_a_fades_the_fill_not_the_node() {
         Draw::Text { color, .. } => Some(color.0[3]),
         _ => None,
     }).unwrap();
-    assert_eq!(text, 255, "the child's text keeps full opacity: {list:#?}");
+    assert_eq!(text, 255, "the text over the scrim keeps full opacity: {list:#?}");
     assert!(!res.anim_owns(scrim, Channel::Opacity) && res.anim_owns(scrim, Channel::ColorA));
 }
 

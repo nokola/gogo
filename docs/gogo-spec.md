@@ -87,7 +87,7 @@ painting) is in REFERENCE.md, "Host API".
 | ref    | `$name`                 | Reads a widget parameter (innermost scope) or theme value. |
 | ident  | `center_bottom`         | Bare word: enum member or handler name; validated by resolver per property type. |
 | size   | `220x110`, `220x`, `x110` | Shorthand for an exact size on both axes (the `size=` prop: exactly that size). Components are epx only (no units inside). Omitted component = unset. `min_size=` is the minimum-only spelling; there one number is both sides (`min_size=44`). |
-| call   | `play(appear)`, `fill(2)` | Ident + parenthesized args. Callees are closed per position: `play`/`go`/`toggle`/`emit` on `on:` keys, `fill(n)`/`hug(n)` in sizing positions (weights — n may be fractional), `round(n, step)` where a number or a text goes (n rounded to a multiple of step; step is 1 when not written). The controlled on-ramp for v2 expressions. |
+| call   | `play(appear)`, `fill(2)` | Ident + parenthesized args. Callees are closed per position: `play`/`go`/`toggle`/`emit` on `on:` keys, `fill(n)`/`hug(n)` in sizing positions (weights — n may be fractional), `round(n, step)` where a number or a text goes (n rounded to a multiple of step; step is 1 when not written), `arc(…)`/`angle(…)` on a slot's `automatic=`. A call outside this list, or a sizing call where no size is written, is refused (G0085). The controlled on-ramp for v2 expressions. |
 | list   | `[80, hug, fill(2)]`    | Ordinary values in brackets; newlines are free inside the brackets (the list cousin of trailing-comma continuation). Six props accept one: Grid's `cols=`/`areas=`, Gradient's `stops=`, `border_dash=`, an Arc's `dash=` and an Image's `window=`; a list on any other prop is refused (G0040). |
 
 **Attached dots form a path**: `listBrush.translate.x` (no spaces) lexes as ONE
@@ -293,6 +293,8 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
   line is refused (G3006): the line declares a name, it is not a node. A style goes
   on the first node of the body (every instance wears it) or on an instance line
   (that one does). Instantiated exactly like a built-in: `Name instName param=..., other=...`.
+  The name is no built-in kind and no gogo keyword (`widget each`, `widget held`,
+  `widget fill`: G5001).
   - Instance name and any instance property that is **not** a declared parameter pass
     through to the widget's root node.
   - **`slot`** — where a widget takes content (control-customization spec §3). Bare
@@ -302,11 +304,13 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
     node): its line takes placement + the box family (`background`/`corner_radius`/
     `border_*`/`padding` — content props route to filling), content is clipped and
     fills it, and its minimum derives from content + padding. Instances fill by name:
-    `slot header { ... }` (props on a fill line are ignored); nested slot declarations
-    survive fills and draw above them. The compiler does not check fills (the
-    Godot addon did): a fill whose name matches no slot and bare children at an
-    instance whose widget has no default slot build with no message and are
-    dropped; a second default slot builds too, and the children land at both.
+    `slot header { ... }` — the fill's line takes the name and nothing else; nested
+    slot declarations survive fills and draw above them. A fill is checked where it
+    is written (G5004): a fill whose name matches no slot of the widget, a word on a
+    fill's line, one slot filled twice, and bare children at an instance whose widget
+    has no default slot are build errors; so is a second default slot in a widget's
+    body. A `slot` line written in a fill, or among an instance's bare children, is
+    a slot of the widget that instance is written in.
     Two slots with one name are refused where the widget is used (G0044).
   - **`signals`** — a flag on one node inside a widget body marking the event surface:
     an `on:` entry written on an instance lands on this node.
@@ -407,8 +411,10 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
   text: on `Layers`, the `View` root, stacks and slot lines it insets
   every child's placement and adds onto the box's minimum, and
   `Label`/`Input` inset their own text (WPF's TextBlock/TextBox Padding,
-  verbatim). Drawing leaves (`Rectangle`/`Circle`/`Image`) have nothing
-  inside — outer air is `margin`.
+  verbatim). Drawing leaves (`Rectangle`/`Circle`/`Arc`/`Gradient`/`Image`)
+  have nothing inside — outer air is `margin`, and a child written in a
+  shape's block is refused (G7014): hold the two in a `Layers`, or use a
+  `Panel`.
   `padding` also comes per side — `padding_left`/`_top`/`_right`/`_bottom` —
   mirroring the `margin_*` family (WPF's per-side Padding thickness).
   `corner_radius` also comes per corner (D135) —

@@ -1270,7 +1270,7 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
         Kind::Arc => &[BOX, &[PropKey::Color, PropKey::ColorA, PropKey::From, PropKey::Sweep, PropKey::Thickness, PropKey::Dash]],
         // A Slider's `background=` is its track, `color=` the filled part.
         Kind::Slider => &[BOX, &[PropKey::Background, PropKey::CornerRadius, PropKey::Color, PropKey::Value, PropKey::Min, PropKey::Max, PropKey::Step]],
-        Kind::Input => &[BOX, PLATE, PADDING, TEXT, &[PropKey::Value, PropKey::PlaceholderText, PropKey::MaxLength, PropKey::SelectionColor]],
+        Kind::Input => &[BOX, PLATE, PADDING, TEXT, &[PropKey::PlaceholderText, PropKey::MaxLength, PropKey::SelectionColor]],
         Kind::Check | Kind::Radio => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::SelectedProp]],
         Kind::Toggle => &[BOX, PLATE, PADDING, TEXT, PRESS, &[PropKey::SelectedProp, PropKey::Value]],
         Kind::Choice => &[BOX, &[PropKey::Value, PropKey::Spacing]],
@@ -1284,9 +1284,30 @@ fn kind_row(kind: Kind) -> &'static [&'static [PropKey]] {
     }
 }
 
+/// Is `key` a word of one of `kind`'s groups that `kind` takes no notice
+/// of?
+///
+/// Needed because a word in a kind's row that nothing reads for that kind
+/// builds clean and changes nothing. Left out here, it is a build error
+/// on that kind and stays a word of the group's other kinds.
+fn left_out(kind: Kind, key: PropKey) -> bool {
+    match kind {
+        // A press control folds its own text (`wrap=`); it never cuts it.
+        Kind::Button | Kind::Check | Kind::Radio | Kind::Toggle => key == PropKey::ClipText,
+        // An Input shows one line of text that starts at its left edge.
+        Kind::Input => matches!(key, PropKey::Wrap | PropKey::ClipText | PropKey::TextHalign | PropKey::TextValign),
+        // A List places its rows itself.
+        Kind::ListItem => matches!(key, PropKey::Valign | PropKey::Aspect | PropKey::Overlay),
+        _ => false,
+    }
+}
+
 /// Is `key` a word `kind` takes? Cell words (`span=`, `col_span=`) count as
 /// legal on every box here — the compiler checks the PARENT for those.
 pub fn legal(kind: Kind, key: PropKey) -> bool {
+    if left_out(kind, key) {
+        return false;
+    }
     // Parametric keys can't sit in the const rows: a numbered stop word
     // is a Gradient's, whatever the number.
     if matches!(key, PropKey::StopColor(_) | PropKey::StopOffset(_)) {
@@ -1302,13 +1323,13 @@ pub fn legal(kind: Kind, key: PropKey) -> bool {
 /// The words `kind` takes, in table order — the docs list and the
 /// did-you-mean pool.
 pub fn kind_words(kind: Kind) -> Vec<&'static str> {
-    kind_row(kind).iter().flat_map(|g| g.iter()).map(|k| k.word()).collect()
+    kind_row(kind).iter().flat_map(|g| g.iter()).filter(|k| !left_out(kind, **k)).map(|k| k.word()).collect()
 }
 
 /// The words `kind` takes that not every box takes: the short list an
 /// error shows ("a Scroll's own words: allow, bars").
 pub fn kind_own_words(kind: Kind) -> Vec<&'static str> {
-    kind_row(kind).iter().flat_map(|g| g.iter()).filter(|k| !BOX.contains(k)).map(|k| k.word()).collect()
+    kind_row(kind).iter().flat_map(|g| g.iter()).filter(|k| !BOX.contains(k) && !left_out(kind, **k)).map(|k| k.word()).collect()
 }
 
 /// The one authored-color type — every color a `.gogo` file names, a

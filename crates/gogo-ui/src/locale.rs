@@ -1,10 +1,10 @@
 //! Translations: which string a `text="x"/key` shows right now.
-//! Needed because the shipped app switches language at runtime and takes
-//! translations from a server — the table is data that arrives after the
-//! build, so a key can't resolve to a string at compile time. Limit: this
-//! file knows keys and strings, not files — the shipped `.txt` format is
-//! the app's (`app::translation`), and RTL/line-breaking is the text
-//! engine's. Mechanism: `Keys` is the build-time interner (one id space
+//! Needed because an app can switch language while it runs and can load
+//! its translations after the build (from a file, from a server) — the
+//! table is data that arrives later, so a key can't resolve to a string at
+//! compile time. Limit: this file knows keys and strings, not files — the
+//! format a translation is stored in is the host's, and RTL/line-breaking
+//! is the text engine's. Mechanism: `Keys` is the build-time interner (one id space
 //! for every page, `build_pages`), `Locale` the runtime table indexed by
 //! that id: one `Vec` index and one branch per read, no hashing, no
 //! allocation — loads allocate, reads never.
@@ -72,9 +72,9 @@ impl Keys {
     }
 }
 
-/// A build-emitted key (`app::ui::Key`) — the only thing `Runtime::set_key`
-/// takes, so a key the pages never declare is a rustc error, not a
-/// runtime miss.
+/// A build-emitted key (the `Key` enum the build writes for the host) —
+/// the only thing `Runtime::set_key` takes, so a key the pages never
+/// declare is a rustc error, not a runtime miss.
 pub trait KeyName: Copy {
     fn id(self) -> KeyId;
 }

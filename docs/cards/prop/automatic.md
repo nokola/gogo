@@ -145,7 +145,8 @@ The round ones are more fun. A volume knob is a circle with a progress arc and a
 ```
 control Knob $value=0, $min=0, $max=1, min_size=48x48 {
     transition duration=0.15, easing=cubic_out
-    Circle color=#333333FF {
+    Layers {
+        Circle color=#333333FF
         slot track width=fill, height=fill {
             slot progress automatic=arc(from=-135, sweep=270),
                     by $value in $min..$max {

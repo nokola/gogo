@@ -18,8 +18,8 @@
 //!   nothing to share yet, so "fill" has nothing to say here.
 //! - Parent that was told its size ("I'm 300 wide, split it"): fixed
 //!   children take their size, `fill` children share what's left. A fill
-//!   child can end up narrower than its text here; the smallest it goes is
-//!   its `min_width`.
+//!   child never goes under its content or its `min_width`, whichever is
+//!   more (`main_min`).
 //!
 //! - `star_split` — ARRANGE along an axis: fixed slots take their size,
 //!   fills share what is left by weight, a fill under its floor takes the
