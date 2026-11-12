@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/gogo-ui", "crates/gogo-text", "crates/gogo-wgpu", "crates/storvald", "examples/window"]
+members = ["crates/gogo-ui", "crates/gogo-text", "crates/gogo-wgpu", "crates/storvald", "crates/turbodot", "examples/window"]
 # `scripts/test-packages.sh` unpacks the crates.io packages under target/ and
 # runs their tests there; without this line cargo would take them for
 # members that the list above forgot.

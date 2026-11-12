@@ -1982,6 +1982,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "turbodot"
+version = "0.5.0"
+
+[[package]]
 name = "unicode-bidi"
 version = "0.3.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

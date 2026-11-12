@@ -1,0 +1,10 @@
+[package]
+name = "turbodot"
+description = "TurboDot: the app and game engine where AI can prove that its changes work. Headless, deterministic, high-performance. In development: this version holds the name and has no API yet."
+keywords = ["gamedev", "game-engine", "ai", "agent", "headless"]
+categories = ["game-engines", "game-development"]
+readme = "../../README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
