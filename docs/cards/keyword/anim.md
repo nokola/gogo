@@ -1,4 +1,4 @@
-Transient choreography on the motion channel (`translate`/`scale`/`rotate`/`opacity` + animatable props). An anim is a CHAIN of steps: property lines, `group { }`, `play <anim>`, `each ... { }` and `delay=` pauses. Every step after the first says when it runs — `and` (with the previous step) or `then` (after it) — or carries `after=<group>` instead. Play with `Runtime::play` from code, `on:show=play(x)` or a transition's `anim=`.
+Transient choreography on the motion channel (`translate`/`scale`/`rotate`/`opacity` + animatable props). An anim is a CHAIN of steps: property lines, `group { }`, `play <anim>`, `each ... { }` and `delay=` pauses. Every step after the first says when it runs — `and` (with the previous step) or `then` (after it) — or, on a `group`, carries `after=<group>` instead (on any other step `after=` is G0062). Play with `Runtime::play` from code, `on:show=play(x)` or a transition's `anim=`.
 
 ```
 // sidebar floats in and content fades in, then the title pops

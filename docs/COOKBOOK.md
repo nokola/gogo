@@ -571,11 +571,12 @@ StatCard runCard {
   structure — they survive a fill and draw above it.
 - Restyling content is filling: a content word on the widget's own slot line
   (`slot label font_size=12`) errors — bring the node instead
-  (`slot label { Label font_size=12 }`). On an instance's fill line the
-  compiler checks nothing yet: properties written there are dropped.
-- Typos are not caught yet: a fill for a slot name the widget does not have,
-  and bare children on a widget without a default slot, compile with no
-  error and show nothing.
+  (`slot label { Label font_size=12 }`). On an instance's fill line a
+  word is a build error too (G5004): that line takes the slot's name and
+  nothing else.
+- Typos are caught where they are written (G5004): a fill for a slot name
+  the widget does not have (the message names the nearest slot), one slot
+  filled twice, and bare children on a widget without a default slot.
 
 ---
 
@@ -598,23 +599,23 @@ An item is a record of named fields. Here `host.rt` is the page's
 `Runtime` and `tasks` is the repeat's node (`page.find("tasks")`):
 
 ```rust
-fn task(id: i64, title: &str) -> Item {
-    Item::Record(vec![("id".to_string(), ItemValue::Int(id)), ("title".to_string(), ItemValue::Str(title.to_string()))])
+fn task(id: i64, title: &str, done: bool) -> Item {
+    Item::Record(vec![("id".to_string(), ItemValue::Int(id)), ("title".to_string(), ItemValue::Str(title.to_string())), ("done".to_string(), ItemValue::Bool(done))])
 }
 ```
 
 ```rust
     // The whole collection, every time it changes. Rows are matched by
     // key: a kept key keeps its row.
-    host.rt.set_items(&mut host.page, tasks, &[task(1, "Buy milk"), task(2, "Call mom")]).expect("two rows with different keys");
+    host.rt.set_items(&mut host.page, tasks, &[task(1, "Buy milk", false), task(2, "Call mom", true)]).expect("two rows with different keys");
 ```
 
 - Assignment IS the change event: re-assign and gogo reconciles by key —
-  items whose data didn't change keep their rows untouched (focus and
-  states survive), a changed item is bound again to a row that already
-  exists (nothing is rebuilt), a removed key's row goes back to the pool,
-  order follows the array. Sort or filter app-side and just assign the
-  result.
+  an item keeps its row as long as its key stays: unchanged data leaves
+  the row untouched, changed data is written onto the same row, so focus
+  and states stay with the item (nothing is rebuilt); a removed key's row
+  goes back to the pool, order follows the array. Sort or filter app-side
+  and just assign the result.
 - `$item.field` reads the item's data; `as $task` renames the binding
   (`repeat tasks as $task by $task.id`). Primitive collections key on the
   item itself: `repeat names by $item`.
@@ -928,8 +929,8 @@ layout.
 - `jump=true` sets the value instantly (no interpolation into that key).
 - `then` waits for the whole `and`-cluster before it (longest member,
   autoreverse's way back included); a pause in the chain is its own step
-  (`then delay=0.3`), and a signed `offset=` shifts any step (negative
-  overlaps the previous step's tail).
+  (`then delay=0.3`), and a signed `offset=` shifts any step but a pause
+  (negative overlaps the previous step's tail).
 - Crossing dependencies graduate to named `group`s + `after=` (next
   recipe); staggering wearers to `each` blocks ("How do I stagger buttons
   into a menu?").
@@ -1036,7 +1037,8 @@ named anim:
 
 ```kdl partial
 anim pressBounce {
-    self.scale from=1.0 {
+    self.scale {
+        key t=0,    v=1.0
         key t=0.1,  v=0.92, easing=cubic_out
         key t=0.25, v=1.0,  easing=back_out
     }
@@ -1455,7 +1457,7 @@ Scroll halign=center, valign=center, height=100, width=hug {
 The centering moved to the Scroll — it is the 100-tall box now; the Column
 inside takes the viewport and scrolls past it (touch pan, fling, springy
 edges — see "How do I let a list scroll under the notch?" for insets). Both
-axes `hug` leave nothing to scroll, and the build says nothing. For selectable
+axes `hug` leave nothing to scroll, and the build warns (G1021). For selectable
 rows use a `List` instead; it scrolls itself and must not sit in a `Scroll`.
 
 Don't know how tall the menu should be? Cap the hug instead of picking a
@@ -1583,9 +1585,12 @@ Layers body {
 ```
 
 Margins bind to the edges the alignment touches: both on a filled axis, the
-near edge otherwise, none when centered. Containers refuse margins — their
-`spacing`/`padding`/`gap` own that job, and the error will point you back
-here.
+near edge otherwise. On a centered axis a per-edge margin shifts the box by
+half of itself (`margin=N` adds none there). A Column, a Row, a `choice`,
+a Flow, a Grid, Tiles and a List place their children themselves and
+refuse margins on them (G1014) — `spacing`/`padding`/`gap` own that job,
+and the error will point you back here. The one body of a Scroll takes
+margins.
 
 ---
 
@@ -1801,8 +1806,9 @@ build says nothing. On a centered axis one margin shifts the box by half
 of it: the box is centered in the room the margins leave. Two margins
 beside an exact size for that side (`margin_left` with `margin_right`
 beside `width=200`, or the pair for the height) are a build error
-(G1006). The `margin=N` shorthand stays
-pure breathing room and never errors. For poses that *change* at runtime
+(G1006). The `margin=N` shorthand writes all four sides, so beside an
+exact size on a side with no alignment it is the same error: give that
+side an alignment, or drop the size. For poses that *change* at runtime
 (drawer open/closed), declare an `arrangement` (two recipes down); for
 transient motion, animate `translate` (next recipe).
 
@@ -2051,16 +2057,17 @@ The page's matching block applies, instantly:
 
 ```kdl partial
 when screen.landscapeSmall {
-    optionsPane.halign = left     // re-declares the h axis: the portrait
-    optionsPane.width = 280       // base's stretch pins drop, the pose's
-    optionsPane.margin_left = 60  // own keys stand alone
+    optionsPane.halign = left     // docked at the left edge,
+    optionsPane.width = 280       // 280 wide,
+    optionsPane.margin_left = 60  // 60 in from that edge
     hint.opacity = 0.5
 }
 ```
 
 Pose keys are margins, `width`/`height`, `halign`/`valign` and any style
-prop. Setting an alignment RE-DECLARES that axis from the pose's keys —
-that's how a stretch-with-margins portrait panel becomes a docked
+prop. A posed alignment replaces the declared alignment word and nothing
+else: the declared margins and size stay unless the pose writes them too.
+That's how a stretch-with-margins portrait panel becomes a docked
 fixed-width landscape one. (An arrangement can re-anchor too: its flip
 glides the box to the new seat.)
 
@@ -2872,17 +2879,20 @@ generates.)
 - **A save that cannot be shown changes nothing.** `refresh` returns
   why, with the file and the line. Fix the file and save again.
 - **Adding or removing a node needs a rebuild.** So does a new picture,
-  a new translation key and a changed `atlas` line: your code and the
-  program's tables were made by the build. Everything else in the file
-  reloads: sizes, colors, text, layout words, `when` blocks, styles,
-  themes, anims.
+  a new translation key, a changed `atlas` line, another English text
+  under a key the program was built with, and another `by` on a repeat:
+  your code and the program's tables were made by the build. The rest of
+  the file reloads: sizes, colors, text, layout words, `when` blocks,
+  styles, themes, anims.
 - **On a phone** the files are not there: copy the `ui` folder to the
   device and point `Sources::dir` at the copy. Empty the copy when you
   install a new build, or its old files show in place of the new pages.
 - **A program with no build step**, which compiles its page when it
   starts, makes `Reloader::files(Sources::dir("ui"))` and hands the page
   over with `reload.follow(&mut page, "menu.gogo")`. `examples/window`
-  does this.
+  does this. The reloader compiles the file with no `CompileOptions`, so
+  a page that needs some (code controls, host behaviors, an `atlas`
+  line) is refused at its first edit.
 
 REFERENCE "Host API" lists what a reload keeps and what it refuses.
 
@@ -2925,7 +2935,7 @@ deciding, per shape, where that bound comes from:
 | XAML shape | gogo spelling |
 |---|---|
 | `<TextBlock TextWrapping="Wrap"/>` stretching in a panel | `Label wrap=true, width=fill` |
-| Left-aligned content control holding wrap text (`<CheckBox HorizontalAlignment="Left">`) | bind the chain: `width=fill` on the control, the row AND the label — a `Row` in a hug chain hands no width down, and a `fill` label inside one gets the leftover of a content-sized row: its own one-char raw minimum (linted, G1004) |
+| Left-aligned content control holding wrap text (`<CheckBox HorizontalAlignment="Left">`) | bind the chain: `width=fill` on the control, the row AND the label — a `Row` in a hug chain hands no width down, and a `fill` label inside one gets the leftover of a content-sized row: the width of its longest word (linted, G1004) |
 | `MaxWidth` hug — size to text, wrap at the screen (a toast) | `width=hug, max_width=fill` on the box (a number caps at a fixed width) |
 | Wrap text inside a floored button (`MinWidth` guarantees the line) | `min_width` on the BUTTON + `width=fill` down to the label — the floor is the width the wrap binds at, and G1004 credits it |
 | `TextTrimming` / no wrapping | plain `Label` — no `wrap=`, no width decision needed |

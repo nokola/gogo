@@ -1,5 +1,7 @@
-Three homes. On an anim line, `from=` pins the journey's start AND holds it
-from play start — staggered entrances never flash their base look; `to=`
+Three homes. On an anim line, `from=` pins the journey's start. On the
+first step that moves a property it also holds from play start —
+staggered entrances never flash their base look — and on a later step it
+is where that step starts; `to=`
 alone starts from the live value read when its STEP begins (the
 interruptible-fade capture rule — a `then` leg glides from wherever the
 previous leg left the property). On a `Gradient`, `from=`/`to=` are box points (0..1 of the box,

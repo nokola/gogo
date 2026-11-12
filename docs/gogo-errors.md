@@ -401,7 +401,9 @@ group is wrapped in one (`group late after=intro { play pop }`).
 
 An anim line drives `<node>.<motion word>` — translate.x, translate.y,
 scale, scale.x, scale.y, rotate, opacity — or `<node>.<property>` for a
-look property (`box.background`, `box.corner_radius`, `box.font_size`).
+look property (`box.background`, `box.corner_radius`, `box.font_size`)
+or a size, a margin or a padding (`box.width`, `box.margin_left`,
+`box.padding_top`).
 `slot.<name>.<channel>` lanes
 belong to a control's OWN scoped anims. And an anim holds journeys,
 never assignments: `box.opacity from=1, to=0, duration=0.2` — a bare
@@ -871,7 +873,7 @@ Wrong:
 Label title text="Hello", no_such_word=1
 ```
 
-## G2002 — another dialect's or another kind's word
+## G2002 — a gogo word on a kind that does not take it
 
 The word exists but not HERE: a Grid cell word off its lattice, a
 `Scroll`-only word on a box, `color=` on a Label. The message names
@@ -1006,8 +1008,10 @@ Wrong: `atlas icons cell=48x48` · Fix: `atlas icons source="res://icons.png", c
 
 An atlas reads its picture's size from the file header (and `from=`
 reads the JSON), so the file must exist, sit outside any `.ignore`
-fence, and be a PNG or JPEG. A standalone compile (a test, hot reload)
+fence, and be a PNG or JPEG. A standalone compile (a test, a tool)
 needs `CompileOptions::assets` to read files; `build_pages` passes one.
+A hot reload of a built program reads no picture: it takes each atlas
+as the program was built with it (G2022).
 
 ## G2013 — `cell=` does not divide the picture
 
@@ -1730,9 +1734,11 @@ Column {
 
 ## G9101 — `set_items` refused whole (runtime)
 
-The repeat is not keyed, or one item broke the template (a missing
-bound field) — the assignment is refused WHOLE and the last good rows
-stand. The message names the item and the field.
+The repeat is not keyed, or one item cannot fill the row: a field the
+row reads is missing, or holds another type than its property takes (a
+whole number in `text=`, text in `color=`, a word the property does not
+have) — the assignment is refused WHOLE and the last good rows stand.
+The message names the item, the field and the property.
 
 ## G9102 — item key shape (runtime)
 

@@ -264,10 +264,10 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
   (D128, one seat per context — G9016 routes it): richer zero-items views
   beside the statics, and the List's repeat carries none. Bad data (duplicate keys above all) REFUSES the
   whole assignment (`set_items` returns the error); the last good items stay
-  live. The compiler accepts a repeat inside a widget body (code reaches it
-  through the instance, `inst/rows`) and inside another repeat; there the
-  inner repeat of a row cannot be filled (`set_items` refuses it, G9101),
-  so a repeat inside a repeat stays unsupported in v1. Full design:
+  live. A repeat inside a widget body works (code reaches it through the
+  instance, `inst/rows`). A repeat inside another repeat's row is a build
+  error (G9018): code fills a repeat by its one name, and every outer row
+  would hold one. Full design:
   `docs/design/2026-07-15-spec-repeat-and-list.md`; REFERENCE "Repeat".
 - **`style Name prop=..., prop=...`** — a named property bag. Applied to a node with
   `.Name`; local properties override style properties. Styles have no structure and no
@@ -514,7 +514,8 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
       remains (G1002): a cap that reads the parent's space on a stack's OWN
       stacking axis is circular — cap the stack itself. On `List` the caps
       keep their D124 meaning (grow with the items, scroll past the cap).
-      Wrap-capable text is `Label`.
+      Text that wraps is a `Label`'s, or the own text of a Button, a
+      Check, a Radio or a Toggle with `wrap=true`.
       - **The min/max band** (D135): `width=hug, min_width=100,
         max_width=300` clamps the natural size into the pair — the floor
         holds below it, the cap binds above it (wrap-text wraps there),
@@ -526,10 +527,10 @@ These are ordinary nodes to the parser; the resolver gives them meaning:
         axis would GET: the parent frame minus region padding minus
         margins — live, so a parent resize re-caps. On a fill-capped axis
         margins bind the MEASURING FRAME exactly as they would inset fill,
-        whatever the alignment. On a centered axis two written margins
-        center the box in the frame between them (unequal margins shift
-        the midpoint, the padded-frame rule) and a lone margin does not
-        move it — with the fill cap or without (the Godot addon refused
+        whatever the alignment. On a centered axis the box is centered in
+        the room the written margins leave: two margins shift it by half
+        their difference, one margin by half of itself — with the fill
+        cap or without (the Godot addon refused
         margins on a centered axis without the cap). The shipped-toast shape: `width=hug, max_width=fill,
         halign=center, margin_left=12, margin_right=12` — hug the text,
         center it, wrap at live width − 24. Wants a parent whose extent
@@ -921,7 +922,9 @@ EXCLUSIVE set — its enum; `base` is predeclared (the declarations themselves)
 and `any` is the transition wildcard (both reserved). Declaration only:
 responses live in top-level `when <name>` blocks (dotted `node.prop=value`
 pairs from the view root), timing in `transition` rules. Placement keys
-(`margin_*`, `width`, `height`, `min_width`, `min_height`) compile per
+(the margin and padding sides, `width`, `height`, `size`, the floors
+`min_width`, `min_height`, `min_size`, the caps `max_width`,
+`max_height`, and `halign`/`valign`) compile per
 arrangement into the target's placement (validated at build); other props
 go through the state machinery.
 
@@ -961,10 +964,10 @@ clamps every posed value — WPF's MinWidth-over-Width order), a posed
 sets a button's non-exact axis above any floor. On a TIMED flip the box's
 edges tween and the boxes around it follow on every frame,
 so motion is smooth in both directions. A declared
-`min_width` next to an exact `width` on the same axis is always legal
-(GPAR79 2026-08-31 dropped the dead-pair refusal): the floor is there to
-bound the posed values, and it clamps the declared size by the same
-order.
+`min_width` next to an exact `width` on the same line builds only where
+a `when` writes that width on the node (otherwise G1019): there the
+floor bounds the posed values, and it clamps the declared size by the
+same order.
 Flipped with `Runtime::go`, `on:<event>=go(name)`, or
 `on:<event>=toggle(name)` — toggle is one comparison of sugar (D92):
 `go(active == name ? base : name)`, the disclosure button without a handler
@@ -1127,7 +1130,7 @@ pair already conformed):
 |---|---|---|
 | `activate` | the control's OWN trigger gesture completed — Button: a completed tap (slide-off clears, slide-back re-arms) or Enter/Space; List: tap or Enter/Space on a row. Never "fires on release" as a universal law; never fires disabled | — (List: the event's node is the row; `Runtime::item_key` gives its key) |
 | `change` | the committed value is now different — once per commit, genuine transitions only ("changed means CHANGED": re-pick repairs, never re-reports). Events come from input: a write from code reports nothing | the new value: Check/Toggle a bool, Slider a number, Input the text, `choice` the picked Radio's name; for a List read the keys with `Runtime::selected_keys` |
-| `edit` | a live, UNCOMMITTED value moved — Slider per drag tick, Input per keystroke; discrete controls have no edit | the live value |
+| `edit` | a live, UNCOMMITTED value moved — Slider per drag tick, Input per keystroke that changes the text; discrete controls have no edit | the live value |
 | `press` / `release` | the finger landed on a press surface, and that gesture ended — `release` fires exactly once however it ends (lift inside or out, cancel, a Scroll steal, disable/hide under the finger). A Slider brackets its drag with the same pair: `press` on down, `release` on up or cancel, one each. `activate` stays a press surface's completed tap; a Slider never fires it | — |
 | `show` / `hide` | visibility choreography (unchanged) | — |
 | `pointer` | every touch phase on a box the host draws itself (the node needs `interactive=true`, G0073) | the phase and the position inside the box, epx |
@@ -1137,7 +1140,8 @@ Per control: **Slider** brackets its drag with `press`/`release`
 (`held`) and commits `change` on release; a key step commits directly —
 `change` only, no `edit` (an `edit` landing in the same
 instant as its commit adds nothing). **Input** streams `edit` per
-keystroke; `change` commits on Enter or focus loss. **Toggle**:
+keystroke that changes the text; `change` commits on Enter or focus
+loss. **Toggle**:
 `selected` flips LIVE as the thumb crosses the midpoint (state =
 presentation); `change` fires on settle, only when the settled
 side differs from the pre-gesture side — wiggling across the middle is
@@ -1223,8 +1227,9 @@ anim entrance duration_each=0.2 {              // each: wearers + stagger
   to=12`, `card.width to=200`, the live `stop_N_color`/`stop_N_offset`
   family. A lane on a size, a margin or a padding moves the box itself,
   as `transition card.width` does: the box and what is around it are
-  laid out again on every frame of the play. `scale`, `translate.x/.y`
-  and `reveal_x/_y` move a box with no new layout. `.a` on
+  laid out again on every frame of the play. `scale` and `translate.x/.y`
+  move a box with no new layout; `reveal_x/_y` changes the room the box
+  takes, so the boxes around it are laid out again as it moves. `.a` on
   any color word moves alpha alone while the hue keeps following its
   ladder. ONE ownership law with the motion channels: a playing anim
   owns its (node, property) lane — `when` and code writes yield, a
@@ -1253,9 +1258,10 @@ anim entrance duration_each=0.2 {              // each: wearers + stagger
   depth, then the header). A line with `key` children can't also take
   `duration=` (keys own the timeline).
 - **The connective law**: the first step stands alone; every later step
-  carries `and`/`then` — or `after=<group>` INSTEAD (one placement per
-  step; a connective plus a reference is an error, never a precedence
-  rule). `then` waits for every end in the previous `and`-cluster,
+  carries `and`/`then` — or, on a `group` line, `after=<group>` INSTEAD
+  (one placement per step; a connective plus a reference is an error,
+  never a precedence rule; `after=` on any other step is G0062: wrap the
+  step in a group). `then` waits for every end in the previous `and`-cluster,
   autoreverse's way back included. `after=` is the crossing-edge escape
   hatch: only named `group`s can be referenced, names are anim-flat
   (forward references legal, wrappers reachable-into), unknown names and
@@ -1313,7 +1319,8 @@ anim entrance duration_each=0.2 {              // each: wearers + stagger
   everything drawn under it, and an anim that ends while its target or a
   parent is hidden holds nothing, so the next show starts at rest. The
   one conflict the compiler can see — a `when` in a scope holding a motion
-  word while a `transition … anim=` in the same scope drives that channel
+  word or a look property (`background`) while a `transition … anim=` in
+  the same scope drives the same one
   on the same target — is refused at build (G4003: "two writers would fight
   on every flip; the loser flickers"). `modulate.a` is refused, naming
   `opacity` (G0075).
@@ -1338,10 +1345,11 @@ anim entrance duration_each=0.2 {              // each: wearers + stagger
   visible when its page first shows plays its `on:show` once as an
   ENTRANCE (the host asks for it once per page: `Runtime::play_entrances`);
   initial `visibility=gone` stays state, not a trigger (the show plays on
-  the flip). Any event also takes `on:<event>=play(x)`,
+  the flip). Every other event also takes `on:<event>=play(x)`,
   `on:<event>=go(arrangementName)` (flips the view's arrangement;
   `go(base)` returns home) or `on:<event>=toggle(name)` (flips between the
-  pose and base, D92). From code, `Runtime::show` goes through the
+  pose and base, D92); `on:show` and `on:hide` take `play(…)` only
+  (G0084). From code, `Runtime::show` goes through the
   `on:show`/`on:hide` pair at once, and `Runtime::set_visible` goes
   through it on the next frame: any change of a node's visibility plays
   the pair (a code write, a `when`, a pose), and a hide waits for its
@@ -1723,12 +1731,12 @@ A widget or control cannot take a built-in's name (G5001): every type word
 `empty`, `gap`, `row`, `skip`, `slot`, `seat`, and the directive words
 `widget`, `control`, `style`, `theme`, `uses`, `allow`, `anim`, `when`,
 `transition`, `layout`. `signals` is always read as the flag, and `base`,
-`any`, `true`, `false` are never names. The other words with a meaning of
-their own — `arrangement`, `atlas`, `slice`, the anim words `each`, `group`,
-`play`, `and`, `then`, `delay`, `key`, and the state words `held`,
-`hovered`, `focused`, `focus_within`, `disabled`, `selected` — are read by
-where they stand, and the compiler does not refuse a widget of that name;
-do not write one, it reads as the keyword. The retired state words
+`any`, `true`, `false` are never names. The other words gogo reads for
+itself — `arrangement`, `atlas`, `slice`, the anim words `each`, `group`,
+`play`, `and`, `then`, `delay`, `key`, the state words `held`,
+`hovered`, `focused`, `focus_within`, `disabled`, `selected`, and the
+rest of the list in REFERENCE "Reserved words" — are refused as a
+widget's or a control's name the same way (G5001). The retired state words
 `pressed`, `hover`, `focus`, `checked` error after `when`, naming their
 replacement (G0035; respelled in D181 — see Input vocabulary). The older
 `state`, `enter` and `exit` blocks get no error of their own (an unknown

@@ -1,6 +1,7 @@
 Wearer fan-out inside an `anim`: `each <node|.Style|self>` names who its
-step chain drives — every wearer of a style gets its own copy (tree
-order), shifted by `stagger_by=N`. Lines inside an each are BARE (the
+step chain drives — every wearer of a style gets its own copy (in file
+order: a wearer before the wearers inside it), shifted by `stagger_by=N`.
+Lines inside an each are BARE (the
 each names the target; prefixing errors). With `stagger_by` > 0 the
 each's length depends on how many wearers it finds at play time, so
 nothing may sequence AFTER it — keep it the tail of its chain. The Main

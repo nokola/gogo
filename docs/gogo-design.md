@@ -157,8 +157,10 @@ pub fn layout(page: &Page, res: &Resolved, viewport: Rect, text: &dyn TextMeasur
       whichever is more; when that does not fit, the children run past
       the parent's edge.
     A `wrap=true` label with `width=fill` is never narrower than its
-    longest word (Godot's autowrap minimum) — above that the text bends
-    to the box. The layout asks the text measure for that width
+    longest word (Godot's autowrap minimum) where its room is no written
+    number — above that the text bends to the box; in a box with a
+    written width it takes that width. The layout asks the text measure
+    for that width
     (`TextMeasure::narrowest_wrap`): a measure at a wrap width of 0
     breaks between letters.
   - `star_split` — ARRANGE along an axis, the star rule: fixed slots take
@@ -299,13 +301,15 @@ impl Input { pub fn touch(&mut self, page: &Page, rt: &mut Runtime, f: Frame<'_>
   full-screen Panel with just `on:show=` must not eat taps; an earlier
   handlers-claim-input clause was removed).
 - `touch` drives the spec's input vocabulary: `held` on press, slide-off
-  clears, slide-back re-arms, `activate` on a completed tap; Slider `edit`
+  clears (a Toggle keeps `held` until the finger lifts), slide-back
+  re-arms, `activate` on a completed tap; Slider `edit`
   per changed value and `change` on release; Toggle `selected` flips at the
   midpoint, `change` on settle; Scroll pans and flings (the code-built pan
   strip of the Godot port becomes the only Scroll). Returned `Event { node,
   kind: Press | Release | Activate | Change(Value) | Edit(Value) |
   Pointer | Key | Signal, action: Option<Action> }`: `action` is what the
-  file's `on:` line names, `None` = the node's own name is the handler.
+  file's `on:` line names, `None` = the node's own name is the handler (a
+  List row with no `on:activate=` of its own carries its List's).
   `on:show` and `on:hide` play anims and send no event. The model has
   only pointers: a mouse is one pointer — the host feeds it as one fixed
   finger id (`MOUSE_ID`), so every event fires for mouse and touch alike.
@@ -460,7 +464,7 @@ inside the runtime, where no event leaves for a host, so any other
 action there is refused (G0084). An anim line on a size, a margin or a
 padding moves the box, as a `transition` on it does (one list of words,
 two doors); the box is laid out again on every frame of the play, and
-`scale`, `translate` and `reveal` are the words that need no layout. A
+`scale` and `translate` are the words that need no layout. A
 rule borrowed for the way back gives its timing and never its `anim=`.
 `each .Style` runs its wearers in file order. A written `from=` starts
 its step there, also on a later step, and two steps that pin one
@@ -483,8 +487,9 @@ color has one word everywhere. A style on a `widget` line is refused:
 the line is not a node, and the two places that are (the first node of
 the body, the instance line) already say both things. `theme { accent =
 … }` reaches the marks gogo draws itself. `Button padding=0` is 0: the
-12/6 default is given at build to a text-only Button that wrote no
-padding. A `disabled` or `selected` written from code sets the state.
+12/6 default is given at build to a text-only Button, on each side its
+line did not write. A `disabled` or `selected` written from code sets
+the state.
 
 One reader (decided 2026-11-11). A placement word is read by one
 function, `Placement::write`, wherever it is written: a node's line at
@@ -607,8 +612,9 @@ break right after its name when the next line opens with a size or a
 `BuildOptions::res_root`, assets checked and embedded by the build);
 `slot`/`seat`/`control`/`automatic=` from the
 control-customization spec; `choice` erased into its parent;
-`layout <Kind>` inside a List; `color.a` as an opacity-like key
-(`modulate.a` is refused, G0075: write `opacity`). Godot's render facts
+`layout <Kind>` inside a List; `color.a` as an opacity-like key in a
+`when`, an anim and from code (on a line it is refused, G2005;
+`modulate.a` is refused, G0075: write `opacity`). Godot's render facts
 the layout copies: font px = `int(epx × size)`,
 face height = the file's ascent and descent each scaled and rounded UP to
 whole px (FreeType's `FT_Size_Metrics`: 24 px Roboto = 23 + 6 = 29, not

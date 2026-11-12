@@ -12,7 +12,7 @@
 | `220x110`, `220x`, `x110` | size shorthand (both axes, epx) |
 | `[80, hug, fill(2)]` | lists — only Grid `cols=`/`areas=`, Gradient `stops=`, `border_dash=`, an Arc's `dash=` and an Image's `window=` take one |
 | `play(appear)`<br>`go(expanded)`<br>`toggle(expanded)`<br>`emit(Saved)` | calls on `on:` keys — `toggle` flips between the pose and base |
-| `"res://assets/icons/save.png"`, `"preview://brush"` | resource paths on `source=`/`icon=`-style properties, scheme always written (`res://` = a file under the build's resource root, checked at build). Any other scheme on an `Image`'s `source=` is a host picture the app's code registers at run time under that exact name; see the `source` card |
+| `"res://assets/icons/save.png"`, `"preview://brush"` | resource paths on `source=` and `font=`, scheme always written (`res://` = a file under the build's resource root, checked at build). Any other scheme on an `Image`'s `source=` is a host picture the app's code registers at run time under that exact name; see the `source` card |
 | `safe` | the screen's safe-area inset, on padding/margin edge keys |
 
 **What is epx? (effective pixels)**

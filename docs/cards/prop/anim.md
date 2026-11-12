@@ -1,5 +1,5 @@
 On a `transition` rule: choreography played WITH the flip (`anim=pop`).
-The condition ending cancels it and tweens the displaced properties back.
+The condition ending cancels it and puts what it moved back at once.
 One writer per property: an `anim=` here may not drive a property a
 `when` in the same scope also holds — pick the held value or the
 choreography.

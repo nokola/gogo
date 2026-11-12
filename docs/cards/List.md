@@ -95,7 +95,8 @@ List bag select=one {
   deselects; code clears it with `Runtime::set_selected` and no keys),
   `many` toggles, `off` nothing. When the selection actually changed, a
   `Change` event on the List comes first (`on:change=` on the List line
-  names its handler; `on:activate=` goes on the `ListItem` line). A
+  names its handler; `on:activate=` on the List line names one handler
+  for every row, and a `ListItem` line may name its own). A
   `Button` inside a row takes its own presses — tapping it fires the
   button, not the row.
 - **The selection** is read and written from code as a list of keys:
@@ -110,5 +111,5 @@ List bag select=one {
 
 Items arrive through the repeat's node, as always:
 `rt.set_items(&mut page, tasks, &items)` — reconcile keeps selection by key
-across reorders and rebuilds. A hot reload does not carry the rows or the
-selection yet: code sets them again.
+across reorders and edits. A hot reload carries the rows and the
+selection.

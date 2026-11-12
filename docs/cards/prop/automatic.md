@@ -127,7 +127,7 @@ Two grammar rules cover all five: parens after the kind carry the kind's own con
   *Takes over:* its extent along the travel axis (`width`, `size`). Thickness stays yours — a fatter bar is a style choice (`height`).
 - **`position`** — the part slides along with the value. That's the slider thumb.
   *Takes over:* placement along the travel axis (`halign`). Size stays yours — a bigger thumb is a style choice.
-- **`presence by selected`** — the part only exists while the named state is on. That's the checkmark in a checkbox: there when `selected`, gone when not. And "gone" still plays your enter/exit transitions, so the mark can fade or pop instead of blinking.
+- **`presence by selected`** — the part only exists while the named state is on. That's the checkmark in a checkbox: there when `selected`, gone when not. And the mark still plays its `on:show` and `on:hide` anims, so it can fade or pop instead of blinking.
   *Takes over:* whether the part exists at all (`visibility`) — showing and hiding it is the control's job.
 - **`arc(from=…, sweep=…)`** — a pie-slice-shaped window opens wider as the value grows. This one's for round progress: you put a full ring inside the slot, and the window reveals more and more of it.
   *Takes over:* the window itself (`from`, `sweep`). The ring inside is fully yours (it's content — fill it).
@@ -169,7 +169,7 @@ This knob shows a value that code sets. To turn under a finger it needs a `behav
 
 ## Two placement rules the compiler holds you to
 
-- A `length`/`position` slot lives in a free host — `Layers`, `Circle`, or another slot region — never directly in a `Column`/`Row`/`Grid`. Those measure their children, and a value that rewrites child geometry would re-run that measurement on every frame of a drag. Gogo refuses at build (G5105) and says where to seat it.
+- A `length`/`position` slot lives in a free host — a `Layers` or another slot region — never directly in a `Column`/`Row`/`Grid`. Those measure their children, and a value that rewrites child geometry would re-run that measurement on every frame of a drag. Gogo refuses at build (G5105) and says where to seat it.
 - A `position` slot is as wide as its content, so `width=fill` content gives it no width at all. Gogo refuses that too: size the content (`width=20`) or the slot line (`slot thumb width=20`).
 
 ## Why you can't add your own kinds

@@ -435,11 +435,12 @@ Card stats {
 - **Filling replaces the slot's default content entirely** — and only the
   content: `slot` declarations nested inside it are contract structure and
   always survive, drawing **above** the fill (tick marks go under the thumb).
-- Duplicate slot names and a second default slot error at the declaration.
-  Unknown fill names error with the widget's slot list and a rename
-  suggestion; bare children on a widget with no default slot error listing
-  the named fills. Fill blocks take **no** props (the declaration places the
-  region; a fill is content).
+- A second default slot errors at the declaration (G5004); two slots with
+  one name error where the widget is used (G0044, below). A fill for a
+  slot the widget does not have names the nearest slot, or lists the
+  widget's slots when none is near; bare children on a widget with no
+  default slot error listing the named fills. Fill blocks take **no**
+  props (the declaration places the region; a fill is content).
 - A named region is a node of the widget body, named like any other: a
   body node with the same name is a build error where the widget is used
   (G0044, the name is used twice).
@@ -575,8 +576,8 @@ unconditionally) extended to user controls.
   when the declaration has none, a bare rule in the instance's block or in
   an applied style. A second bare rule on one instance is build error
   G0034. At rest the driver disarms and the written layout HOLDS.
-  A `length` or `position` slot must sit in a free host (a slot region,
-  Layers, Circle) — under a measuring container (Column, Row, Flow, Grid,
+  A `length` or `position` slot must sit in a free host (a slot region or
+  a `Layers`) — under a measuring container (Column, Row, Flow, Grid,
   Tiles, Scroll) it is build error G5105, given at the slot's line once
   the control is used. A `position`
   slot's width comes from its content: `width=fill` content is a build
@@ -593,8 +594,9 @@ unconditionally) extended to user controls.
   The typical arc content is a bare full `Arc` ring — the wedge does the
   revealing. The `automatic` card builds a knob this way.
 - **States**: customs (`state <names>`) sit between `held` and `disabled`
-  in priority; between two customs the `when` written later in the file
-  wins; `disabled` beats everything. Instance
+  in priority; between two customs a `when` on the instance beats one a
+  style or the control's own body carries, and of two written in the same
+  place the later line wins; `disabled` beats everything. Instance
   and style whens respond to declared states like any built-in
   (`Fader f { when held opacity=0.85 }`); undeclared contract states
   error listing what's available.
@@ -941,8 +943,9 @@ Layers screen {
   parent's space on a stack's OWN stacking axis (`max_width=fill` in a
   `Row`, or any cap on a `fill` slot there) is circular — cap the stack
   itself; and `max_width=fill` / `max_height=fill` on a child of a `Flow`,
-  which has no frame to read — cap at a number. Wrap-capable text
-  is `Label`.
+  which has no frame to read — cap at a number. Text that wraps is a
+  `Label`'s, or the own text of a Button, a Check, a Radio or a Toggle
+  with `wrap=true`.
 - **The min/max band** (D135): `width=hug, min_width=100, max_width=300`
   clamps the natural size into the pair — below 100 the floor holds, above
   300 the cap binds (wrap-text wraps there). The floor beats the cap (WPF
@@ -956,8 +959,9 @@ Layers screen {
   `fill` stays legal: "at least N, still stretchy".
 - **`max_width=fill`** caps at what a `fill` axis would GET — parent frame
   minus region padding minus margins, live across resizes. Margins bind the
-  measuring frame like they inset fill, whatever the alignment, so a
-  centered axis takes them here: `width=hug, max_width=fill, halign=center,
+  measuring frame like they inset fill, whatever the alignment, and a
+  centered box sits in the middle of the room they leave: `width=hug,
+  max_width=fill, halign=center,
   margin_left=12, margin_right=12` is the toast shape — hug the text,
   center it, wrap at live width − 24.
 - **The capped fill** (D245): `width=fill, max_width=380, halign=center`
@@ -1006,10 +1010,11 @@ Layers screen {
     on a free child spans its parent and hangs 10 epx below it.
   - **aligned axis** → an offset of the near edge (`valign=bottom,
     margin_bottom=90` sits 90 above the bottom). A margin on the far edge
-    of an aligned axis, or on one edge of a centered one, is accepted and
-    does not move the box; it still counts into what a hugging parent
-    holds and narrows a `max_width=fill` cap. Both margins on a centered
-    hug box shift it by half their difference.
+    of an aligned axis is accepted and does not move the box; it still
+    counts into what a hugging parent holds and narrows a
+    `max_width=fill` cap. On a centered axis the box is centered in the
+    room the margins leave: one margin shifts it by half of itself, two
+    by half their difference.
   - **`hug`/exact axis with no alignment** → a PIN: the pinned edge moves,
     the other follows at size distance (declared size, else the live
     minimum), and grow points away from the pin.
@@ -1019,10 +1024,11 @@ Layers screen {
   **Two per-edge keys bind both edges** — the box spans them (a declared
   size there over-constrains and errors). A document ROOT follows the
   same rules against the rectangle the host gives it: a lone margin
-  there insets the filled root, it does not pin it. Under a container
-  margins are a build error — space
-  container children with `spacing` / `gap` (or `padding` on a
-  `Panel`/`Layers`).
+  there insets the filled root, it does not pin it. Under a box that
+  places its children itself (a Column, a Row, a `choice`, a Flow, a
+  Grid, Tiles, a List) margins are a build error (G1014) — space those
+  children with `spacing` / `gap`, or `padding` on the parent. The one
+  body of a `Scroll` takes margins.
 - **`anchors=` / `offset_*` were removed** — placement says it all now. The
   old escape hatches translate mechanically: overhang = a negative margin
   (plus an explicit size for an exact box); off-screen parking = a negative
@@ -1032,7 +1038,9 @@ Layers screen {
 - (`inset=N` and `size_flags_*` are gone — G2001 and G0041: a bare child
   already fills, and `margin=N` carves that box; a document root fills
   the same way, with nothing spelled.)
-- Not anim targets (layout is declared — see Motion). Arrangement `when`
+- An anim line may move a size, a margin or a padding (see Motion: the box
+  is laid out again on every frame of the play); `halign`/`valign` are no
+  anim targets. Arrangement `when`
   responses may overlay `margin_*`/`width`/`height`/`min_width`/
   `min_height` per node, and that pose holds for as long as the
   arrangement does.
@@ -1110,7 +1118,7 @@ exactly as a child's are read against its parent.
 ### gap — space in a stack
 
 `gap` is the one-off break between stack children — a structure word
-(lowercase, like `row`/`skip`/`choice`: never named):
+(lowercase, like `row` and `skip`: never named):
 
 ```kdl
 Column spacing=8 {
@@ -1308,7 +1316,7 @@ flows through them.
 **How wide a Flow is.** `width=fill` (or no alignment): the Flow takes the
 width it is given and every row starts at its left edge. A hugging Flow
 (`halign=center`, no width) packs its rows into the width it is offered,
-then is as wide as its widest wrapped row — like a wrapping Label. So
+then is as wide as its widest wrapped row. So
 `Flow halign=center` is a centred block of full rows, and a short last row
 starts at the block's left:
 
@@ -1744,8 +1752,8 @@ Code hands the repeat its rows through the repeat's node, every time the
 collection changes (here `host.rt` is the page's `Runtime`):
 
 ```rust
-fn task(id: i64, title: &str) -> Item {
-    Item::Record(vec![("id".to_string(), ItemValue::Int(id)), ("title".to_string(), ItemValue::Str(title.to_string()))])
+fn task(id: i64, title: &str, done: bool) -> Item {
+    Item::Record(vec![("id".to_string(), ItemValue::Int(id)), ("title".to_string(), ItemValue::Str(title.to_string())), ("done".to_string(), ItemValue::Bool(done))])
 }
 ```
 
@@ -1755,7 +1763,7 @@ fn task(id: i64, title: &str) -> Item {
 
     // The whole collection, every time it changes. Rows are matched by
     // key: a kept key keeps its row.
-    host.rt.set_items(&mut host.page, tasks, &[task(1, "Buy milk"), task(2, "Call mom")]).expect("two rows with different keys");
+    host.rt.set_items(&mut host.page, tasks, &[task(1, "Buy milk", false), task(2, "Call mom", true)]).expect("two rows with different keys");
 ```
 
 - **The line**: `repeat <name> [as $binding] by <key-path> { ... }` — the
@@ -1955,9 +1963,9 @@ List picker select=many, spacing=4 {
   `when focused` (the cursor). A `when selected` on a node INSIDE the row
   never fires — the List drives the ROOT (linted, G9014; toggle buttons
   drive their own selected and stay quiet).
-- **Reconcile keeps selection by key**: reorders move it, changed-data
-  rebuilds re-check the fresh row, and an empty collection leaves the
-  selection inert. Hot reload carries it: a List's selection and a
+- **Reconcile keeps selection by key**: reorders move it, an item whose
+  data changed keeps its row and its selection, and an empty collection
+  leaves the selection inert. Hot reload carries it: a List's selection and a
   repeat's rows are on the reloaded page (`Runtime::carried_to`).
 
 ## States
@@ -2123,10 +2131,11 @@ reflowing with it (see the `reveal_*` props row and the COOKBOOK
 smooth-slide recipe).
 
 - Responses are top-level `when <name>` blocks: dotted `node.prop=value`
-  pairs. **Placement keys** (`margin_left/-top/-right/-bottom`, `width`,
-  `height`, `min_width`, `min_height`) overlay the target's placement and
-  compile per arrangement at build time; everything else goes through the
-  normal state machinery.
+  pairs. **Placement keys** (the margin and padding sides, `width`,
+  `height`, `size`, the floors `min_width`, `min_height`, `min_size`, the
+  caps `max_width`, `max_height`, and `halign`/`valign`) overlay the
+  target's placement and compile per arrangement at build time;
+  everything else goes through the normal state machinery.
 - The flip tweens edge offsets and style props with the matching
   `transition` rule.
 - **A standing pose**: the ACTIVE arrangement's pose holds across rotation
@@ -2248,10 +2257,10 @@ catches big PORTRAIT tablets, because `lotsOfSpace` covers both shapes.
   seats after the screen already turned. `transition` rules don't apply
   (a rule that names a class or an orientation as an endpoint is a build
   error, G0034).
-- Placement keys are the arrangement set (`margin_*`, `width`, `height`,
-  `min_width`, `min_height`) PLUS `halign`/`valign` — an alignment key
-  RE-DECLARES that axis: the base's pins and size mode drop and the pose's
-  own margins/size stand alone (`middlePanel.halign=left,
+- Placement keys are the arrangement set (above), `halign`/`valign`
+  among them — a posed alignment key replaces the declared alignment
+  word and nothing else: the declared margins and size stay unless the
+  pose writes them too (`middlePanel.halign=left,
   middlePanel.width=280, middlePanel.margin_left=60` flips a
   stretch-with-margins panel into a left-docked one). An arrangement pose
   takes the alignment keys too — see the bullet above. Everything else
@@ -2471,8 +2480,9 @@ restructure a tree to animate it.
 `padding_*` (`card.width to=200`) changes the box, as `transition
 card.width` does, so the box and what is around it are laid out again on
 every frame of the play. Where only the picture has to move, a motion
-word (`scale`, `translate.x/.y`) or `reveal_x/_y` does it with no new
-layout: transient pulse → `scale.x`/`scale.y`; changing and staying →
+word (`scale`, `translate.x/.y`) does it with no new layout (`reveal_x/_y`
+changes the room the box takes, so it is laid out again as it moves):
+transient pulse → `scale.x`/`scale.y`; changing and staying →
 `arrangement` + `when` + `transition`. A side written `fill` or `hug`
 starts from the size the box has. Engine words (`position`, `offset_*`,
 `rotation`) are not gogo words and are refused (G0063). A finished anim
@@ -2637,13 +2647,13 @@ View settings {
 | `activate` | the control's OWN trigger gesture completed — Button: a completed tap or Enter/Space; List: tap or Enter/Space on a row. Never fires disabled | — (List: the event's node is the row; `Runtime::item_key` gives its key) |
 | `press` / `release` | a finger landed on a press surface or a Slider, and that gesture ended — `release` fires exactly once per `press`, however the gesture ends (lift inside or out, cancel, a Scroll taking it, the node disabling under the finger) | — |
 | `change` | the committed value is now different — once per commit, genuine transitions only | Check/Toggle a bool, Slider a number, Input the text, `choice` the picked Radio's name; for a List read the keys with `Runtime::selected_keys` |
-| `edit` | a live, UNCOMMITTED value moved — Slider per drag tick, Input per keystroke; discrete controls have no edit | the live value |
+| `edit` | a live, UNCOMMITTED value moved — Slider per drag tick, Input per keystroke that changes the text; discrete controls have no edit | the live value |
 | `show` / `hide` | the node was shown or hidden — takes `play(anim)` | — |
 | `pointer` | every touch phase on a box the host draws itself (the node needs `interactive=true`, G0073) | the phase and the position inside the box, epx |
 
 Per control: **Slider** — `edit` streams while dragging (`held`),
 `change` commits on release; a key step commits directly (`change`
-only, no `edit`). **Input** — `edit` per keystroke; `change` on Enter or
+only, no `edit`). **Input** — `edit` per keystroke that changes the text; `change` on Enter or
 focus loss. **Toggle** — `change` on settle, only if the settled side
 differs from the pre-gesture side. **choice** — `change` on the GROUP
 (the value is the picked Radio's name; items refuse it). **List** —
@@ -2688,7 +2698,9 @@ What `on:` takes:
   event; the host asks for it once per page (`Runtime::play_entrances`).
   An initial `visibility=gone` stays state, not a trigger (the show plays
   on the flip). From code, `Runtime::show(&mut page, node, visible)` goes
-  through the pair; `Runtime::set_visible` flips at once.
+  through the pair at once and `Runtime::set_visible` on the next frame;
+  either way a hide waits for the node's `on:hide` anim, and a node with
+  none hides at once.
 
 How the host program reads the handler name off an event is in the
 cookbook: "How do I hear a button in my code?".
@@ -2810,7 +2822,7 @@ glide freezes mid-flight until the next input.
 | `rt.set_theme_variant(&page, name)`, `rt.theme_color`, `rt.theme_number` | Switch the theme variant; read a theme value from code. |
 | `rt.set_locale`, `rt.translate`, `rt.set_key`, `rt.set_text`, `rt.text_of` | Languages and texts (see Translations). |
 | `rt.set_prop` / `set_prop_instant` / `clear_prop` | Write any property from code: sliding by its `transition`, at once, and taking the write back. |
-| `rt.set_visible`, `rt.show` | Show or hide a node: at once, or through its `on:show`/`on:hide` anims. |
+| `rt.set_visible`, `rt.show` | Show or hide a node. Both play its `on:show`/`on:hide` anims: `show` at once, `set_visible` on the next frame. |
 | `rt.set_state(node, DISABLED, on)`, `rt.has(node, SELECTED)` | Flip or read a state bit. |
 | `rt.set_value(&mut page, root, v)`, `rt.set_custom` / `custom` | A control's value; a control's own declared states. |
 | `rt.set_items` / `items` / `item_key`, `rt.set_selected` / `selected_keys` | A repeat's rows and a List's selection (see Repeat, List). |
@@ -2901,7 +2913,9 @@ A program with no build step, which compiles its page when it starts and
 finds its nodes by name (`page.find`), has no numbers fixed in its code.
 It makes the reloader with `Reloader::files` and hands its page over
 with `follow`; a reload may then change anything, and a page whose node
-list changed starts fresh:
+list changed starts fresh. The reloader compiles the file with no
+`CompileOptions`, so a page that needs some (code controls, host
+behaviors, an `atlas` line) is refused at its first edit:
 
 ```rust
     // Where the program reads its page files while it runs. A real host
@@ -2941,7 +2955,8 @@ nothing itself and measures no text: the host passes a `TextMeasure` and
 paints the list with its own renderer. A `TextMeasure` answers two
 questions about a text: its size at a wrap width (`measure`), and the
 narrowest it folds to, which is the width of its longest word
-(`narrowest_wrap`; a wrapping `fill` label never gets less). The second
+(`narrowest_wrap`; a wrapping `fill` label never gets less where its room
+is no written number). The second
 has a default that measures every word alone, so a measure of your own
 needs only `measure`; `gogo-text`'s measure answers both from its line
 breaker.
@@ -2968,17 +2983,27 @@ ui/menu.gogo:3: error G2001: `anim=` is not a gogo word — timing belongs on a 
 
 ## Reserved words
 
-`widget`, `style`, `theme`, `uses`, `slot`, `signals`, `anim`, `arrangement`,
-`atlas`, `slice` (inside an atlas block),
-`when`, `transition`, `each`, `key`, `row`, `skip`, `gap`, `choice`,
-`repeat`, `empty`, `as`, `by` (the last two on repeat lines),
-`held`, `hovered`, `focused`, `focus_within`, `disabled`, `selected`,
-`base`, `any`, `true`,
-`false`, `state` (a control's own states, in a `control` body) — plus the
-retired `pressed`, `hover`, `focus`, `checked`
-(build errors point at their
-replacements; respelled in D181). Reserved in TYPE
-position; node names stay free — except `base` and `any`, reserved
+No widget and no control can be named one of gogo's own words (G5001).
+The parser and the compiler share one list of them:
+
+- lines that are not nodes: `when`, `transition`, `anim`, `repeat`,
+  `uses`, `widget`, `control`, `style`, `theme`, `atlas`, `slice`,
+  `arrangement`, `allow`, `layout`, `choice`, `empty`, `key`;
+- lines of a widget or control body: `slot`, `seat`, `gap`, `row`,
+  `skip`, `script`, `behavior`, `keys`, `signal`, `state`,
+  `state_builtin`;
+- clause and step words: `as`, `by`, `in`, `and`, `then`, `play`,
+  `each`, `group`, `delay`;
+- states, and the words that stand for one: `held`, `hovered`,
+  `focused`, `focus_within`, `disabled`, `selected`, `base`, `any`,
+  `screen`;
+- values and flags: `true`, `false`, `fill`, `hug`, `signals`,
+  `interactive`;
+- actions: `go`, `toggle`, `emit`.
+
+The retired state words `pressed`, `hover`, `focus`, `checked` are
+refused after `when`, each naming its replacement (G0035; respelled in
+D181). Node names stay free — except `base` and `any`, reserved
 everywhere (they name state endpoints; a child called `base` next to
 `transition base -> held` would read as two things — decided
 2026-08-31), `true`/`false` (value words), and

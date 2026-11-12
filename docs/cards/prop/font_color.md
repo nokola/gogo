@@ -1,8 +1,9 @@
 Text color — the text half of `background=` (what
 WPF calls Foreground and CSS calls color). Pairs with `font_size`. A
-`font_color` response inside `when` tweens from the node's own
-`font_color=` and hands back when the condition ends; with none written
-on the node the text switches color at once.
+`font_color` response inside `when` slides under a `transition` rule and
+hands back when the condition ends. With no `font_color=` on the node it
+starts from the color the text shows: the one a box above it or the
+theme gives, else white.
 
 ```
 Column spacing=6 {

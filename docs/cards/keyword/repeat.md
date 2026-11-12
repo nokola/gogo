@@ -2,8 +2,8 @@ N children from data — a lowercase structure word that draws nothing and
 takes no room: the rows lay out as children of the repeat's parent (a
 `Column`'s spacing spaces them). The collection arrives from code through
 the repeat's node, found by its NAME; each assignment reconciles by key —
-kept keys keep their nodes, changed data rebuilds, absent keys free, order
-follows the collection.
+a kept key keeps its row, changed data is written onto that row, an
+absent key frees its row, order follows the collection.
 
 Default binding — the item is `$item`, `by` keys it, and the `empty`
 block is the zero-items screen (a plain repeat may leave it out; a
@@ -37,15 +37,15 @@ node (`page.find("brushes")`, or the generated `NAMES.brushes`), every
 time the collection changes. An item is a record of named fields:
 
 ```rust
-fn task(id: i64, title: &str) -> Item {
-    Item::Record(vec![("id".to_string(), ItemValue::Int(id)), ("title".to_string(), ItemValue::Str(title.to_string()))])
+fn task(id: i64, title: &str, done: bool) -> Item {
+    Item::Record(vec![("id".to_string(), ItemValue::Int(id)), ("title".to_string(), ItemValue::Str(title.to_string())), ("done".to_string(), ItemValue::Bool(done))])
 }
 ```
 
 ```rust
     // The whole collection, every time it changes. Rows are matched by
     // key: a kept key keeps its row.
-    host.rt.set_items(&mut host.page, tasks, &[task(1, "Buy milk"), task(2, "Call mom")]).expect("two rows with different keys");
+    host.rt.set_items(&mut host.page, tasks, &[task(1, "Buy milk", false), task(2, "Call mom", true)]).expect("two rows with different keys");
 ```
 
 An event from inside a row carries the node it happened on, and

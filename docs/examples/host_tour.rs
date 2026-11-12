@@ -270,8 +270,8 @@ View tasksPage {
 }
 "#;
 
-fn task(id: i64, title: &str) -> Item {
-    Item::Record(vec![("id".to_string(), ItemValue::Int(id)), ("title".to_string(), ItemValue::Str(title.to_string()))])
+fn task(id: i64, title: &str, done: bool) -> Item {
+    Item::Record(vec![("id".to_string(), ItemValue::Int(id)), ("title".to_string(), ItemValue::Str(title.to_string())), ("done".to_string(), ItemValue::Bool(done))])
 }
 
 fn list_tour() {
@@ -282,12 +282,12 @@ fn list_tour() {
 
     // The whole collection, every time it changes. Rows are matched by
     // key: a kept key keeps its row.
-    host.rt.set_items(&mut host.page, tasks, &[task(1, "Buy milk"), task(2, "Call mom")]).expect("two rows with different keys");
+    host.rt.set_items(&mut host.page, tasks, &[task(1, "Buy milk", false), task(2, "Call mom", true)]).expect("two rows with different keys");
     host.frame(0.0);
     assert_eq!(host.rt.items(&host.page, tasks).len(), 2);
 
     // Two rows with one key: the whole write is refused, the rows stay.
-    let refused = host.rt.set_items(&mut host.page, tasks, &[task(3, "a"), task(3, "b")]);
+    let refused = host.rt.set_items(&mut host.page, tasks, &[task(3, "a", false), task(3, "b", false)]);
     assert!(refused.is_err());
     assert_eq!(host.rt.items(&host.page, tasks).len(), 2);
 

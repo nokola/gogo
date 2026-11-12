@@ -1,4 +1,4 @@
-One Grid row — a lowercase structure word (never named, erased at build).
+One Grid row — a lowercase structure word (never named; in the built page it is a plain `row` node between the Grid and its cells).
 Cells walk the `cols=` signature left to right; `height=` goes on the row.
 
 ```

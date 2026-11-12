@@ -1,5 +1,5 @@
 On an `each` block: shifts successive wearers' copies of its step chain
-by N seconds (tree order) — the cascading-entrance one-liner. Pair with
+by N seconds (in file order) — the cascading-entrance one-liner. Pair with
 a pinned `from=` so waiting wearers hold their start pose instead of
 flashing the base look.
 

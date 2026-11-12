@@ -26,7 +26,7 @@ Priority when several hold (higher wins per property): arrangements <
 | `activate` | the control's own trigger gesture completed — a Button's tap or Enter/Space, a List row's tap | — (List: the event's node is the row; `Runtime::item_key` gives its key) |
 | `press` / `release` | a finger landed on a press surface or a Slider, and that gesture ended (exactly one `release` per `press`) | — |
 | `change` | the COMMITTED value is now different — once per genuine transition a tap, a drag or a key makes; a write from code reports nothing | the new value |
-| `edit` | a live, uncommitted value moved — per drag tick, per keystroke | the live value |
+| `edit` | a live, uncommitted value moved — per drag tick, per keystroke that changes the text | the live value |
 | `show` / `hide` | visibility choreography — takes `play(anim)` | — |
 | `pointer` | every touch phase on a box the host draws itself (needs `interactive=true`) | the phase and the position inside the box |
 
@@ -42,7 +42,8 @@ Priority when several hold (higher wins per property): arrangements <
 | `List` | `selected` on the row's `ListItem` root | — | `change` | read the keys with `Runtime::selected_keys`; `activate` fires on every row tap |
 
 Values on an `on:` key: a handler name (`on:activate=SaveBrush`), or a
-call — `play(anim)`, `go(pose)`, `toggle(pose)`, `emit(Name)`.
+call — `play(anim)`, `go(pose)`, `toggle(pose)`, `emit(Name)`; `on:show`
+and `on:hide` take `play(anim)` only (G0084).
 A named node needs no `on:` line to be heard: the handler an event names
 is then the node's own name (`saveButton`, `brushSize`). Any word after
 `on:` that is not one of the events above is build error G0049.

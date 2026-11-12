@@ -9,9 +9,9 @@ What a property line can drive:
 | `scale.x` / `scale.y` | one-axis scale |
 | `rotate` | degrees, around the center |
 | `opacity` | whole-node fade, 0..1 |
-| `background`, `font_color`, … | the words a `transition` rule can time: the color words (whole, or `.a` for the alpha alone), `corner_radius`, `border_thickness`, `font_size`, a Gradient's `angle` and its live stops. Not every number: `spacing=` is refused (G0063) |
+| `background`, `font_color`, … | the words a `transition` rule can time: the color words (whole, or `.a` for the alpha alone), `corner_radius`, `border_thickness`, `font_size`, a Gradient's `angle` and its live stops, and `width`, `height`, `min_width`, `min_height`, the `margin_*` and the `padding_*` sides (these move the box, which is laid out again on every frame). Not every number: `spacing=` is refused (G0063) |
 
-Layout geometry (`width`, `margin`, …) is fenced — an anim would fight the layout; a pose that changes and STAYS is arrangement + `when` + `transition` territory.
+An anim line on a size, a margin or a padding (`card.width to=200`) moves the box itself, and the box and what is around it are laid out again on every frame of the play. Where only the picture has to move, use `scale` or `translate`. A pose that changes and STAYS is arrangement + `when` + `transition` territory.
 
 ```
 anim open {

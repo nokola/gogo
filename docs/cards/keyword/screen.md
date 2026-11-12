@@ -15,8 +15,8 @@ line; an unknown name is a build error listing both vocabularies.
 
 ```
 when screen.landscape {
-    optionsPane.halign = left    // an alignment RE-DECLARES the axis: the
-    optionsPane.width = 280      // base's pins drop, these keys stand alone
+    optionsPane.halign = left    // a posed alignment replaces the declared
+    optionsPane.width = 280      // word only: declared margins and size stay
     optionsPane.margin_left = 60
     hintLabel.opacity = 0.5      // style props flip through the states
 }

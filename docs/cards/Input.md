@@ -11,5 +11,5 @@ plate takes the box words of a Panel: `background=`, a border,
 ```
 Input nameInput placeholder_text="Painting name", width=fill
 // a Change event carries the committed text (handler: `nameInput`);
-// Edit events carry the text per keystroke, only when you need it
+// Edit events carry the text per keystroke that changes it, only when you need it
 ```
