@@ -1,3 +1,46 @@
+# Storvald
+
+**A capable AI-first creative environment for unslop games and apps.**
+
+![Storvald, the AI-first IDE and agent environment, stands on TurboDot, the app and game engine, and Gogo, the declarative UI](docs/img/storvald_overview.svg)
+
+| Part | What it is | 
+|---|---|
+| **Storvald** | Capable AI-first creative environment for unslop games and apps | 
+| **TurboDot** | App and game engine where AI can prove that its changes work. Headless, deterministic, high-performance, powered by 80s simplicity. Built for agents. |
+| **[Gogo UI](#gogo)** | Declarative UI with immediate-mode performance. Ready on crates.io: `gogo-ui`, `gogo-text` and `gogo-wgpu` on crates.io and shipping in production apps.|
+
+Gogo UI is published and in production use. TurboDot and Storvald are in development, and nothing of them is
+released yet.
+
+# Storvald
+Storvald aims to be a capable AI-first creative environment for unslop games and apps.
+
+Unlike previous-era editors optimized for 90% human involvement, Stormvald embraces **AI-first with strong checks**, **quality assurances**, and workflows to create **higher quality, less slop output** with **efficient token use**.
+
+Traditional game engines assume a person working in a visual editor. They present multiple ways of achieving the same result, and while easy to understand for humans, can lead to AI confusion and AI slop.
+
+Because of these choices, Stormvald can forego UIs such as code editor or git diff - use any of your preference - and focus on UIs and workflow for improving outcomes when using AI.
+
+
+# TurboDot
+
+TurboDot is the underlying app/game engine. Its goal is to make it easy for AI to "take the right route" and reduce de-duplication (less tokens), while building on high-performance Rust libraries for fast execution.
+
+TurboDot is being built so that an agent works with the engine directly and create quiality code:
+
+- **Project as data.** Agent reads and changes typed entities,
+  resources and properties. 
+- **Deterministic runs.** Game state can be replayed. Bug are easier to reproduce and deterministic
+- **Tests with no window.** Simulation frames run with no
+  editor open.
+- **Answers to "why".** Why a collision happened, which system used the
+  frame time, why an entity changed state.
+- **Performance budgets.** Slowdowns caught early before it shows in play.
+
+
+---
+
 # gogo
 
 A declarative UI language for apps and games, written for people and for AI

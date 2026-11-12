@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 420" width="1200" height="420" role="img" aria-labelledby="chart-title chart-desc" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="chart-title">Storvald, TurboDot and Gogo</title>
+  <desc id="chart-desc">Storvald, the AI-first IDE and agent environment, stands on two parts: TurboDot, the app and game engine (runtime, execution, rendering), and Gogo, the declarative UI (layouts, controls, interactions).</desc>
+  <style>
+    .frame { fill: #fcfcfc; stroke: #e3e3e3; }
+    .card { fill: #ffffff; stroke: #e3e3e3; }
+    .chip { fill: #f0f0f0; }
+    .name { fill: #111111; font-weight: 700; }
+    .kind { fill: black; letter-spacing: 0.06em; }
+    .what { fill: #111111; }
+    .code { fill: #111111; font-family: ui-monospace, 'Cascadia Mono', Consolas, Menlo, monospace; }
+    .dim { fill: #8a8a8a; stroke: #8a8a8a; }
+    @media (prefers-color-scheme: dark) {
+      .frame { fill: #161616; stroke: #343434; }
+      .card { fill: #1f1f1f; stroke: #3a3a3a; }
+      .chip { fill: #2c2c2c; }
+      .name, .what, .code { fill: #f2f2f2; }
+      .kind { fill: #a3a3a3; }
+      .dim { fill: #8a8a8a; stroke: #8a8a8a; }
+    }
+  </style>
+
+  <rect class="frame" x="10" y="10" width="1180" height="400" rx="24"/>
+
+  <text class="name" x="600" y="76" font-size="36" text-anchor="middle">Storvald</text>
+  <text class="kind" x="600" y="112" font-size="16" text-anchor="middle">AI-FIRST IDE AND AGENT ENVIRONMENT</text>
+
+  <rect class="chip" x="412" y="136" width="164" height="38" rx="6"/>
+  <text class="code" x="494" y="162" font-size="22" text-anchor="middle" xml:space="preserve">storvald .</text>
+  <circle class="dim" cx="593" cy="155" r="2.5" stroke="none"/>
+  <rect class="chip" x="610" y="136" width="178" height="38" rx="6"/>
+  <text class="code" x="699" y="162" font-size="22" text-anchor="middle" xml:space="preserve">storvald go</text>
+
+  <path class="dim" d="M600 196 V222 M593 215 L600 223 L607 215" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect class="card" x="32" y="244" width="556" height="140" rx="16"/>
+  <text class="name" x="310" y="296" font-size="26" text-anchor="middle">TurboDot</text>
+  <text class="kind" x="310" y="327" font-size="14" text-anchor="middle">APP / GAME ENGINE</text>
+  <text class="what" x="310" y="361" font-size="20" text-anchor="middle">Runtime, execution, rendering</text>
+
+  <rect class="card" x="612" y="244" width="556" height="140" rx="16"/>
+  <text class="name" x="890" y="296" font-size="26" text-anchor="middle">Gogo</text>
+  <text class="kind" x="890" y="327" font-size="14" text-anchor="middle">DECLARATIVE UI</text>
+  <text class="what" x="890" y="361" font-size="20" text-anchor="middle">Layouts, controls, interactions</text>
+</svg>
