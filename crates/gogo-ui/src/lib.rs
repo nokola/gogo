@@ -225,12 +225,13 @@ pub fn build_pages(dir: &Path, out: &Path, options: BuildOptions<'_>) -> Result<
         // the embed table). Images come from the shared `Images` table —
         // the compiler interns every `source=` there.
         for s in &compiled.page.strings {
+            let s: &str = s;
             if !s.starts_with("res://") {
                 continue;
             }
             let lower = s.to_ascii_lowercase();
-            if compile::FONT_EXTS.iter().any(|e| lower.ends_with(e)) && !fonts.contains(s) {
-                fonts.push(s.clone());
+            if compile::FONT_EXTS.iter().any(|e| lower.ends_with(e)) && !fonts.iter().any(|f| f == s) {
+                fonts.push(s.to_string());
             }
         }
         modules.push(module.clone());

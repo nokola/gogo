@@ -1,6 +1,7 @@
 //! The compiled page: a flat arena of nodes plus pools (strings, props,
 //! values, whens, handlers). Needed in this shape so `build.rs` can emit a
-//! page as `static` slices and boot copies them in (`Page::from_static`)
+//! page as `static` slices and a start copies the tables in
+//! (`Page::from_static`; the strings are read where the build put them)
 //! with no parsing; hot reload builds the same `Page` from text. Every
 //! type here is `Copy` + `Debug`, and `Debug` output IS the emitted Rust
 //! literal (see `emit.rs`) — keep variant names unique across enums.
@@ -1959,7 +1960,15 @@ pub struct StaticPage {
 #[derive(Clone, Debug, Default)]
 pub struct Page {
     pub nodes: Vec<Node>,
-    pub strings: Vec<String>,
+    /// Every string of the page, by `StrId`. A string of a built page is
+    /// borrowed from the build's own text; a string the page gains while
+    /// it runs (`intern`, `Runtime::set_text`) and every string of a page
+    /// compiled at run time is owned.
+    ///
+    /// Needed so a page start allocates nothing for its strings: a page
+    /// holds hundreds, and a copy of each would be an allocation of its
+    /// own.
+    pub strings: Vec<std::borrow::Cow<'static, str>>,
     pub props: Vec<Prop>,
     pub values: Vec<Value>,
     pub whens: Vec<When>,
@@ -2073,7 +2082,7 @@ impl Page {
     pub fn from_static(s: &StaticPage) -> Page {
         Page {
             nodes: s.nodes.to_vec(),
-            strings: s.strings.iter().map(|x| x.to_string()).collect(),
+            strings: s.strings.iter().map(|x| std::borrow::Cow::Borrowed(*x)).collect(),
             props: s.props.to_vec(),
             values: s.values.to_vec(),
             whens: s.whens.to_vec(),
@@ -2190,12 +2199,12 @@ impl Page {
 
     pub fn intern(&mut self, s: &str) -> StrId {
         if self.strings.is_empty() {
-            self.strings.push(String::new());
+            self.strings.push(std::borrow::Cow::Borrowed(""));
         }
         if let Some(i) = self.strings.iter().position(|x| x == s) {
             return StrId::from_index(i);
         }
-        self.strings.push(s.to_string());
+        self.strings.push(std::borrow::Cow::Owned(s.to_string()));
         StrId::from_index(self.strings.len() - 1)
     }
 

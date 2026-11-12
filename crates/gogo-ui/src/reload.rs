@@ -447,7 +447,7 @@ impl Reloader {
     pub fn new(build: &'static BuildTables<'static>, sources: Sources) -> Reloader {
         #[cfg(feature = "hot-reload")]
         {
-            Reloader { live: Some(Box::new(live::Live::new(Some(build), sources))) }
+            Reloader { live: Some(Box::new(live::Live::new(Some(build), sources, live::HostWords::default()))) }
         }
         #[cfg(not(feature = "hot-reload"))]
         {
@@ -464,11 +464,37 @@ impl Reloader {
     pub fn files(sources: Sources) -> Reloader {
         #[cfg(feature = "hot-reload")]
         {
-            Reloader { live: Some(Box::new(live::Live::new(None, sources))) }
+            Reloader { live: Some(Box::new(live::Live::new(None, sources, live::HostWords::default()))) }
         }
         #[cfg(not(feature = "hot-reload"))]
         {
             let _ = sources;
+            Reloader {}
+        }
+    }
+
+    /// As [`Reloader::files`], for an app that compiles its pages with
+    /// options of its own: every reload compiles a followed file with
+    /// the code controls, the behaviors and the `require_keys` of
+    /// `options`, the options the app gives `compile_with` at start.
+    ///
+    /// Needed because a file that names a host's code control or
+    /// behavior compiles only when the compiler is told of it: a
+    /// reloader that was not told refuses the first save of such a page
+    /// ("unknown node type").
+    ///
+    /// The key table, the picture table and the asset reader of
+    /// `options` are not kept: they are lent for one compile. So a
+    /// page with an `atlas` line still needs a build to reload.
+    #[inline(always)]
+    pub fn files_with(sources: Sources, options: CompileOptions<'_>) -> Reloader {
+        #[cfg(feature = "hot-reload")]
+        {
+            Reloader { live: Some(Box::new(live::Live::new(None, sources, live::HostWords::of(&options)))) }
+        }
+        #[cfg(not(feature = "hot-reload"))]
+        {
+            let _ = (sources, options);
             Reloader {}
         }
     }
@@ -632,7 +658,7 @@ mod live {
     use super::{BuildTables, Follows, Refused, Sources, TextStamp, Why, compile_against, same_shape, swap};
     use crate::compile::{CompileOptions, compile_with};
     use crate::diag::{Severity, has_errors};
-    use crate::page::{Page, StaticPage};
+    use crate::page::{BehaviorSpec, Page, StaticPage};
     use crate::runtime::Runtime;
 
     /// How often a watched folder's file times are read.
@@ -752,8 +778,28 @@ mod live {
         latest: Option<(u64, Result<Page, Why>)>,
     }
 
+    /// What an app that compiles its own pages told the compiler, in
+    /// lists the reloader owns.
+    ///
+    /// Needed because `CompileOptions` borrows its lists for one compile,
+    /// and the reloader compiles again at every save.
+    #[derive(Default)]
+    pub(super) struct HostWords {
+        code_controls: Vec<String>,
+        behaviors: Vec<BehaviorSpec>,
+        require_keys: bool,
+    }
+
+    impl HostWords {
+        pub(super) fn of(options: &CompileOptions<'_>) -> HostWords {
+            HostWords { code_controls: options.code_controls.iter().map(|c| c.to_string()).collect(), behaviors: options.behaviors.to_vec(), require_keys: options.require_keys }
+        }
+    }
+
     pub(super) struct Live {
         build: Option<&'static BuildTables<'static>>,
+        /// The options of an app with no build (`Reloader::files_with`).
+        host: HostWords,
         sources: Sources,
         changes: Arc<Changes>,
         /// The change count `take_changed` last handed out.
@@ -768,7 +814,7 @@ mod live {
     }
 
     impl Live {
-        pub(super) fn new(build: Option<&'static BuildTables<'static>>, sources: Sources) -> Live {
+        pub(super) fn new(build: Option<&'static BuildTables<'static>>, sources: Sources, host: HostWords) -> Live {
             let changes = Arc::new(Changes { count: AtomicU32::new(1), stop: AtomicBool::new(false), wake: Mutex::new(None) });
             if let Kind::Dir(dir) = &sources.kind {
                 let mut watch: DirWatch = DirWatch::primed(dir.clone());
@@ -791,7 +837,7 @@ mod live {
                 });
             }
             let files: Vec<File> = build.map_or(Vec::new(), |b| b.pages.iter().map(|p| File { name: p.file.to_string(), uses: p.uses.iter().map(|u| u.to_string()).collect(), built: Some((p.page, p.text)), latest: None }).collect());
-            Live { build, sources, changes, taken: 1, files }
+            Live { build, host, sources, changes, taken: 1, files }
         }
 
         pub(super) fn set_wake(&self, wake: Box<dyn Fn() + Send>) {
@@ -851,9 +897,12 @@ mod live {
                     Err(errors) => (Err(Why::Errors(errors)), None),
                 },
                 // A page the host compiled itself: no build to index, so
-                // the file may name any key and any picture.
+                // the file may name any key and any picture, and it is
+                // compiled with the words the host told of.
                 _ => {
-                    let compiled = compile_with(&text, &loader, CompileOptions { source_name: &name, ..CompileOptions::default() });
+                    let code_controls: Vec<&str> = self.host.code_controls.iter().map(String::as_str).collect();
+                    let options = CompileOptions { source_name: &name, code_controls: &code_controls, behaviors: &self.host.behaviors, require_keys: self.host.require_keys, ..CompileOptions::default() };
+                    let compiled = compile_with(&text, &loader, options);
                     if has_errors(&compiled.diags) {
                         (Err(Why::Errors(compiled.diags.into_iter().filter(|d| d.severity == Severity::Error).collect())), Some(compiled.uses))
                     } else {

@@ -10,13 +10,14 @@
 
 mod reload_kit;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use gogo_ui::reload::{Refused, Reloader, ShapeChange, Sources, Why};
+use gogo_ui::page::{BehaviorSpec, Payload};
 use gogo_ui::runtime::{Runtime, resolve};
-use gogo_ui::{Color_Straight_Srgb_4xU8_RGBA, Page, PropKey, Value, compile};
+use gogo_ui::{Color_Straight_Srgb_4xU8_RGBA, CompileOptions, Page, PropKey, Value, compile, compile_with};
 use reload_kit::{Kit, build};
 
 const THEME: &str = "$accent = #FF0000FF\n";
@@ -315,4 +316,76 @@ fn a_saved_file_in_a_watched_folder_wakes_the_host() {
     assert_eq!(resolve(&page, &rt).prop(&page, page.find("note").unwrap(), PropKey::FontColor), Some(GREEN));
     drop(reload);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A page that names a control the host draws itself (`Knob`) and a
+/// control whose behavior the host runs (`edge`).
+const HOSTED: &str = "control Handle $value=0, $min=0, $max=1 {\n    behavior edge by $value in $min..$max\n    state_builtin held\n    Layers width=90, height=30 {\n        slot track width=fill, height=fill { Rectangle width=fill, height=fill, color=#333333FF }\n    }\n}\nView root {\n    Column col {\n        Knob volume width=100, height=40\n        Handle grip\n        Label note text=\"Volume\"\n    }\n}\n";
+
+static EDGE_SPEC: BehaviorSpec = BehaviorSpec { name: "edge", slots: &["track"], keys: 0, payload: Payload::Number };
+
+/// A program with no build that compiles its pages with code controls
+/// and behaviors of its own gives the reloader the options it compiles
+/// with, and a save of such a page shows. A reloader told nothing does
+/// not know the host's words and refuses the save.
+#[test]
+fn a_files_reloader_compiles_with_the_options_the_host_gave() {
+    let options = CompileOptions { code_controls: &["Knob"], behaviors: &[EDGE_SPEC], ..CompileOptions::default() };
+    let file: Arc<Mutex<String>> = Arc::new(Mutex::new(HOSTED.to_string()));
+    let sources = |file: &Arc<Mutex<String>>| -> Sources {
+        let file = file.clone();
+        Sources::read_with(move |_| Some(file.lock().unwrap().clone()))
+    };
+    let start = || -> (Page, Runtime) {
+        let compiled = compile_with(HOSTED, &|_| None, options);
+        assert!(!gogo_ui::has_errors(&compiled.diags), "{:#?}", compiled.diags);
+        let rt = Runtime::new(&compiled.page);
+        (compiled.page, rt)
+    };
+    let note = |page: &Page, rt: &Runtime| -> String { rt.text_of(page, page.find("note").unwrap()).unwrap().to_string() };
+
+    let mut told = Reloader::files_with(sources(&file), options);
+    let (mut page, mut rt) = start();
+    told.follow(&mut page, "menu.gogo");
+    assert_eq!(told.refresh(&mut page, &mut rt), Ok(false));
+    *file.lock().unwrap() = HOSTED.replace("Volume", "Loudness");
+    told.mark_changed();
+    assert_eq!(told.refresh(&mut page, &mut rt), Ok(true));
+    assert_eq!(note(&page, &rt), "Loudness");
+    assert!(page.find("volume").is_some() && page.find("grip").is_some());
+
+    *file.lock().unwrap() = HOSTED.to_string();
+    let mut untold = Reloader::files(sources(&file));
+    let (mut page, mut rt) = start();
+    untold.follow(&mut page, "menu.gogo");
+    *file.lock().unwrap() = HOSTED.replace("Volume", "Loudness");
+    untold.mark_changed();
+    let refused: Refused = untold.refresh(&mut page, &mut rt).unwrap_err();
+    let said: String = refused.to_string();
+    assert!(said.starts_with("menu.gogo:") && (said.contains("Knob") || said.contains("edge")), "{said}");
+    assert_eq!(note(&page, &rt), "Volume", "the page stays as it was");
+}
+
+/// What `files_with` does not carry: the asset reader, which is lent for
+/// one compile. A page with an `atlas` line, compiled by the host with a
+/// reader, is refused at its first save, with the line.
+#[test]
+fn a_files_reloader_does_not_read_an_atlas_picture() {
+    const SHEET: &str = "atlas sheet source=\"res://s/sheet.png\", cell=16x16\nView root {\n    Column col {\n        Image pic source=sheet[1], width=16, height=16\n        Label note text=\"Volume\"\n    }\n}\n";
+    let read = |path: &str| -> Result<Vec<u8>, String> { if path == "res://s/sheet.png" { Ok(reload_kit::png(64, 32)) } else { Err("no such file".to_string()) } };
+    let options = CompileOptions { assets: Some(&read), ..CompileOptions::default() };
+    let compiled = compile_with(SHEET, &|_| None, options);
+    assert!(!gogo_ui::has_errors(&compiled.diags), "{:#?}", compiled.diags);
+    let mut page: Page = compiled.page;
+    let mut rt = Runtime::new(&page);
+
+    let file: Arc<Mutex<String>> = Arc::new(Mutex::new(SHEET.to_string()));
+    let shared = file.clone();
+    let mut reload = Reloader::files_with(Sources::read_with(move |_| Some(shared.lock().unwrap().clone())), options);
+    reload.follow(&mut page, "sheet.gogo");
+    *file.lock().unwrap() = SHEET.replace("Volume", "Loudness");
+    reload.mark_changed();
+    let refused: Refused = reload.refresh(&mut page, &mut rt).unwrap_err();
+    assert!(refused.to_string().starts_with("sheet.gogo:1 G2012"), "{refused}");
+    assert_eq!(rt.text_of(&page, page.find("note").unwrap()), Some("Volume"), "the page stays as it was");
 }

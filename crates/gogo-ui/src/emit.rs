@@ -415,7 +415,7 @@ pub fn emit_rust(page: &Page, module: &str) -> Result<String, String> {
     emit_anims(page, &mut out).map_err(|e| format!("{module}: {e}"))?;
     out.push_str("    pub static PAGE: StaticPage = StaticPage {\n");
     out.push_str(&format!("        nodes: {},\n", slice(&page.nodes)));
-    out.push_str(&format!("        strings: {},\n", slice(&page.strings.iter().map(String::as_str).collect::<Vec<_>>())));
+    out.push_str(&format!("        strings: {},\n", slice(&page.strings.iter().map(|s| &**s).collect::<Vec<_>>())));
     out.push_str(&format!("        props: {},\n", slice(&page.props)));
     out.push_str(&format!("        values: {},\n", slice(&page.values)));
     out.push_str(&format!("        whens: {},\n", slice(&page.whens)));

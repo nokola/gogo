@@ -31,7 +31,7 @@ fn leak_str(s: &str) -> &'static str {
 
 /// `page` as a build emits it: the same tables as `'static` slices, with
 /// the build's whole slice table.
-fn as_built(page: &Page, slices: &'static [ImageSlice]) -> &'static StaticPage {
+pub fn as_built(page: &Page, slices: &'static [ImageSlice]) -> &'static StaticPage {
     let strings: Vec<&'static str> = page.strings.iter().map(|s| leak_str(s)).collect();
     Box::leak(Box::new(StaticPage {
         nodes: leak(&page.nodes),

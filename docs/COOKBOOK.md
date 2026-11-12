@@ -2890,9 +2890,10 @@ generates.)
 - **A program with no build step**, which compiles its page when it
   starts, makes `Reloader::files(Sources::dir("ui"))` and hands the page
   over with `reload.follow(&mut page, "menu.gogo")`. `examples/window`
-  does this. The reloader compiles the file with no `CompileOptions`, so
-  a page that needs some (code controls, host behaviors, an `atlas`
-  line) is refused at its first edit.
+  does this. A program that compiles with code controls or behaviors of
+  its own makes `Reloader::files_with(sources, options)` with the same
+  options, so a reload knows them too. A page with an `atlas` line is
+  still refused at its first edit: the picture reader is not kept.
 
 REFERENCE "Host API" lists what a reload keeps and what it refuses.
 

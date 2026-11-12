@@ -2913,9 +2913,12 @@ A program with no build step, which compiles its page when it starts and
 finds its nodes by name (`page.find`), has no numbers fixed in its code.
 It makes the reloader with `Reloader::files` and hands its page over
 with `follow`; a reload may then change anything, and a page whose node
-list changed starts fresh. The reloader compiles the file with no
-`CompileOptions`, so a page that needs some (code controls, host
-behaviors, an `atlas` line) is refused at its first edit:
+list changed starts fresh. A program that compiles its pages with code
+controls or behaviors of its own makes the reloader with
+`Reloader::files_with(sources, options)`, the options it compiles with,
+so a reload knows them too. The key table, the picture table and the
+asset reader of those options are lent for one compile and are not
+kept, so a page with an `atlas` line is refused at its first edit:
 
 ```rust
     // Where the program reads its page files while it runs. A real host

@@ -60,4 +60,13 @@ fn without_the_feature_a_page_the_host_compiled_stays_as_compiled() {
     assert_eq!(reload.refresh(&mut page, &mut rt), Ok(false));
     assert_eq!(title_color(&page, &rt), RED);
     assert!(!Reloader::off().is_on());
+
+    // The same for a reloader given the options the host compiles with.
+    let options = gogo_ui::CompileOptions { code_controls: &["Knob"], ..gogo_ui::CompileOptions::default() };
+    let mut told = Reloader::files_with(Sources::dir(std::env::temp_dir().join("gogo_no_such_folder")), options);
+    assert!(!told.is_on());
+    told.follow(&mut page, "page.gogo");
+    told.mark_changed();
+    assert_eq!(told.refresh(&mut page, &mut rt), Ok(false));
+    assert_eq!(title_color(&page, &rt), RED);
 }

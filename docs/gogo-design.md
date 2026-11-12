@@ -100,10 +100,13 @@ pub struct Node {
   its nodes and the next row reuses them. This is the only way the arena
   changes at run time: it grows, and no node is ever removed.
 - Static form: `build.rs` emits the same structs as `&'static` slices per
-  page; boot copies them into the `Vec`s (memcpy-sized). Hot reload parses
-  text into the same `Page`. One parser, one `Page` type.
-- Strings are owned (`Vec<String>`): `Page::from_static` copies a built
-  page's strings in, and a page compiled at run time owns its own.
+  page; a start copies the tables into the `Vec`s (memcpy-sized). Hot
+  reload parses text into the same `Page`. One parser, one `Page` type.
+- Strings are borrowed or owned (`Vec<Cow<'static, str>>`): a page
+  started with `Page::from_static` reads a built page's strings where the
+  build put them and copies none; a string the page gains while it runs
+  (`set_text`, a new word) and every string of a page compiled at run
+  time is the page's own.
 
 ## 2. State overlay
 

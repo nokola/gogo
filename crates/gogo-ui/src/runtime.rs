@@ -2132,7 +2132,9 @@ impl Runtime {
             if page.strings[owned] == text {
                 return;
             }
-            let slot = &mut page.strings[owned];
+            // The slot is the node's own, pushed on its first write
+            // below, so `to_mut` copies nothing here.
+            let slot: &mut String = page.strings[owned].to_mut();
             slot.clear();
             slot.push_str(text);
             self.dirty = true;
@@ -2142,9 +2144,9 @@ impl Runtime {
             owned
         } else {
             if page.strings.is_empty() {
-                page.strings.push(String::new());
+                page.strings.push(std::borrow::Cow::Borrowed(""));
             }
-            page.strings.push(text.to_string());
+            page.strings.push(std::borrow::Cow::Owned(text.to_string()));
             let id = StrId::from_index(page.strings.len() - 1);
             self.owned_text[node] = id;
             id
