@@ -4,49 +4,40 @@
 
 ![Storvald, the AI-first IDE and agent environment, stands on TurboDot, the app and game engine, and Gogo, the declarative UI](docs/img/storvald_overview.svg)
 
-| Part | What it is |
+| Part | What it is | 
 |---|---|
-| **Storvald** | The AI-first IDE and agent environment: where you steer an AI agent and check its work. |
-| **TurboDot** | The app and game engine where AI can prove that its changes work. Headless, deterministic, high-performance, powered by 80s simplicity. Built for agents. |
-| **[Gogo UI](#gogo)** | Declarative UI with immediate-mode performance. On crates.io as `gogo-ui`, `gogo-text` and `gogo-wgpu`, and shipping in production apps. |
+| **Storvald** | Capable AI-first creative environment for unslop games and apps | 
+| **TurboDot** | App and game engine where AI can prove that its changes work. Headless, deterministic, high-performance, powered by 80s simplicity. Built for agents. |
+| **[Gogo UI](#gogo)** | Declarative UI with immediate-mode performance. Ready on crates.io: `gogo-ui`, `gogo-text` and `gogo-wgpu` on crates.io and shipping in production apps.|
 
-Gogo UI is published and in production use. TurboDot and Storvald are in
-development, and nothing of them is released yet.
+Gogo UI is published and in production use. TurboDot and Storvald are in development, and nothing of them is
+released yet.
 
-## Storvald is AI-first
+# Storvald
+Storvald aims to be a capable AI-first creative environment for unslop games and apps.
 
-Earlier editors are tuned for work that is 90% human. Storvald is AI-first:
-**strong checks**, **quality assurances** and workflows that give **higher
-quality and less slop** with **efficient token use**.
+Unlike previous-era editors optimized for 90% human involvement, Stormvald embraces **AI-first with strong checks**, **quality assurances**, and workflows to create **higher quality, less slop output** with **efficient token use**.
 
-So Storvald can do without a code editor and a git diff view of its own:
-use the ones you like. It focuses on the screens and workflows that make
-work with an AI come out better.
+Traditional game engines assume a person working in a visual editor. They present multiple ways of achieving the same result, and while easy to understand for humans, can lead to AI confusion and AI slop.
 
-## TurboDot makes the right route the easy one
+Because of these choices, Stormvald can forego UIs such as code editor or git diff - use any of your preference - and focus on UIs and workflow for improving outcomes when using AI.
 
-TurboDot is the app and game engine under Storvald.
 
-A traditional game engine assumes a person working in a visual editor, and
-it offers several ways to reach the same result. A person finds that easy.
-An AI agent gets confused by it, and the outcome is slop.
+# TurboDot
 
-TurboDot aims to make the right route the easy one for an AI to take, and
-to cut duplicated code, which also means fewer tokens. It builds on
-high-performance Rust libraries, so the result runs fast.
+TurboDot is the underlying app/game engine. Its goal is to make it easy for AI to "take the right route" and reduce de-duplication (less tokens), while building on high-performance Rust libraries for fast execution.
 
-TurboDot is being built so that an agent works with the engine directly and
-writes quality code:
+TurboDot is being built so that an agent works with the engine directly and create quiality code:
 
-- **A project as data.** An agent reads and changes typed entities,
-  resources and properties.
-- **Deterministic runs.** A game state can be replayed, so a bug is easy to
-  reproduce.
-- **Tests with no window.** Simulation frames run with no editor open.
+- **Project as data.** Agent reads and changes typed entities,
+  resources and properties. 
+- **Deterministic runs.** Game state can be replayed. Bug are easier to reproduce and deterministic
+- **Tests with no window.** Simulation frames run with no
+  editor open.
 - **Answers to "why".** Why a collision happened, which system used the
   frame time, why an entity changed state.
-- **Performance budgets.** A slowdown is caught early, before it shows in
-  play.
+- **Performance budgets.** Slowdowns caught early before it shows in play.
+
 
 ---
 
