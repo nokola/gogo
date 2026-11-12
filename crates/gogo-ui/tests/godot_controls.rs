@@ -1223,3 +1223,18 @@ fn theme_entry_tiers_and_v1_fences() {
     // a variant entry's style is base-look only — whens don't switch yet
     assert!(gogo_ui::has_errors(&diags("style H for=Button { when held opacity=0.8 }\ntheme dark { Button .H }\nView v { Button b text=\"x\" }")));
 }
+
+/// A variant's entry follows the order of the default block's: the
+/// line's own word beats the same word from the style the entry names,
+/// and of two styles the one named later wins, as on a node.
+#[test]
+fn a_variant_entrys_own_word_beats_its_style() {
+    let mut fx = Fx::new("style S for=Slider, step=10\ntheme dark { Slider .S step=25 }\nView v { Slider a value=33, width=200 }");
+    assert_eq!(fx.value("a"), 33.0, "the variant is off: the Slider has no step");
+    fx.rt.set_theme_variant(&fx.page, "dark");
+    assert_eq!(fx.value("a"), 25.0, "the line's step=25 beats the style's step=10");
+
+    let mut fx = Fx::new("style A for=Slider, step=10\nstyle B for=Slider, step=20\ntheme dark { Slider .A .B }\nView v { Slider a value=33, width=200 }");
+    fx.rt.set_theme_variant(&fx.page, "dark");
+    assert_eq!(fx.value("a"), 40.0, "the style named later wins");
+}

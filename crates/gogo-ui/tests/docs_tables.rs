@@ -42,11 +42,27 @@ fn kind_words_markdown() -> String {
     let mut out = String::new();
     out.push_str("Every box takes: ");
     out.push_str(&every_box.iter().map(|w| format!("`{w}`")).collect::<Vec<_>>().join(", "));
-    out.push_str(".\nA Grid cell adds `col_span`, `row_span`; a Tiles cell adds `span`, `full_row`.\n\n| kind | own words |\n|---|---|\n");
-    let kinds = KIND_WORDS.iter().map(|(w, k)| (*w, *k)).chain(std::iter::once(("<code control>", Kind::Custom)));
+    out.push_str(".\nA Grid cell adds `col_span`, `row_span`; a Tiles cell adds `span`, `full_row`.\n");
+    let kinds: Vec<(&str, Kind)> = KIND_WORDS.iter().map(|(w, k)| (*w, *k)).chain(std::iter::once(("<code control>", Kind::Custom))).collect();
+    // A kind that takes the box words less a few: the table shows own
+    // words only, so the few are said here.
+    for (word, kind) in &kinds {
+        let words: Vec<&str> = kind_words(*kind);
+        let less: Vec<&str> = every_box.iter().copied().filter(|w| !words.contains(w)).collect();
+        if !words.is_empty() && !less.is_empty() {
+            out.push_str(&format!("A `{word}` takes these less {}.\n", less.iter().map(|w| format!("`{w}`")).collect::<Vec<_>>().join(", ")));
+        }
+    }
+    out.push_str("\n| kind | own words |\n|---|---|\n");
     for (word, kind) in kinds {
         let own: Vec<&str> = kind_own_words(kind);
-        let cell: String = if own.is_empty() { "(none — the line takes clauses, not properties)".to_string() } else { own.iter().map(|w| format!("`{w}`")).collect::<Vec<_>>().join(", ") };
+        let cell: String = if kind_words(kind).is_empty() {
+            "(none — the line takes clauses, not properties)".to_string()
+        } else if own.is_empty() {
+            "(none of its own)".to_string()
+        } else {
+            own.iter().map(|w| format!("`{w}`")).collect::<Vec<_>>().join(", ")
+        };
         out.push_str(&format!("| `{word}` | {cell} |\n"));
     }
     out

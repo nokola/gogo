@@ -1320,16 +1320,28 @@ pub fn legal(kind: Kind, key: PropKey) -> bool {
     !row.is_empty() && (GRID_CELL.contains(&key) || TILES_CELL.contains(&key))
 }
 
+/// Is `key` a word that no node's line takes, though a kind's row holds
+/// it?
+///
+/// Needed because `disabled_opacity` is kept on the View's defaults (the
+/// top `theme { }` block writes it there, `Page::disabled_opacity` reads
+/// it back) and is refused on every line: listed among a View's words,
+/// the docs' table and a did-you-mean would offer a word that is then
+/// refused.
+fn theme_only(key: PropKey) -> bool {
+    key == PropKey::DisabledOpacity
+}
+
 /// The words `kind` takes, in table order — the docs list and the
 /// did-you-mean pool.
 pub fn kind_words(kind: Kind) -> Vec<&'static str> {
-    kind_row(kind).iter().flat_map(|g| g.iter()).filter(|k| !left_out(kind, **k)).map(|k| k.word()).collect()
+    kind_row(kind).iter().flat_map(|g| g.iter()).filter(|k| !left_out(kind, **k) && !theme_only(**k)).map(|k| k.word()).collect()
 }
 
 /// The words `kind` takes that not every box takes: the short list an
 /// error shows ("a Scroll's own words: allow, bars").
 pub fn kind_own_words(kind: Kind) -> Vec<&'static str> {
-    kind_row(kind).iter().flat_map(|g| g.iter()).filter(|k| !BOX.contains(k) && !left_out(kind, **k)).map(|k| k.word()).collect()
+    kind_row(kind).iter().flat_map(|g| g.iter()).filter(|k| !BOX.contains(k) && !left_out(kind, **k) && !theme_only(**k)).map(|k| k.word()).collect()
 }
 
 /// The one authored-color type — every color a `.gogo` file names, a
@@ -1568,8 +1580,11 @@ impl State {
 /// `when <state> prop=...` on one node: the props range in `Page::props`.
 /// `of` = the node whose state is watched (`NO_NODE` = this node); a
 /// style's `when held face.background=…` lands on `face` watching the
-/// Button. `line` = the `when` block's source line — the tie-break between
-/// blocks of equal `State::priority` (later line wins).
+/// Button. `line` = the `when` block's source line: between two nodes that
+/// ask for one seat with `when`s of equal `State::priority`, the later
+/// line holds it (`runtime::seat_claim_rank`). A node's own `when`s are
+/// not ordered by it while the page runs: the compiler stores them in the
+/// order they win.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct When {
     pub state: State,

@@ -1350,10 +1350,11 @@ paste.
 <!-- kind-words:start -->
 Every box takes: `width`, `height`, `min_width`, `min_height`, `max_width`, `max_height`, `size`, `min_size`, `halign`, `valign`, `margin`, `margin_left`, `margin_top`, `margin_right`, `margin_bottom`, `aspect`, `opacity`, `visibility`, `overlay`, `interactive`, `font`, `scale`, `scale.x`, `scale.y`, `translate.x`, `translate.y`, `rotate`, `pivot`, `seat`, `disabled`, `touch_target`, `reveal_x`, `reveal_y`, `accessibility_name`, `keyboard_target`.
 A Grid cell adds `col_span`, `row_span`; a Tiles cell adds `span`, `full_row`.
+A `ListItem` takes these less `valign`, `aspect`, `overlay`.
 
 | kind | own words |
 |---|---|
-| `View` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `disabled_opacity` |
+| `View` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom` |
 | `Panel` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom` |
 | `Column` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `spacing` |
 | `Row` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `spacing` |
@@ -1379,10 +1380,10 @@ A Grid cell adds `col_span`, `row_span`; a Tiles cell adds `span`, `full_row`.
 | `ListItem` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `tap_pulse`, `selected` |
 | `repeat` | (none — the line takes clauses, not properties) |
 | `gap` | (none — the line takes clauses, not properties) |
-| `row` | (none — the line takes clauses, not properties) |
+| `row` | (none of its own) |
 | `skip` | (none — the line takes clauses, not properties) |
 | `slot` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom`, `automatic` |
-| `seat` | (none — the line takes clauses, not properties) |
+| `seat` | (none of its own) |
 | `empty` | (none — the line takes clauses, not properties) |
 | `<code control>` | `background`, `corner_radius`, `corner_radius_top_left`, `corner_radius_top_right`, `corner_radius_bottom_right`, `corner_radius_bottom_left`, `border_thickness`, `border_color`, `border_dash`, `clip_contents`, `padding`, `padding_left`, `padding_top`, `padding_right`, `padding_bottom` |
 <!-- kind-words:end -->

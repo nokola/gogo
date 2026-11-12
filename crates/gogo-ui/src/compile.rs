@@ -168,8 +168,9 @@ struct Fills {
 
 struct WhenTmp {
     state: State,
-    /// The `when` block's source line — the equal-rank tie-break
-    /// (`State::priority`): later line wins.
+    /// The `when` block's source line: between two of a node's own
+    /// `when`s of equal rank (`State::priority`) the later line wins. 0
+    /// marks a widget's default pose, which every page line beats.
     line: u32,
     props: Vec<Prop>,
     /// Descendant responses (`when held face.background=…`): (node name,
@@ -618,7 +619,13 @@ fn wrong_kind(key: PropKey, kind: Kind) -> String {
         PropKey::Allow | PropKey::Bars => format!("`{word}=` picks a Scroll's pan axes — a {name} does not scroll"),
         PropKey::Cols | PropKey::RowHeight => format!("`{word}=` lays out a Grid or Tiles — a {name} has no tracks"),
         PropKey::Spacing => format!("`spacing=` separates a stack's children (Column, Row, Flow, Grid, Tiles, List) — a {name} stacks nothing"),
-        PropKey::Text | PropKey::FontSize | PropKey::FontColor | PropKey::Wrap | PropKey::ClipText | PropKey::TextHalign | PropKey::TextValign => format!("`{word}=` belongs to a box that shows text (Label, Button, Check, Toggle, Radio, Input) — a {name} shows none"),
+        PropKey::Text | PropKey::FontSize | PropKey::FontColor | PropKey::Wrap | PropKey::ClipText | PropKey::TextHalign | PropKey::TextValign => {
+            // The text kinds that take THIS word: `clip_text=` is a
+            // Label's alone, and an Input takes neither `wrap=` nor the
+            // two alignment words.
+            let takers: Vec<&str> = [Kind::Label, Kind::Button, Kind::Check, Kind::Toggle, Kind::Radio, Kind::Input].into_iter().filter(|k| legal(*k, key)).map(kind_name).collect();
+            format!("`{word}=` belongs to a box that shows text ({}) — a {name} shows none", takers.join(", "))
+        }
         PropKey::Source | PropKey::Fit | PropKey::Loading | PropKey::Release => format!("`{word}=` is an Image word — a {name} shows no picture"),
         PropKey::TextFit | PropKey::TextFlip => format!("`{word}=` stretches a Label's one glyph over its box — a {name} has no glyph to stretch"),
         PropKey::Stops | PropKey::GradientFill | PropKey::Angle | PropKey::GradientRepeat => format!("`{word}=` is a Gradient word — a {name}'s one color is `background=`"),
@@ -2051,19 +2058,16 @@ impl<'a> Compiler<'a> {
                             e.1.extend(kn.props.iter().map(|p| p.key.clone()));
                         }
                     }
-                    let first = self.page.props.len() as u32;
-                    for p in &kn.props {
-                        if let Some(prop) = self.prop(p, kind) {
-                            self.page.props.push(prop);
-                        }
-                    }
-                    let count = self.page.props.len() as u32 - first;
-                    self.page.kind_defaults.push(KindDefault { kind, props: (first, count), variant });
                     if variant != NO_STR {
-                        // A VARIANT entry's style: base-look props only,
-                        // riding the variant-gated kind defaults (pushed
-                        // AFTER the line's run — the first matching run
-                        // wins the read, so the line out-ranks it).
+                        // A variant entry's style: base-look props only,
+                        // as rows of the variant's own kind defaults.
+                        //
+                        // Needed before the line's row because
+                        // `Page::kind_default` reads the rows last first:
+                        // the line's own word then beats the same word
+                        // from a style, and of two styles the one named
+                        // later wins, as on a node.
+                        //
                         // `when`/`transition` can't switch with the
                         // variant yet (variant-stamped writes, LATER IF
                         // NEEDED: todo-gogo.md GP47).
@@ -2083,6 +2087,14 @@ impl<'a> Compiler<'a> {
                             self.page.kind_defaults.push(KindDefault { kind, props: (first, count), variant });
                         }
                     }
+                    let first = self.page.props.len() as u32;
+                    for p in &kn.props {
+                        if let Some(prop) = self.prop(p, kind) {
+                            self.page.props.push(prop);
+                        }
+                    }
+                    let count = self.page.props.len() as u32 - first;
+                    self.page.kind_defaults.push(KindDefault { kind, props: (first, count), variant });
                 }
             }
         }
@@ -6172,7 +6184,7 @@ impl<'a> Compiler<'a> {
                     // host would re-lay out the whole page every frame
                     // (G5105, the shipped fence).
                     if matches!(parent_kind, Some(Kind::Column | Kind::Row | Kind::Flow | Kind::Grid | Kind::Tiles | Kind::Scroll)) {
-                        self.error("G5105", n.line, format!("'{}' geometry is automatic — it can't live in a {:?}, which measures children on that axis; seat the slot in a free host (a named slot region, Layers, Circle)", n.name.clone().unwrap_or_default(), parent_kind.unwrap_or(Kind::Column)));
+                        self.error("G5105", n.line, format!("'{}' geometry is automatic — it can't live in a {:?}, which measures children on that axis; seat the slot in a free host (a named slot region or a Layers)", n.name.clone().unwrap_or_default(), parent_kind.unwrap_or(Kind::Column)));
                     }
                     // The driven aspect has ONE writer — the driver (§4.5,
                     // the shipped G3002): the slot line must not place it.
@@ -7102,8 +7114,8 @@ impl<'a> Compiler<'a> {
         let mut seat_claims: Vec<(NodeId, StrId, State, u32)> = Vec::new();
         let mut screen_writes: Vec<(NodeId, PropKey, State, u32)> = Vec::new();
         for (state, items, block_line, default_pose) in deferred {
-            // A widget's default pose ranks under every page line (the
-            // runtime applies a node's whens by (priority, line)).
+            // A widget's default pose ranks under every page line: line 0
+            // marks it for the order the whens are stored in, below.
             let line: u32 = if default_pose { 0 } else { block_line };
             for item in &items {
                 let AstItem::Assign { key, dollar: false, value, line: l } = item else {

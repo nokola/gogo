@@ -516,9 +516,10 @@ impl Player {
     /// Instantiates the anim's tracks for the page. A track's authored
     /// `from=` is written at play start and held until the track begins
     /// (a staggered entrance never flashes its base) — for the FIRST
-    /// track on a channel only; a later track on the same channel chains
-    /// from the value the previous one leaves. `from=current` captures
-    /// the live value now, at play start.
+    /// track on a channel only; a later track on the same channel starts
+    /// at its own `from=`, and with none it goes on from the value the
+    /// channel has when the track begins. `from=current` captures the
+    /// live value now, at play start.
     ///
     /// `layer` is the anim layer this player writes; `live` is the value
     /// each channel SHOWS right now (the ladder, or an anim that owns it)

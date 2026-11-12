@@ -437,3 +437,35 @@ fn a_list_row_takes_no_placement_a_list_overrides() {
         builds(&row(word));
     }
 }
+
+// ----- words and messages that name the right kinds ---------------------------
+
+/// `disabled_opacity` is offered on no line: it is a word of the top
+/// `theme { }` block alone.
+#[test]
+fn disabled_opacity_is_offered_on_no_line() {
+    assert!(!gogo_ui::page::kind_words(gogo_ui::page::Kind::View).contains(&"disabled_opacity"));
+    assert!(!gogo_ui::page::kind_own_words(gogo_ui::page::Kind::View).contains(&"disabled_opacity"));
+    never_says("View v disabled_opacit=0.9 { Button b text=\"x\" }", "disabled_opacity");
+}
+
+/// A text word on a box that shows no text names the kinds that take
+/// that word, and no other kind.
+#[test]
+fn a_text_word_on_a_box_with_no_text_names_its_takers() {
+    refused("View v { Panel p clip_text=true }", "G2002", "(Label)");
+    refused("View v { Panel p wrap=true }", "G2002", "(Label, Button, Check, Toggle, Radio)");
+    refused("View v { Panel p horizontal_alignment=center }", "G2002", "(Label, Button, Check, Toggle, Radio)");
+    refused("View v { Panel p vertical_alignment=center }", "G2002", "(Label, Button, Check, Toggle, Radio)");
+    refused("View v { Panel p text=\"x\" }", "G2002", "(Label, Button, Check, Toggle, Radio, Input)");
+    refused("View v { Panel p font_size=12 }", "G2002", "(Label, Button, Check, Toggle, Radio, Input)");
+}
+
+/// A `length` or `position` slot under a box that measures its children
+/// is sent to the hosts that can hold it, and a shape is not one.
+#[test]
+fn a_slot_that_moves_is_sent_to_a_host_that_holds_it() {
+    let src = "control Bad $value=0, $min=0, $max=1 {\n Column {\n  slot p automatic=position by $value in $min..$max { Rectangle 6x6 }\n }\n}\nView v { Bad b }";
+    refused(src, "G5105", "a named slot region or a Layers");
+    never_says(src, "Circle");
+}
