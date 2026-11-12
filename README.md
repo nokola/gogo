@@ -1,6 +1,6 @@
 # Storvald
 
-**Capable, AI-first creative environment for unslop games and apps.**
+**AI-first creative environment.**
 
 ![Storvald, the AI-first IDE and agent environment, stands on TurboDot, the app and game engine, and Gogo, the declarative UI](docs/img/storvald_overview.svg)
 
